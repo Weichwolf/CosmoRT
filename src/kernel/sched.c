@@ -17,6 +17,9 @@
 #include "config.h"
 #include "smp.h"
 
+/* Forward declarations */
+void sched_add(thread_t *t);
+
 /* Core isolation: 1 = RT-only, 0 = normal */
 static uint8_t core_isolated[SMP_MAX_CORES];
 
@@ -34,6 +37,179 @@ static struct {
 void sched_isolate_core(int core_id) {
     if (core_id >= 0 && core_id < SMP_MAX_CORES)
         core_isolated[core_id] = 1;
+}
+
+/* Un-isolate a core — allow SCHED_OTHER threads again. */
+void sched_unisolate_core(int core_id) {
+    if (core_id >= 0 && core_id < SMP_MAX_CORES)
+        core_isolated[core_id] = 0;
+}
+
+/* Count isolated cores (excluding core 0 which is never isolated). */
+static int count_isolated(void) {
+    int n = 0, ncores = smp_num_cores();
+    for (int c = 1; c < ncores; c++)
+        if (core_isolated[c]) n++;
+    return n;
+}
+
+/* Approximate RT thread count from per-core bitmaps + running threads.
+ * Lock-free: reads are atomic word-sized. Fine for a heuristic. */
+static int count_rt_threads(void) {
+    int count = 0, ncores = smp_num_cores();
+    for (int c = 0; c < ncores; c++) {
+        thread_t *t = percpu_data[c].current_thread;
+        if (t && (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR))
+            count++;
+        uint32_t rt_bits = core_rq[c].bitmap >> PRIO_RT_MIN;
+        count += __builtin_popcount(rt_bits);
+    }
+    return count;
+}
+
+/* Find non-isolated core (>0) with fewest SCHED_OTHER threads queued. */
+static int find_least_loaded_core(void) {
+    int best = -1, best_load = 0x7FFFFFFF;
+    int ncores = smp_num_cores();
+    for (int c = 1; c < ncores; c++) {
+        if (core_isolated[c]) continue;
+        /* Approximate: count bits at priority 0 (SCHED_OTHER level) */
+        int load = (core_rq[c].bitmap & 1) ? 1 : 0;
+        /* Also count current thread if SCHED_OTHER */
+        thread_t *t = percpu_data[c].current_thread;
+        if (t && t->sched_policy == SCHED_OTHER) load++;
+        if (load < best_load) { best_load = load; best = c; }
+    }
+    return best;
+}
+
+/* Find an isolated core to un-isolate. */
+static int find_isolated_core(void) {
+    int ncores = smp_num_cores();
+    for (int c = 1; c < ncores; c++)
+        if (core_isolated[c]) return c;
+    return -1;
+}
+
+/* Migrate RT threads with cpu_affinity == -1 to isolated cores (round-robin).
+ * Only migrates threads found in run queues (not currently running). */
+static void migrate_rt_to_isolated(void) {
+    int ncores = smp_num_cores();
+
+    /* Collect isolated cores */
+    int iso[SMP_MAX_CORES], niso = 0;
+    for (int c = 1; c < ncores; c++)
+        if (core_isolated[c]) iso[niso++] = c;
+    if (!niso) return;
+
+    int rr = 0; /* round-robin index */
+
+    for (int c = 0; c < ncores; c++) {
+        if (core_isolated[c]) continue; /* skip isolated — RT already there */
+
+        uint64_t flags;
+        spin_lock_irq(&core_rq[c].lock, &flags);
+
+        for (int p = PRIO_RT_MIN; p <= PRIO_RT_MAX; p++) {
+            thread_t **prev = &core_rq[c].rq[p].head;
+            thread_t *t = *prev;
+            while (t) {
+                if ((t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
+                    && t->cpu_affinity < 0)
+                {
+                    /* Remove from this queue */
+                    *prev = t->rq_next;
+                    if (!*prev) core_rq[c].rq[p].tail = 0;
+                    if (!core_rq[c].rq[p].head) {
+                        core_rq[c].rq[p].tail = 0;
+                        core_rq[c].bitmap &= ~(1u << p);
+                    }
+                    thread_t *migrating = t;
+                    t = t->rq_next;
+                    migrating->rq_next = 0;
+
+                    /* Pin to isolated core and enqueue */
+                    int target = iso[rr % niso];
+                    rr++;
+                    migrating->cpu_affinity = target;
+
+                    spin_unlock_irq(&core_rq[c].lock, flags);
+
+                    /* Enqueue on target (sched_add handles locking) */
+                    sched_add(migrating);
+
+                    spin_lock_irq(&core_rq[c].lock, &flags);
+                    /* Restart scan from head — queue may have changed */
+                    prev = &core_rq[c].rq[p].head;
+                    t = *prev;
+                    continue;
+                }
+                prev = &t->rq_next;
+                t = t->rq_next;
+            }
+        }
+
+        spin_unlock_irq(&core_rq[c].lock, flags);
+    }
+}
+
+/* Dynamic RT core isolation. Called every ~1s from timer IRQ context. */
+static void sched_rebalance(void) {
+    int ncores = smp_num_cores();
+    if (ncores < 4) return; /* 2-core: no isolation, RT preempts POSIX */
+
+    int rt_count = count_rt_threads();
+    int target = rt_count;
+    int max_iso = ncores / 4;
+    if (target > max_iso) target = max_iso;
+    if (rt_count == 0) target = 0;
+
+    int current_iso = count_isolated();
+    if (target == current_iso) {
+        /* Even if count unchanged, migrate unpinned RT threads */
+        if (current_iso > 0)
+            migrate_rt_to_isolated();
+        return;
+    }
+
+    if (target > current_iso) {
+        /* Isolate more cores */
+        int need = target - current_iso;
+        for (int i = 0; i < need; i++) {
+            int c = find_least_loaded_core();
+            if (c < 0) break;
+            sched_isolate_core(c);
+            serial_puts("sched: isolate core ");
+            serial_putchar('0' + (c % 10));
+            serial_putchar('\n');
+        }
+    } else {
+        /* Un-isolate cores */
+        int excess = current_iso - target;
+        for (int i = 0; i < excess; i++) {
+            int c = find_isolated_core();
+            if (c < 0) break;
+            /* Unpin RT threads on this core before un-isolating */
+            uint64_t flags;
+            spin_lock_irq(&core_rq[c].lock, &flags);
+            for (int p = PRIO_RT_MIN; p <= PRIO_RT_MAX; p++) {
+                thread_t *t = core_rq[c].rq[p].head;
+                while (t) { t->cpu_affinity = -1; t = t->rq_next; }
+            }
+            spin_unlock_irq(&core_rq[c].lock, flags);
+            /* Also unpin running RT thread */
+            thread_t *cur = percpu_data[c].current_thread;
+            if (cur && (cur->sched_policy == SCHED_FIFO || cur->sched_policy == SCHED_RR))
+                cur->cpu_affinity = -1;
+            sched_unisolate_core(c);
+            serial_puts("sched: unisolate core ");
+            serial_putchar('0' + (c % 10));
+            serial_putchar('\n');
+        }
+    }
+
+    if (target > 0)
+        migrate_rt_to_isolated();
 }
 
 /* Add thread to appropriate core's queue.
@@ -103,6 +279,13 @@ thread_t *sched_pick(void) {
  * Saves current thread, picks next, restores into frame.
  * frame layout: [r15..rax, vector, error, rip, cs, rflags, rsp, ss] */
 void sched_preempt(void *frame_ptr) {
+    /* Periodic rebalance (~1s at 10Hz) — only on BSP to avoid races */
+    static int rebalance_counter;
+    if (percpu_self()->core_id == 0 && ++rebalance_counter >= 10) {
+        rebalance_counter = 0;
+        sched_rebalance();
+    }
+
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
     if (!cur || cur->state != THREAD_RUNNING) return;

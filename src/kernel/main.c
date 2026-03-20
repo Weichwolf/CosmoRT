@@ -96,13 +96,6 @@ void kernel_main(struct boot_info *info) {
     extern void sched_loop(void);
     smp_start_all(sched_loop);
 
-    /* Core isolation: if >= 4 cores, isolate core 1 for RT */
-    if (smp_num_cores() >= 4) {
-        extern void sched_isolate_core(int);
-        sched_isolate_core(1);
-        serial_puts("core 1: isolated (RT)\n");
-    }
-
     serial_puts("\n--- Loading init ---\n");
 
     int pid = proc_create_elf(init_bin, init_bin_size);
