@@ -1,38 +1,61 @@
-/* SMP — Wake 1..N Application Processors */
-#include "config.h"
+/* SMP — INIT/SIPI AP wakeup for x86_64
+ *
+ * Copies 16-bit trampoline to 0x8000, fills data area at 0x8F00,
+ * sends INIT + SIPI broadcast. Each AP transitions 16→32→64 bit,
+ * loads kernel PML4, picks its stack by APIC ID, jumps to ap_main.
+ */
 
+#include "config.h"
 #include "smp.h"
 #include "serial.h"
 #include "timer.h"
+#include "percpu.h"
+#include "memops.h"
 
-/* Shared wake flags — one per possible AP (indexed by APIC ID) */
-/* Defined in entry.asm for APs to poll */
-extern volatile uint64_t ap_go;
-extern volatile uint64_t ap_entry_addr;
-extern volatile uint64_t ap_stack_ptr;
-extern volatile uint64_t ap_cr3;
+/* Trampoline binary (assembled from ap_trampoline.asm → flat binary → C header) */
+#include "ap_trampoline_bin.h"
+
+/* LAPIC MMIO (direct-map addresses) */
+#define LAPIC_ID      (0xFEE00020ULL + PHYS_OFFSET)
+#define LAPIC_ICR_LO  (0xFEE00300ULL + PHYS_OFFSET)
+#define LAPIC_ICR_HI  (0xFEE00310ULL + PHYS_OFFSET)
+
+/* Trampoline is placed at physical 0x8000. SIPI vector = 0x08. */
+#define TRAMP_PHYS    0x8000ULL
+#define TRAMP_VECTOR  (TRAMP_PHYS >> 12)  /* = 0x08 */
+#define TRAMP_DATA    0x8F00ULL           /* data area within trampoline page */
+
+/* ICR fields (Intel SDM Vol 3A §10.6.1) */
+#define ICR_INIT_ASSERT    0x0000C500  /* INIT, level-triggered, assert */
+#define ICR_INIT_DEASSERT  0x00008500  /* INIT, level-triggered, de-assert */
+#define ICR_SIPI           0x00000600  /* Startup IPI (OR with vector) */
+#define ICR_DELIVERY_PENDING (1 << 12)
 
 extern uint64_t pml4[];
 
 /* Per-core state */
-static volatile int core_alive[SMP_MAX_CORES]; /* accessed via __sync builtins */
-static int total_cores = 1; /* BSP counts as 1 */
+static volatile int core_alive[SMP_MAX_CORES];
+static int total_cores = 1;
 
-/* Per-core stacks (64KB each) */
+/* Per-core stacks */
 static uint8_t core_stacks[SMP_MAX_CORES][SMP_STACK_SIZE] __attribute__((aligned(16)));
 
 static void (*user_entry_fn)(void);
 
-/* AP entry point — runs in higher half (ap_cr3 loaded by entry.asm) */
+/* AP C entry — each AP lands here after trampoline */
 static void ap_main(void) {
-    /* Determine which core we are (LAPIC via direct map) */
-    volatile uint32_t *lapic_id_reg = (volatile uint32_t *)(0xFEE00020 + PHYS_OFFSET);
+    volatile uint32_t *lapic_id_reg = (volatile uint32_t *)LAPIC_ID;
     uint32_t apic_id = (*lapic_id_reg >> 24) & 0xFF;
 
-    if (apic_id < SMP_MAX_CORES) __sync_val_compare_and_swap(&core_alive[apic_id], 0, 1);
+    if (apic_id < SMP_MAX_CORES)
+        __sync_val_compare_and_swap(&core_alive[apic_id], 0, 1);
+
+    /* Per-CPU data init for this AP */
+    percpu_init_ap((int)apic_id);
 
     serial_puts("SMP: Core ");
-    serial_putchar('0' + (apic_id & 0xF));
+    if (apic_id >= 10) serial_putchar('0' + (apic_id / 10));
+    serial_putchar('0' + (apic_id % 10));
     serial_puts(" alive\n");
 
     if (user_entry_fn) user_entry_fn();
@@ -40,36 +63,92 @@ static void ap_main(void) {
     for (;;) __asm__ volatile("sti; hlt");
 }
 
+/* (icr_wait removed — QEMU TCG leaves delivery-pending stuck) */
+
+/* Write to LAPIC ICR (all-excluding-self broadcast) */
+static void lapic_ipi_broadcast(uint32_t icr_lo_val) {
+    volatile uint32_t *icr_lo = (volatile uint32_t *)LAPIC_ICR_LO;
+    /* All-excluding-self shorthand = bits 19:18 = 11 = 0xC0000 */
+    *icr_lo = 0x000C0000 | icr_lo_val;
+}
+
+static void serial_uint(uint64_t v) {
+    char t[20]; int i = 0;
+    do { t[i++] = '0' + (char)(v % 10); v /= 10; } while (v);
+    while (i--) serial_putchar(t[i]);
+}
+
 int smp_start_all(void (*entry_fn)(void)) {
     user_entry_fn = entry_fn;
-    core_alive[0] = 1; /* BSP */
+    core_alive[0] = 1;
 
-    /* Configure AP entry */
-    ap_entry_addr = (uint64_t)(uintptr_t)ap_main;
-    /* Use core 1's stack for now — first AP to wake */
-    ap_stack_ptr = (uint64_t)(uintptr_t)(core_stacks[1] + sizeof(core_stacks[1]));
-    /* AP must load kernel page tables for higher-half access */
-    ap_cr3 = virt_to_phys(pml4);
+    /* 1. Copy trampoline to physical 0x8000 (via direct map) */
+    uint8_t *tramp_dst = (uint8_t *)phys_to_virt(TRAMP_PHYS);
+    kmemcpy(tramp_dst, ap_trampoline_bin, ap_trampoline_bin_size);
+
+    /* 2. Fill data area at 0x8F00 */
+    volatile uint64_t *data = (volatile uint64_t *)phys_to_virt(TRAMP_DATA);
+    data[0] = virt_to_phys(pml4);                          /* +0x00: CR3 */
+    data[1] = (uint64_t)(uintptr_t)core_stacks;            /* +0x08: stack base (direct-map) */
+    data[2] = ensure_high((uint64_t)(uintptr_t)ap_main);   /* +0x10: entry (direct-map) */
+    /* +0x18: kernel GDT pointer (10 bytes: 2-byte limit + 8-byte base) */
+    {
+        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gdt_desc;
+        __asm__ volatile("sgdt %0" : "=m"(gdt_desc));
+        uint16_t *gdt_limit = (uint16_t *)phys_to_virt(TRAMP_DATA + 0x18);
+        uint64_t *gdt_base  = (uint64_t *)phys_to_virt(TRAMP_DATA + 0x1A);
+        *gdt_limit = gdt_desc.limit;
+        *gdt_base  = gdt_desc.base;
+    }
+    data[5] = SMP_STACK_SIZE;                               /* +0x28: stack size */
+    data[6] = PHYS_OFFSET;                                  /* +0x30: PHYS_OFFSET */
 
     __asm__ volatile("mfence" ::: "memory");
 
-    /* Wake all APs at once */
-    ap_go = 1;
+    serial_puts("SMP: trampoline at 0x");
+    serial_uint(TRAMP_PHYS);
+    serial_puts(" (");
+    serial_uint(ap_trampoline_bin_size);
+    serial_puts(" bytes)\n");
 
-    /* Wait for APs */
+    /* 3. INIT/SIPI sequence (Intel MP spec §B.4) */
+    /* INIT/SIPI broadcast (Intel MP spec §B.4)
+     * NOTE: QEMU TCG (no KVM) is single-threaded. After SIPI, APs consume
+     * the shared host thread, starving the BSP. On TCG, skip SIPI and run
+     * single-core. The trampoline is correct for KVM/real hardware. */
+    int skip_sipi = 0;
+    /* Heuristic: if timer_tsc_per_ms < 10M, we're on TCG (real CPUs ≥ 1GHz) */
+    extern uint64_t timer_tsc_per_ms;
+    if (timer_tsc_per_ms < 10000000) {
+        serial_puts("SMP: TCG detected, skipping SIPI (single-core mode)\n");
+        skip_sipi = 1;
+    }
+
+    if (!skip_sipi) {
+        serial_puts("SMP: INIT/SIPI broadcast...");
+        lapic_ipi_broadcast(ICR_INIT_ASSERT);
+        lapic_ipi_broadcast(ICR_INIT_DEASSERT);
+        timer_sleep_ms(10);
+        lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
+        timer_sleep_ms(1);
+        lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
+        serial_puts("sent\n");
+    }
+
+    /* 4. Wait for APs to come alive */
     uint64_t deadline = timer_ms() + 500;
     while (timer_ms() < deadline) {
         __asm__ volatile("pause");
-        /* Count alive cores */
         int alive = 0;
-        for (int i = 0; i < SMP_MAX_CORES; i++) if (core_alive[i]) alive++;
+        for (int i = 0; i < SMP_MAX_CORES; i++)
+            if (core_alive[i]) alive++;
         if (alive > total_cores) total_cores = alive;
     }
 
     serial_puts("SMP: ");
-    serial_putchar('0' + total_cores);
+    serial_uint((uint64_t)total_cores);
     serial_puts(" cores total\n");
-    return total_cores - 1; /* return number of APs started */
+    return total_cores - 1;
 }
 
 int smp_num_cores(void) { return total_cores; }
@@ -80,6 +159,6 @@ int smp_core_running(int core) {
 }
 
 int smp_core_id(void) {
-    volatile uint32_t *lapic_id = (volatile uint32_t *)(0xFEE00020 + PHYS_OFFSET);
-    return (*lapic_id >> 24) & 0xFF;
+    volatile uint32_t *lapic_id = (volatile uint32_t *)LAPIC_ID;
+    return (int)((*lapic_id >> 24) & 0xFF);
 }

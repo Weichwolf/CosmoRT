@@ -66,6 +66,25 @@ all: $(ESP_IMG)
 $(BUILD)/boot $(BUILD)/kernel $(BUILD)/user:
 	mkdir -p $@
 
+# ── AP trampoline (16-bit, flat binary → C header) ──
+$(BUILD)/kernel/ap_trampoline.bin: $(SRC)/kernel/ap_trampoline.asm | $(BUILD)/kernel
+	$(NASM) -f bin -o $@ $<
+
+$(SRC)/kernel/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated AP trampoline (%d bytes) */' % len(data)); \
+	print('static const unsigned char ap_trampoline_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long ap_trampoline_bin_size = %d;' % len(data))" > $@
+	@echo "ap_trampoline_bin.h: $$(wc -c < $<) bytes"
+
+# smp.o depends on trampoline header
+$(BUILD)/kernel/smp.o: $(SRC)/kernel/smp.c $(SRC)/kernel/ap_trampoline_bin.h | $(BUILD)/kernel
+	$(CC) $(KCFLAGS) -o $@ $<
+
 # ── Init binary (embedded in kernel) ─────────────
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -210,4 +229,4 @@ test-boot: $(ESP_IMG)
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h
+	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h
