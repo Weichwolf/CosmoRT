@@ -13,6 +13,24 @@ CosmoRT (Kernel)  dieses Repo
 Hardware          x86/ARM/RISC-V
 ```
 
+## Ausgangsbasis: llmos
+
+~/Git/llmos/ ist ein funktionierender Microkernel (22K Zeilen C):
+- UEFI Boot, GDT, IDT, Page Tables
+- EDF-Scheduler (Tickless, Bandwidth-Server)
+- Capability-basiertes IPC (seL4-Stil)
+- Paging, SMP, APIC Timer
+- Treiber: xHCI USB, E1000 Netzwerk, virtio Block
+- Grafik, Browser, JS-Engine (alles Ring 0)
+
+CosmoRT baut darauf auf. Was sich aendert:
+1. POSIX-Syscall-Layer drauflegen (fork, exec, open, read, write, ...)
+2. Treiber aus Ring 0 in Userspace verschieben
+3. Eingebauten Browser/Desktop entfernen (wird CosmoUI/CosmoJS)
+4. CosmoPX libc als Userspace-Fundament
+
+Der Kernel-Core (Boot, Scheduler, IPC, Paging, IRQ) bleibt.
+
 ## Ziel
 
 Minimaler Kernel der POSIX-Syscalls implementiert.
