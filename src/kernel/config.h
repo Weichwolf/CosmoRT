@@ -37,4 +37,11 @@ static inline uint64_t ensure_high(uint64_t addr) {
 #define USER_MMAP_BASE   0x7F0000000000ULL
 #define USER_BRK_BASE    0x600000ULL         /* above typical ELF load */
 
+/* Network */
+#define NET_PKT_SIZE       1536    /* max packet size (MTU + headers) */
+#define NET_QUEUE_SIZE     16      /* packets per queue */
+#define NET_TCP_RXBUF      4096    /* TCP receive buffer */
+#define NET_TCP_TIMEOUT_MS 5000    /* TCP connect/recv timeout */
+#define NET_DHCP_RETRY_MS  3000    /* DHCP retry interval */
+
 #endif

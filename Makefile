@@ -55,7 +55,10 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/vma.o \
            $(BUILD)/kernel/memops.o \
            $(BUILD)/kernel/vfs.o \
-           $(BUILD)/kernel/hw.o
+           $(BUILD)/kernel/hw.o \
+           $(BUILD)/kernel/net.o \
+           $(BUILD)/kernel/e1000.o \
+           $(BUILD)/kernel/socket.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
@@ -202,6 +205,9 @@ QEMU_FLAGS = -cpu qemu64 -smp 1 -m 256 \
 
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
+
+qemu-net: $(ESP_IMG)
+	$(QEMU) $(QEMU_FLAGS) -device e1000,netdev=net0 -netdev user,id=net0
 
 # Background QEMU with serial log
 run: $(ESP_IMG)

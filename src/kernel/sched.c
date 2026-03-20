@@ -399,6 +399,9 @@ void sched_loop(void) {
                 (idle_stacks[core] + sizeof(idle_stacks[core]));
             tss_set_rsp0(idle_top);
             percpu_self()->kernel_rsp = idle_top;
+            /* Poll network while idle (no-op if no NIC) */
+            extern void net_poll(void);
+            net_poll();
             __asm__ volatile("sti; hlt");
         }
     }

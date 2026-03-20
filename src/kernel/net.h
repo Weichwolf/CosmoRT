@@ -1,0 +1,77 @@
+/* CosmoRT Network Stack — IP/UDP/TCP/DHCP/ARP/DNS over E1000
+ * Adapted from llmos net.h
+ */
+#ifndef NET_H
+#define NET_H
+
+#include <stdint.h>
+#include "config.h"
+
+/* Initialize NIC + network state. Returns 0 on success, -1 if no NIC. */
+int net_init(void);
+
+/* DHCP */
+void net_dhcp_send_discover(void);
+int net_dhcp_check(void);
+int net_dhcp(void);
+
+/* Ping */
+int net_ping(const uint8_t *dst_ip);
+
+/* ARP */
+int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out);
+
+/* TCP */
+typedef struct {
+    uint8_t  dst_ip[4];
+    uint8_t  dst_mac[6];
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t seq;
+    uint32_t ack;
+    int      state;
+    uint8_t  rxbuf[NET_TCP_RXBUF];
+    int      rxbuf_pos;
+    int      rxbuf_len;
+} net_tcp_t;
+
+int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port);
+int net_tcp_send(net_tcp_t *c, const void *data, int len);
+int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter);
+void net_tcp_close(net_tcp_t *c);
+
+/* HTTP */
+int net_http_get(const uint8_t *dst_ip, uint16_t port,
+                 const char *host, const char *path,
+                 char *response, int resp_size);
+
+/* DNS */
+int net_dns_resolve(const char *hostname, uint8_t ip_out[4]);
+
+/* Polling — call from idle loop */
+void net_poll(void);
+
+/* Queue type */
+#define Q_SIZE NET_QUEUE_SIZE
+#define Q_PKT  NET_PKT_SIZE
+typedef struct {
+    uint8_t data[Q_SIZE][Q_PKT];
+    int     len[Q_SIZE];
+    int     head, count;
+} pkt_queue_t;
+extern pkt_queue_t q_tcp;
+
+/* Network state */
+typedef struct {
+    uint8_t my_ip[4];
+    uint8_t my_mac[6];
+    uint8_t gw_ip[4];
+    uint8_t dns_ip[4];
+} net_state_t;
+extern net_state_t net_state;
+#define net_my_ip   net_state.my_ip
+#define net_my_mac  net_state.my_mac
+#define net_gw_ip   net_state.gw_ip
+#define net_dns_ip  net_state.dns_ip
+
+#endif

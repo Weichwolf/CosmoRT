@@ -12,6 +12,7 @@
 #include "slab.h"
 #include "vfs.h"
 #include "memops.h"
+#include "socket.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -63,6 +64,8 @@ static long do_write(int fd, const void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_write(fd, buf, count);
+    if (fde->type == FD_SOCKET)
+        return socket_write(fd, buf, (long)count);
     return -EBADF;
 }
 
@@ -108,6 +111,8 @@ static long do_read(int fd, void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_read(fd, buf, count);
+    if (fde->type == FD_SOCKET)
+        return socket_read(fd, buf, (long)count);
     return -EBADF;
 }
 
@@ -606,6 +611,8 @@ static long do_close(int fd) {
     if (!fde) return -EBADF;
     if (fde->type == FD_FILE)
         return vfs_close(fd);
+    if (fde->type == FD_SOCKET)
+        return socket_close(fd);
     return fd_close(&p->fds, fd);
 }
 
@@ -1092,6 +1099,28 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_DUP2:   return do_dup2((int)a1, (int)a2);
     case SYS_GETCWD: return do_getcwd((char *)a1, (size_t)a2);
     case SYS_CHDIR:  return do_chdir((const char *)a1);
+
+    /* Network / sockets */
+    case SYS_SOCKET:      return do_socket((int)a1, (int)a2, (int)a3);
+    case SYS_CONNECT:     return do_connect((int)a1, (const void *)a2, (int)a3);
+    case SYS_BIND:        return do_bind((int)a1, (const void *)a2, (int)a3);
+    case SYS_LISTEN:      return do_listen((int)a1, (int)a2);
+    case SYS_ACCEPT:      return do_accept((int)a1, (void *)a2, (int *)a3);
+    case SYS_SENDTO:      return do_sendto((int)a1, (const void *)a2, a3, (int)a4,
+                                           (const void *)a5, (int)a6);
+    case SYS_RECVFROM:    return do_recvfrom((int)a1, (void *)a2, a3, (int)a4,
+                                             (void *)a5, (int *)a6);
+    case SYS_SETSOCKOPT:  return do_setsockopt((int)a1, (int)a2, (int)a3,
+                                               (const void *)a4, (int)a5);
+    case SYS_GETSOCKOPT:  return do_getsockopt((int)a1, (int)a2, (int)a3,
+                                               (void *)a4, (int *)a5);
+    case SYS_GETSOCKNAME: return do_getsockname((int)a1, (void *)a2, (int *)a3);
+    case SYS_GETPEERNAME: return do_getpeername((int)a1, (void *)a2, (int *)a3);
+    case SYS_SENDMSG:     return -ENOSYS;
+    case SYS_RECVMSG:     return -ENOSYS;
+    case SYS_SHUTDOWN:     return 0;
+    case SYS_SOCKETPAIR:  return -ENOSYS;
+    case SYS_POLL:        return do_poll((void *)a1, (int)a2, (int)a3);
 
     /* Stubs */
     case SYS_ACCESS: return 0; /* pretend everything is accessible */

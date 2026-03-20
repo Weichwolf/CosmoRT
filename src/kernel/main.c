@@ -17,6 +17,8 @@
 #include "config.h"
 #include "vma.h"
 #include "vfs.h"
+#include "net.h"
+#include "hw.h"
 
 #include "init_bin.h"
 
@@ -103,6 +105,14 @@ void kernel_main(struct boot_info *info) {
     /* SMP — APs enter scheduler loop */
     extern void sched_loop(void);
     smp_start_all(sched_loop);
+
+    /* Network — graceful: failure is non-fatal (no NIC in basic QEMU) */
+    if (net_init() == 0) {
+        serial_puts("net: NIC ready, sending DHCP discover\n");
+        net_dhcp_send_discover();
+    } else {
+        serial_puts("net: no NIC (ok for basic boot)\n");
+    }
 
     serial_puts("\n--- Loading init ---\n");
 
