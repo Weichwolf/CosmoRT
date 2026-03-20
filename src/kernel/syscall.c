@@ -9,6 +9,28 @@
 #include "page_alloc.h"
 #include "futex.h"
 #include "timer.h"
+#include "slab.h"
+
+/* Syscall saved frame layout (matches syscall_entry.asm push order) */
+typedef struct {
+    uint64_t r15, r14, r13, r12, rbp, rbx;
+    uint64_t r9, r8, r10, rdx, rsi, rdi;
+    uint64_t rax;       /* syscall number */
+    uint64_t r11;       /* user RFLAGS */
+    uint64_t rcx;       /* user RIP */
+} syscall_frame_t;
+
+/* clone flags */
+#define CLONE_VM             0x00000100
+#define CLONE_FS             0x00000200
+#define CLONE_FILES          0x00000400
+#define CLONE_SIGHAND        0x00000800
+#define CLONE_THREAD         0x00010000
+#define CLONE_SYSVSEM        0x00040000
+#define CLONE_SETTLS         0x00080000
+#define CLONE_PARENT_SETTID  0x00100000
+#define CLONE_CHILD_CLEARTID 0x00200000
+#define CLONE_CHILD_SETTID   0x01000000
 
 /* PTE flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -455,6 +477,84 @@ static void do_exit(int status) {
     __asm__ volatile("cli; hlt");
 }
 
+/* ── SYS_clone (56) ──────────────────────────────── */
+
+static long do_clone(unsigned long flags, void *child_stack,
+                     int *parent_tid, int *child_tid, unsigned long tls) {
+    percpu_t *cpu = percpu_self();
+    thread_t *cur = cpu->current_thread;
+    if (!cur || !cur->proc) return -EFAULT;
+
+    /* Read parent's saved user registers from the syscall frame */
+    syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
+
+    /* Allocate new thread */
+    thread_t *t = thread_alloc();
+    if (!t) return -ENOMEM;
+
+    /* Copy parent's register state */
+    t->rip    = frame->rcx;    /* user RIP (SYSCALL saved in RCX) */
+    t->rflags = frame->r11;    /* user RFLAGS (SYSCALL saved in R11) */
+    t->rax    = 0;             /* clone() returns 0 in child */
+    t->rbx    = frame->rbx;
+    t->rcx    = frame->rcx;
+    t->rdx    = frame->rdx;
+    t->rsi    = frame->rsi;
+    t->rdi    = frame->rdi;
+    t->rbp    = frame->rbp;
+    t->r8     = frame->r8;
+    t->r9     = frame->r9;
+    t->r10    = frame->r10;
+    t->r11    = frame->r11;
+    t->r12    = frame->r12;
+    t->r13    = frame->r13;
+    t->r14    = frame->r14;
+    t->r15    = frame->r15;
+
+    /* Child stack */
+    t->rsp = child_stack ? (uint64_t)child_stack : frame->rsi; /* RSI had arg2 */
+
+    /* Share address space (CLONE_VM) */
+    t->proc = cur->proc;
+    t->state = THREAD_RUNNABLE;
+    t->sched_policy = cur->sched_policy;
+    t->priority = cur->priority;
+    t->cpu_affinity = -1;
+    t->timeslice = RR_TIMESLICE;
+
+    /* Kernel stack for new thread */
+    t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
+    if (!t->kstack) { thread_free(t); return -ENOMEM; }
+    t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
+
+    /* TLS (CLONE_SETTLS) */
+    if (flags & CLONE_SETTLS) {
+        /* Store TLS base — will be loaded when thread is scheduled.
+         * For now: write to FS MSR directly (single-core simplification).
+         * TODO: save/restore FS per thread on context switch. */
+        (void)tls;
+    }
+
+    /* Parent TID (CLONE_PARENT_SETTID) */
+    if ((flags & CLONE_PARENT_SETTID) && parent_tid)
+        *parent_tid = t->tid;
+
+    /* Child TID (CLONE_CHILD_SETTID) */
+    if ((flags & CLONE_CHILD_SETTID) && child_tid)
+        *child_tid = t->tid;
+
+    /* Add to process thread list */
+    t->proc_next = cur->proc->threads;
+    cur->proc->threads = t;
+    cur->proc->thread_count++;
+
+    /* Add to scheduler */
+    extern void sched_add(thread_t *t);
+    sched_add(t);
+
+    return (long)t->tid;
+}
+
 /* ── SYS_close (3) ───────────────────────────────── */
 
 static long do_close(int fd) {
@@ -579,9 +679,27 @@ static long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     return (long)sizeof(uint64_t);
 }
 
+/* Save user register state from syscall frame into thread_t.
+ * Used by clone, futex_wait, and any syscall that blocks. */
+__attribute__((unused))
+static void save_user_state(thread_t *t, long return_value) {
+    percpu_t *cpu = percpu_self();
+    syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
+    t->rip    = frame->rcx;       /* user RIP */
+    t->rflags = frame->r11;       /* user RFLAGS */
+    t->rsp    = cpu->user_rsp;    /* user RSP */
+    t->rax    = (uint64_t)return_value;
+    t->rbx = frame->rbx; t->rcx = frame->rcx; t->rdx = frame->rdx;
+    t->rsi = frame->rsi; t->rdi = frame->rdi; t->rbp = frame->rbp;
+    t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
+    t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
+    t->r14 = frame->r14; t->r15 = frame->r15;
+}
+
 static long do_sched_yield(void) {
-    thread_t *t = thread_current();
-    if (t) t->state = THREAD_RUNNABLE;
+    /* Simple yield: just return. Timer preemption handles context switching.
+     * True yield (longjmp) requires saving full user state from syscall frame,
+     * which needs more infrastructure. For now, sched_yield is a no-op hint. */
     return 0;
 }
 
@@ -645,6 +763,8 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     /* Process lifecycle */
     case SYS_EXIT:          do_exit((int)a1); return 0;
     case SYS_EXIT_GROUP:    do_exit((int)a1); return 0;
+    case SYS_CLONE:         return do_clone((unsigned long)a1, (void *)a2,
+                                            (int *)a3, (int *)a4, (unsigned long)a5);
 
     /* Thread/TLS */
     case SYS_ARCH_PRCTL:    return do_arch_prctl((int)a1, (unsigned long)a2);

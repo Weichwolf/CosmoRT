@@ -43,12 +43,26 @@ static uint8_t core_stacks[SMP_MAX_CORES][SMP_STACK_SIZE] __attribute__((aligned
 static void (*user_entry_fn)(void);
 
 /* AP C entry — each AP lands here after trampoline */
+#define LAPIC_SVR        (0xFEE000F0ULL + PHYS_OFFSET)
+#define LAPIC_TPR        (0xFEE00080ULL + PHYS_OFFSET)
+#define LAPIC_TIMER_REG  (0xFEE00320ULL + PHYS_OFFSET)
+#define LAPIC_TIMER_INIT (0xFEE00380ULL + PHYS_OFFSET)
+#define LAPIC_TIMER_DIV  (0xFEE003E0ULL + PHYS_OFFSET)
+#define LAPIC_EOI_REG    (0xFEE000B0ULL + PHYS_OFFSET)
+
 static void ap_main(void) {
-    /* Enable SSE (CR4.OSFXSR + CR4.OSXMMEXCPT) — needed for compiler-generated SSE code */
+    /* Enable SSE */
     uint64_t cr4;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= (1 << 9) | (1 << 10);  /* OSFXSR + OSXMMEXCPT */
+    cr4 |= (1 << 9) | (1 << 10);
     __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+
+    /* Initialize this core's LAPIC (reset by INIT IPI) */
+    *(volatile uint32_t *)LAPIC_SVR = 0x1FF;         /* enable, spurious=0xFF */
+    *(volatile uint32_t *)LAPIC_TPR = 0;              /* accept all */
+    *(volatile uint32_t *)LAPIC_TIMER_DIV = 0x03;     /* divide by 16 */
+    *(volatile uint32_t *)LAPIC_TIMER_REG = 0x20020;  /* periodic, vector 32 */
+    *(volatile uint32_t *)LAPIC_TIMER_INIT = 10000000; /* same as BSP */
 
     volatile uint32_t *lapic_id_reg = (volatile uint32_t *)LAPIC_ID;
     uint32_t apic_id = (*lapic_id_reg >> 24) & 0xFF;

@@ -15,6 +15,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "config.h"
+#include "smp.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
 static uint8_t core_isolated[SMP_MAX_CORES];
@@ -44,8 +45,11 @@ void sched_add(thread_t *t) {
     if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
 
     int cpu = t->cpu_affinity;
-    if (cpu < 0 || cpu >= SMP_MAX_CORES)
-        cpu = percpu_self()->core_id;
+    if (cpu < 0 || cpu >= SMP_MAX_CORES) {
+        /* Round-robin across cores */
+        static volatile int next_cpu = 0;
+        cpu = __sync_fetch_and_add(&next_cpu, 1) % smp_num_cores();
+    }
 
     /* Isolated core: only RT threads (SCHED_FIFO/SCHED_RR) may run */
     if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER)
@@ -177,4 +181,28 @@ void sched_init(void) {
     do { t[ti++] = '0' + v % 10; v /= 10; } while (v);
     while (ti--) serial_putchar(t[ti]);
     serial_puts(" cores)\n");
+}
+
+/* Per-core ISR stack for idle HLT */
+static uint8_t idle_stacks[SMP_MAX_CORES][8192] __attribute__((aligned(16)));
+
+/* Scheduler loop — runs on each core (BSP + APs) */
+void sched_loop(void) {
+    int core = percpu_self()->core_id;
+    extern void tss_set_rsp0(uint64_t rsp0);
+
+    for (;;) {
+        thread_t *next = sched_pick();
+        if (next) {
+            thread_run(next);
+            if (next->state == THREAD_RUNNABLE)
+                sched_add(next);
+        } else {
+            uint64_t idle_top = (uint64_t)(uintptr_t)
+                (idle_stacks[core] + sizeof(idle_stacks[core]));
+            tss_set_rsp0(idle_top);
+            percpu_self()->kernel_rsp = idle_top;
+            __asm__ volatile("sti; hlt");
+        }
+    }
 }

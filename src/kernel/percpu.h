@@ -19,7 +19,8 @@ typedef struct percpu {
     uint64_t       user_rsp;        /* offset 8: saved user RSP during SYSCALL */
     struct thread *current_thread;  /* offset 16: running thread on this core */
     int            core_id;         /* offset 24 */
-    int            in_kernel;       /* offset 28: 1 if executing kernel code */
+    int            in_kernel;       /* offset 28 */
+    uint64_t       syscall_frame;   /* offset 32: saved regs pointer for clone() */
 } percpu_t;
 
 extern percpu_t percpu_data[SMP_MAX_CORES];

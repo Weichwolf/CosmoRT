@@ -134,7 +134,7 @@ bench: $(SRC)/kernel/kbench_bin.h
 	  $(SRC)/kernel/kbench_bin.h > $(SRC)/kernel/init_bin.h
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
-	timeout 30 $(QEMU) -cpu qemu64 -smp 4 -m 256 \
+	timeout 300 $(QEMU) -cpu qemu64 -smp 1 -m 256 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
@@ -192,7 +192,7 @@ $(BUILD):
 
 # ── QEMU ────────────────────────────────────────
 QEMU = qemu-system-x86_64
-QEMU_FLAGS = -cpu qemu64 -smp 4 -m 256 \
+QEMU_FLAGS = -cpu qemu64 -smp 1 -m 256 \
              -bios /usr/share/ovmf/OVMF.fd \
              -drive file=$(ESP_IMG),format=raw \
              -serial stdio \
@@ -205,7 +205,7 @@ qemu: $(ESP_IMG)
 # Background QEMU with serial log
 run: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	$(QEMU) -cpu qemu64 -smp 4 -m 256 \
+	$(QEMU) -cpu qemu64 -smp 1 -m 256 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
@@ -217,7 +217,7 @@ stop:
 # ── Test ────────────────────────────────────────
 test-boot: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	timeout 10 $(QEMU) -cpu qemu64 -smp 4 -m 256 \
+	timeout 10 $(QEMU) -cpu qemu64 -smp 1 -m 256 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \

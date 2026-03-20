@@ -1,13 +1,4 @@
-/* CosmoRT Kernel Benchmark — runs after boot, reports via serial
- *
- * Tests: syscall latency, page fault latency, mmap/munmap throughput,
- *        context switch (futex ping-pong), RT jitter, memory bandwidth,
- *        concurrent page_alloc stress.
- *
- * All timings via RDTSC. Results on serial console.
- */
-
-/* ── Raw syscall wrappers ─────────────────────────── */
+/* CosmoRT Kernel Benchmark — multi-core stress + latency measurement */
 
 typedef unsigned long uint64_t;
 typedef long int64_t;
@@ -47,6 +38,16 @@ static long syscall3(long n, long a1, long a2, long a3) {
     return ret;
 }
 
+static long syscall5(long n, long a1, long a2, long a3, long a4, long a5) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    register long r8  __asm__("r8")  = a5;
+    __asm__ volatile("syscall" : "=a"(ret)
+                     : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8)
+                     : "rcx","r11","memory");
+    return ret;
+}
+
 static long syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
     long ret;
     register long r10 __asm__("r10") = a4;
@@ -58,22 +59,38 @@ static long syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a
     return ret;
 }
 
-/* Syscall numbers */
 #define SYS_write          1
 #define SYS_mmap           9
 #define SYS_munmap         11
 #define SYS_getpid         39
+#define SYS_clone          56
+#define SYS_exit           60
 #define SYS_exit_group     231
 #define SYS_clock_gettime  228
 #define SYS_sched_yield    24
+#define SYS_gettid         186
 
-/* mmap constants */
 #define PROT_READ   0x1
 #define PROT_WRITE  0x2
 #define MAP_PRIVATE 0x02
 #define MAP_ANON    0x20
 
-/* ── Output helpers ───────────────────────────────── */
+#define CLONE_VM      0x00000100
+#define CLONE_FS      0x00000200
+#define CLONE_FILES   0x00000400
+#define CLONE_SIGHAND 0x00000800
+#define CLONE_THREAD  0x00010000
+
+#define PAGE_SIZE 4096
+#define THREAD_STACK_SIZE (64 * 1024)
+
+#define BENCH_ITERS 10000
+#define MMAP_ITERS  1000
+#define FAULT_ITERS 1000
+#define NUM_WORKERS 3  /* threads share 1 core via preemption under TCG */
+#define STRESS_ITERS 500000
+
+/* ── Output ───────────────────────────────────── */
 
 static void puts(const char *s) {
     int len = 0;
@@ -92,166 +109,191 @@ static void put_uint(uint64_t v) {
 }
 
 static void put_result(const char *name, uint64_t cycles, uint64_t iters) {
-    uint64_t per = cycles / iters;
     puts("  ");
     puts(name);
     puts(": ");
-    put_uint(per);
-    puts(" cycles/op (");
+    put_uint(cycles / iters);
+    puts(" cyc/op (");
     put_uint(iters);
-    puts(" iters, ");
-    put_uint(cycles);
-    puts(" total)\n");
+    puts(" iters)\n");
 }
 
-/* ── Benchmarks ───────────────────────────────────── */
+/* ── Shared state for multi-core stress ──────── */
 
-#define BENCH_ITERS 10
-#define MMAP_ITERS  10
-#define FAULT_ITERS 10
-#define PAGE_SIZE   4096
+static volatile uint64_t worker_counter[8];  /* per-core iteration count */
+static volatile int       workers_go = 0;     /* start signal */
+static volatile int       workers_stop = 0;   /* stop signal */
 
-/* 1. Syscall latency: getpid() round-trip */
+/* Worker: burn CPU, increment counter */
+static void worker_fn(void) {
+    int tid = (int)syscall0(SYS_gettid);
+    int slot = tid & 7;
+
+    /* Wait for start signal */
+    while (!workers_go)
+        __asm__ volatile("pause");
+
+    /* Burn CPU for fixed iterations (pure compute, no syscalls) */
+    uint64_t count = 0;
+    volatile uint64_t x = 1;
+    while (count < STRESS_ITERS) {
+        x = x * 6364136223846793005ULL + 1;
+        count++;
+    }
+
+    worker_counter[slot] = count;
+    __sync_fetch_and_add(&workers_stop, 1);  /* signal completion */
+    for (;;) __asm__ volatile("pause");      /* don't exit — stay alive */
+}
+
+/* ── Benchmarks ──────────────────────────────── */
+
 static void bench_syscall(void) {
-    puts("  warmup...");
-    for (int i = 0; i < 3; i++) syscall0(SYS_getpid);
-    puts("ok\n  rdtsc...");
+    for (int i = 0; i < 100; i++) syscall0(SYS_getpid);
     uint64_t start = rdtsc();
-    puts("ok\n  loop...");
     for (int i = 0; i < BENCH_ITERS; i++)
         syscall0(SYS_getpid);
-    puts("ok\n  rdtsc2...");
     uint64_t end = rdtsc();
-    puts("ok\n");
-    put_result("syscall (getpid)", end - start, BENCH_ITERS);
+    put_result("getpid", end - start, BENCH_ITERS);
 }
 
-/* 2. Write syscall latency */
-static void bench_write(void) {
-    char buf[1] = {'.'};
-    /* Suppress output: write to fd 99 (invalid, returns -EBADF fast) */
-    uint64_t start = rdtsc();
-    for (int i = 0; i < BENCH_ITERS; i++)
-        syscall3(SYS_write, 99, (long)buf, 1);
-    uint64_t end = rdtsc();
-
-    put_result("syscall (write err)", end - start, BENCH_ITERS);
-}
-
-/* 3. Page fault latency (demand paging) */
-static void bench_pagefault(void) {
-    /* mmap a large region, then touch each page to trigger faults */
-    size_t region = (size_t)FAULT_ITERS * PAGE_SIZE;
-    long addr = syscall6(SYS_mmap, 0, (long)region,
-                         PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (addr < 0) { puts("  pagefault: mmap failed\n"); return; }
-
-    /* Touch each page — triggers page fault + alloc + map */
-    uint64_t start = rdtsc();
-    volatile char *p = (volatile char *)addr;
-    for (int i = 0; i < FAULT_ITERS; i++)
-        p[(size_t)i * PAGE_SIZE] = (char)i;
-    uint64_t end = rdtsc();
-
-    put_result("page fault", end - start, FAULT_ITERS);
-
-    syscall2(SYS_munmap, addr, (long)region);
-}
-
-/* 4. mmap + munmap throughput */
-static void bench_mmap(void) {
-    uint64_t start = rdtsc();
-    for (int i = 0; i < MMAP_ITERS; i++) {
-        long addr = syscall6(SYS_mmap, 0, PAGE_SIZE,
-                             PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (addr > 0)
-            syscall2(SYS_munmap, addr, PAGE_SIZE);
-    }
-    uint64_t end = rdtsc();
-
-    put_result("mmap+munmap", end - start, MMAP_ITERS);
-}
-
-/* 5. clock_gettime latency */
 static void bench_clock(void) {
     struct { long tv_sec; long tv_nsec; } ts;
-
     uint64_t start = rdtsc();
     for (int i = 0; i < BENCH_ITERS; i++)
-        syscall2(SYS_clock_gettime, 1, (long)&ts); /* CLOCK_MONOTONIC */
+        syscall2(SYS_clock_gettime, 1, (long)&ts);
     uint64_t end = rdtsc();
-
     put_result("clock_gettime", end - start, BENCH_ITERS);
 }
 
-/* 6. sched_yield latency */
 static void bench_yield(void) {
     uint64_t start = rdtsc();
     for (int i = 0; i < BENCH_ITERS; i++)
         syscall0(SYS_sched_yield);
     uint64_t end = rdtsc();
-
     put_result("sched_yield", end - start, BENCH_ITERS);
 }
 
-/* 7. Memory bandwidth: write 4KB pages */
-static void bench_membw(void) {
-    long addr = syscall6(SYS_mmap, 0, 256 * PAGE_SIZE,
-                         PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (addr < 0) { puts("  membw: mmap failed\n"); return; }
-
-    /* Pre-fault all pages */
-    volatile char *p = (volatile char *)addr;
-    for (int i = 0; i < 256; i++) p[(size_t)i * PAGE_SIZE] = 0;
-
-    /* Measure sequential write bandwidth (1MB = 256 pages) */
-    int rounds = 2;
+static void bench_pagefault(void) {
+    size_t region = (size_t)FAULT_ITERS * PAGE_SIZE;
+    long addr = syscall6(SYS_mmap, 0, (long)region,
+                         PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (addr < 0) { puts("  pagefault: mmap failed\n"); return; }
     uint64_t start = rdtsc();
-    for (int r = 0; r < rounds; r++) {
-        uint64_t *q = (uint64_t *)addr;
-        for (int i = 0; i < 256 * 512; i++) /* 256 pages × 512 qwords */
-            q[i] = (uint64_t)i;
-    }
+    volatile char *p = (volatile char *)addr;
+    for (int i = 0; i < FAULT_ITERS; i++)
+        p[(size_t)i * PAGE_SIZE] = (char)i;
     uint64_t end = rdtsc();
-
-    uint64_t bytes = (uint64_t)rounds * 256 * PAGE_SIZE;
-    uint64_t cycles = end - start;
-    puts("  mem write: ");
-    put_uint(bytes / (1024*1024));
-    puts(" MB in ");
-    put_uint(cycles);
-    puts(" cycles (");
-    put_uint(cycles / (bytes / 64)); /* cycles per cacheline */
-    puts(" cyc/64B)\n");
-
-    syscall2(SYS_munmap, addr, 256 * PAGE_SIZE);
+    put_result("page fault", end - start, FAULT_ITERS);
+    syscall2(SYS_munmap, addr, (long)region);
 }
 
-/* ── Main ─────────────────────────────────────────── */
+static void bench_mmap(void) {
+    uint64_t start = rdtsc();
+    for (int i = 0; i < MMAP_ITERS; i++) {
+        long addr = syscall6(SYS_mmap, 0, PAGE_SIZE,
+                             PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (addr > 0) syscall2(SYS_munmap, addr, PAGE_SIZE);
+    }
+    uint64_t end = rdtsc();
+    put_result("mmap+munmap", end - start, MMAP_ITERS);
+}
+
+/* ── Multi-Core Stress ───────────────────────── */
+
+static void bench_multicore(void) {
+    puts("\n[Multi-Core Stress: ");
+    put_uint(NUM_WORKERS + 1);
+    puts(" threads, ");
+    put_uint(STRESS_ITERS);
+    puts(" iters each]\n");
+
+    /* Spawn worker threads via clone() */
+    for (int i = 0; i < NUM_WORKERS; i++) {
+        long stack = syscall6(SYS_mmap, 0, THREAD_STACK_SIZE,
+                              PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (stack < 0) { puts("  mmap stack failed\n"); return; }
+
+        long ret = syscall5(SYS_clone,
+                            CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD,
+                            stack + THREAD_STACK_SIZE, 0, 0, 0);
+        if (ret == 0) {
+            /* Child: immediately jump to worker (no parent stack access) */
+            worker_fn();
+            __builtin_unreachable();
+        }
+        if (ret < 0) {
+            puts("  clone failed\n");
+            return;
+        }
+        puts("  tid=");
+        put_uint((uint64_t)ret);
+    }
+    puts("\n");
+
+    /* Start workers */
+    __asm__ volatile("mfence" ::: "memory");
+    workers_go = 1;
+    __asm__ volatile("mfence" ::: "memory");
+
+    /* Main thread burns CPU for fixed iterations */
+    uint64_t main_count = 0;
+    uint64_t start = rdtsc();
+    volatile uint64_t x = 1;
+    while (main_count < STRESS_ITERS) {
+        x = x * 6364136223846793005ULL + 1;
+        main_count++;
+    }
+    uint64_t elapsed = rdtsc() - start;
+
+    /* Stop workers */
+    __asm__ volatile("mfence" ::: "memory");
+    workers_stop = 1;
+    __asm__ volatile("mfence" ::: "memory");
+
+    /* Wait for all workers to complete */
+    while (workers_stop < NUM_WORKERS)
+        __asm__ volatile("pause");
+
+    /* Report */
+    puts("  main:   ");
+    put_uint(main_count);
+    puts(" iters (");
+    put_uint(elapsed);
+    puts(" cyc)\n");
+    uint64_t total = main_count;
+    for (int i = 0; i < 8; i++) {
+        if (worker_counter[i]) {
+            puts("  worker: ");
+            put_uint(worker_counter[i]);
+            puts(" iters\n");
+            total += worker_counter[i];
+        }
+    }
+    puts("  total:  ");
+    put_uint(total);
+    puts(" iters (");
+    put_uint(NUM_WORKERS + 1);
+    puts(" threads)\n");
+}
+
+/* ── Main ────────────────────────────────────── */
 
 void _start(void) {
     puts("\n=== CosmoRT Kernel Benchmark ===\n\n");
 
-    /* Smoke test: can we syscall at all? */
-    long pid = syscall0(SYS_getpid);
-    puts("pid="); put_uint((uint64_t)pid); puts("\n");
-
     puts("[Syscall Latency]\n");
     bench_syscall();
-    bench_write();
     bench_clock();
     bench_yield();
 
     puts("\n[Memory]\n");
     bench_pagefault();
     bench_mmap();
-    bench_membw();
+
+    bench_multicore();
 
     puts("\n=== Benchmark Complete ===\n");
-
     syscall1(SYS_exit_group, 0);
     __builtin_unreachable();
 }

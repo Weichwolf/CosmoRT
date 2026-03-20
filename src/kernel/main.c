@@ -19,7 +19,7 @@
 
 #include "init_bin.h"
 
-static uint8_t kernel_isr_stack[8192] __attribute__((aligned(16)));
+/* ISR stacks now in sched.c (per-core idle_stacks) */
 
 uint64_t g_heap_size;
 struct boot_info *g_boot_info;
@@ -92,8 +92,9 @@ void kernel_main(struct boot_info *info) {
     extern void futex_init(void);
     futex_init();
 
-    /* SMP */
-    smp_start_all(0);
+    /* SMP — APs enter scheduler loop */
+    extern void sched_loop(void);
+    smp_start_all(sched_loop);
 
     /* Core isolation: if >= 4 cores, isolate core 1 for RT */
     if (smp_num_cores() >= 4) {
@@ -112,25 +113,6 @@ void kernel_main(struct boot_info *info) {
 
     serial_puts("--- Entering userspace ---\n\n");
 
-    /* Main scheduler loop (BSP core) */
-    for (;;) {
-        extern thread_t *sched_pick(void);
-
-        thread_t *next = sched_pick();
-        if (next) {
-            thread_run(next);
-            /* Thread returned — may need to be re-added if still RUNNABLE */
-            if (next->state == THREAD_RUNNABLE) {
-                extern void sched_add(thread_t *t);
-                sched_add(next);
-            }
-        } else {
-            /* Idle */
-            extern void tss_set_rsp0(uint64_t rsp0);
-            tss_set_rsp0((uint64_t)(uintptr_t)(kernel_isr_stack + sizeof(kernel_isr_stack)));
-            percpu_self()->kernel_rsp =
-                (uint64_t)(uintptr_t)(kernel_isr_stack + sizeof(kernel_isr_stack));
-            __asm__ volatile("sti; hlt");
-        }
-    }
+    /* Enter scheduler loop (same as APs) */
+    sched_loop();
 }
