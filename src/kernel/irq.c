@@ -93,11 +93,6 @@ static void idt_set_entry_user(int n, uint64_t handler) {
 
 /* ── Helpers ───────────────────────────────────────── */
 
-static void serial_hex64(uint64_t v) {
-    for (int i = 60; i >= 0; i -= 4)
-        serial_putchar("0123456789abcdef"[(v >> i) & 0xf]);
-}
-
 /* ── Handlers ──────────────────────────────────────── */
 
 #define MAX_HANDLERS 256

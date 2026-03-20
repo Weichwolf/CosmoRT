@@ -10,6 +10,8 @@
 #include "futex.h"
 #include "timer.h"
 #include "slab.h"
+#include "vfs.h"
+#include "memops.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -45,11 +47,6 @@ typedef struct {
 #define PTE_USER    (1ULL << 2)
 #define PTE_NX      (1ULL << 63)
 
-static void serial_hex64(uint64_t v) {
-    for (int i = 60; i >= 0; i -= 4)
-        serial_putchar("0123456789abcdef"[(v >> i) & 0xf]);
-}
-
 /* ── SYS_write (1) ───────────────────────────────── */
 
 static long do_write(int fd, const void *buf, size_t count) {
@@ -64,6 +61,8 @@ static long do_write(int fd, const void *buf, size_t count) {
             serial_putchar(s[i]);
         return (long)count;
     }
+    if (fde->type == FD_FILE)
+        return vfs_write(fd, buf, count);
     return -EBADF;
 }
 
@@ -107,6 +106,8 @@ static long do_read(int fd, void *buf, size_t count) {
         }
         return (long)count;
     }
+    if (fde->type == FD_FILE)
+        return vfs_read(fd, buf, count);
     return -EBADF;
 }
 
@@ -244,6 +245,7 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
 
     length = (length + 0xFFF) & ~0xFFFULL;
     if (length == 0) return -EINVAL;
+    if (addr + length < addr) return -EINVAL; /* overflow */
 
     uint64_t vaddr;
     if (addr && (flags & MAP_FIXED)) {
@@ -366,11 +368,15 @@ static long do_munmap(unsigned long addr, size_t length) {
     if (addr & 0xFFF) return -EINVAL;
 
     length = (length + 0xFFF) & ~0xFFFULL;
+    if (addr + length < addr) return -EINVAL; /* overflow */
     uint64_t start = addr;
     uint64_t end = addr + length;
 
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
+    /* TLB flush: reload CR3 on current core.
+     * TODO: cross-core IPI shootdown for SMP with shared address spaces. */
+    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
@@ -474,16 +480,34 @@ static long do_arch_prctl(int code, unsigned long addr) {
 static void do_exit(int status) {
     thread_t *t = thread_current();
     if (t) {
+        process_t *p = t->proc;
         t->state = THREAD_DEAD;
-        if (t->proc) {
-            t->proc->state = PROC_ZOMBIE;
-            t->proc->exit_code = status;
+        if (p) {
+            p->state = PROC_ZOMBIE;
+            p->exit_code = status;
+
+            serial_puts("exit: pid=");
+            serial_putchar('0' + (p->pid % 10));
+            serial_puts(" status=");
+            serial_putchar('0' + (status & 0xF));
+            serial_putchar('\n');
+
+            /* Wake parent if blocked in wait4 */
+            if (p->parent_pid) {
+                process_t *parent = proc_find(p->parent_pid);
+                if (parent) {
+                    /* Find and wake blocked threads in parent */
+                    thread_t *pt = parent->threads;
+                    while (pt) {
+                        if (pt->state == THREAD_BLOCKED) {
+                            extern void sched_add(thread_t *t);
+                            sched_add(pt);
+                        }
+                        pt = pt->proc_next;
+                    }
+                }
+            }
         }
-        serial_puts("exit: pid=");
-        if (t->proc) serial_putchar('0' + (t->proc->pid % 10));
-        serial_puts(" status=");
-        serial_putchar('0' + (status & 0xF));
-        serial_putchar('\n');
 
         extern uint64_t pml4[];
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
@@ -578,6 +602,10 @@ static long do_clone(unsigned long flags, void *child_stack,
 static long do_close(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    if (fde->type == FD_FILE)
+        return vfs_close(fd);
     return fd_close(&p->fds, fd);
 }
 
@@ -732,9 +760,197 @@ void save_user_state_for_block(thread_t *t, long return_value) {
 }
 
 static long do_sched_yield(void) {
-    /* Simple yield: just return. Timer preemption handles context switching.
-     * True yield (longjmp) requires saving full user state from syscall frame,
-     * which needs more infrastructure. For now, sched_yield is a no-op hint. */
+    thread_t *t = thread_current();
+    if (!t) return 0;
+
+    save_user_state_for_block(t, 0);
+    t->state = THREAD_RUNNABLE;
+    extern void sched_add(thread_t *t);
+    sched_add(t);
+
+    extern uint64_t pml4[];
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+    return 0; /* unreachable */
+}
+
+/* ── SYS_open (2) / SYS_openat (257) ────────────────── */
+
+static long do_open(const char *path, int flags, int mode) {
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    return vfs_open(path, flags, mode);
+}
+
+static long do_openat(int dirfd, const char *path, int flags, int mode) {
+    /* Only AT_FDCWD (-100) supported for now */
+    (void)dirfd;
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    return vfs_open(path, flags, mode);
+}
+
+/* ── SYS_lseek (8) ──────────────────────────────── */
+
+static long do_lseek(int fd, long offset, int whence) {
+    return vfs_lseek(fd, offset, whence);
+}
+
+/* ── SYS_fstat (5) / SYS_stat (4) ───────────────── */
+
+static long do_fstat(int fd, struct k_stat *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_fstat(fd, buf);
+}
+
+static long do_stat(const char *path, struct k_stat *buf) {
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_stat(path, buf);
+}
+
+/* ── SYS_dup2 (33) ──────────────────────────────── */
+
+static long do_dup2(int oldfd, int newfd) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
+    fd_entry_t *old = fd_get(&p->fds, oldfd);
+    if (!old) return -EBADF;
+    if (oldfd == newfd) return newfd;
+
+    /* Close newfd if open */
+    fd_entry_t *cur = fd_get(&p->fds, newfd);
+    if (cur) {
+        if (cur->type == FD_FILE) vfs_close(newfd);
+        else fd_close(&p->fds, newfd);
+    }
+
+    /* Copy the fd entry */
+    p->fds.entries[newfd] = *old;
+    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
+    return newfd;
+}
+
+/* ── SYS_getcwd (79) / SYS_chdir (80) ──────────── */
+
+static long do_getcwd(char *buf, size_t size) {
+    if (!user_ok((uint64_t)buf, size)) return -EFAULT;
+    int r = vfs_getcwd(buf, size);
+    if (r < 0) return r;
+    return (long)(uint64_t)buf; /* Linux returns pointer */
+}
+
+static long do_chdir(const char *path) {
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    return vfs_chdir(path);
+}
+
+/* ── Signals (2.4) ───────────────────────────────── */
+
+#define SIG_DFL  ((void *)0)
+#define SIG_IGN  ((void *)1)
+
+/* SIGKILL=9, SIGSEGV=11, SIGPIPE=13, SIGCHLD=17, SIGTERM=15 */
+
+struct k_sigaction {
+    void    *sa_handler;
+    uint64_t sa_flags;
+    void    *sa_restorer;
+    uint64_t sa_mask;
+};
+
+static long do_rt_sigaction(int sig, const struct k_sigaction *act,
+                            struct k_sigaction *oldact, size_t sigsetsize) {
+    (void)sigsetsize;
+    if (sig < 1 || sig >= 32) return -EINVAL;
+    if (sig == 9) return -EINVAL; /* SIGKILL cannot be caught */
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    if (oldact) {
+        if (!user_ok((uint64_t)oldact, sizeof(struct k_sigaction))) return -EFAULT;
+        oldact->sa_handler = p->sig_handlers[sig];
+        oldact->sa_flags = 0;
+        oldact->sa_restorer = 0;
+        oldact->sa_mask = 0;
+    }
+
+    if (act) {
+        if (!user_ok((uint64_t)act, sizeof(struct k_sigaction))) return -EFAULT;
+        p->sig_handlers[sig] = act->sa_handler;
+    }
+
+    return 0;
+}
+
+static long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
+                              size_t sigsetsize) {
+    (void)sigsetsize;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    if (oldset) {
+        if (!user_ok((uint64_t)oldset, 8)) return -EFAULT;
+        *oldset = p->sig_blocked;
+    }
+
+    if (set) {
+        if (!user_ok((uint64_t)set, 8)) return -EFAULT;
+        uint64_t mask = *set;
+        mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
+        switch (how) {
+        case 0: p->sig_blocked |= mask; break;  /* SIG_BLOCK */
+        case 1: p->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
+        case 2: p->sig_blocked = mask; break;    /* SIG_SETMASK */
+        default: return -EINVAL;
+        }
+    }
+
+    return 0;
+}
+
+static long do_kill(int pid, int sig) {
+    if (sig < 0 || sig >= 32) return -EINVAL;
+    if (sig == 0) return 0; /* check permission only */
+
+    process_t *target = 0;
+    if (pid > 0) {
+        target = proc_find((uint32_t)pid);
+    } else if (pid == 0 || pid == -1) {
+        /* Signal to self or all — just handle self */
+        target = proc_current();
+    }
+    if (!target) return -ESRCH;
+
+    /* Check handler */
+    void *handler = target->sig_handlers[sig];
+    if (handler == SIG_IGN) return 0;
+
+    /* SIG_DFL: kill the process for fatal signals */
+    if (handler == SIG_DFL) {
+        /* SIGCHLD default = ignore */
+        if (sig == 17) return 0; /* SIGCHLD */
+
+        /* Fatal signals: kill the process */
+        target->state = PROC_ZOMBIE;
+        target->exit_code = sig;
+        target->sig_pending |= (1ULL << sig);
+
+        /* If target has blocked threads, wake them to die */
+        thread_t *t = target->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING) {
+                t->state = THREAD_DEAD;
+            }
+            t = t->proc_next;
+        }
+        return 0;
+    }
+
+    /* User handler registered — set pending bit.
+     * Delivery happens on return to userspace (not implemented yet).
+     * For now, just set the pending bit. */
+    target->sig_pending |= (1ULL << sig);
     return 0;
 }
 
@@ -805,6 +1021,10 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_EXIT_GROUP:    do_exit((int)a1); return 0;
     case SYS_CLONE:         return do_clone((unsigned long)a1, (void *)a2,
                                             (int *)a3, (int *)a4, (unsigned long)a5);
+    case SYS_FORK:          return do_fork();
+    case SYS_EXECVE:        return do_execve((const char *)a1,
+                                             (char *const *)a2, (char *const *)a3);
+    case SYS_WAIT4:         return do_wait4((int)a1, (int *)a2, (int)a3, (void *)a4);
 
     /* Thread/TLS */
     case SYS_ARCH_PRCTL:    return do_arch_prctl((int)a1, (unsigned long)a2);
@@ -814,12 +1034,17 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     }
     case SYS_SET_ROBUST_LIST: return 0;
 
-    /* Signals (stubs) */
-    case SYS_RT_SIGACTION:    return 0;
-    case SYS_RT_SIGPROCMASK:  return 0;
+    /* Signals */
+    case SYS_RT_SIGACTION:    return do_rt_sigaction((int)a1,
+                                       (const struct k_sigaction *)a2,
+                                       (struct k_sigaction *)a3, (size_t)a4);
+    case SYS_RT_SIGPROCMASK:  return do_rt_sigprocmask((int)a1,
+                                       (const uint64_t *)a2, (uint64_t *)a3, (size_t)a4);
+    case SYS_KILL:            return do_kill((int)a1, (int)a2);
 
     /* Identity */
     case SYS_GETPID:  { process_t *p = proc_current(); return p ? (long)p->pid : 1; }
+    case SYS_GETPPID: { process_t *p = proc_current(); return p ? (long)p->parent_pid : 0; }
     case SYS_GETTID:  { thread_t *t = thread_current(); return t ? (long)t->tid : 1; }
     case SYS_GETUID:  return 0;
     case SYS_GETGID:  return 0;
@@ -858,13 +1083,22 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
                                         (const struct timespec *)a4,
                                         (uint32_t *)a5, (uint32_t)a6);
 
+    /* Filesystem */
+    case SYS_OPEN:   return do_open((const char *)a1, (int)a2, (int)a3);
+    case SYS_OPENAT: return do_openat((int)a1, (const char *)a2, (int)a3, (int)a4);
+    case SYS_LSEEK:  return do_lseek((int)a1, a2, (int)a3);
+    case SYS_FSTAT:  return do_fstat((int)a1, (struct k_stat *)a2);
+    case SYS_STAT:   return do_stat((const char *)a1, (struct k_stat *)a2);
+    case SYS_DUP2:   return do_dup2((int)a1, (int)a2);
+    case SYS_GETCWD: return do_getcwd((char *)a1, (size_t)a2);
+    case SYS_CHDIR:  return do_chdir((const char *)a1);
+
     /* Stubs */
-    case SYS_OPEN:   return -ENOSYS;
-    case SYS_FSTAT:  return -ENOSYS;
-    case SYS_STAT:   return -ENOSYS;
-    case SYS_ACCESS: return -ENOSYS;
+    case SYS_ACCESS: return 0; /* pretend everything is accessible */
     case SYS_IOCTL:  return -ENOSYS;
     case SYS_FCNTL:  return -ENOSYS;
+    case SYS_PIPE2:  return -ENOSYS;
+    case SYS_READV:  return -ENOSYS;
 
     default:
         serial_puts("syscall: unhandled #");

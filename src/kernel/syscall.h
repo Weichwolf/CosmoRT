@@ -53,6 +53,17 @@
 
 /* sched_yield — already used via SYS_SCHED_YIELD */
 #define SYS_SCHED_YIELD       24
+#define SYS_DUP2              33
+#define SYS_WAIT4             61
+#define SYS_KILL              62
+#define SYS_GETCWD            79
+#define SYS_CHDIR             80
+#define SYS_LSEEK             8
+#define SYS_PIPE2             293
+#define SYS_OPENAT            257
+#define SYS_READV             19
+#define SYS_RT_SIGRETURN      15
+#define SYS_GETPPID           110
 
 /* Timers / clocks */
 #define SYS_NANOSLEEP         35
@@ -84,15 +95,24 @@
 #define TIMER_ABSTIME    1
 
 /* Error numbers */
-#define ENOSYS  38
-#define ENOMEM  12
-#define EBADF   9
-#define EINVAL  22
-#define EFAULT  14
-#define EAGAIN  11
+#define EPERM     1
+#define ENOENT    2
+#define ESRCH     3
+#define EIO       5
+#define EBADF     9
+#define ECHILD    10
+#define EAGAIN    11
+#define ENOMEM    12
+#define EACCES    13
+#define EFAULT    14
+#define ENOTDIR   20
+#define EISDIR    21
+#define EINVAL    22
+#define EMFILE    24
+#define ENOEXEC   8
+#define ENOSYS    38
+#define ERANGE    34
 #define ETIMEDOUT 110
-#define EPERM   1
-#define EIO     5
 
 /* Main syscall dispatcher — called from ASM entry and INT 0x80 */
 long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6);

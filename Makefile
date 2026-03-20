@@ -47,7 +47,6 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/sched.o \
            $(BUILD)/kernel/ipc.o \
            $(BUILD)/kernel/smp.o \
-           $(BUILD)/kernel/edf.o \
            $(BUILD)/kernel/elf.o \
            $(BUILD)/kernel/syscall.o \
            $(BUILD)/kernel/futex.o \

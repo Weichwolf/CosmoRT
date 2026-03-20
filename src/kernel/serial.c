@@ -38,6 +38,11 @@ void serial_puts(const char *s) {
     }
 }
 
+void serial_hex64(uint64_t v) {
+    for (int i = 60; i >= 0; i -= 4)
+        serial_putchar("0123456789abcdef"[(v >> i) & 0xf]);
+}
+
 char serial_getchar(void) {
     if (!(port_in8(COM1 + 5) & 0x01))
         return 0; /* no data available */

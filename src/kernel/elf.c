@@ -7,11 +7,6 @@
 #include "page_alloc.h"
 #include "memops.h"
 
-static void serial_hex64(uint64_t v) {
-    for (int i = 60; i >= 0; i -= 4)
-        serial_putchar("0123456789abcdef"[(v >> i) & 0xf]);
-}
-
 int elf_load(const void *data, size_t len, uint64_t *user_pml4,
              uint64_t stack_top,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out) {
