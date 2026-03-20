@@ -314,6 +314,13 @@ void sched_preempt(void *frame_ptr) {
     cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
     cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
 
+    /* Save current FS base (TLS) */
+    {
+        uint32_t fs_lo, fs_hi;
+        __asm__ volatile("rdmsr" : "=a"(fs_lo), "=d"(fs_hi) : "c"(0xC0000100));
+        cur->fs_base = ((uint64_t)fs_hi << 32) | fs_lo;
+    }
+
     /* Put current back in run queue */
     sched_add(cur);
 
@@ -336,6 +343,13 @@ void sched_preempt(void *frame_ptr) {
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(next->kstack_top);
     cpu->kernel_rsp = next->kstack_top;
+
+    /* Load next thread's FS base (TLS) */
+    {
+        uint64_t fs = next->fs_base;
+        __asm__ volatile("wrmsr" :: "c"(0xC0000100),
+                         "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+    }
 
     /* Restore next thread context into interrupt frame */
     f[0] = next->r15; f[1] = next->r14; f[2] = next->r13; f[3] = next->r12;

@@ -236,6 +236,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->sched_policy = SCHED_OTHER;
     t->priority = PRIO_MIN;
     t->saved_priority = -1; /* not boosted */
+    t->fs_base = 0;
     t->cpu_affinity = -1;  /* any core */
     t->timeslice = RR_TIMESLICE;
     t->proc = p;
@@ -289,6 +290,13 @@ void thread_run(thread_t *t) {
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(t->kstack_top);
     cpu->kernel_rsp = t->kstack_top;
+
+    /* Load thread's FS base (TLS) before entering userspace */
+    if (t->fs_base) {
+        uint64_t fs = t->fs_base;
+        __asm__ volatile("wrmsr" :: "c"(0xC0000100),
+                         "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+    }
 
     /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
     proc_enter_ring3(t);

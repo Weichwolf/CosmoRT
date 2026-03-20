@@ -65,6 +65,9 @@ process_t *proc_current(void);
 /* Get current thread (via percpu) */
 thread_t *thread_current(void);
 
+/* Save user register state from syscall frame into thread_t for blocking */
+void save_user_state_for_block(thread_t *t, long return_value);
+
 /* Page table helpers */
 uint64_t *alloc_page(void);
 int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys);

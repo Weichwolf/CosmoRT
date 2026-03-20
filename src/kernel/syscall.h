@@ -92,6 +92,7 @@
 #define EAGAIN  11
 #define ETIMEDOUT 110
 #define EPERM   1
+#define EIO     5
 
 /* Main syscall dispatcher — called from ASM entry and INT 0x80 */
 long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6);

@@ -11,6 +11,13 @@
 #include "timer.h"
 #include "slab.h"
 
+/* Validate user pointer: must be in lower half, no overflow */
+static inline int user_ok(uint64_t addr, size_t len) {
+    return addr < 0x800000000000ULL &&
+           addr + len <= 0x800000000000ULL &&
+           addr + len >= addr;
+}
+
 /* Syscall saved frame layout (matches syscall_entry.asm push order) */
 typedef struct {
     uint64_t r15, r14, r13, r12, rbp, rbx;
@@ -46,6 +53,7 @@ static void serial_hex64(uint64_t v) {
 /* ── SYS_write (1) ───────────────────────────────── */
 
 static long do_write(int fd, const void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
@@ -64,12 +72,15 @@ static long do_write(int fd, const void *buf, size_t count) {
 struct iovec { const void *iov_base; size_t iov_len; };
 
 static long do_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
+    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde || fde->type != FD_SERIAL) return -EBADF;
     long total = 0;
-    for (int i = 0; i < iovcnt && i < 1024; i++) {
+    for (int i = 0; i < iovcnt; i++) {
+        if (!user_ok((uint64_t)iov[i].iov_base, iov[i].iov_len)) return -EFAULT;
         const char *s = (const char *)iov[i].iov_base;
         for (size_t j = 0; j < iov[i].iov_len && j < 0x10000; j++)
             serial_putchar(s[j]);
@@ -81,6 +92,7 @@ static long do_writev(int fd, const struct iovec *iov, int iovcnt) {
 /* ── SYS_read (0) ────────────────────────────────── */
 
 static long do_read(int fd, void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
@@ -434,6 +446,8 @@ static long do_mprotect(unsigned long addr, size_t len, int prot) {
 
 static long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_FS) {
+        thread_t *t = thread_current();
+        if (t) t->fs_base = addr;
         __asm__ volatile("wrmsr" :: "c"(0xC0000100),
                          "a"((uint32_t)addr), "d"((uint32_t)(addr >> 32)));
         return 0;
@@ -446,6 +460,7 @@ static long do_arch_prctl(int code, unsigned long addr) {
         return -EINVAL;
     }
     if (code == ARCH_GET_FS) {
+        if (!user_ok(addr, 8)) return -EFAULT;
         uint32_t lo, hi;
         __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
         *(unsigned long *)addr = ((uint64_t)hi << 32) | lo;
@@ -529,19 +544,22 @@ static long do_clone(unsigned long flags, void *child_stack,
 
     /* TLS (CLONE_SETTLS) */
     if (flags & CLONE_SETTLS) {
-        /* Store TLS base — will be loaded when thread is scheduled.
-         * For now: write to FS MSR directly (single-core simplification).
-         * TODO: save/restore FS per thread on context switch. */
-        (void)tls;
+        t->fs_base = tls;
+    } else {
+        t->fs_base = cur->fs_base;
     }
 
     /* Parent TID (CLONE_PARENT_SETTID) */
-    if ((flags & CLONE_PARENT_SETTID) && parent_tid)
+    if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
+        if (!user_ok((uint64_t)parent_tid, 4)) { thread_free(t); return -EFAULT; }
         *parent_tid = t->tid;
+    }
 
     /* Child TID (CLONE_CHILD_SETTID) */
-    if ((flags & CLONE_CHILD_SETTID) && child_tid)
+    if ((flags & CLONE_CHILD_SETTID) && child_tid) {
+        if (!user_ok((uint64_t)child_tid, 4)) { thread_free(t); return -EFAULT; }
         *child_tid = t->tid;
+    }
 
     /* Add to process thread list */
     t->proc_next = cur->proc->threads;
@@ -577,6 +595,7 @@ static void kstrcpy(char *dst, const char *src, int max) {
 }
 
 static long do_uname(struct utsname *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct utsname))) return -EFAULT;
     kstrcpy(buf->sysname, "CosmoRT", 65);
     kstrcpy(buf->nodename, "cosmo", 65);
     kstrcpy(buf->release, "0.1.0", 65);
@@ -590,11 +609,22 @@ static long do_uname(struct utsname *buf) {
 
 static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
     (void)flags;
+    if (!user_ok((uint64_t)buf, buflen)) return -EFAULT;
     uint8_t *p = (uint8_t *)buf;
-    for (size_t i = 0; i < buflen; i++) {
-        uint32_t lo, hi;
-        __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-        p[i] = (uint8_t)(lo ^ (lo >> 8) ^ hi ^ (uint8_t)i);
+    for (size_t i = 0; i < buflen; i += 8) {
+        uint64_t r;
+        int ok = 0;
+        for (int try = 0; try < 10 && !ok; try++)
+            __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
+        if (!ok) {
+            /* RDRAND unavailable — fall back to RDSEED */
+            for (int try = 0; try < 10 && !ok; try++)
+                __asm__ volatile("rdseed %0; setc %1" : "=r"(r), "=qm"(ok));
+            if (!ok) return -EIO;
+        }
+        size_t n = buflen - i < 8 ? buflen - i : 8;
+        for (size_t j = 0; j < n; j++)
+            p[i + j] = (uint8_t)(r >> (j * 8));
     }
     return (long)buflen;
 }
@@ -606,7 +636,7 @@ struct k_timeval  { long tv_sec; long tv_usec; };
 
 static long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     (void)clk_id; /* CLOCK_REALTIME and CLOCK_MONOTONIC both use uptime */
-    if (!tp) return -EFAULT;
+    if (!tp || !user_ok((uint64_t)tp, 16)) return -EFAULT;
     uint64_t ms = timer_ms();
     tp->tv_sec = (long)(ms / 1000);
     tp->tv_nsec = (long)((ms % 1000) * 1000000);
@@ -620,7 +650,8 @@ static long do_clock_getres(int clk_id, struct k_timespec *tp) {
 }
 
 static long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
-    if (!req) return -EFAULT;
+    if (!req || !user_ok((uint64_t)req, 16)) return -EFAULT;
+    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     uint64_t ms = (uint64_t)req->tv_sec * 1000 + (uint64_t)(req->tv_nsec / 1000000);
     if (ms == 0) ms = 1;
     timer_sleep_ms((uint32_t)ms);
@@ -631,6 +662,8 @@ static long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
 static long do_clock_nanosleep(int clk_id, int flags,
                                const struct k_timespec *req, struct k_timespec *rem) {
     (void)clk_id;
+    if (req && !user_ok((uint64_t)req, 16)) return -EFAULT;
+    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
         if (!req) return -EFAULT;
         uint64_t target_ms = (uint64_t)req->tv_sec * 1000
@@ -644,6 +677,7 @@ static long do_clock_nanosleep(int clk_id, int flags,
 
 static long do_gettimeofday(struct k_timeval *tv, void *tz) {
     (void)tz;
+    if (tv && !user_ok((uint64_t)tv, 16)) return -EFAULT;
     if (tv) {
         uint64_t ms = timer_ms();
         tv->tv_sec = (long)(ms / 1000);
@@ -659,6 +693,7 @@ static long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mas
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
+    if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
     uint64_t m = *mask;
     if (m == 0) return -EINVAL;
     int core = __builtin_ctzll(m);
@@ -672,6 +707,7 @@ static long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
+    if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
     if (t->cpu_affinity >= 0)
         *mask = 1ULL << t->cpu_affinity;
     else
@@ -681,8 +717,7 @@ static long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
 
 /* Save user register state from syscall frame into thread_t.
  * Used by clone, futex_wait, and any syscall that blocks. */
-__attribute__((unused))
-static void save_user_state(thread_t *t, long return_value) {
+void save_user_state_for_block(thread_t *t, long return_value) {
     percpu_t *cpu = percpu_self();
     syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
     t->rip    = frame->rcx;       /* user RIP */
@@ -713,7 +748,10 @@ static long do_sched_setscheduler(int pid, int policy, const struct sched_param_
     if (!t) return -EFAULT;
     if (policy < 0 || policy > 2) return -EINVAL;
     t->sched_policy = policy;
-    if (param) t->priority = param->sched_priority;
+    if (param) {
+        if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
+        t->priority = param->sched_priority;
+    }
     return 0;
 }
 
@@ -727,6 +765,7 @@ static long do_sched_setparam(int pid, const struct sched_param_k *param) {
     (void)pid;
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
+    if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
     t->priority = param->sched_priority;
     return 0;
 }
@@ -735,6 +774,7 @@ static long do_sched_getparam(int pid, struct sched_param_k *param) {
     (void)pid;
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
+    if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
     param->sched_priority = t->priority;
     return 0;
 }
@@ -812,7 +852,9 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_SCHED_GETPARAM:    return do_sched_getparam((int)a1, (struct sched_param_k *)a2);
 
     /* Futex */
-    case SYS_FUTEX:     return do_futex((uint32_t *)a1, (int)a2, (uint32_t)a3,
+    case SYS_FUTEX:
+        if (!user_ok((uint64_t)a1, 4)) return -EFAULT;
+        return do_futex((uint32_t *)a1, (int)a2, (uint32_t)a3,
                                         (const struct timespec *)a4,
                                         (uint32_t *)a5, (uint32_t)a6);
 

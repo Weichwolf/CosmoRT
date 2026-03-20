@@ -17,6 +17,7 @@
 #include "spinlock.h"
 #include "slab.h"
 #include "serial.h"
+#include "config.h"
 
 extern void sched_add(thread_t *t);
 
@@ -103,21 +104,55 @@ static void pi_unboost(thread_t *owner) {
 
 /* ── FUTEX_WAIT ─────────────────────────────────── */
 
+extern uint64_t pml4[];
+
 static long futex_wait(uint32_t *uaddr, uint32_t val) {
     /* Atomic check: if *uaddr != val, the wake already happened */
     if (__sync_val_compare_and_swap(uaddr, val, val) != val)
         return -EAGAIN;
 
-    /* Spin-yield: not true blocking, but functionally correct.
-     * 1000 iterations * PAUSE (~100 cycles @ 2GHz) ≈ 50us.
-     * If still not woken, return -ETIMEDOUT so libc can retry. */
-    for (int i = 0; i < 1000; i++) {
-        if (__sync_val_compare_and_swap(uaddr, val, val) != val)
-            return 0; /* value changed — woken */
-        __asm__ volatile("pause");
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+    process_t *p = t->proc;
+    uint32_t pid = p ? p->pid : 0;
+
+    /* Add to wait queue under lock */
+    int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
+    uint64_t flags;
+    spin_lock_irq(&futex_hash[bucket].lock, &flags);
+
+    /* Re-check under lock — value may have changed */
+    if (__sync_val_compare_and_swap(uaddr, val, val) != val) {
+        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+        return -EAGAIN;
     }
 
-    return -ETIMEDOUT;
+    /* Allocate waiter entry */
+    futex_waiter_t *w = (futex_waiter_t *)slab_alloc(&waiter_slab);
+    if (!w) {
+        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+        return -ENOMEM;
+    }
+    w->thread = t;
+    w->uaddr = (uint64_t)(uintptr_t)uaddr;
+    w->pid = pid;
+    w->next = futex_hash[bucket].head;
+    futex_hash[bucket].head = w;
+
+    spin_unlock_irq(&futex_hash[bucket].lock, flags);
+
+    /* Save user state — when woken, thread resumes with return value 0 */
+    save_user_state_for_block(t, 0);
+
+    /* Block the thread */
+    t->state = THREAD_BLOCKED;
+
+    /* Switch to kernel page tables and return to scheduler */
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+
+    /* Unreachable — thread resumes via proc_enter_ring3 when woken */
+    return 0;
 }
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
