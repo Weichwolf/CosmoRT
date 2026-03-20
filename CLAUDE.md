@@ -59,13 +59,38 @@ ist Kernel-Konfiguration, transparent fuer Anwendungen.
 - IPC: Synchrone Messages (L4-Stil) + Async Ports
 - Syscalls: POSIX-kompatibel. Linux Syscall-Nummern wo moeglich.
 
-## Userspace-Services (nicht im Kernel)
+## Userspace-Treiber (Microkernel)
+
+Alle Treiber laufen im Userspace, nicht im Kernel. Kommunikation mit
+dem Kernel via IPC (Interrupt-Delivery, DMA-Setup, MMIO-Mapping).
 
 - Filesystem
 - Netzwerk-Stack (TCP/IP)
 - GPU-Treiber
 - Audio-Treiber
 - Input-Treiber
+- USB, WiFi, Bluetooth, Storage
+
+### Linux-Treiber-Transpiler
+
+Linux-Treiber werden per LLM-Transpiler nach CosmoRT uebersetzt.
+Die Uebersetzung ist mechanisch — Linux Driver API → POSIX Userspace:
+
+| Linux Kernel API          | CosmoRT Userspace             |
+|---------------------------|-------------------------------|
+| `pci_ioremap_bar()`       | `mmap(/dev/pci/...)`          |
+| `readl/writel`            | Direkter Speicherzugriff      |
+| `request_irq()`           | IPC-Port fuer Interrupt-Msgs  |
+| `kmalloc/kfree`           | `malloc/free`                 |
+| `dma_alloc_coherent`      | `mmap` mit DMA-Flag           |
+| `spinlock_t`              | `pthread_mutex`               |
+| `module_init/exit`        | `main()` + Init/Cleanup       |
+| `probe/remove`            | Init/Cleanup Funktionen       |
+| Interrupt-Context/Softirq | Entfaellt (alles Userspace)   |
+
+Ergebnis: sauberere Treiber. Kernel-Komplexitaet (IRQ-Context, RCU,
+Softirqs, Workqueues) entfaellt im Microkernel. Der transpilierte
+Treiber ist simpler als das Linux-Original.
 
 ## CosmoRT-spezifische Syscalls
 
