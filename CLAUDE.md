@@ -59,38 +59,99 @@ ist Kernel-Konfiguration, transparent fuer Anwendungen.
 - IPC: Synchrone Messages (L4-Stil) + Async Ports
 - Syscalls: POSIX-kompatibel. Linux Syscall-Nummern wo moeglich.
 
-## Userspace-Treiber (Microkernel)
+## Treiber-Architektur
 
-Alle Treiber laufen im Userspace, nicht im Kernel. Kommunikation mit
-dem Kernel via IPC (Interrupt-Delivery, DMA-Setup, MMIO-Mapping).
+### Drei Schichten
 
-- Filesystem
-- Netzwerk-Stack (TCP/IP)
-- GPU-Treiber
-- Audio-Treiber
-- Input-Treiber
-- USB, WiFi, Bluetooth, Storage
+```
+Userspace:
+  Protokoll-Stacks (WiFi, USB, Audio, Display)
+    reine Software, portiert von Linux, testbar ohne Hardware
+  Treiber-Adapter (iwl, xhci, nvme, hda, ...)
+    duenn, Hardware-spezifisch, MMIO via gemappten Speicher
 
-### Linux-Treiber-Transpiler
+Kernel (CosmoRT):
+  5 Hardware-Primitives (einmalig bei Init aufgerufen)
+  Scheduler, Memory, IPC
+```
 
-Linux-Treiber werden per LLM-Transpiler nach CosmoRT uebersetzt.
-Die Uebersetzung ist mechanisch — Linux Driver API → POSIX Userspace:
+### Kernel: 5 Hardware-Primitives
 
-| Linux Kernel API          | CosmoRT Userspace             |
-|---------------------------|-------------------------------|
-| `pci_ioremap_bar()`       | `mmap(/dev/pci/...)`          |
-| `readl/writel`            | Direkter Speicherzugriff      |
-| `request_irq()`           | IPC-Port fuer Interrupt-Msgs  |
-| `kmalloc/kfree`           | `malloc/free`                 |
-| `dma_alloc_coherent`      | `mmap` mit DMA-Flag           |
-| `spinlock_t`              | `pthread_mutex`               |
-| `module_init/exit`        | `main()` + Init/Cleanup       |
-| `probe/remove`            | Init/Cleanup Funktionen       |
-| Interrupt-Context/Softirq | Entfaellt (alles Userspace)   |
+```c
+int cosmo_mmio_map(uint64_t phys, size_t len, void **virt);
+int cosmo_dma_alloc(size_t len, void **virt, uint64_t *phys);
+int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx);
+int cosmo_pci_config_read(int bus, int dev, int fn, int reg, uint32_t *val);
+int cosmo_fw_load(const char *name, void **data, size_t *len);
+```
 
-Ergebnis: sauberere Treiber. Kernel-Komplexitaet (IRQ-Context, RCU,
-Softirqs, Workqueues) entfaellt im Microkernel. Der transpilierte
-Treiber ist simpler als das Linux-Original.
+Das ist die GESAMTE Hardware-Abstraktion. Kernel macht das Mapping,
+Userspace macht den Zugriff. Kein Syscall pro Register-Zugriff.
+
+### Userspace: Protokoll-Stacks (portiert von Linux)
+
+Reine Software, keine Hardware-Abhaengigkeit, testbar in QEMU mit
+Mock-Backends. Einmal portieren, fuer alle Treiber wiederverwendbar.
+
+| Stack | Linux-Quelle | Funktion |
+|---|---|---|
+| Wireless | mac80211 + cfg80211 | WiFi-Protokoll |
+| Netzwerk | netdev + TCP/IP | Paket-Verarbeitung |
+| USB | USB Core | USB-Protokoll |
+| Audio | ALSA Core | Audio-Routing |
+| Display | DRM/KMS | Modesetting, Buffering |
+| Storage | Block-Layer | I/O Scheduling |
+
+### Userspace: Treiber-Adapter (pro Hardware)
+
+Duenn (~500-2000 Zeilen). Nutzt den Protokoll-Stack + die 5 Kernel-
+Primitives. Hardware-spezifischer Code (Register-Adressen, Firmware-
+Protokoll) kommt aus dem Linux-Treiber — nur die Zeilen die wirklich
+Hardware anfassen, nicht der gesamte 100K-Zeilen Treiber.
+
+10 Adapter decken 90% der Hardware ab:
+
+| Adapter | Hardware | Zeilen |
+|---|---|---|
+| i915/amdgpu | Intel/AMD GPU | ~2000 |
+| iwlwifi | Intel WiFi | ~1000 |
+| r8169 | Realtek Ethernet | ~500 |
+| hda | Intel HD Audio | ~500 |
+| xhci | USB 3.0 | ~1000 |
+| nvme | NVMe Storage | ~500 |
+| ahci | SATA Storage | ~500 |
+| hid | USB Keyboard/Mouse | ~300 |
+| ps2 | Legacy Input | ~200 |
+| acpi | Power Management | ~500 |
+
+### Entwicklungsplan
+
+**Phase 1: QEMU (keine Hardware noetig)**
+- CosmoRT bootet in QEMU
+- virtio-Treiber (virtio-net, virtio-gpu, virtio-blk, virtio-input)
+- Protokoll-Stacks portieren und gegen virtio-Backends testen
+
+**Phase 2: Protokoll-Stacks (keine Hardware noetig)**
+- Linux mac80211/cfg80211 → CosmoOS Wireless-Stack
+- Linux USB Core → CosmoOS USB-Stack
+- Testbar mit Mock-Treibern in QEMU
+
+**Phase 3: Echte Hardware**
+- Treiber-Adapter schreiben (braucht echte Hardware)
+- 50 Euro Hardware (RPi + USB-Geraete) fuer Entwicklung
+- Record/Replay von Linux Register-Traces fuer Regression-Tests
+
+### Referenz: Wer macht es aehnlich?
+
+| OS | Ansatz | Status |
+|---|---|---|
+| Fuchsia | Userspace-Treiber via Driver Framework | Production (Nest Hub) |
+| Genode/Sculpt | Linux-DDE Compat-Layer | Production |
+| Minix 3 | Alle Treiber Userspace, Auto-Restart | Forschung |
+| seL4/CAmkES | Formal verifiziert, Userspace-Treiber | Militaer/Aerospace |
+
+Alle mit limitiertem Hardware-Support. Breiter Support braucht
+die 10 Adapter + portierte Protokoll-Stacks.
 
 ## CosmoRT-spezifische Syscalls
 
