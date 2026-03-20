@@ -16,6 +16,7 @@
 #include "memops.h"
 #include "config.h"
 #include "vma.h"
+#include "vfs.h"
 
 #include "init_bin.h"
 
@@ -87,6 +88,13 @@ void kernel_main(struct boot_info *info) {
     proc_init();
     vma_init();
     ipc_init();
+
+    /* Hardware primitives (MMIO, DMA, IRQ, PCI, FW) */
+    extern void hw_init(void);
+    hw_init();
+
+    /* VFS (ramfs) */
+    vfs_init();
 
     /* Futex subsystem (wait queue hash table + slab pool) */
     extern void futex_init(void);

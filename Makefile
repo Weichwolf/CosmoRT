@@ -54,7 +54,9 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/slab.o \
            $(BUILD)/kernel/percpu.o \
            $(BUILD)/kernel/vma.o \
-           $(BUILD)/kernel/memops.o
+           $(BUILD)/kernel/memops.o \
+           $(BUILD)/kernel/vfs.o \
+           $(BUILD)/kernel/hw.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
