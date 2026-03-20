@@ -1,7 +1,13 @@
-; CosmoRT AP Trampoline — 16-bit real → 32-bit → 64-bit long mode
+; CosmoRT AP Trampoline — 16→32→64 mode transition
+; Copied to physical 0x8000, started via SIPI vector 0x08.
 ;
-; Copied to physical 0x8000. APs start here after SIPI (vector 0x08).
-; Data at 0x8F00 filled by BSP.
+; Data at 0x8F00 (filled by BSP):
+;   +0x00: PML4 physical address (uint64_t)
+;   +0x08: Stack base, direct-map (uint64_t)
+;   +0x10: Entry point, direct-map (uint64_t)
+;   +0x18: GDT: limit(u16) + base(u64)
+;   +0x28: Stack size per core (uint64_t)
+;   +0x30: IDT: limit(u16) + base(u64)
 
 bits 16
 org 0x8000
@@ -13,13 +19,9 @@ ap_trampoline_start:
     mov es, ax
     mov ss, ax
 
-    ; Signal arrival: write marker to 0x8FF0
-    mov byte [0x8FF0], 0xAA
-
-    ; Load transitional GDT
     lgdt [tramp_gdt_ptr]
 
-    ; Enable protected mode
+    ; Protected mode
     mov eax, cr0
     or al, 1
     mov cr0, eax
@@ -33,34 +35,35 @@ pm32:
     mov es, ax
     mov ss, ax
 
-    ; Enable PAE
+    ; PAE + PML4 + Long Mode + Paging
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
 
-    ; Load PML4
     mov eax, [0x8F00]
     mov cr3, eax
 
-    ; Enable long mode (IA32_EFER.LME)
     mov ecx, 0xC0000080
     rdmsr
     or eax, 0x100
     wrmsr
 
-    ; Enable paging
     mov eax, cr0
     or eax, 0x80000000
     mov cr0, eax
 
-    ; Far jump to 64-bit
-    jmp dword 0x18:lm64
+    jmp 0x18:lm64
 
 bits 64
 lm64:
-    ; Load kernel GDT
+    ; Temporary stack for retfq
+    mov rsp, 0x8EF0
+
+    ; Load kernel GDT + IDT
     mov rax, 0x8F18
     lgdt [rax]
+    mov rax, 0x8F30
+    lidt [rax]
 
     mov ax, 0x10
     mov ds, ax
@@ -71,18 +74,18 @@ lm64:
 
     ; Reload CS
     push qword 0x08
-    mov rax, 0x8000 + (.cs_ok - ap_trampoline_start)
+    mov rax, .cs_ok
     push rax
     retfq
 
 .cs_ok:
-    ; Get APIC ID
+    ; APIC ID
     mov rax, 0xFEE00020
     mov eax, [rax]
     shr eax, 24
     and eax, 0xFF
 
-    ; Compute stack: stack_base + (apic_id + 1) * stack_size
+    ; Stack = stack_base + (apic_id + 1) * stack_size
     mov ecx, eax
     inc rcx
     mov rax, 0x8F28
@@ -93,12 +96,18 @@ lm64:
 
     ; Jump to AP entry
     mov rax, 0x8F10
-    jmp [rax]
+    mov rax, [rax]
+    jmp rax
 
-; ── Transitional GDT ──────────────────────────────────
+    cli
+.hang:
+    hlt
+    jmp .hang
+
+; ── Transitional GDT ──────────────────────
 align 8
 tramp_gdt:
-    dq 0x0000000000000000       ; 0x00: null
+    dq 0x0000000000000000
     dq 0x00CF9A000000FFFF       ; 0x08: 32-bit code
     dq 0x00CF92000000FFFF       ; 0x10: 32-bit data
     dq 0x00AF9A000000FFFF       ; 0x18: 64-bit code (L=1)

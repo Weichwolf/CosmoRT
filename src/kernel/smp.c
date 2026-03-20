@@ -44,6 +44,12 @@ static void (*user_entry_fn)(void);
 
 /* AP C entry — each AP lands here after trampoline */
 static void ap_main(void) {
+    /* Enable SSE (CR4.OSFXSR + CR4.OSXMMEXCPT) — needed for compiler-generated SSE code */
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1 << 9) | (1 << 10);  /* OSFXSR + OSXMMEXCPT */
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+
     volatile uint32_t *lapic_id_reg = (volatile uint32_t *)LAPIC_ID;
     uint32_t apic_id = (*lapic_id_reg >> 24) & 0xFF;
 
@@ -101,7 +107,15 @@ int smp_start_all(void (*entry_fn)(void)) {
         *gdt_base  = gdt_desc.base;
     }
     data[5] = SMP_STACK_SIZE;                               /* +0x28: stack size */
-    data[6] = PHYS_OFFSET;                                  /* +0x30: PHYS_OFFSET */
+    /* +0x30: kernel IDT pointer (10 bytes: 2-byte limit + 8-byte base) */
+    {
+        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idt_desc;
+        __asm__ volatile("sidt %0" : "=m"(idt_desc));
+        uint16_t *idt_limit = (uint16_t *)phys_to_virt(TRAMP_DATA + 0x30);
+        uint64_t *idt_base  = (uint64_t *)phys_to_virt(TRAMP_DATA + 0x32);
+        *idt_limit = idt_desc.limit;
+        *idt_base  = idt_desc.base;
+    }
 
     __asm__ volatile("mfence" ::: "memory");
 
@@ -112,28 +126,15 @@ int smp_start_all(void (*entry_fn)(void)) {
     serial_puts(" bytes)\n");
 
     /* 3. INIT/SIPI sequence (Intel MP spec §B.4) */
-    /* INIT/SIPI broadcast (Intel MP spec §B.4)
-     * NOTE: QEMU TCG (no KVM) is single-threaded. After SIPI, APs consume
-     * the shared host thread, starving the BSP. On TCG, skip SIPI and run
-     * single-core. The trampoline is correct for KVM/real hardware. */
-    int skip_sipi = 0;
-    /* Heuristic: if timer_tsc_per_ms < 10M, we're on TCG (real CPUs ≥ 1GHz) */
-    extern uint64_t timer_tsc_per_ms;
-    if (timer_tsc_per_ms < 10000000) {
-        serial_puts("SMP: TCG detected, skipping SIPI (single-core mode)\n");
-        skip_sipi = 1;
-    }
-
-    if (!skip_sipi) {
-        serial_puts("SMP: INIT/SIPI broadcast...");
-        lapic_ipi_broadcast(ICR_INIT_ASSERT);
-        lapic_ipi_broadcast(ICR_INIT_DEASSERT);
-        timer_sleep_ms(10);
-        lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
-        timer_sleep_ms(1);
-        lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
-        serial_puts("sent\n");
-    }
+    /* INIT/SIPI broadcast (Intel MP spec §B.4) */
+    serial_puts("SMP: INIT/SIPI...");
+    lapic_ipi_broadcast(ICR_INIT_ASSERT);
+    lapic_ipi_broadcast(ICR_INIT_DEASSERT);
+    timer_sleep_ms(10);
+    lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
+    timer_sleep_ms(1);
+    lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
+    serial_puts("sent\n");
 
     /* 4. Wait for APs to come alive */
     uint64_t deadline = timer_ms() + 500;
