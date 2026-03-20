@@ -13,28 +13,30 @@ CosmoRT (Kernel)  dieses Repo
 Hardware          x86/ARM/RISC-V
 ```
 
-## Ausgangsbasis: llmos
+## Ausgangslage
 
-~/Git/llmos/ ist ein funktionierender Microkernel (22K Zeilen C):
-- UEFI Boot, GDT, IDT, Page Tables
-- EDF-Scheduler (Tickless, Bandwidth-Server)
-- Capability-basiertes IPC (seL4-Stil)
-- Paging, SMP, APIC Timer
+~/Git/llmos/ hat einen funktionierenden Microkernel (22K Zeilen):
+- UEFI Boot, GDT, IDT, Page Tables, APIC Timer
+- EDF-Scheduler (Tickless, Bandwidth-Server, SMP)
+- Capability-basiertes IPC (seL4-Stil, synchron + async)
+- Paging, TSS, IRQ-Handling
 - Treiber: xHCI USB, E1000 Netzwerk, virtio Block
-- Grafik, Browser, JS-Engine (alles Ring 0)
+- Browser, JS-Engine, Desktop (alles Ring 0)
 
-CosmoRT baut darauf auf. Was sich aendert:
-1. POSIX-Syscall-Layer drauflegen (fork, exec, open, read, write, ...)
-2. Treiber aus Ring 0 in Userspace verschieben
-3. Eingebauten Browser/Desktop entfernen (wird CosmoUI/CosmoJS)
-4. CosmoPX libc als Userspace-Fundament
+~/Git/CosmoPX/libc/ hat eine eigenstaendige POSIX libc (737 Symbole):
+- Statische Binaries ohne glibc funktionieren
+- printf, malloc, pthreads, math, stat, time, errno — alles da
+- 141 musl libc-tests gruen
 
-Der Kernel-Core (Boot, Scheduler, IPC, Paging, IRQ) bleibt.
+~/Git/CosmoLib/ hat HTTP/TLS/Crypto/JSON/RegExp/etc.
 
 ## Ziel
 
-Minimaler Kernel der POSIX-Syscalls implementiert.
-Alles was Userspace sein kann ist Userspace (Microkernel).
+CosmoRT = llmos Kernel-Core + POSIX-Syscall-Layer.
+Bootet in QEMU. Fuehrt statische CosmoPX-Binaries aus.
+
+Validierung: `/tmp/cosmo-sysroot/usr/bin/fetch https://example.com/`
+laeuft auf CosmoRT in QEMU und gibt HTML aus.
 
 ## RT-Modell
 
@@ -221,9 +223,166 @@ Capabilities statt File-Permissions.
 - sem_open / sem_wait / sem_post (Named Semaphores)
 - shm_open (Shared Memory)
 
+## Phase 1: Kernel-Core extrahieren
+
+Kopiere aus ~/Git/llmos/src/ nach ~/Git/CosmoRT/src/:
+
+**Behalten (Kernel-Core):**
+- src/boot/boot.c — UEFI Boot, ExitBootServices
+- src/kernel/main.c — Kernel-Entry
+- src/kernel/paging.c — Page Tables, Virtual Memory
+- src/kernel/sched.c + edf.c — Scheduler
+- src/kernel/ipc.c — IPC
+- src/kernel/irq.c — Interrupt-Handling
+- src/kernel/timer.c — APIC Timer
+- src/kernel/smp.c — Multi-Core
+- src/kernel/tss.c — Task State Segment
+- src/kernel/sse.c — SSE/AVX State Save
+- src/kernel/process.c — Process-Management
+- src/kernel/serial.c — Debug-Output (Serial Console)
+- src/arch/ — Architektur-spezifischer Code
+
+**NICHT kopieren (wird Userspace):**
+- src/browser/ — wird CosmoUI
+- src/js/ — wird CosmoJS
+- src/gfx/ — wird CosmoLib/CosmoUI
+- src/crypto/ — wird CosmoLib
+- src/kernel/https.c, http_parse.c, net.c — wird CosmoLib
+- src/kernel/agent.c — wird CosmoJS App
+- src/kernel/objstore.c — wird Userspace-Service
+- src/drivers/ — bleibt erstmal, wird spaeter Userspace
+
+## Phase 2: POSIX-Syscall-Layer
+
+Implementiere einen Syscall-Handler der POSIX-Syscalls entgegennimmt.
+Linux Syscall-Nummern verwenden (x86_64 Syscall-Tabelle).
+
+```c
+// src/kernel/syscall.c
+// Entry via syscall-Instruktion (STAR/LSTAR MSR)
+
+long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    switch (num) {
+        case SYS_read:    return sys_read((int)a1, (void*)a2, (size_t)a3);
+        case SYS_write:   return sys_write((int)a1, (const void*)a2, (size_t)a3);
+        case SYS_open:    return sys_open((const char*)a1, (int)a2, (int)a3);
+        case SYS_close:   return sys_close((int)a1);
+        case SYS_mmap:    return sys_mmap(a1, a2, a3, a4, a5, a6);
+        case SYS_munmap:  return sys_munmap(a1, a2);
+        case SYS_brk:     return sys_brk(a1);
+        case SYS_exit:    sys_exit((int)a1); return 0;
+        case SYS_getpid:  return sys_getpid();
+        // ...
+        default:          return -ENOSYS;
+    }
+}
+```
+
+**Phase 2a — Minimaler Satz fuer "Hello World":**
+- SYS_write (1) — stdout Output
+- SYS_exit_group (231) — Prozess beenden
+- SYS_brk (12) — Heap (fuer malloc)
+- SYS_mmap (9) — Memory Mapping (fuer malloc, Stack)
+- SYS_munmap (11) — Memory freigeben
+
+**Phase 2b — Erweiterung fuer fetch:**
+- SYS_open/close/read/write — File I/O
+- SYS_socket/connect/sendto/recvfrom — Netzwerk
+- SYS_getaddrinfo — DNS (oder eigener Resolver)
+- SYS_clock_gettime — Zeitmessung
+- SYS_poll — I/O Multiplexing
+- SYS_clone/wait4 — Prozesse (fuer pthreads)
+- SYS_futex — Synchronisation (fuer pthread_mutex)
+
+## Phase 3: ELF-Loader
+
+Lade statische ELF-Binaries (CosmoPX-kompiliert) in den Userspace:
+
+```c
+// src/kernel/elf.c
+int load_elf(const void *elf_data, size_t len, uint64_t *entry_point) {
+    // Parse ELF Header
+    // Fuer jedes PT_LOAD Segment: mmap in Userspace
+    // Stack allozieren (8MB, Guard Page)
+    // entry_point = e_entry
+    // argc/argv/envp auf Stack legen
+    return 0;
+}
+```
+
+Statische ELF-Binaries haben keine Dynamic-Linking-Abhaengigkeiten.
+Nur PT_LOAD Segmente in den Adressraum mappen und zum Entry-Point springen.
+
+## Phase 4: QEMU Boot
+
+```makefile
+qemu: kernel.efi
+    qemu-system-x86_64 \
+        -bios /usr/share/ovmf/OVMF.fd \
+        -drive format=raw,file=fat:rw:esp \
+        -serial stdio \
+        -m 256M \
+        -smp 2 \
+        -device virtio-net-pci \
+        -device virtio-blk-pci,drive=hd0 \
+        -drive id=hd0,file=disk.img,format=raw
+```
+
+ESP (EFI System Partition) enthaelt:
+- EFI/BOOT/BOOTX64.EFI — CosmoRT Kernel
+- init — Erste Userspace-Binary (statisch, CosmoPX)
+
+Init-Prozess:
+```c
+// init.c (kompiliert gegen CosmoPX libc, statisch)
+int main(void) {
+    write(1, "CosmoOS booted!\n", 16);
+    // Spaeter: mount filesystem, start shell
+    for(;;) pause();
+}
+```
+
+## Phase 5: Validierung
+
+1. QEMU bootet CosmoRT
+2. Kernel laedt init (statische CosmoPX-Binary)
+3. init gibt "CosmoOS booted!" auf Serial Console aus
+4. Spaeter: Shell, fetch, Ruby, Homebrew
+
+## Dateisystem
+
+Fuer Phase 4-5: Initrd oder eingebettetes CPIO-Archiv.
+Kein richtiges Filesystem noetig fuer den ersten Boot.
+
+Spaeter: virtio-blk + einfaches Filesystem (ext2-read oder eigenes).
+
+## Treiber (erstmal im Kernel)
+
+Fuer Phase 4: virtio-Treiber direkt im Kernel (einfach, QEMU-kompatibel):
+- virtio-console — Serial/Console Output
+- virtio-blk — Block-Device fuer Filesystem
+- virtio-net — Netzwerk (fuer fetch)
+
+Diese werden SPAETER in den Userspace verschoben (Microkernel-Ziel).
+Erstmal funktional, dann sauber.
+
+## Meilensteine
+
+1. Kernel bootet in QEMU, gibt Text auf Serial aus
+2. ELF-Loader laedt statische Binary
+3. "Hello World" Binary (write + exit Syscalls) laeuft
+4. malloc funktioniert (brk/mmap Syscalls)
+5. CosmoPX printf-Binary laeuft
+6. Netzwerk-Syscalls (socket/connect/read/write)
+7. fetch laeuft und gibt HTML aus
+
 ## Regeln
 
-- `make test` muss immer gruen sein.
-- Warnings = Errors.
-- C11. Assembly nur in arch/ (Boot, Context-Switch, Syscall-Entry).
-- Kernel kommt zuletzt. Erst CosmoPX (libc), getestet auf Linux.
+- Kernel in C11 + minimales Assembly (arch/)
+- llmos-Code als Referenz, nicht blind kopieren — verstehen und anpassen
+- QEMU ist die primaere Test-Plattform
+- Serial Console fuer Debug-Output (kein Grafik noetig)
+- Linux Syscall-Nummern (Kompatibilitaet)
+- `make qemu` muss den Kernel booten
+- `make test` muss immer gruen sein
+- Warnings = Errors

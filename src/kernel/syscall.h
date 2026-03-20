@@ -1,0 +1,99 @@
+/* CosmoRT POSIX Syscall Layer — Linux x86_64 syscall numbers */
+#ifndef SYSCALL_H
+#define SYSCALL_H
+
+#include <stdint.h>
+
+/* Linux x86_64 syscall numbers (Phase 2a: minimal for Hello World) */
+#define SYS_READ            0
+#define SYS_WRITE           1
+#define SYS_OPEN            2
+#define SYS_CLOSE           3
+#define SYS_STAT            4
+#define SYS_FSTAT           5
+#define SYS_MMAP            9
+#define SYS_MPROTECT        10
+#define SYS_MUNMAP          11
+#define SYS_BRK             12
+#define SYS_RT_SIGACTION    13
+#define SYS_RT_SIGPROCMASK  14
+#define SYS_IOCTL           16
+#define SYS_WRITEV          20
+#define SYS_ACCESS          21
+#define SYS_GETPID          39
+#define SYS_CLONE           56
+#define SYS_FORK            57
+#define SYS_EXECVE          59
+#define SYS_EXIT            60
+#define SYS_UNAME           63
+#define SYS_FCNTL           72
+#define SYS_GETUID          102
+#define SYS_GETGID          104
+#define SYS_GETEUID         107
+#define SYS_GETEGID         108
+#define SYS_ARCH_PRCTL      158
+#define SYS_GETTID          186
+#define SYS_SET_TID_ADDRESS  218
+#define SYS_EXIT_GROUP      231
+#define SYS_SET_ROBUST_LIST 273
+#define SYS_PRLIMIT64       302
+#define SYS_GETRANDOM       318
+#define SYS_SCHED_SETPARAM    142
+#define SYS_SCHED_GETPARAM    143
+#define SYS_SCHED_SETSCHEDULER 144
+#define SYS_SCHED_GETSCHEDULER 145
+#define SYS_MLOCK             149
+#define SYS_MUNLOCK           150
+#define SYS_MLOCKALL          151
+#define SYS_MUNLOCKALL        152
+#define SYS_FUTEX             202
+#define SYS_SCHED_SETAFFINITY 203
+#define SYS_SCHED_GETAFFINITY 204
+#define SYS_RSEQ              334
+
+/* sched_yield — already used via SYS_SCHED_YIELD */
+#define SYS_SCHED_YIELD       24
+
+/* Timers / clocks */
+#define SYS_NANOSLEEP         35
+#define SYS_GETTIMEOFDAY      96
+#define SYS_CLOCK_GETTIME     228
+#define SYS_CLOCK_GETRES      229
+#define SYS_CLOCK_NANOSLEEP   230
+
+/* mmap flags */
+#define MAP_FIXED     0x10
+#define MAP_ANONYMOUS 0x20
+#define MAP_PRIVATE   0x02
+
+/* arch_prctl codes */
+#define ARCH_SET_GS   0x1001
+#define ARCH_SET_FS   0x1002
+#define ARCH_GET_FS   0x1003
+#define ARCH_GET_GS   0x1004
+
+/* mlockall flags */
+#define MCL_CURRENT  1
+#define MCL_FUTURE   2
+
+/* clock IDs */
+#define CLOCK_REALTIME   0
+#define CLOCK_MONOTONIC  1
+
+/* TIMER_ABSTIME */
+#define TIMER_ABSTIME    1
+
+/* Error numbers */
+#define ENOSYS  38
+#define ENOMEM  12
+#define EBADF   9
+#define EINVAL  22
+#define EFAULT  14
+#define EAGAIN  11
+#define ETIMEDOUT 110
+#define EPERM   1
+
+/* Main syscall dispatcher — called from ASM entry and INT 0x80 */
+long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6);
+
+#endif
