@@ -155,54 +155,46 @@ void vma_remove(vma_t **root, vma_t *node) {
 
 /* ── Find free gap (grows down from base) ────────── */
 
+/* Reverse in-order traversal (right, node, left) visits VMAs from highest
+ * to lowest address. Track gap_end starting at base. O(1) extra stack
+ * beyond the traversal stack (pointer-sized entries, not 16KB arrays). */
+
 uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
     if (!root) {
         /* No VMAs at all — place at base - size */
         return (base >= size) ? base - size : 0;
     }
 
-    /* Simple approach: try base - size downward, checking for overlaps.
-     * Walk all VMAs, collect sorted endpoints, find the best gap. */
-
-    /* Collect all VMAs into a flat array, sort by start, find gap. */
-    /* With max 1024 VMAs this is fine. */
-    uint64_t starts[1024], ends[1024];
-    int count = 0;
-
-    /* In-order traversal to get sorted VMAs */
+    /* Reverse in-order traversal: visit VMAs from highest to lowest.
+     * For each VMA, check if there's a gap between its end and gap_end. */
     vma_t *stack[64];
     int sp = 0;
     vma_t *cur = root;
+    uint64_t gap_end = base;
+    uint64_t result = 0;
+
+    /* Reverse in-order: right first, then node, then left */
     while (cur || sp > 0) {
         while (cur) {
             if (sp < 64) stack[sp++] = cur;
-            cur = cur->left;
+            cur = cur->right;
         }
         if (sp > 0) {
             cur = stack[--sp];
-            if (count < 1024) {
-                starts[count] = cur->start;
-                ends[count] = cur->end;
-                count++;
+            /* Check gap between cur->end and gap_end */
+            if (cur->end <= gap_end && gap_end - cur->end >= size) {
+                uint64_t addr = (gap_end - size) & ~0xFFFULL;
+                if (addr >= cur->end) {
+                    result = addr;
+                    return result;
+                }
             }
-            cur = cur->right;
+            gap_end = cur->start;
+            cur = cur->left;
         }
     }
 
-    /* Try to fit in the gap between VMAs, searching from high to low.
-     * The mmap region grows downward, so prefer high addresses. */
-
-    /* Gap after the last VMA (below base) */
-    uint64_t gap_end = base;
-    for (int i = count - 1; i >= 0; i--) {
-        if (ends[i] <= gap_end && gap_end - ends[i] >= size) {
-            uint64_t addr = (gap_end - size) & ~0xFFFULL;
-            if (addr >= ends[i])
-                return addr;
-        }
-        gap_end = starts[i];
-    }
-    /* Gap before the first VMA */
+    /* Gap before the first (lowest) VMA */
     if (gap_end >= size) {
         uint64_t addr = (gap_end - size) & ~0xFFFULL;
         if (addr >= 0x1000) /* don't map NULL page */

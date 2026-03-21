@@ -57,6 +57,7 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/memops.o \
            $(BUILD)/kernel/random.o \
            $(BUILD)/kernel/vfs.o \
+           $(BUILD)/kernel/procfs.o \
            $(BUILD)/kernel/hw.o \
            $(BUILD)/kernel/net.o \
            $(BUILD)/kernel/net_port.o \

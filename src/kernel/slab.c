@@ -2,11 +2,13 @@
 
 #include "slab.h"
 #include "memops.h"
+#include "serial.h"
 
 void slab_init(slab_t *s, void *pool, int obj_size, int count) {
     s->obj_size = obj_size < 8 ? 8 : obj_size;
     s->capacity = count;
     s->used = 0;
+    s->base = (uint8_t *)pool;
     s->lock = (spinlock_t)SPINLOCK_INIT;
 
     /* Build free list: each free slot starts with a next pointer */
@@ -37,6 +39,15 @@ void *slab_alloc(slab_t *s) {
 
 void slab_free(slab_t *s, void *obj) {
     if (!obj) return;
+
+    /* Validate obj belongs to this slab's pool and is aligned */
+    uint8_t *p = (uint8_t *)obj;
+    uint64_t pool_size = (uint64_t)s->capacity * s->obj_size;
+    if (p < s->base || p >= s->base + pool_size ||
+        (uint64_t)(p - s->base) % (uint64_t)s->obj_size != 0) {
+        serial_puts("slab_free: invalid pointer\n");
+        return;
+    }
 
     uint64_t flags;
     spin_lock_irq(&s->lock, &flags);

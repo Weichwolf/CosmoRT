@@ -17,6 +17,7 @@
 #include "memops.h"
 #include "syscall.h"
 #include "irq.h"
+#include "socket.h"
 
 /* Page table flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -488,8 +489,11 @@ void proc_cleanup(process_t *p) {
 
     /* Close all FDs */
     for (int i = 0; i < FD_MAX; i++) {
-        if (p->fds.entries[i].type == FD_FILE) {
+        int type = p->fds.entries[i].type;
+        if (type == FD_FILE) {
             vfs_file_free_obj(p->fds.entries[i].obj);
+        } else if (type == FD_SOCKET || type == FD_PIPE) {
+            fd_cleanup_entry(type, p->fds.entries[i].obj);
         }
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;

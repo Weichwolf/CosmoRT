@@ -17,6 +17,7 @@
 #include "config.h"
 #include "vma.h"
 #include "vfs.h"
+#include "procfs.h"
 #include "net.h"
 #include "hw.h"
 #include "random.h"
@@ -123,6 +124,9 @@ void kernel_main(struct boot_info *info) {
         vfs_create("/bin", VFS_DIR);
         vfs_create("/etc", VFS_DIR);
     }
+
+    /* procfs — virtual /proc (dmesg, meminfo, cpuinfo) */
+    procfs_init();
 
     /* Dynamic linker: register at /lib/ld-cosmo.so */
 #ifdef HAVE_LD_COSMO

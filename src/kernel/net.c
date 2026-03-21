@@ -587,11 +587,12 @@ int net_http_get(const uint8_t *dst_ip, uint16_t port,
     net_tcp_t conn; mzero(&conn, sizeof(conn));
     if (net_tcp_connect(&conn, dst_ip, port) < 0) return -1;
     char req[512]; int ri = 0; const char *s;
-    for (s="GET "; *s;) req[ri++]=*s++;
-    for (s=path; *s;) req[ri++]=*s++;
-    for (s=" HTTP/1.0\r\nHost: "; *s;) req[ri++]=*s++;
-    for (s=host; *s;) req[ri++]=*s++;
-    for (s="\r\nConnection: close\r\n\r\n"; *s;) req[ri++]=*s++;
+    for (s="GET "; *s && ri < 510;) req[ri++]=*s++;
+    for (s=path; *s && ri < 510;) req[ri++]=*s++;
+    for (s=" HTTP/1.0\r\nHost: "; *s && ri < 510;) req[ri++]=*s++;
+    for (s=host; *s && ri < 510;) req[ri++]=*s++;
+    for (s="\r\nConnection: close\r\n\r\n"; *s && ri < 510;) req[ri++]=*s++;
+    if (ri >= 510) { net_tcp_close(&conn); return -1; }
     net_tcp_send(&conn, req, ri);
     int total = net_tcp_recv(&conn, response, resp_size-1, 10000);
     if (total > 0) response[total] = 0; else response[0] = 0;

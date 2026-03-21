@@ -1,4 +1,8 @@
-/* COM1 serial — 115200 baud, 8N1 */
+/* COM1 serial — 115200 baud, 8N1, ring buffer for dmesg
+ *
+ * All output is mirrored to a 64KB ring buffer. procfs reads it live
+ * via serial_dmesg_read() — no VFS writes, no file I/O from serial.
+ */
 
 #include "serial.h"
 #include <stdint.h>
@@ -15,6 +19,16 @@ static inline uint8_t port_in8(uint16_t port) {
     return val;
 }
 
+/* ── dmesg ring buffer ─────────────────────────────── */
+
+#define DMESG_SIZE (64 * 1024)
+
+static char dmesg_ring[DMESG_SIZE];
+static int dmesg_head;  /* next write position (wraps) */
+static int dmesg_len;   /* total bytes stored (capped at DMESG_SIZE) */
+
+/* ── Public API ────────────────────────────────────── */
+
 void serial_init(void) {
     port_out8(COM1 + 1, 0x00);
     port_out8(COM1 + 3, 0x80);
@@ -29,6 +43,12 @@ void serial_putchar(char c) {
     while (!(port_in8(COM1 + 5) & 0x20))
         ;
     port_out8(COM1, c);
+
+    /* Append to ring buffer */
+    dmesg_ring[dmesg_head] = c;
+    dmesg_head = (dmesg_head + 1) % DMESG_SIZE;
+    if (dmesg_len < DMESG_SIZE)
+        dmesg_len++;
 }
 
 void serial_puts(const char *s) {
@@ -47,4 +67,29 @@ char serial_getchar(void) {
     if (!(port_in8(COM1 + 5) & 0x01))
         return 0; /* no data available */
     return (char)port_in8(COM1);
+}
+
+/* ── dmesg read (for procfs) ─────────────────────── */
+
+int serial_dmesg_read(char *buf, int offset, int size) {
+    if (offset >= dmesg_len || size <= 0) return 0;
+    int avail = dmesg_len - offset;
+    if (size > avail) size = avail;
+
+    /* Ring start: oldest byte position */
+    int start;
+    if (dmesg_len < DMESG_SIZE)
+        start = 0;
+    else
+        start = dmesg_head; /* oldest byte is at write cursor when full */
+
+    for (int i = 0; i < size; i++) {
+        int idx = (start + offset + i) % DMESG_SIZE;
+        buf[i] = dmesg_ring[idx];
+    }
+    return size;
+}
+
+int serial_dmesg_len(void) {
+    return dmesg_len;
 }

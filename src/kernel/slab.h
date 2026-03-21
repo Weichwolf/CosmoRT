@@ -11,6 +11,7 @@
 
 typedef struct {
     void       *free_list;  /* linked list of free slots */
+    uint8_t    *base;       /* base address of pool memory */
     int         obj_size;   /* bytes per object (>= sizeof(void*)) */
     int         capacity;   /* total number of slots */
     int         used;       /* currently allocated */

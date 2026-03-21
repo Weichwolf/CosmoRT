@@ -10,6 +10,7 @@
 #include "page_alloc.h"
 #include "memops.h"
 #include "syscall.h"
+#include "procfs.h"
 
 /* ── Slab pools ──────────────────────────────────── */
 
@@ -42,6 +43,18 @@ static void kstrncpy(char *dst, const char *src, int max) {
     int i = 0;
     while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
     dst[i] = 0;
+}
+
+/* ── procfs routing ──────────────────────────────── */
+
+/* Returns pointer to name after "/proc/" or NULL */
+static const char *procfs_name(const char *path) {
+    if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
+        path[4]=='c' && path[5]=='/') {
+        const char *name = path + 6;
+        if (*name && *name != '/') return name;
+    }
+    return 0;
 }
 
 /* ── CosmoFS routing ─────────────────────────────── */
@@ -303,6 +316,25 @@ static struct vfs_node *ensure_dirs(const char *path) {
 
 int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
+
+    /* procfs path? */
+    const char *pname = procfs_name(path);
+    if (pname) {
+        int handle = procfs_open(pname);
+        if (!handle) return -ENOENT;
+
+        procfs_fd_t *pf = procfs_fd_alloc();
+        if (!pf) return -ENOMEM;
+        pf->handle = handle;
+        pf->offset = 0;
+
+        process_t *p = proc_current();
+        if (!p) { procfs_fd_free(pf); return -EFAULT; }
+
+        int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+        if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
+        return fd;
+    }
 
     /* CosmoFS path? */
     if (!is_ramfs_path(path)) {
@@ -629,6 +661,16 @@ static void fill_cosmofs_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_s
 }
 
 int vfs_stat(const char *path, struct k_stat *buf) {
+    const char *pn = procfs_name(path);
+    if (pn) {
+        int dummy;
+        if (procfs_stat(pn, &dummy) < 0) return -ENOENT;
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFREG | S_IRUSR;
+        buf->st_ino = 0xFFFF0001;  /* synthetic inode */
+        buf->st_blksize = 4096;
+        return 0;
+    }
     if (!is_ramfs_path(path)) {
         uint64_t ino = cosmofs_walk(path);
         if (ino == 0) return -ENOENT;
@@ -654,6 +696,15 @@ int vfs_fstat(int fd, struct k_stat *buf) {
     if (fde->type == FD_SERIAL) {
         kmemset(buf, 0, sizeof(struct k_stat));
         buf->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+
+    /* procfs FDs */
+    if (fde->type == FD_PROCFS) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFREG | S_IRUSR;
+        buf->st_ino = 0xFFFF0001;
         buf->st_blksize = 4096;
         return 0;
     }
@@ -879,6 +930,56 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
     serial_puts(" bytes)\n");
 
     return 0;
+}
+
+/* ── Kernel-internal file append (no process context) ── */
+
+long vfs_kernel_append(const char *path, const void *buf, size_t len) {
+    if (!buf || !len) return 0;
+
+    if (is_ramfs_path(path)) {
+        /* ramfs: find or create the node, append directly */
+        struct vfs_node *node = vfs_lookup(path);
+        if (!node) {
+            ensure_dirs(path);
+            node = vfs_create(path, VFS_FILE);
+            if (!node) return -ENOMEM;
+        }
+        size_t end = node->size + len;
+        if (end > node->capacity) {
+            if (grow_file(node, end) < 0) return -ENOMEM;
+        }
+        kmemcpy(node->data + node->size, buf, len);
+        node->size = end;
+        return (long)len;
+    }
+
+    /* CosmoFS: walk path, create if missing, append via cosmofs_write */
+    uint64_t ino = cosmofs_walk(path);
+    if (ino == 0) {
+        const char *basename;
+        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        if (parent_ino == 0) return -ENOENT;
+
+        struct cosmofs_inode *pip = cosmofs_inode_read(parent_ino);
+        if (!pip || pip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+
+        ino = cosmofs_inode_alloc();
+        if (ino == 0) return -ENOMEM;
+
+        struct cosmofs_inode new_in;
+        kmemset(&new_in, 0, sizeof(new_in));
+        new_in.type = COSMOFS_TYPE_FILE;
+        cosmofs_inode_write(ino, &new_in);
+        cosmofs_dir_create(parent_ino, basename, ino);
+    }
+
+    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+    if (!ip) return -EIO;
+    size_t off = ip->size;
+
+    int rc = cosmofs_write(ino, buf, off, len);
+    return (long)rc;
 }
 
 /* ── Mount CosmoFS ────────────────────────────────── */

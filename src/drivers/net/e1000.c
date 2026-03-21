@@ -310,9 +310,12 @@ void e1000_get_mac(uint8_t mac[6]) {
 int e1000_send(const void *data, uint16_t len) {
     if (len > BUF_SIZE) return -1;
 
-    /* Wait for previous TX to complete */
-    while (!(tx_descs[tx_cur].status & E1000_TXD_STAT_DD))
+    /* Wait for previous TX to complete (timeout after ~1000 iterations) */
+    for (int w = 0; w < 1000; w++) {
+        if (tx_descs[tx_cur].status & E1000_TXD_STAT_DD) break;
         __asm__ volatile("pause");
+        if (w == 999) { serial_puts("e1000: TX prev timeout\n"); return -1; }
+    }
 
     /* Copy data to TX buffer */
     const uint8_t *src = data;
@@ -329,9 +332,12 @@ int e1000_send(const void *data, uint16_t len) {
     tx_cur = (tx_cur + 1) % NUM_TX_DESC;
     e1000_write(E1000_TDT, tx_cur);
 
-    /* Wait for completion */
-    while (!(tx_descs[old].status & E1000_TXD_STAT_DD))
+    /* Wait for completion (timeout after ~1000 iterations) */
+    for (int w = 0; w < 1000; w++) {
+        if (tx_descs[old].status & E1000_TXD_STAT_DD) break;
         __asm__ volatile("pause");
+        if (w == 999) { serial_puts("e1000: TX completion timeout\n"); return -1; }
+    }
 
     return 0;
 }

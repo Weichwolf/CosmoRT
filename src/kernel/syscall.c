@@ -17,6 +17,7 @@
 #include "net_port.h"
 #include "irq.h"
 #include "spinlock.h"
+#include "procfs.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -154,6 +155,20 @@ static long do_read(int fd, void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_read(fd, buf, count);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (!pf) return -EBADF;
+        /* Read into kernel buffer, then copy to user */
+        char kbuf[4096];
+        int want = (int)count;
+        if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
+        int got = procfs_read(pf->handle, kbuf, want, pf->offset);
+        if (got > 0) {
+            kmemcpy(buf, kbuf, (size_t)got);
+            pf->offset += got;
+        }
+        return (long)got;
+    }
     if (fde->type == FD_SOCKET)
         return socket_read(fd, buf, (long)count);
     if (fde->type == FD_PIPE) {
@@ -694,6 +709,14 @@ static long do_close(int fd) {
     if (!fde) return -EBADF;
     if (fde->type == FD_FILE)
         return vfs_close(fd);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (pf) {
+            procfs_close(pf->handle);
+            procfs_fd_free(pf);
+        }
+        return fd_close(&p->fds, fd);
+    }
     if (fde->type == FD_SOCKET)
         return socket_close(fd);
     if (fde->type == FD_PIPE) {
@@ -1314,6 +1337,7 @@ static long do_sched_setscheduler(int pid, int policy, const struct sched_param_
         if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
         struct sched_param_k kp;
         kmemcpy(&kp, param, sizeof(kp));
+        if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
         t->priority = kp.sched_priority;
     }
     return 0;
@@ -1332,6 +1356,7 @@ static long do_sched_setparam(int pid, const struct sched_param_k *param) {
     if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
     struct sched_param_k kp;
     kmemcpy(&kp, param, sizeof(kp));
+    if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
     t->priority = kp.sched_priority;
     return 0;
 }
@@ -1482,6 +1507,37 @@ static long pipe_close(fd_entry_t *fde) {
     if (both_closed)
         slab_free(&pipe_slab, pp);
     return 0;
+}
+
+/* ── fd_cleanup_entry — process-exit cleanup for non-file FDs ── */
+
+void fd_cleanup_entry(int fde_type, void *fde_obj) {
+    if (!fde_obj) return;
+    if (fde_type == FD_SOCKET) {
+        socket_t *s = (socket_t *)fde_obj;
+        if (s->state == SOCK_CONNECTED)
+            net_tcp_close(&s->tcp);
+        s->state = SOCK_UNUSED;
+    } else if (fde_type == FD_PIPE) {
+        /* Decode read/write end from pointer (write end = pp + 1 byte) */
+        uintptr_t addr = (uintptr_t)fde_obj;
+        uintptr_t base = (uintptr_t)pipe_pool;
+        uintptr_t end = base + sizeof(pipe_pool);
+        if (addr >= base && addr < end) {
+            uintptr_t off = (addr - base) % sizeof(struct pipe);
+            struct pipe *pp = (off <= 1) ? (struct pipe *)(addr - off) : 0;
+            if (pp) {
+                uint64_t flags;
+                spin_lock_irq(&pp->lock, &flags);
+                if (off == 0) pp->read_open = 0;
+                else          pp->write_open = 0;
+                int both_closed = !pp->read_open && !pp->write_open;
+                spin_unlock_irq(&pp->lock, flags);
+                if (both_closed)
+                    slab_free(&pipe_slab, pp);
+            }
+        }
+    }
 }
 
 /* ── SYS_readv (19) ──────────────────────────────── */

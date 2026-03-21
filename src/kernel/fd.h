@@ -16,6 +16,7 @@
 #define FD_SOCKET  3
 #define FD_DEVICE  4
 #define FD_FILE    5
+#define FD_PROCFS  6   /* /proc virtual files */
 
 /* Open flags (subset of POSIX) */
 #define O_RDONLY   0x0000
