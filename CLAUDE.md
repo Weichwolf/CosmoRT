@@ -385,51 +385,146 @@ qemu: kernel.efi
 
 ESP (EFI System Partition) enthaelt:
 - EFI/BOOT/BOOTX64.EFI — CosmoRT Kernel
-- init — Erste Userspace-Binary (statisch, CosmoPX)
 
-Init-Prozess:
+CosmoFS disk.img enthaelt das komplette System.
+
+## OS-Image (disk.img)
+
+CosmoOS bootet direkt in Bash. Alles vorinstalliert.
+Kein Installer, kein Setup. Image bauen → booten → arbeiten.
+
+### Inhalt
+
+```
+/bin/bash           Interaktive Shell (aus Brew, readline+ncurses)
+/bin/sh             Bootstrap-Shell (from scratch, fuer Scripts)
+/bin/cat,ls,...     43 Coreutils (from scratch, statisch)
+/bin/make           POSIX make (from scratch)
+/bin/tar            tar + gzip/gunzip/zcat (from scratch)
+/bin/awk            POSIX awk (from scratch)
+/bin/gcc,g++        GCC mit C++ Support (aus Brew)
+/bin/ar,nm,strip    Binutils (from scratch + aus Brew)
+/bin/ruby           Ruby (aus Brew, fuer CosmoBrew PM)
+/bin/brew           CosmoBrew Package-Manager
+/lib/libc.a         CosmoPX libc (statisch)
+/lib/libstdc++.a    C++ Standard Library
+/lib/libz.a         zlib
+/lib/libssl.a       OpenSSL
+/lib/libreadline.a  readline
+/lib/libncursesw.a  ncurses
+/lib/libgmp.a       GMP  \
+/lib/libmpfr.a      MPFR  } GCC-Dependencies
+/lib/libmpc.a       MPC  /
+/include/           Alle Header (libc + Libraries)
+/etc/profile        PATH, SHELL=/bin/bash, PS1, HOME=/home
+/home/              User Home-Directory
+/tmp/               Temporaer (geloescht bei Boot)
+```
+
+### Boot-Sequenz
+
+```
+1. UEFI laedt CosmoRT Kernel (BOOTX64.EFI)
+2. Kernel initialisiert: SMP, VM, Scheduler, Treiber
+3. CosmoFS mounten (virtio-blk oder Hyper-V storvsc)
+4. /sbin/init starten (erster Userspace-Prozess)
+5. init: mount /tmp, setze hostname (cosmo-XXXX), starte bash
+6. bash liest /etc/profile → User sieht Prompt
+```
+
+### init (src/user/init.c)
+
 ```c
-// init.c (kompiliert gegen CosmoPX libc, statisch)
 int main(void) {
-    write(1, "CosmoOS booted!\n", 16);
-    // Spaeter: mount filesystem, start shell
+    // Mount /tmp (CosmoFS, frisch)
+    // Hostname: cosmo-XXXX (aus MAC-Adresse)
+    // Netzwerk: DHCP + SLAAC (automatisch)
+    // Login-Shell starten
+    char *argv[] = { "/bin/bash", "--login", NULL };
+    char *envp[] = {
+        "HOME=/home",
+        "PATH=/bin:/usr/bin",
+        "SHELL=/bin/bash",
+        "TERM=vt100",
+        NULL
+    };
+    execve("/bin/bash", argv, envp);
+    // Fallback
+    execve("/bin/sh", argv, envp);
+    write(2, "init: no shell\n", 15);
     for(;;) pause();
 }
 ```
 
-## Phase 5: Validierung
+### Image bauen (tools/mkimage.sh)
 
-1. QEMU bootet CosmoRT
-2. Kernel laedt init (statische CosmoPX-Binary)
-3. init gibt "CosmoOS booted!" auf Serial Console aus
-4. Spaeter: Shell, fetch, Ruby, Homebrew
+```sh
+#!/bin/sh
+# Baut das komplette CosmoOS-Image
+COSMO=~/Git
+PX=$COSMO/CosmoPX
+RT=$COSMO/CosmoRT
+PREFIX=$PX/brew/prefix
 
-## Dateisystem
+# 1. CosmoPX Userland bauen
+make -C $PX/libc lib
+make -C $PX/sh
+make -C $PX/coreutils
+make -C $PX/fileutils
+make -C $PX/buildutils
+make -C $PX/toolchain
 
-Fuer Phase 4-5: Initrd oder eingebettetes CPIO-Archiv.
-Kein richtiges Filesystem noetig fuer den ersten Boot.
+# 2. Brew-Pakete bauen (bash, gcc, ruby, etc.)
+sh $PX/brew/bootstrap.sh
 
-Spaeter: virtio-blk + einfaches Filesystem (ext2-read oder eigenes).
+# 3. CosmoFS-Image erstellen
+$RT/tools/mkfs disk.img 256M    # 256MB Image
+
+# 4. Dateien ins Image kopieren
+$RT/tools/cosmo_cp disk.img $PX/sh/build/sh /bin/sh
+$RT/tools/cosmo_cp disk.img $PREFIX/bin/bash /bin/bash
+for tool in $PX/coreutils/build/*; do
+    $RT/tools/cosmo_cp disk.img $tool /bin/$(basename $tool)
+done
+$RT/tools/cosmo_cp disk.img $PX/fileutils/build/tar /bin/tar
+$RT/tools/cosmo_cp disk.img $PX/fileutils/build/gzip /bin/gzip
+$RT/tools/cosmo_cp disk.img $PX/buildutils/build/make /bin/make
+# GCC, Ruby, Libraries, Headers...
+
+# 5. /etc/profile
+echo 'export PATH=/bin:/usr/bin
+export HOME=/home
+export SHELL=/bin/bash
+export PS1="cosmo$ "
+' | $RT/tools/cosmo_write disk.img /etc/profile
+
+# 6. Kernel bauen
+make -C $RT
+```
 
 ## Treiber (erstmal im Kernel)
 
-Fuer Phase 4: virtio-Treiber direkt im Kernel (einfach, QEMU-kompatibel):
-- virtio-console — Serial/Console Output
-- virtio-blk — Block-Device fuer Filesystem
-- virtio-net — Netzwerk (fuer fetch)
+virtio-Treiber direkt im Kernel (QEMU/KVM):
+- virtio-blk — Block-Device fuer CosmoFS
+- virtio-net — Netzwerk (Alternative zu E1000)
 
-Diese werden SPAETER in den Userspace verschoben (Microkernel-Ziel).
-Erstmal funktional, dann sauber.
+Hyper-V Treiber (primaere Entwicklungsplattform):
+- VMBus + storvsc + netvsc
+
+Alle koexistieren. Boot-Erkennung waehlt passenden Treiber.
+Werden SPAETER in den Userspace verschoben (Microkernel-Ziel).
 
 ## Meilensteine
 
-1. Kernel bootet in QEMU, gibt Text auf Serial aus
-2. ELF-Loader laedt statische Binary
-3. "Hello World" Binary (write + exit Syscalls) laeuft
-4. malloc funktioniert (brk/mmap Syscalls)
-5. CosmoPX printf-Binary laeuft
-6. Netzwerk-Syscalls (socket/connect/read/write)
-7. fetch laeuft und gibt HTML aus
+1. [x] Kernel bootet in QEMU, Serial Output
+2. [x] ELF-Loader laedt statische Binary
+3. [x] "Hello World" (write + exit) laeuft
+4. [x] malloc (brk/mmap) funktioniert
+5. [x] CosmoPX printf-Binary laeuft
+6. [x] Netzwerk (TCP/IP + E1000)
+7. [ ] CosmoOS bootet in Bash mit gcc + brew vorinstalliert
+8. [ ] CosmoOS bootet in Hyper-V
+9. [ ] Claude Code laeuft auf CosmoOS
 
 ## Repo-Struktur
 
