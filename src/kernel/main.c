@@ -21,6 +21,7 @@
 #include "net.h"
 #include "hw.h"
 #include "random.h"
+#include "vt.h"
 
 #include "init_bin.h"
 
@@ -190,6 +191,16 @@ void kernel_main(struct boot_info *info) {
         virtio_net_init();   /* alternative NIC, registers if found */
         virtio_gpu_init();   /* 2D framebuffer if found */
         virtio_input_init(); /* keyboard/mouse if found */
+    }
+
+    /* Virtual Terminal — framebuffer + PTY + keyboard */
+    vt_init(info);
+
+    /* Hook virtio-input keyboard events to VT */
+    {
+        extern void virtio_input_set_callback(void (*)(uint16_t, uint16_t, int32_t));
+        extern void vt_input_cb(uint16_t type, uint16_t code, int32_t value);
+        virtio_input_set_callback(vt_input_cb);
     }
 
     /* Network — uses whatever NIC driver registered */

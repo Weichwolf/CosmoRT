@@ -1,3 +1,5 @@
 build/
 disk.img
 src/kernel/ktest_bin.h
+src/kernel/font_atlas.h
+fonts/*.ttf

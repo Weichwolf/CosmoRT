@@ -21,6 +21,8 @@
 #define FD_EVENTFD 8
 #define FD_TIMERFD 9
 #define FD_INOTIFY 10
+#define FD_PTY_MASTER 11
+#define FD_PTY_SLAVE  12
 
 /* Open flags (subset of POSIX) */
 #define O_RDONLY   0x0000

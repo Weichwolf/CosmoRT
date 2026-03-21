@@ -81,7 +81,10 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/drivers/hyperv/hyperv_fb.o \
            $(BUILD)/drivers/hyperv/hv_kbd.o \
            $(BUILD)/drivers/hyperv/hv_mouse.o \
-           $(BUILD)/drivers/hyperv/hv_utils.o
+           $(BUILD)/drivers/hyperv/hv_utils.o \
+           $(BUILD)/kernel/pty.o \
+           $(BUILD)/kernel/vt.o \
+           $(BUILD)/kernel/fb.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 

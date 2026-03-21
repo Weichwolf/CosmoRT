@@ -55,8 +55,8 @@ static void hv_kbd_callback(struct vmbus_channel *ch, void *ctx) {
         if (msg->type == HV_KBD_PROTO_EVENT && len >= (int)sizeof(struct hv_kbd_keystroke)) {
             struct hv_kbd_keystroke *key = (struct hv_kbd_keystroke *)buf;
             int up = key->info & 1;
-            (void)up;
-            /* Key events available for input subsystem integration */
+            extern void vt_keyboard_event_at(uint16_t make_code, int key_up);
+            vt_keyboard_event_at(key->make_code, up);
         }
     }
 }

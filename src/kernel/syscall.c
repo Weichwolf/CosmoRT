@@ -19,6 +19,8 @@
 #include "spinlock.h"
 #include "procfs.h"
 #include "epoll.h"
+#include "pty.h"
+#include "vt.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -112,6 +114,22 @@ static long do_write(int fd, const void *buf, size_t count) {
     }
     if (fde->type == FD_EVENTFD)
         return eventfd_write(fde->obj, buf, (long)count);
+    if (fde->type == FD_PTY_SLAVE) {
+        int pty_id = (int)(long)fde->obj;
+        uint8_t kbuf[256];
+        size_t pos = 0;
+        size_t actual = count > 0x10000 ? 0x10000 : count;
+        while (pos < actual) {
+            size_t chunk = actual - pos > 256 ? 256 : actual - pos;
+            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            int w = pty_slave_write(pty_id, (const char *)kbuf, (int)chunk);
+            if (w <= 0) break;
+            pos += (size_t)w;
+        }
+        /* Flush VT output for immediate rendering */
+        vt_flush(pty_id);
+        return (long)pos;
+    }
     return -EBADF;
 }
 
@@ -184,6 +202,14 @@ static long do_read(int fd, void *buf, size_t count) {
         return eventfd_read(fde->obj, buf, (long)count);
     if (fde->type == FD_TIMERFD)
         return timerfd_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_PTY_SLAVE) {
+        int pty_id = (int)(long)fde->obj;
+        uint8_t kbuf[256];
+        size_t want = count > 256 ? 256 : count;
+        int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
+        if (got > 0) kmemcpy(buf, kbuf, (size_t)got);
+        return got > 0 ? (long)got : (long)-EAGAIN;
+    }
     return -EBADF;
 }
 
@@ -735,6 +761,8 @@ static long do_close(int fd) {
     if (fde->type == FD_EVENTFD) { eventfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
     if (fde->type == FD_TIMERFD) { timerfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
     if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_PTY_MASTER || fde->type == FD_PTY_SLAVE)
+        return fd_close(&p->fds, fd);
     return fd_close(&p->fds, fd);
 }
 
@@ -1958,8 +1986,8 @@ static long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
         struct winsize *ws = (struct winsize *)arg;
-        ws->ws_row = 24;
-        ws->ws_col = 80;
+        ws->ws_row = (uint16_t)vt_rows();
+        ws->ws_col = (uint16_t)vt_cols();
         ws->ws_xpixel = 0;
         ws->ws_ypixel = 0;
         return 0;

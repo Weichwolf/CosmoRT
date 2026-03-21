@@ -27,4 +27,7 @@ int virtio_input_init(void);
 /* Non-blocking read. Returns 1 if event available, 0 if none. */
 int virtio_input_read(struct input_event *ev);
 
+/* Set callback for input events (called from IRQ context). */
+void virtio_input_set_callback(void (*cb)(uint16_t type, uint16_t code, int32_t value));
+
 #endif
