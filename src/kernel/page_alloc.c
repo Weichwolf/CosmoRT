@@ -16,8 +16,8 @@
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
 #define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB */
 
-/* 64GB direct-map cap (entry.asm maps 64 PD pages) */
-#define DIRECT_MAP_LIMIT (64ULL * 1024 * 1024 * 1024)
+/* 512 PDPT entries × 1GB = 512GB max (one PML4 entry). */
+#define DIRECT_MAP_MAX (512ULL * 1024 * 1024 * 1024)
 
 struct free_block {
     struct free_block *next;
@@ -194,8 +194,8 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         uint64_t phys = *(uint64_t *)(mmap + i * desc_size + 8);
         uint64_t pages = *(uint64_t *)(mmap + i * desc_size + 24);
         uint64_t end = phys + pages * PAGE_SIZE;
-        if (end > DIRECT_MAP_LIMIT) {
-            end = DIRECT_MAP_LIMIT;
+        if (end > DIRECT_MAP_MAX) {
+            end = DIRECT_MAP_MAX;
             truncated = 1;
         }
         uint64_t pfn = end >> PAGE_SHIFT;
@@ -223,7 +223,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         uint64_t region_size = pages * PAGE_SIZE;
         if (phys < 0x100000) continue; /* skip low memory */
         uint64_t end = phys + region_size;
-        if (end > DIRECT_MAP_LIMIT) end = DIRECT_MAP_LIMIT;
+        if (end > DIRECT_MAP_MAX) end = DIRECT_MAP_MAX;
         if (end <= phys) continue;
         if (end - phys >= bitmap_bytes) {
             bitmap_phys = phys;
@@ -255,7 +255,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         uint64_t end = phys + pages * PAGE_SIZE;
 
         if (phys < 0x100000) continue; /* skip low memory */
-        if (end > DIRECT_MAP_LIMIT) end = DIRECT_MAP_LIMIT;
+        if (end > DIRECT_MAP_MAX) end = DIRECT_MAP_MAX;
         if (end <= phys) continue;
 
         /* Skip bitmap area within this region */
@@ -290,7 +290,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     serial_puts(" pages\n");
 
     if (truncated)
-        serial_puts("buddy: WARNING — RAM above 64GB truncated (direct-map limit)\n");
+        serial_puts("buddy: WARNING — RAM above 512GB truncated (PDPT limit)\n");
 }
 
 void *page_alloc(void) {

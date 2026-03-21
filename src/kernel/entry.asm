@@ -57,11 +57,11 @@ kernel_entry:
 
     lidt [idt_ptr]
 
-    ; Set up identity-mapped page tables (64GB using 2MB pages)
-    ; Zero PML4 + PDPT + 64 PD pages = (512 + 512 + 32768) × 8 = 270336 bytes
+    ; Set up identity-mapped page tables (initial 8GB using 2MB pages)
+    ; Enough to boot. paging_init extends to cover all physical RAM.
     lea rdi, [rel pml4]
     xor eax, eax
-    mov ecx, (512 + 512 + 32768) * 2  ; qwords*2 = dwords
+    mov ecx, (512 + 512 + 4096) * 2
     rep stosd
 
     ; PML4[0] → PDPT
@@ -70,11 +70,11 @@ kernel_entry:
     or rax, 0x03
     mov [rdi], rax
 
-    ; PDPT[0..63] → 64 PD pages (64GB)
+    ; PDPT[0..7] → 8 PD pages (8GB, enough for boot)
     lea rdi, [rel pdpt]
     lea rax, [rel pd]
     or rax, 0x03
-    mov ecx, 64
+    mov ecx, 8
 .fill_pdpt:
     mov [rdi], rax
     add rdi, 8
@@ -82,10 +82,10 @@ kernel_entry:
     dec ecx
     jnz .fill_pdpt
 
-    ; Fill PD: 32768 entries × 2MB = 64GB
+    ; Fill PD: 4096 entries × 2MB = 8GB
     lea rdi, [rel pd]
     xor eax, eax
-    mov ecx, 32768
+    mov ecx, 4096
 .fill_pd:
     mov rdx, rax
     or rdx, 0x83            ; present + writable + PS (2MB)
@@ -229,7 +229,7 @@ align 4096
 global pml4, pdpt, pd
 pml4:   times 512 dq 0
 pdpt:   times 512 dq 0
-pd:     times 32768 dq 0   ; 64 PD pages: 64 × 512 entries = 64GB
+pd:     times 4096 dq 0    ; 8 PD pages for initial 8GB (extended by paging_init)
 
 ; ── AP support ───────────────────────────────────────
 global ap_go, ap_entry_addr, ap_stack_ptr, ap_cr3

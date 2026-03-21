@@ -51,15 +51,16 @@ void kernel_main(struct boot_info *info) {
     /* CPU feature detection (ERMS, AVX2) for memops */
     memops_init();
 
-    /* Page allocator — register ALL UEFI memory regions */
+    /* Extend direct map to cover ALL physical RAM (before page allocator) */
+    paging_init(info);
+
+    /* Page allocator — register ALL UEFI memory regions.
+     * Must run AFTER paging_init so phys_to_virt works for >8GB RAM. */
     page_alloc_init(0, 0);
     page_alloc_add_uefi_regions(
         phys_to_virt(info->mmap_addr),
         info->mmap_size,
         info->mmap_desc_size);
-
-    /* Page tables */
-    paging_init(info);
 
     /* Interrupts + Timer */
     irq_init();
