@@ -101,13 +101,20 @@ void kernel_main(struct boot_info *info) {
     extern void net_port_init(void);
     net_port_init();
 
-    /* VFS (ramfs) */
+    /* VFS (ramfs — replaced by CosmoFS on disk later) */
     vfs_init();
+    vfs_create("/home", VFS_DIR);
+    vfs_create("/home/Documents", VFS_DIR);
+    vfs_create("/home/Downloads", VFS_DIR);
+    vfs_create("/home/Pictures", VFS_DIR);
+    vfs_create("/home/Music", VFS_DIR);
+    vfs_create("/home/Videos", VFS_DIR);
+    vfs_create("/home/Projects", VFS_DIR);
     vfs_create("/tmp", VFS_DIR);
-    vfs_create("/dev", VFS_DIR);
-    vfs_create("/proc", VFS_DIR);
     vfs_create("/bin", VFS_DIR);
     vfs_create("/etc", VFS_DIR);
+    vfs_create("/dev", VFS_DIR);
+    vfs_create("/dev/shm", VFS_DIR);
 
     /* Futex subsystem (wait queue hash table + slab pool) */
     extern void futex_init(void);

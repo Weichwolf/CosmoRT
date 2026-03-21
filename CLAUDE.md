@@ -215,7 +215,32 @@ Ueber POSIX hinaus, fuer Multimedia-RT:
 ## Single-User
 
 Kein Multi-User. Kein root/sudo. Kein Permission-System.
-Capabilities statt File-Permissions.
+Capabilities statt File-Permissions. BeOS-Philosophie:
+ein Personal Computer ist persoenlich.
+
+### Filesystem-Layout
+
+```
+/                       CosmoFS auf virtio-blk (persistent)
+/home/                  $HOME (einziger User, kein /home/<name>)
+  Documents/
+  Downloads/
+  Pictures/
+  Music/
+  Videos/
+  Projects/
+  .config/              $XDG_CONFIG_HOME
+  .cache/               $XDG_CACHE_HOME
+  .local/               $XDG_DATA_HOME
+/tmp/                   CosmoFS (Disk, geloescht bei Boot)
+/bin/                   Binaries (statisch gelinkt, CosmoPX)
+/etc/                   Konfiguration
+/dev/                   Spezial-FDs: null, zero, urandom
+/dev/shm/               ramfs (Shared Memory fuer IPC, cl_ring)
+```
+
+$HOME=/home. getpwuid() liefert pw_dir="/home".
+Kein /usr, kein /var, kein /opt. Ein Baum, flach.
 
 ## Specs
 
