@@ -22,9 +22,12 @@ extern uint64_t pdpt[];
 #define PAGE_RAM  (PTE_PRESENT | PTE_WRITE | PTE_PS)
 #define PAGE_MMIO (PTE_PRESENT | PTE_WRITE | PTE_PS | PTE_PCD | PTE_PWT)
 
-/* All PD pages in BSS: 512 × 4KB = 2MB. Covers 512 × 1GB = 512GB.
- * No dynamic allocation, no carving, no conflicts with buddy. */
-static uint64_t all_pd[512][512] __attribute__((aligned(4096)));
+/* All PD pages in BSS: 2048 × 4KB = 8MB. Covers 2048 × 1GB = 2TB.
+ * 4 PML4 entries (256..259). No dynamic allocation. */
+#define MAX_PDPT_ENTRIES 2048
+static uint64_t all_pd[MAX_PDPT_ENTRIES][512] __attribute__((aligned(4096)));
+/* 4 PDPTs for 4 PML4 entries */
+static uint64_t all_pdpt[4][512] __attribute__((aligned(4096)));
 
 /* Exported reserved list (empty — no carving needed) */
 uint64_t paging_reserved_phys[PAGING_MAX_RESERVED];
@@ -38,18 +41,12 @@ static void serial_dec(uint64_t v) {
 
 void paging_map_2mb(uint64_t phys_addr) {
     uint64_t aligned = phys_addr & ~0x1FFFFFULL;
-    uint32_t pdpt_idx = (uint32_t)(aligned >> 30);
+    uint32_t global_pdpt = (uint32_t)(aligned >> 30);
     uint32_t pd_idx = (uint32_t)((aligned >> 21) & 0x1FF);
 
-    if (pdpt_idx >= 512) return;
+    if (global_pdpt >= MAX_PDPT_ENTRIES) return;
 
-    /* Ensure PDPT entry points to our static PD page */
-    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
-        uint64_t pd_phys = virt_to_phys(&all_pd[pdpt_idx][0]);
-        pdpt[pdpt_idx] = pd_phys | PTE_PRESENT | PTE_WRITE;
-    }
-
-    all_pd[pdpt_idx][pd_idx] = aligned | PAGE_MMIO;
+    all_pd[global_pdpt][pd_idx] = aligned | PAGE_MMIO;
 
     __asm__ volatile("invlpg (%0)" : : "r"(aligned) : "memory");
     __asm__ volatile("invlpg (%0)" : : "r"(aligned + PHYS_OFFSET) : "memory");
@@ -73,11 +70,13 @@ void paging_init(struct boot_info *info) {
     }
 
     uint32_t pdpt_needed = (uint32_t)((highest_phys + (1ULL << 30) - 1) >> 30);
-    if (pdpt_needed > 512) pdpt_needed = 512;
+    if (pdpt_needed < 8) pdpt_needed = 8; /* minimum 8GB for LAPIC/IOAPIC at ~4GB */
+    if (pdpt_needed > MAX_PDPT_ENTRIES) pdpt_needed = MAX_PDPT_ENTRIES;
+    uint32_t pml4_entries = (pdpt_needed + 511) / 512; /* 1 PML4 entry per 512GB */
+    if (pml4_entries > 4) pml4_entries = 4;
 
-    /* Copy initial 8 PD pages from entry.asm into our static array,
-     * then wire ALL PDPT entries to static all_pd pages. */
-    extern uint64_t pd[]; /* entry.asm initial 8 PD pages */
+    /* Copy initial 8 PD pages from entry.asm into our static array */
+    extern uint64_t pd[];
     for (uint32_t p = 0; p < 8 && p < pdpt_needed; p++) {
         for (int j = 0; j < 512; j++)
             all_pd[p][j] = pd[p * 512 + j];
@@ -91,11 +90,28 @@ void paging_init(struct boot_info *info) {
         }
     }
 
-    /* Wire PDPT entries to our static PD pages */
-    for (uint32_t p = 0; p < pdpt_needed; p++) {
-        uint64_t pd_phys = virt_to_phys(&all_pd[p][0]);
-        pdpt[p] = pd_phys | PTE_PRESENT | PTE_WRITE;
+    /* Build PDPTs and wire to PML4 entries.
+     * PML4[256] = first 512GB, PML4[257] = next 512GB, etc. */
+    for (uint32_t m = 0; m < pml4_entries; m++) {
+        /* Fill PDPT for this PML4 entry */
+        for (int p = 0; p < 512; p++) {
+            uint32_t global_pdpt = m * 512 + (uint32_t)p;
+            if (global_pdpt < pdpt_needed) {
+                all_pdpt[m][p] = virt_to_phys(&all_pd[global_pdpt][0])
+                                 | PTE_PRESENT | PTE_WRITE;
+            } else {
+                all_pdpt[m][p] = 0;
+            }
+        }
+        /* Wire PML4 entry (identity map + direct map) */
+        uint64_t pdpt_phys = virt_to_phys(&all_pdpt[m][0]);
+        pml4[m] = pdpt_phys | PTE_PRESENT | PTE_WRITE;         /* identity */
+        pml4[256 + m] = pdpt_phys | PTE_PRESENT | PTE_WRITE;   /* direct map */
     }
+
+    /* Keep entry.asm's original PDPT for PML4[0] and PML4[256]
+     * if we only need 1 PML4 entry (≤512GB). For >512GB, our
+     * all_pdpt replaces the entry.asm PDPT entirely. */
 
     /* Map all UEFI regions */
     uint64_t total_mapped = 0;

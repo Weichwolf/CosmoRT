@@ -16,8 +16,8 @@
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
 #define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB */
 
-/* 512 PDPT entries × 1GB = 512GB max (one PML4 entry). */
-#define DIRECT_MAP_MAX (512ULL * 1024 * 1024 * 1024)
+/* 2048 PDPT entries × 1GB = 2TB (4 PML4 entries). */
+#define DIRECT_MAP_MAX (2048ULL * 1024 * 1024 * 1024)
 
 struct free_block {
     struct free_block *next;
@@ -290,7 +290,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     serial_puts(" pages\n");
 
     if (truncated)
-        serial_puts("buddy: WARNING — RAM above 512GB truncated (PDPT limit)\n");
+        serial_puts("buddy: WARNING — RAM above 2TB truncated (direct-map limit)\n");
 }
 
 void *page_alloc(void) {
