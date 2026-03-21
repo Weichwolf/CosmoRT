@@ -28,6 +28,16 @@
 #include "ld_cosmo_bin.h"
 #endif
 
+/* Userspace E1000 driver (embedded, registered in VFS at /bin/e1000d) */
+#ifdef HAVE_E1000D
+#include "e1000d_bin.h"
+#endif
+
+/* Service manager (embedded, registered in VFS at /bin/svcmgr) */
+#ifdef HAVE_SVCMGR
+#include "svcmgr_bin.h"
+#endif
+
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
 uint64_t g_heap_size;
@@ -142,6 +152,16 @@ void kernel_main(struct boot_info *info) {
     vfs_create("/lib", VFS_DIR);
     vfs_add_file("/lib/ld-cosmo.so", ld_cosmo_bin, ld_cosmo_bin_size);
     serial_puts("vfs: /lib/ld-cosmo.so registered\n");
+#endif
+
+    /* Userspace driver binaries */
+#ifdef HAVE_E1000D
+    vfs_add_file("/bin/e1000d", e1000d_bin, e1000d_bin_size);
+    serial_puts("vfs: /bin/e1000d registered\n");
+#endif
+#ifdef HAVE_SVCMGR
+    vfs_add_file("/bin/svcmgr", svcmgr_bin, svcmgr_bin_size);
+    serial_puts("vfs: /bin/svcmgr registered\n");
 #endif
 
     /* Futex subsystem (wait queue hash table + slab pool) */

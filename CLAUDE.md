@@ -6,11 +6,46 @@ C11, x86/ARM/RISC-V. Mindesthardware: Intel N4020 (2 Cores).
 ## Stack
 
 ```
-CosmoPX (libc)    ~/Git/CosmoPX
+CosmoUI (HTML/CSS/JS/WASM)  ~/Git/CosmoUI   Native UI direkt auf RT
   |
-CosmoRT (Kernel)  dieses Repo
+CosmoCL (libc)               ~/Git/CosmoCL   POSIX libc + Userland
   |
-Hardware          x86/ARM/RISC-V
+CosmoRT (Kernel)             dieses Repo
+  |
+Hardware                     x86/ARM/RISC-V
+```
+
+## Drei Repos
+
+```
+~/Git/CosmoRT/     Kernel + Treiber (dieses Repo)
+                   Freestanding, UEFI Boot, kein libc
+                   Build: make → BOOTX64.EFI
+                   Test: make qemu (ktest in QEMU, 38 PASS)
+
+~/Git/CosmoCL/     C Library + Userland (POSIX-Plattform)
+                   libc, sh, coreutils, make, tar, gzip, toolchain, brew
+                   Build: make -C libc lib
+                   Test: make -C libc test (141 PASS)
+
+~/Git/CosmoUI/     Native UI (HTML/CSS/JS/WASM direkt auf CosmoRT)
+                   Renderer, JS-Engine, Codecs, Crypto, Text
+                   Protokoll-Stacks fuer Userspace-Treiber
+```
+
+Warum getrennt:
+- Verschiedene Build-Umgebungen (Freestanding vs Hosted)
+- Verschiedene Compiler-Flags (-ffreestanding vs -nostdinc)
+- Verschiedene Test-Infrastruktur (QEMU vs Host)
+- Verschiedene Release-Zyklen
+
+Integration ueber Build-Skript (nicht Monorepo):
+```sh
+make -C ~/Git/CosmoCL/libc lib           # libc bauen
+make -C ~/Git/CosmoCL/coreutils          # Userland bauen
+make -C ~/Git/CosmoCL/sh                 # Shell bauen
+make -C ~/Git/CosmoRT                    # Kernel bauen
+~/Git/CosmoRT/tools/mkfs disk.img        # Filesystem-Image
 ```
 
 ## Ausgangslage
@@ -23,17 +58,17 @@ Hardware          x86/ARM/RISC-V
 - Treiber: xHCI USB, E1000 Netzwerk, virtio Block
 - Browser, JS-Engine, Desktop (alles Ring 0)
 
-~/Git/CosmoPX/libc/ hat eine eigenstaendige POSIX libc (737 Symbole):
+~/Git/CosmoCL/libc/ hat eine eigenstaendige POSIX libc (737 Symbole):
 - Statische Binaries ohne glibc funktionieren
 - printf, malloc, pthreads, math, stat, time, errno — alles da
 - 141 musl libc-tests gruen
 
-~/Git/CosmoLib/ hat HTTP/TLS/Crypto/JSON/RegExp/etc.
+~/Git/CosmoUI/ hat HTTP/TLS/Crypto/JSON/RegExp/Codecs/Renderer/JS-Engine.
 
 ## Ziel
 
 CosmoRT = llmos Kernel-Core + POSIX-Syscall-Layer.
-Bootet in QEMU. Fuehrt statische CosmoPX-Binaries aus.
+Bootet in QEMU. Fuehrt statische CosmoCL-Binaries aus.
 
 Validierung: `/tmp/cosmo-sysroot/usr/bin/fetch https://example.com/`
 laeuft auf CosmoRT in QEMU und gibt HTML aus.
@@ -142,6 +177,7 @@ und Hot-Reload (Treiber neu starten ohne Reboot).
 
 Reine Software, keine Hardware-Abhaengigkeit, testbar in QEMU mit
 Mock-Backends. Einmal portieren, fuer alle Treiber wiederverwendbar.
+Leben in CosmoUI.
 
 | Stack | Linux-Quelle | Funktion |
 |---|---|---|
@@ -233,7 +269,7 @@ ein Personal Computer ist persoenlich.
   .cache/               $XDG_CACHE_HOME
   .local/               $XDG_DATA_HOME
 /tmp/                   CosmoFS (Disk, geloescht bei Boot)
-/bin/                   Binaries (statisch gelinkt, CosmoPX)
+/bin/                   Binaries (statisch gelinkt, CosmoCL)
 /etc/                   Konfiguration
 /dev/                   Spezial-FDs: null, zero, urandom
 /dev/shm/               ramfs (Shared Memory fuer IPC, cl_ring)
@@ -297,13 +333,13 @@ Kopiere aus ~/Git/llmos/src/ nach ~/Git/CosmoRT/src/:
 - src/kernel/serial.c — Debug-Output (Serial Console)
 - src/arch/ — Architektur-spezifischer Code
 
-**NICHT kopieren (wird Userspace):**
-- src/browser/ — wird CosmoUI
-- src/js/ — wird CosmoJS
-- src/gfx/ — wird CosmoLib/CosmoUI
-- src/crypto/ — wird CosmoLib
-- src/kernel/https.c, http_parse.c, net.c — wird CosmoLib
-- src/kernel/agent.c — wird CosmoJS App
+**NICHT kopieren (wird CosmoUI):**
+- src/browser/ — Renderer
+- src/js/ — JS-Engine
+- src/gfx/ — Grafik
+- src/crypto/ — Crypto
+- src/kernel/https.c, http_parse.c, net.c — Netzwerk-Protokolle
+- src/kernel/agent.c — wird CosmoUI App
 - src/kernel/objstore.c — wird Userspace-Service
 - src/drivers/ — bleibt erstmal, wird spaeter Userspace
 
@@ -351,7 +387,7 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
 
 ## Phase 3: ELF-Loader
 
-Lade statische ELF-Binaries (CosmoPX-kompiliert) in den Userspace:
+Lade statische ELF-Binaries (CosmoCL-kompiliert) in den Userspace:
 
 ```c
 // src/kernel/elf.c
@@ -406,7 +442,7 @@ Kein Installer, kein Setup. Image bauen → booten → arbeiten.
 /bin/ar,nm,strip    Binutils (from scratch + aus Brew)
 /bin/ruby           Ruby (aus Brew, fuer CosmoBrew PM)
 /bin/brew           CosmoBrew Package-Manager
-/lib/libc.a         CosmoPX libc (statisch)
+/lib/libc.a         CosmoCL libc (statisch)
 /lib/libstdc++.a    C++ Standard Library
 /lib/libz.a         zlib
 /lib/libssl.a       OpenSSL
@@ -462,33 +498,33 @@ int main(void) {
 #!/bin/sh
 # Baut das komplette CosmoOS-Image
 COSMO=~/Git
-PX=$COSMO/CosmoPX
+CL=$COSMO/CosmoCL
 RT=$COSMO/CosmoRT
-PREFIX=$PX/brew/prefix
+PREFIX=$CL/brew/prefix
 
-# 1. CosmoPX Userland bauen
-make -C $PX/libc lib
-make -C $PX/sh
-make -C $PX/coreutils
-make -C $PX/fileutils
-make -C $PX/buildutils
-make -C $PX/toolchain
+# 1. CosmoCL Userland bauen
+make -C $CL/libc lib
+make -C $CL/sh
+make -C $CL/coreutils
+make -C $CL/fileutils
+make -C $CL/buildutils
+make -C $CL/toolchain
 
 # 2. Brew-Pakete bauen (bash, gcc, ruby, etc.)
-sh $PX/brew/bootstrap.sh
+sh $CL/brew/bootstrap.sh
 
 # 3. CosmoFS-Image erstellen
 $RT/tools/mkfs disk.img 256M    # 256MB Image
 
 # 4. Dateien ins Image kopieren
-$RT/tools/cosmo_cp disk.img $PX/sh/build/sh /bin/sh
+$RT/tools/cosmo_cp disk.img $CL/sh/build/sh /bin/sh
 $RT/tools/cosmo_cp disk.img $PREFIX/bin/bash /bin/bash
-for tool in $PX/coreutils/build/*; do
+for tool in $CL/coreutils/build/*; do
     $RT/tools/cosmo_cp disk.img $tool /bin/$(basename $tool)
 done
-$RT/tools/cosmo_cp disk.img $PX/fileutils/build/tar /bin/tar
-$RT/tools/cosmo_cp disk.img $PX/fileutils/build/gzip /bin/gzip
-$RT/tools/cosmo_cp disk.img $PX/buildutils/build/make /bin/make
+$RT/tools/cosmo_cp disk.img $CL/fileutils/build/tar /bin/tar
+$RT/tools/cosmo_cp disk.img $CL/fileutils/build/gzip /bin/gzip
+$RT/tools/cosmo_cp disk.img $CL/buildutils/build/make /bin/make
 # GCC, Ruby, Libraries, Headers...
 
 # 5. /etc/profile
@@ -520,49 +556,11 @@ Werden SPAETER in den Userspace verschoben (Microkernel-Ziel).
 2. [x] ELF-Loader laedt statische Binary
 3. [x] "Hello World" (write + exit) laeuft
 4. [x] malloc (brk/mmap) funktioniert
-5. [x] CosmoPX printf-Binary laeuft
+5. [x] CosmoCL printf-Binary laeuft
 6. [x] Netzwerk (TCP/IP + E1000)
 7. [ ] CosmoOS bootet in Bash mit gcc + brew vorinstalliert
 8. [ ] CosmoOS bootet in Hyper-V
 9. [ ] Claude Code laeuft auf CosmoOS
-
-## Repo-Struktur
-
-CosmoOS ist drei getrennte Repos. Nicht zusammenfuehren.
-
-```
-~/Git/CosmoRT/     Kernel (dieses Repo)
-                   Freestanding, UEFI Boot, kein libc
-                   Build: make → BOOTX64.EFI
-                   Test: make qemu (ktest in QEMU, 38 PASS)
-
-~/Git/CosmoPX/     Userland (POSIX-Plattform)
-                   libc, sh, coreutils, make, tar, gzip, toolchain, brew
-                   Build: make -C libc lib
-                   Test: make -C libc test (141 PASS)
-
-~/Git/CosmoLib/    Convenience-Library
-                   HTTP, TLS, Crypto, JSON, RegExp
-                   Wird von Apps genutzt, nicht vom Kernel
-```
-
-Warum getrennt:
-- Verschiedene Build-Umgebungen (Freestanding vs Hosted)
-- Verschiedene Compiler-Flags (-ffreestanding vs -nostdinc)
-- Verschiedene Test-Infrastruktur (QEMU vs Host)
-- Verschiedene Release-Zyklen
-
-Integration ueber Build-Skript (nicht Monorepo):
-```sh
-# ~/Git/CosmoOS/build.sh (oder in CosmoRT Makefile)
-make -C ~/Git/CosmoPX/libc lib           # libc bauen
-make -C ~/Git/CosmoPX/coreutils          # Userland bauen
-make -C ~/Git/CosmoPX/sh                 # Shell bauen
-make -C ~/Git/CosmoRT                    # Kernel bauen
-~/Git/CosmoRT/tools/mkfs disk.img        # Filesystem-Image
-# → packe Kernel + Userland-Binaries in QEMU/Hyper-V Image
-# → qemu-system-x86_64 ... oder Hyper-V VM starten
-```
 
 ## Regeln
 

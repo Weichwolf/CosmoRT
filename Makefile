@@ -116,7 +116,7 @@ $(SRC)/kernel/init_bin.h: $(BUILD)/user/init
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h
+init-bin: $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h
 
 # ── Dynamic linker (ld-cosmo.so, embedded in kernel) ──
 $(BUILD)/user/ld-cosmo.o: $(SRC)/user/ld-cosmo.c | $(BUILD)/user
@@ -136,6 +136,42 @@ $(SRC)/kernel/ld_cosmo_bin.h: $(BUILD)/user/ld-cosmo
 	print('};'); \
 	print('static const unsigned long ld_cosmo_bin_size = %d;' % len(data))" > $@
 	@echo "ld_cosmo_bin.h: $$(wc -c < $<) bytes"
+
+# ── E1000 userspace driver (embedded in kernel) ──
+$(BUILD)/user/e1000d.o: $(SRC)/user/e1000d.c | $(BUILD)/user
+	$(CC) $(UCFLAGS) -c -o $@ $<
+
+$(BUILD)/user/e1000d: $(BUILD)/user/e1000d.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+
+$(SRC)/kernel/e1000d_bin.h: $(BUILD)/user/e1000d
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated e1000d binary (%d bytes) */' % len(data)); \
+	print('static const unsigned char e1000d_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long e1000d_bin_size = %d;' % len(data))" > $@
+	@echo "e1000d_bin.h: $$(wc -c < $<) bytes"
+
+# ── Service manager (embedded in kernel) ─────────
+$(BUILD)/user/svcmgr.o: $(SRC)/user/svcmgr.c | $(BUILD)/user
+	$(CC) $(UCFLAGS) -c -o $@ $<
+
+$(BUILD)/user/svcmgr: $(BUILD)/user/svcmgr.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+
+$(SRC)/kernel/svcmgr_bin.h: $(BUILD)/user/svcmgr
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated svcmgr binary (%d bytes) */' % len(data)); \
+	print('static const unsigned char svcmgr_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long svcmgr_bin_size = %d;' % len(data))" > $@
+	@echo "svcmgr_bin.h: $$(wc -c < $<) bytes"
 
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
@@ -248,9 +284,9 @@ $(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
 $(BUILD)/drivers/blk/%.o: $(SRC)/drivers/blk/%.c | $(BUILD)/drivers/blk
 	$(CC) $(KCFLAGS) -I$(SRC)/drivers/blk -o $@ $<
 
-# main.o depends on init_bin.h and ld_cosmo_bin.h
-$(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h | $(BUILD)/kernel
-	$(CC) $(KCFLAGS) -DHAVE_LD_COSMO -o $@ $<
+# main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
+$(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h | $(BUILD)/kernel
+	$(CC) $(KCFLAGS) -DHAVE_LD_COSMO -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -329,5 +365,5 @@ test-boot-disk: $(ESP_IMG) disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h
+	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h
 	rm -f tools/mkfs disk.img
