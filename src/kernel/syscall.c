@@ -13,6 +13,7 @@
 #include "vfs.h"
 #include "memops.h"
 #include "socket.h"
+#include "hw.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -1128,6 +1129,37 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_FCNTL:  return -ENOSYS;
     case SYS_PIPE2:  return -ENOSYS;
     case SYS_READV:  return -ENOSYS;
+
+    /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
+    case SYS_COSMO_MMIO_MAP: {
+        if (!user_ok(a3, 8)) return -EFAULT;
+        void *virt;
+        int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
+        if (r == 0) *(void **)a3 = virt;
+        return r;
+    }
+    case SYS_COSMO_DMA_ALLOC: {
+        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
+        void *virt; uint64_t phys;
+        int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
+        if (r == 0) { *(void **)a2 = virt; *(uint64_t *)a3 = phys; }
+        return r;
+    }
+    case SYS_COSMO_DMA_FREE:
+        cosmo_dma_free((void *)a1, (size_t)a2);
+        return 0;
+    case SYS_COSMO_IRQ_REGISTER:
+        return cosmo_irq_register((int)a1, (void (*)(void *))a2, (void *)a3);
+    case SYS_COSMO_PCI_READ: {
+        if (!user_ok(a4, 4)) return -EFAULT;
+        return cosmo_pci_config_read((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t *)a5);
+    }
+    case SYS_COSMO_PCI_WRITE:
+        return cosmo_pci_config_write((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t)a5);
+    case SYS_COSMO_FW_LOAD: {
+        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
+        return cosmo_fw_load((const char *)a1, (void **)a2, (size_t *)a3);
+    }
 
     default:
         serial_puts("syscall: unhandled #");

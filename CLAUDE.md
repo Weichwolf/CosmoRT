@@ -130,7 +130,13 @@ int cosmo_fw_load(const char *name, void **data, size_t *len);
 
 Das ist die GESAMTE Hardware-Abstraktion. Kernel macht das Mapping,
 Treiber machen den Zugriff. Kein Syscall pro Register-Zugriff.
-Spaeter werden die 5 Primitives zu Syscalls → Treiber in Userspace.
+
+Die 5 Primitives sind als Syscalls registriert (SYS_COSMO_MMIO_MAP
+bis SYS_COSMO_FW_LOAD, Nummern 512-518). Treiber koennen als
+Kernel-Module ODER als Userspace-Prozesse laufen — gleicher Code,
+gleiche API. Userspace-Treiber ermoeglichen Crash-Isolation
+(Treiber-Bug killt nur den Treiber-Prozess, nicht den Kernel)
+und Hot-Reload (Treiber neu starten ohne Reboot).
 
 ### Userspace: Protokoll-Stacks (portiert von Linux)
 

@@ -90,6 +90,15 @@
 #define SYS_CLOCK_GETRES      229
 #define SYS_CLOCK_NANOSLEEP   230
 
+/* CosmoRT hardware primitives (non-POSIX, for userspace drivers) */
+#define SYS_COSMO_MMIO_MAP       512
+#define SYS_COSMO_DMA_ALLOC      513
+#define SYS_COSMO_DMA_FREE       514
+#define SYS_COSMO_IRQ_REGISTER   515
+#define SYS_COSMO_PCI_READ       516
+#define SYS_COSMO_PCI_WRITE      517
+#define SYS_COSMO_FW_LOAD        518
+
 /* mmap flags */
 #define MAP_FIXED     0x10
 #define MAP_ANONYMOUS 0x20
