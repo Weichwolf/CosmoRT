@@ -88,6 +88,29 @@ vma_t *vma_find(vma_t *root, uint64_t addr) {
     return 0;
 }
 
+/* ── Find overlap ────────────────────────────────── */
+
+/* Find any VMA overlapping [start, end). AVL tree is keyed by vma->start.
+ * A VMA overlaps if vma->start < end && vma->end > start. */
+vma_t *vma_find_overlap(vma_t *root, uint64_t start, uint64_t end) {
+    if (!root) return 0;
+    /* If this node overlaps, return it */
+    if (root->start < end && root->end > start)
+        return root;
+    /* If left subtree might contain an overlap (left nodes have start < root->start,
+     * but their end could extend into [start, end)) — check left if start < root->start */
+    if (root->left && start < root->start) {
+        vma_t *r = vma_find_overlap(root->left, start, end);
+        if (r) return r;
+    }
+    /* Check right subtree if range extends past this node */
+    if (root->right && end > root->start) {
+        vma_t *r = vma_find_overlap(root->right, start, end);
+        if (r) return r;
+    }
+    return 0;
+}
+
 /* ── Insert ──────────────────────────────────────── */
 
 static vma_t *insert_node(vma_t *root, vma_t *node) {

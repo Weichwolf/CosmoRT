@@ -106,8 +106,11 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage);
 void proc_cleanup(process_t *p);
 void free_address_space(uint64_t *pml4);
 
-/* Find process by PID */
+/* Find process by PID — O(1) via pid_table */
 process_t *proc_find(uint32_t pid);
+
+/* Find thread by TID — O(1) via tid_table */
+thread_t *thread_find_by_tid(int tid);
 
 /* Legacy compat for sched.c — maps to thread operations */
 #define proc_return_to_kernel(slot) thread_return_to_kernel(percpu_self()->current_thread)

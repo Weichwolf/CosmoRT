@@ -66,16 +66,6 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
 
 /* ── Helpers ────────────────────────────────────── */
 
-static thread_t *find_thread_by_tid(int tid) {
-    for (int i = 0; i < THREAD_MAX; i++) {
-        if (thread_pool[i].state != THREAD_FREE &&
-            thread_pool[i].state != THREAD_DEAD &&
-            thread_pool[i].tid == tid)
-            return &thread_pool[i];
-    }
-    return 0;
-}
-
 /* Boost owner's priority to at least `prio`. */
 static void pi_boost(thread_t *owner, int prio) {
     if (!owner) return;
@@ -206,7 +196,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
     /* Contended: boost owner, then spin-yield */
     uint32_t owner_tid = old & FUTEX_TID_MASK;
-    thread_t *owner = find_thread_by_tid((int)owner_tid);
+    thread_t *owner = thread_find_by_tid((int)owner_tid);
     pi_boost(owner, self->priority);
 
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */

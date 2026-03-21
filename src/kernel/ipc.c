@@ -13,22 +13,12 @@
 
 extern void sched_add(thread_t *t);
 
-/* Find thread by tid across all pools */
-static thread_t *ipc_find_thread(int tid) {
-    if (tid < 0) return 0;
-    for (int i = 0; i < THREAD_MAX; i++) {
-        if (thread_pool[i].state != THREAD_FREE &&
-            thread_pool[i].state != THREAD_DEAD &&
-            thread_pool[i].tid == tid)
-            return &thread_pool[i];
-    }
-    return 0;
-}
+/* Thread lookup — delegated to process.c O(1) tid_table */
 
 /* Wake a thread blocked on IPC receive */
 static void ipc_wake_receiver(ipc_endpoint_t *ep) {
     if (ep->blocked_tid > 0) {
-        thread_t *t = ipc_find_thread(ep->blocked_tid);
+        thread_t *t = thread_find_by_tid(ep->blocked_tid);
         if (t && t->state == THREAD_BLOCKED)
             sched_add(t);
         ep->blocked_tid = -1;
