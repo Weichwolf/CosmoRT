@@ -2,7 +2,7 @@
 
 Stand: 2026-03-21.
 
-ktest Ergebnis: 36 PASS, 0 FAIL, 1 SKIP (getrandom auf qemu64 ohne RDRAND).
+ktest Ergebnis: 38 PASS, 0 FAIL, 0 SKIP.
 
 ---
 
@@ -41,9 +41,8 @@ Erledigt: sti nach Frame-Save verschoben (61762fa).
 Hardcoded `PTE_PRESENT | PTE_WRITE | PTE_USER`. NX-Bit nie gesetzt.
 Read-only VMAs sind schreibbar. W^X Violation.
 
-### ASLR mit RDTSC
-`aslr_rand()` nutzt RDTSC — vorhersagbar. Sollte RDRAND nutzen
-(wenn CPUID-Bug gefixt).
+### ~~ASLR mit RDTSC~~
+Erledigt: `aslr_rand()` nutzt jetzt ChaCha20 CSPRNG (random.c).
 
 ### user_ok(path, 1) prueft nur erstes Byte
 String-Pointer-Validation prueft nicht die gesamte String-Laenge.
@@ -138,3 +137,6 @@ Shell → configure → make → GCC → Ruby → Homebrew.
 - [x] VFS read #GP: ELF-Loader Stack-Alignment (16n+8 statt 16n)
 - [x] getrandom: RDRAND-Erkennung in memops_init (NASM)
 - [x] fork Race: Parent-Threads stoppen waehrend copy_address_space
+- [x] ChaCha20 CSPRNG (random.c — kein RDRAND noetig, 6 Entropie-Quellen)
+- [x] ASLR via CSPRNG statt RDTSC
+- [x] getrandom immer verfuegbar (38 PASS, 0 SKIP)

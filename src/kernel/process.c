@@ -160,8 +160,11 @@ fd_entry_t *fd_get(fd_table_t *fdt, int fd) {
 
 /* ── Process creation ───────────────────────────── */
 
-/* Simple PRNG from RDTSC for ASLR */
+/* ASLR via kernel CSPRNG, fallback to RDTSC before init */
 static uint64_t aslr_rand(void) {
+    uint64_t r;
+    extern int random_get(void *buf, size_t len);
+    if (random_get(&r, sizeof(r)) == 0) return r;
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;

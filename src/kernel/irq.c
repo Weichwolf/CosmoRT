@@ -260,6 +260,8 @@ static volatile uint64_t tick_count = 0;
 static void timer_handler(int vector) {
     (void)vector;
     __sync_fetch_and_add(&tick_count, 1); /* atomic for SMP */
+    extern void random_add_interrupt_entropy(void);
+    random_add_interrupt_entropy();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

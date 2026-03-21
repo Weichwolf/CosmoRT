@@ -19,6 +19,7 @@
 #include "vfs.h"
 #include "net.h"
 #include "hw.h"
+#include "random.h"
 
 #include "init_bin.h"
 
@@ -72,6 +73,7 @@ void kernel_main(struct boot_info *info) {
     /* Interrupts + Timer */
     irq_init();
     timer_init();
+    random_init(info);
 
     /* TSS + SYSCALL */
     extern void tss_init(void);

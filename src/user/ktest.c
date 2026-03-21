@@ -232,13 +232,7 @@ static void test_random(void) {
     puts("\n[Random]\n");
     uint8_t buf[16] = {0};
     long r = sc3(SYS_getrandom, (long)buf, 16, 0);
-    if (r == -5) {
-        /* -EIO: RDRAND not available (e.g., qemu64 without -cpu max) */
-        puts("  SKIP  getrandom (no RDRAND on this CPU)\n");
-        return;
-    }
     check_val("getrandom returns 16", r, 16);
-    /* Check that at least some bytes are non-zero (probabilistic) */
     int nonzero = 0;
     for (int i = 0; i < 16; i++)
         if (buf[i]) nonzero++;

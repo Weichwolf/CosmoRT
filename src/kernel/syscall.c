@@ -648,19 +648,8 @@ static long do_uname(struct utsname *buf) {
 static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
     (void)flags;
     if (!user_ok((uint64_t)buf, buflen)) return -EFAULT;
-    if (!memops_has_rdrand) return -EIO;
-
-    uint8_t *p = (uint8_t *)buf;
-    for (size_t i = 0; i < buflen; i += 8) {
-        uint64_t r;
-        int ok = 0;
-        for (int t = 0; t < 10 && !ok; t++)
-            __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-        if (!ok) return -EIO;
-        size_t n = buflen - i < 8 ? buflen - i : 8;
-        for (size_t j = 0; j < n; j++)
-            p[i + j] = (uint8_t)(r >> (j * 8));
-    }
+    extern int random_get(void *buf, size_t len);
+    if (random_get(buf, buflen) < 0) return -EIO;
     return (long)buflen;
 }
 
