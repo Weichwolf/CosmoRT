@@ -203,7 +203,37 @@ Schuetzt auch gegen korrupte Builds (Hash stimmt nicht).
 
 ---
 
-## P11 — Virtio Transport + Treiber (QEMU/KVM komplett)
+## P11 — Netzwerk Zero-Config
+
+Personal OS: Netzwerk muss einfach funktionieren. Keine Konfiguration.
+Kabel rein oder WLAN verbinden → Netz laeuft.
+
+### Automatisch bei jedem Boot
+
+```
+IPv4:       DHCP Client (~300 Zeilen)
+IPv6:       SLAAC Stateless Autoconfiguration (~200 Zeilen)
+Link-Local: 169.254.x.x / fe80:: (immer, auch ohne Router)
+DNS:        DHCP Option 6 (automatisch)
+Hostname:   mDNS .local — cosmo-XXXX.local
+            XXXX = letzte 4 Hex der MAC-Adresse
+            MAC 52:54:00:12:34:56 → cosmo-3456.local
+            Eindeutig im LAN, auch bei mehreren CosmoOS-Rechnern
+```
+
+### Kein
+
+- /etc/network/interfaces
+- NetworkManager / systemd-networkd
+- ip addr add / ifconfig
+- Manuelle DNS-Konfiguration
+
+Einzige User-Interaktion: WLAN-Passwort eingeben. Alles andere
+ist Maschinenarbeit.
+
+---
+
+## P12 — Virtio Transport + Treiber (QEMU/KVM)
 
 Gemeinsamer virtio-pci Transport-Layer (aus virtio-blk extrahieren),
 dann alle Geraete als duenne Adapter.
@@ -236,7 +266,7 @@ Fehlen:
 
 ---
 
-## P12 — Hyper-V Support (Primaere Entwicklungsplattform)
+## P13 — Hyper-V Support (Primaere Entwicklungsplattform)
 
 CosmoRT soll direkt in Hyper-V/WSL2 laufen. Hyper-V nutzt nicht
 virtio sondern VMBus (Ring-Buffer + Hypercalls). Komplett eigenes
@@ -298,22 +328,22 @@ Initialisierung:
 ### Reihenfolge (schnellster Weg zu laufendem Hyper-V)
 
 ```
-12.1 Hyper-V Detection + Enlightenments (CPUID, MSRs)     ~200 Zeilen
-12.2 SynIC Setup (Synthetic Interrupts)                    ~200 Zeilen
-12.3 Hypercall Page + HvPostMessage                        ~100 Zeilen
-12.4 VMBus Init + Channel Open                             ~500 Zeilen
-12.5 storvsc (Block-Device → CosmoFS)                      ~500 Zeilen
+13.1 Hyper-V Detection + Enlightenments (CPUID, MSRs)     ~200 Zeilen
+13.2 SynIC Setup (Synthetic Interrupts)                    ~200 Zeilen
+13.3 Hypercall Page + HvPostMessage                        ~100 Zeilen
+13.4 VMBus Init + Channel Open                             ~500 Zeilen
+13.5 storvsc (Block-Device → CosmoFS)                      ~500 Zeilen
      → CosmoRT bootet in Hyper-V mit Disk
-12.6 netvsc + RNDIS (Netzwerk)                             ~500 Zeilen
+13.6 netvsc + RNDIS (Netzwerk)                             ~500 Zeilen
      → Netzwerk funktioniert
-12.7 hyperv_fb (Display)                                   ~400 Zeilen
-12.8 hv_kbd + hv_mouse (Input)                             ~400 Zeilen
+13.7 hyperv_fb (Display)                                   ~400 Zeilen
+13.8 hv_kbd + hv_mouse (Input)                             ~400 Zeilen
      → Interaktives CosmoOS in Hyper-V
-12.9 hv_utils (Heartbeat, Shutdown)                        ~300 Zeilen
+13.9 hv_utils (Heartbeat, Shutdown)                        ~300 Zeilen
      → Sauberes Herunterfahren via Hyper-V Manager
 ```
 
-Gesamt: ~3100 Zeilen. Davon sind 12.1-12.5 (~1500 Zeilen) der
+Gesamt: ~3100 Zeilen. Davon sind 13.1-13.5 (~1500 Zeilen) der
 minimale Pfad zum bootfaehigen CosmoRT in Hyper-V.
 
 ### Abstraktion
@@ -334,10 +364,11 @@ Kein CPUID Match? → PCI Scan → virtio-Treiber laden.
 ```
 Prio 1 (jetzt):
   P6  Signal User-Handler     → Ruby/Node.js auf CosmoRT
-  P12 Hyper-V Support         → Primaere Entwicklungsplattform
+  P13 Hyper-V Support         → Primaere Entwicklungsplattform
 
 Prio 2 (wenn Hyper-V laeuft):
-  P11 Virtio-Treiber          → Volle QEMU/KVM-Unterstuetzung
+  P11 Netzwerk Zero-Config    → DHCP/SLAAC/mDNS, cosmo-XXXX.local
+  P12 Virtio-Treiber          → Volle QEMU/KVM-Unterstuetzung
   P7  Dynamischer Linker      → Hot-Reload fuer Claude Code
   P8  Userspace-Treiber       → Crash-Isolation, Hot-Reload
 
@@ -347,7 +378,7 @@ Prio 3 (wenn CosmoOS produktiv ist):
 ```
 
 Schnellster Weg zu "CosmoOS in Hyper-V mit Claude Code":
-P6 (Signale) → P12.1-12.5 (Boot) → P12.6 (Netz) → Node.js → Claude Code
+P6 (Signale) → P13.1-13.5 (Boot) → P13.6 (Netz) → Node.js → Claude Code
 
 ---
 
