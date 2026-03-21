@@ -1,9 +1,64 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-21.
+Stand: 2026-03-21. Audit durchgefuehrt.
 
-ktest: 51 PASS, 0 FAIL, 0 SKIP.
-94 Syscalls implementiert. CosmoFS persistent auf virtio-blk.
+ktest: 51 PASS, 0 FAIL, 0 SKIP. 20K LOC.
+P0-P12 erledigt. Kein Polling (IRQ-driven).
+
+---
+
+## Audit-Ergebnisse (7 SEC-HIGH, 3 PERF-HIGH)
+
+### SEC-HIGH: Sofort fixen
+
+1. **pages_alloc/pages_free ohne Lock** (page_alloc.c:81,105)
+   Bitmap-Corruption bei concurrent DMA + Demand Paging.
+
+2. **HW-Primitives ohne Capability** (syscall.c:1763, hw.c:20)
+   Jeder Prozess kann MMIO/DMA/IRQ — volle System-Kompromittierung.
+   Fix: Nur Prozesse mit Driver-Capability duerfen 512-519 aufrufen.
+
+3. **TOCTOU auf User-Pointern** (syscall.c:114,1131,1150; socket.c:78)
+   do_writev, do_rt_sigaction, do_rt_sigprocmask, do_connect lesen
+   User-Memory nach Validation. CLONE_VM-Thread kann aendern.
+   Fix: In Kernel-Buffer kopieren vor Nutzung.
+
+4. **kexec ohne user_ok** (kexec.c:231)
+   kmemcpy direkt von User-Pointer. Fix: user_ok(image, len).
+
+5. **Signal-Frame ohne VMA-Check** (syscall.c:969)
+   deliver_signal schreibt auf User-Stack ohne zu pruefen ob die
+   Adresse in einer schreibbaren VMA liegt.
+
+6. **ELF e_phentsize nicht validiert** (elf.c:34)
+   e_phentsize=0 → Endlosschleife. Fix: >= sizeof(Elf64_Phdr).
+
+### PERF-HIGH: Naechste Iteration
+
+1. **page_alloc O(n) unter globalem Lock** (page_alloc.c:50)
+   Jede Page-Allokation scannt Bitmap von Bit 0.
+   Fix: Next-fit Hint + 64-bit Scan mit __builtin_ctzll.
+
+2. **pages_alloc O(n*m)** (page_alloc.c:83)
+   Kein Skip-Ahead. Fix: Hint + Bulk-Scan.
+
+3. **futex_lock_pi 10K Spin** (futex.c:215)
+   Busy-wait ohne Yield. Fix: Nach N Spins Thread blockieren.
+
+### SEC-MED + PERF-MED (17 Stueck)
+
+- do_sched_setscheduler/setparam: kein Priority-Bounds-Check
+- fork: laufende Threads nicht gestoppt (Running-State Race)
+- proc_cleanup: FD_SOCKET/FD_PIPE nicht freigegeben
+- IPC: globaler Lock statt per-Endpoint
+- sched_rebalance in IRQ-Kontext (zu viel Arbeit)
+- vma_find_free: 16KB Stack-Allokation
+- net_http_get: 512B Buffer ohne Laengencheck
+- e1000_send: Busy-wait fuer TX-Completion
+- slab_free: keine Pool-Zugehoerigkeitspruefung
+- percpu_self: LAPIC MMIO-Read pro Syscall
+
+Vollstaendiger Report: audit_2026-03-21.md (auf Anfrage)
 
 ---
 
