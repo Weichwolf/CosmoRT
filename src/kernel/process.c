@@ -46,6 +46,12 @@ static int next_pid = 1;
 static int next_tid = 1;
 static spinlock_t pid_lock = SPINLOCK_INIT;
 
+/* O(1) lookup tables — indexed by PID/TID, entries set at alloc, cleared at free */
+#define PID_TABLE_MAX 256
+#define TID_TABLE_MAX 512
+static process_t *pid_table[PID_TABLE_MAX];
+static thread_t  *tid_table[TID_TABLE_MAX];
+
 extern uint64_t pml4[]; /* kernel page table from entry.asm */
 
 void proc_init(void) {
@@ -60,13 +66,18 @@ thread_t *thread_alloc(void) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         t->tid = next_tid++;
+        if (t->tid < TID_TABLE_MAX)
+            tid_table[t->tid] = t;
         spin_unlock_irq(&pid_lock, flags);
     }
     return t;
 }
 
 void thread_free(thread_t *t) {
-    if (t && t->kstack)
+    if (!t) return;
+    if (t->tid > 0 && t->tid < TID_TABLE_MAX)
+        tid_table[t->tid] = 0;
+    if (t->kstack)
         pages_free(t->kstack, KSTACK_SIZE / 4096);
     slab_free(&thread_slab, t);
 }
@@ -77,6 +88,8 @@ static process_t *proc_alloc(void) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         p->pid = (uint32_t)next_pid++;
+        if (p->pid < PID_TABLE_MAX)
+            pid_table[p->pid] = p;
         spin_unlock_irq(&pid_lock, flags);
         p->state = PROC_ALIVE;
     }
@@ -368,13 +381,22 @@ void proc_yield(void) {
     /* no-op in kernel context */
 }
 
-/* ── Process lookup ──────────────────────────────── */
+/* ── Process lookup — O(1) via pid_table ─────────── */
 
 process_t *proc_find(uint32_t pid) {
-    for (int i = 0; i < PROC_MAX; i++) {
-        if (proc_pool[i].state != PROC_FREE && proc_pool[i].pid == pid)
-            return &proc_pool[i];
-    }
+    if (pid == 0 || pid >= PID_TABLE_MAX) return 0;
+    process_t *p = pid_table[pid];
+    if (p && p->state != PROC_FREE && p->pid == pid) return p;
+    return 0;
+}
+
+/* ── Thread lookup — O(1) via tid_table ──────────── */
+
+thread_t *thread_find_by_tid(int tid) {
+    if (tid <= 0 || tid >= TID_TABLE_MAX) return 0;
+    thread_t *t = tid_table[tid];
+    if (t && t->state != THREAD_FREE && t->state != THREAD_DEAD && t->tid == tid)
+        return t;
     return 0;
 }
 
@@ -529,6 +551,10 @@ void proc_cleanup(process_t *p) {
     /* Free VMAs */
     vma_free_tree(p->vma_root);
     p->vma_root = 0;
+
+    /* Clear lookup table entry */
+    if (p->pid < PID_TABLE_MAX)
+        pid_table[p->pid] = 0;
 
     /* Free process struct */
     slab_free(&proc_slab, p);

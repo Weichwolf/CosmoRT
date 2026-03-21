@@ -235,27 +235,33 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     for (;;) {
         net_poll();
 
-        int nready = 0;
+        /* Snapshot entries under lock, then scan without lock held.
+         * Avoids IRQs-off during fd_poll_readiness (RT-latency). */
+        epoll_entry_t snap[EPOLL_MAX_FDS];
+        int snap_count;
+
         uint64_t irqf;
         spin_lock_irq(&ep->lock, &irqf);
+        snap_count = ep->count;
+        for (int i = 0; i < snap_count; i++)
+            snap[i] = ep->entries[i];
+        spin_unlock_irq(&ep->lock, irqf);
 
-        for (int i = 0; i < ep->count && nready < maxevents; i++) {
-            uint32_t r = fd_poll_readiness(ep->entries[i].fd,
-                                           ep->entries[i].events);
+        int nready = 0;
+        for (int i = 0; i < snap_count && nready < maxevents; i++) {
+            uint32_t r = fd_poll_readiness(snap[i].fd, snap[i].events);
             if (r) {
                 struct epoll_event ev;
-                ev.events = r & ep->entries[i].events;
+                ev.events = r & snap[i].events;
                 /* Always report HUP/ERR even if not requested */
                 ev.events |= r & (EPOLLHUP | EPOLLERR);
                 if (ev.events) {
-                    ev.data = ep->entries[i].data;
+                    ev.data = snap[i].data;
                     kmemcpy(&events[nready], &ev, sizeof(ev));
                     nready++;
                 }
             }
         }
-
-        spin_unlock_irq(&ep->lock, irqf);
 
         if (nready > 0) return nready;
         if (timeout == 0) return 0;

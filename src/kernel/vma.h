@@ -49,6 +49,9 @@ void vma_remove(vma_t **root, vma_t *node);
  * (Actually returns the gap start address, 0 on failure.) */
 uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size);
 
+/* Find first VMA overlapping [start, end). O(log n) AVL search. */
+vma_t *vma_find_overlap(vma_t *root, uint64_t start, uint64_t end);
+
 /* Free a VMA back to slab (without removing from tree — for internal use). */
 void vma_free(vma_t *v);
 

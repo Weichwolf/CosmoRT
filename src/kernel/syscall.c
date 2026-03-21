@@ -408,19 +408,13 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
     uint64_t vaddr;
     if (addr && (flags & MAP_FIXED)) {
         vaddr = addr & ~0xFFFULL;
-        /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
+        /* Remove any overlapping VMAs in [vaddr, vaddr+length).
+         * Uses O(log n) AVL overlap search instead of page-by-page probe. */
         for (;;) {
-            vma_t *ov = vma_find(p->vma_root, vaddr);
-            if (!ov) {
-                int found = 0;
-                for (uint64_t probe = vaddr; probe < vaddr + length; probe += 4096) {
-                    ov = vma_find(p->vma_root, probe);
-                    if (ov) { found = 1; break; }
-                }
-                if (!found) break;
-            }
-            if (ov->start >= vaddr + length) break;
+            vma_t *ov = vma_find_overlap(p->vma_root, vaddr, vaddr + length);
+            if (!ov) break;
             if (ov->start < vaddr && ov->end > vaddr + length) {
+                /* VMA straddles both sides — split */
                 uint64_t orig_end = ov->end;
                 ov->end = vaddr;
                 vma_insert(&p->vma_root, vaddr + length, orig_end,
@@ -432,9 +426,6 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
             } else {
                 vma_remove(&p->vma_root, ov);
             }
-            ov = vma_find(p->vma_root, vaddr);
-            if (!ov) break;
-            if (ov->start >= vaddr + length) break;
         }
     } else {
         vaddr = vma_find_free(p->vma_root, p->mmap_next, length);
@@ -553,16 +544,11 @@ static long do_munmap(unsigned long addr, size_t length) {
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     tlb_shootdown(virt_to_phys(p->pml4));
 
-    /* Adjust VMAs: find and remove/split overlapping VMAs */
+    /* Adjust VMAs: find and remove/split overlapping VMAs.
+     * Uses O(log n) AVL overlap search instead of page-by-page probe. */
     for (;;) {
-        vma_t *v = 0;
-        /* Find any VMA overlapping [start, end) */
-        for (uint64_t probe = start; probe < end; probe += 4096) {
-            v = vma_find(p->vma_root, probe);
-            if (v) break;
-        }
+        vma_t *v = vma_find_overlap(p->vma_root, start, end);
         if (!v) break;
-        if (v->start >= end || v->end <= start) break;
 
         if (v->start >= start && v->end <= end) {
             /* Entirely within unmap range */
