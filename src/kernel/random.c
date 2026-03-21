@@ -181,7 +181,10 @@ void random_add_interrupt_entropy(void) {
         if (ok) entropy_mix(r);
     }
 
-    /* Re-key CSPRNG with fresh entropy */
+    /* Re-key CSPRNG with fresh entropy — under lock to avoid race with random_get */
+    uint64_t rng_flags;
+    spin_lock_irq(&rng_lock, &rng_flags);
     for (int i = 0; i < 8; i++)
         csprng_state[4 + i] ^= entropy_pool[i];
+    spin_unlock_irq(&rng_lock, rng_flags);
 }

@@ -634,10 +634,18 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     inotify_t *ino = (inotify_t *)fde->obj;
     if (!ino) return -EBADF;
 
-    /* Copy path from user */
+    /* Copy path from user — safe byte-by-byte copy with bounds check */
     char kpath[256];
     if (!user_ok((uint64_t)path, 1)) return -EFAULT;
-    ino_strncpy(kpath, path, 256);
+    {
+        int pi = 0;
+        for (; pi < 255; pi++) {
+            if ((uint64_t)(path + pi) >= 0x800000000000ULL) return -EFAULT;
+            kpath[pi] = path[pi];
+            if (kpath[pi] == '\0') break;
+        }
+        kpath[pi] = '\0';
+    }
 
     uint64_t flags;
     spin_lock_irq(&ino->lock, &flags);

@@ -103,10 +103,15 @@ long do_connect(int fd, const void *addr, int addrlen) {
 long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen) {
     (void)flags; (void)dest_addr; (void)addrlen;
+    if (len < 0 || len > 1400) return -EINVAL;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
-    int r = net_tcp_send(&s->tcp, buf, (int)len);
+
+    /* TOCTOU fix: bounce user buffer into kernel before DMA */
+    uint8_t kbuf[1400];
+    kmemcpy(kbuf, buf, (size_t)len);
+    int r = net_tcp_send(&s->tcp, kbuf, (int)len);
     return r < 0 ? -EIO : r;
 }
 
@@ -185,7 +190,10 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     if (!user_ok((uint64_t)fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)))
         return -EFAULT;
 
-    struct k_pollfd *fds = (struct k_pollfd *)fds_ptr;
+    /* TOCTOU fix: copy pollfd array to kernel stack before use */
+    struct k_pollfd kfds[256];
+    kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
+
     uint64_t deadline = timer_ms() + (uint64_t)(timeout >= 0 ? timeout : 30000);
     int ready = 0;
 
@@ -193,25 +201,29 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         net_poll();
         ready = 0;
         for (int i = 0; i < nfds; i++) {
-            fds[i].revents = 0;
-            socket_t *s = sock_from_fd(fds[i].fd);
+            kfds[i].revents = 0;
+            socket_t *s = sock_from_fd(kfds[i].fd);
             if (!s) {
                 /* Non-socket FD: pretend writable */
-                if (fds[i].events & POLLOUT) fds[i].revents |= POLLOUT;
-                if (fds[i].revents) ready++;
+                if (kfds[i].events & POLLOUT) kfds[i].revents |= POLLOUT;
+                if (kfds[i].revents) ready++;
                 continue;
             }
-            if ((fds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
+            if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
                 /* Check if TCP has buffered data or queue has packets */
                 if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
-                    fds[i].revents |= POLLIN;
+                    kfds[i].revents |= POLLIN;
             }
-            if (fds[i].events & POLLOUT) {
-                if (s->state == SOCK_CONNECTED) fds[i].revents |= POLLOUT;
+            if (kfds[i].events & POLLOUT) {
+                if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
             }
-            if (fds[i].revents) ready++;
+            if (kfds[i].revents) ready++;
         }
-        if (ready > 0) return ready;
+        if (ready > 0) {
+            /* Copy results back to user */
+            kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+            return ready;
+        }
         if (timeout == 0) return 0;
         __asm__ volatile("sti; hlt");
     }

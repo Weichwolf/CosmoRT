@@ -275,11 +275,28 @@ static long do_brk(unsigned long addr) {
     if (new_end > old_end) {
         /* Growing: pages allocated on demand (page fault handler) */
     } else if (new_end < old_end) {
-        /* Shrinking: unmap pages */
+        /* Shrinking: walk PTEs and free mapped pages */
         for (uint64_t va = new_end; va < old_end; va += 4096) {
             /* Walk page tables to find and free the physical page */
-            /* For now, just clear the PTE — page leak is acceptable */
+            uint64_t *upml4 = p->pml4;
+            int pml4i = (va >> 39) & 0x1FF;
+            if (!(upml4[pml4i] & PTE_PRESENT)) continue;
+            uint64_t *pdpt = (uint64_t *)((upml4[pml4i] & PTE_ADDR_MASK) + PHYS_OFFSET);
+            int pdpti = (va >> 30) & 0x1FF;
+            if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+            uint64_t *pd = (uint64_t *)((pdpt[pdpti] & PTE_ADDR_MASK) + PHYS_OFFSET);
+            int pdi = (va >> 21) & 0x1FF;
+            if (!(pd[pdi] & PTE_PRESENT)) continue;
+            uint64_t *pt = (uint64_t *)((pd[pdi] & PTE_ADDR_MASK) + PHYS_OFFSET);
+            int pti = (va >> 12) & 0x1FF;
+            if (pt[pti] & PTE_PRESENT) {
+                uint64_t phys = pt[pti] & PTE_ADDR_MASK;
+                pt[pti] = 0;
+                page_free((void *)(phys + PHYS_OFFSET));
+            }
         }
+        /* Invalidate TLB for freed range */
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     }
 
     /* Update brk VMA */
@@ -1140,9 +1157,9 @@ static void deliver_signal(thread_t *t, int signo) {
     t->rflags |= (1ULL << 9);   /* IF=1 */
 
     /* Block this signal during handler + sa_mask */
-    p->sig_blocked |= (1ULL << signo) | sa->sa_mask;
+    __atomic_fetch_or(&p->sig_blocked, (1ULL << signo) | sa->sa_mask, __ATOMIC_SEQ_CST);
     /* SIGKILL/SIGSTOP never blocked */
-    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
+    __atomic_fetch_and(&p->sig_blocked, ~((1ULL << 9) | (1ULL << 19)), __ATOMIC_SEQ_CST);
 }
 
 /* Check and deliver pending signals. Operates on thread_t register fields.
@@ -1157,7 +1174,7 @@ void check_pending_signals(void) {
 
     for (int sig = 1; sig < 32; sig++) {
         if (!(deliverable & (1ULL << sig))) continue;
-        p->sig_pending &= ~(1ULL << sig);
+        __atomic_fetch_and(&p->sig_pending, ~(1ULL << sig), __ATOMIC_SEQ_CST);
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -1235,11 +1252,17 @@ static long do_dup2(int oldfd, int newfd) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
-        else fd_close(&p->fds, newfd);
+        else if (cur->type != FD_NONE && cur->type != FD_SERIAL)
+            fd_cleanup_entry(cur->type, cur->obj);
+        fd_close(&p->fds, newfd);
     }
 
-    /* Copy the fd entry */
+    /* Copy the fd entry + increment refcount */
     p->fds.entries[newfd] = *old;
+    if (old->type == FD_FILE && old->obj)
+        vfs_file_incref((struct vfs_file *)old->obj);
+    else if (old->type != FD_NONE && old->type != FD_SERIAL && old->obj)
+        fd_obj_incref(old->type, old->obj);
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
     return newfd;
 }
@@ -1256,11 +1279,17 @@ static long do_dup3(int oldfd, int newfd, int flags) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
-        else fd_close(&p->fds, newfd);
+        else if (cur->type != FD_NONE && cur->type != FD_SERIAL)
+            fd_cleanup_entry(cur->type, cur->obj);
+        fd_close(&p->fds, newfd);
     }
 
-    /* Copy the fd entry */
+    /* Copy the fd entry + increment refcount */
     p->fds.entries[newfd] = *old;
+    if (old->type == FD_FILE && old->obj)
+        vfs_file_incref((struct vfs_file *)old->obj);
+    else if (old->type != FD_NONE && old->type != FD_SERIAL && old->obj)
+        fd_obj_incref(old->type, old->obj);
     if (flags & O_CLOEXEC)
         p->fds.entries[newfd].flags |= O_CLOEXEC;
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
@@ -1301,7 +1330,9 @@ static long do_rt_sigaction(int sig, const struct k_sigaction *act,
 
     if (oldact) {
         if (!user_ok((uint64_t)oldact, sizeof(struct k_sigaction))) return -EFAULT;
-        *oldact = p->sig_actions[sig];
+        /* TOCTOU fix: copy via kernel stack */
+        struct k_sigaction k_old = p->sig_actions[sig];
+        kmemcpy(oldact, &k_old, sizeof(k_old));
     }
 
     if (act) {
@@ -1332,9 +1363,9 @@ static long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
         uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
-        case 0: p->sig_blocked |= mask; break;  /* SIG_BLOCK */
-        case 1: p->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
-        case 2: p->sig_blocked = mask; break;    /* SIG_SETMASK */
+        case 0: __atomic_fetch_or(&p->sig_blocked, mask, __ATOMIC_SEQ_CST); break;  /* SIG_BLOCK */
+        case 1: __atomic_fetch_and(&p->sig_blocked, ~mask, __ATOMIC_SEQ_CST); break; /* SIG_UNBLOCK */
+        case 2: __atomic_store_n(&p->sig_blocked, mask, __ATOMIC_SEQ_CST); break;    /* SIG_SETMASK */
         default: return -EINVAL;
         }
     }
@@ -1367,7 +1398,7 @@ static long do_kill(int pid, int sig) {
         /* Fatal signals: kill the process */
         target->state = PROC_ZOMBIE;
         target->exit_code = sig;
-        target->sig_pending |= (1ULL << sig);
+        __atomic_fetch_or(&target->sig_pending, (1ULL << sig), __ATOMIC_SEQ_CST);
 
         /* If target has blocked threads, wake them to die */
         thread_t *t = target->threads;
@@ -1382,7 +1413,7 @@ static long do_kill(int pid, int sig) {
 
     /* User handler registered — set pending bit.
      * Delivery happens on return to userspace via check_pending_signals. */
-    target->sig_pending |= (1ULL << sig);
+    __atomic_fetch_or(&target->sig_pending, (1ULL << sig), __ATOMIC_SEQ_CST);
     return 0;
 }
 
@@ -1423,8 +1454,8 @@ static long do_rt_sigreturn(void) {
     cpu->user_rsp = uc.uc_mcontext.rsp;
 
     /* Restore signal mask */
-    p->sig_blocked = uc.uc_sigmask;
-    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
+    __atomic_store_n(&p->sig_blocked, uc.uc_sigmask & ~((1ULL << 9) | (1ULL << 19)),
+                     __ATOMIC_SEQ_CST);
 
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER
@@ -1499,10 +1530,16 @@ static slab_t pipe_slab;
 static int pipe_slab_inited;
 
 static void pipe_slab_ensure(void) {
-    if (!pipe_slab_inited) {
+    if (__atomic_load_n(&pipe_slab_inited, __ATOMIC_ACQUIRE) == 2) return;
+    /* Use 3 states: 0=uninit, 1=in-progress, 2=done */
+    if (__sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1)) {
         extern void slab_init(slab_t *, void *, int, int);
         slab_init(&pipe_slab, pipe_pool, (int)sizeof(struct pipe), PIPE_MAX);
-        pipe_slab_inited = 1;
+        __atomic_store_n(&pipe_slab_inited, 2, __ATOMIC_RELEASE);
+    } else {
+        /* Another CPU is initializing — spin until done */
+        while (__atomic_load_n(&pipe_slab_inited, __ATOMIC_ACQUIRE) != 2)
+            __asm__ volatile("pause");
     }
 }
 
@@ -1619,11 +1656,85 @@ static long pipe_close(fd_entry_t *fde) {
     return 0;
 }
 
+/* ── Generic FD object refcount for non-file FDs ─────────────────── */
+/* Small side-table: maps obj pointer → refcount. Slab/pool objects have
+ * stable addresses, so pointer comparison is safe. */
+
+#define FD_REFCOUNT_MAX 256
+static struct { void *obj; int refcount; } fd_refcounts[FD_REFCOUNT_MAX];
+static spinlock_t fd_refcount_lock = SPINLOCK_INIT;
+
+/* Increment refcount for a non-file FD object. Called from fork/dup. */
+void fd_obj_incref(int fde_type, void *obj) {
+    if (!obj) return;
+    /* Pipes: increment read_open / write_open counter directly */
+    if (fde_type == FD_PIPE) {
+        uintptr_t addr = (uintptr_t)obj;
+        uintptr_t base = (uintptr_t)pipe_pool;
+        uintptr_t end = base + sizeof(pipe_pool);
+        if (addr >= base && addr < end) {
+            uintptr_t off = (addr - base) % sizeof(struct pipe);
+            struct pipe *pp = (off <= 1) ? (struct pipe *)(addr - off) : 0;
+            if (pp) {
+                uint64_t flags;
+                spin_lock_irq(&pp->lock, &flags);
+                if (off == 0) pp->read_open++;
+                else          pp->write_open++;
+                spin_unlock_irq(&pp->lock, flags);
+            }
+        }
+        return;
+    }
+    /* All other types: generic refcount table */
+    uint64_t flags;
+    spin_lock_irq(&fd_refcount_lock, &flags);
+    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
+        if (fd_refcounts[i].obj == obj) {
+            fd_refcounts[i].refcount++;
+            spin_unlock_irq(&fd_refcount_lock, flags);
+            return;
+        }
+    }
+    /* Not found: first dup, start at refcount 2 (original + dup) */
+    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
+        if (!fd_refcounts[i].obj) {
+            fd_refcounts[i].obj = obj;
+            fd_refcounts[i].refcount = 2;
+            spin_unlock_irq(&fd_refcount_lock, flags);
+            return;
+        }
+    }
+    spin_unlock_irq(&fd_refcount_lock, flags);
+    /* Table full — leak rather than corrupt. */
+}
+
+/* Decrement refcount. Returns 1 if object should be freed, 0 otherwise. */
+static int fd_obj_decref(void *obj) {
+    if (!obj) return 1;
+    uint64_t flags;
+    spin_lock_irq(&fd_refcount_lock, &flags);
+    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
+        if (fd_refcounts[i].obj == obj) {
+            if (--fd_refcounts[i].refcount <= 0) {
+                fd_refcounts[i].obj = 0;
+                fd_refcounts[i].refcount = 0;
+                spin_unlock_irq(&fd_refcount_lock, flags);
+                return 1; /* last ref — free the object */
+            }
+            spin_unlock_irq(&fd_refcount_lock, flags);
+            return 0; /* still referenced */
+        }
+    }
+    spin_unlock_irq(&fd_refcount_lock, flags);
+    return 1; /* not in table → sole owner → free */
+}
+
 /* ── fd_cleanup_entry — process-exit cleanup for non-file FDs ── */
 
 void fd_cleanup_entry(int fde_type, void *fde_obj) {
     if (!fde_obj) return;
     if (fde_type == FD_SOCKET) {
+        if (!fd_obj_decref(fde_obj)) return; /* still referenced */
         socket_t *s = (socket_t *)fde_obj;
         if (s->state == SOCK_CONNECTED)
             net_tcp_close(&s->tcp);
@@ -1639,8 +1750,8 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             if (pp) {
                 uint64_t flags;
                 spin_lock_irq(&pp->lock, &flags);
-                if (off == 0) pp->read_open = 0;
-                else          pp->write_open = 0;
+                if (off == 0) { if (pp->read_open > 0) pp->read_open--; }
+                else          { if (pp->write_open > 0) pp->write_open--; }
                 int both_closed = !pp->read_open && !pp->write_open;
                 spin_unlock_irq(&pp->lock, flags);
                 if (both_closed)
@@ -1648,13 +1759,13 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             }
         }
     } else if (fde_type == FD_EPOLL) {
-        epoll_destroy(fde_obj);
+        if (fd_obj_decref(fde_obj)) epoll_destroy(fde_obj);
     } else if (fde_type == FD_EVENTFD) {
-        eventfd_destroy(fde_obj);
+        if (fd_obj_decref(fde_obj)) eventfd_destroy(fde_obj);
     } else if (fde_type == FD_TIMERFD) {
-        timerfd_destroy(fde_obj);
+        if (fd_obj_decref(fde_obj)) timerfd_destroy(fde_obj);
     } else if (fde_type == FD_INOTIFY) {
-        inotify_destroy(fde_obj);
+        if (fd_obj_decref(fde_obj)) inotify_destroy(fde_obj);
     }
 }
 
@@ -2038,11 +2149,13 @@ static long do_ioctl(int fd, unsigned long request, unsigned long arg) {
 
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
-        struct winsize *ws = (struct winsize *)arg;
-        ws->ws_row = (uint16_t)vt_rows();
-        ws->ws_col = (uint16_t)vt_cols();
-        ws->ws_xpixel = 0;
-        ws->ws_ypixel = 0;
+        /* TOCTOU fix: build on kernel stack, then copy out */
+        struct winsize kws;
+        kws.ws_row = (uint16_t)vt_rows();
+        kws.ws_col = (uint16_t)vt_cols();
+        kws.ws_xpixel = 0;
+        kws.ws_ypixel = 0;
+        kmemcpy((void *)arg, &kws, sizeof(kws));
         return 0;
     }
     return -ENOTTY;

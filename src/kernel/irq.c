@@ -161,8 +161,31 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         uint64_t error = frame->error;
 
-        /* Kernel-mode fault (bit 2 = 0) → panic */
+        /* Kernel-mode fault (bit 2 = 0): try demand paging for user addresses */
         if (!(error & 4)) {
+            /* If faulting address is in user half, the kernel was accessing
+             * a valid-but-unmapped user buffer (e.g. copy_path_from_user).
+             * Look up VMA, demand-map if possible, resume. */
+            if (cr2 < 0x800000000000ULL) {
+                percpu_t *kcpu = percpu_self();
+                thread_t *kt = kcpu->current_thread;
+                process_t *kp = kt ? kt->proc : 0;
+                if (kp) {
+                    vma_t *kvma = vma_find(kp->vma_root, cr2);
+                    if (kvma && !(error & 1)) {
+                        /* Not-present fault in valid VMA — allocate page */
+                        uint64_t kpage_addr = cr2 & ~0xFFFULL;
+                        uint64_t *kpage = alloc_page();
+                        if (kpage) {
+                            if (map_user_page(kp->pml4, kpage_addr,
+                                              virt_to_phys(kpage), kvma->prot) == 0) {
+                                return; /* resume kernel code */
+                            }
+                            page_free(kpage);
+                        }
+                    }
+                }
+            }
             serial_puts("\nPAGE FAULT in kernel CR2=");
             serial_hex64(cr2);
             serial_puts(" err=");

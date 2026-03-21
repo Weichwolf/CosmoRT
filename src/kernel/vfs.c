@@ -156,14 +156,14 @@ static void file_free(struct vfs_file *f) {
 
 /* Increment refcount on a vfs_file (for fork fd duplication) */
 void vfs_file_incref(struct vfs_file *f) {
-    if (f) f->refcount++;
+    if (f) __sync_fetch_and_add(&f->refcount, 1);
 }
 
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj) {
     if (!obj) return;
     struct vfs_file *f = (struct vfs_file *)obj;
-    if (--f->refcount <= 0)
+    if (__sync_sub_and_fetch(&f->refcount, 1) <= 0)
         file_free(f);
 }
 
@@ -533,10 +533,22 @@ long vfs_read(int fd, void *buf, size_t count) {
 
     if (f->backend == VFS_BACKEND_COSMOFS) {
         if (f->type != VFS_FILE) return -EISDIR;
-        int rc = cosmofs_read(f->cosmofs_ino, buf, (size_t)f->offset, count);
-        if (rc < 0) return rc;
-        f->offset += (uint64_t)rc;
-        return (long)rc;
+        /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
+        uint8_t kbuf[4096];
+        size_t total = 0;
+        while (total < count) {
+            size_t chunk = count - total;
+            if (chunk > 4096) chunk = 4096;
+            int rc = cosmofs_read(f->cosmofs_ino, kbuf,
+                                  (size_t)f->offset + total, chunk);
+            if (rc < 0) return total > 0 ? (long)total : rc;
+            if (rc == 0) break;
+            kmemcpy((uint8_t *)buf + total, kbuf, (size_t)rc);
+            total += (size_t)rc;
+            if ((size_t)rc < chunk) break;
+        }
+        f->offset += (uint64_t)total;
+        return (long)total;
     }
 
     /* ramfs */
@@ -549,8 +561,18 @@ long vfs_read(int fd, void *buf, size_t count) {
     size_t avail = node->size - (size_t)f->offset;
     if (count > avail) count = avail;
 
-    if (node->data)
-        kmemcpy(buf, node->data + f->offset, count);
+    /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
+    if (node->data) {
+        uint8_t kbuf[4096];
+        size_t done = 0;
+        while (done < count) {
+            size_t chunk = count - done;
+            if (chunk > 4096) chunk = 4096;
+            kmemcpy(kbuf, node->data + f->offset + done, chunk);
+            kmemcpy((uint8_t *)buf + done, kbuf, chunk);
+            done += chunk;
+        }
+    }
 
     f->offset += count;
     return (long)count;
@@ -599,11 +621,22 @@ long vfs_write(int fd, const void *buf, size_t count) {
             struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
             if (ip) f->offset = ip->size;
         }
-        int rc = cosmofs_write(f->cosmofs_ino, buf, (size_t)f->offset, count);
-        if (rc < 0) return rc;
-        f->offset += (uint64_t)rc;
+        /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
+        uint8_t kbuf[4096];
+        size_t total = 0;
+        while (total < count) {
+            size_t chunk = count - total;
+            if (chunk > 4096) chunk = 4096;
+            kmemcpy(kbuf, (const uint8_t *)buf + total, chunk);
+            int rc = cosmofs_write(f->cosmofs_ino, kbuf,
+                                   (size_t)f->offset + total, chunk);
+            if (rc < 0) return total > 0 ? (long)total : rc;
+            total += (size_t)rc;
+            if ((size_t)rc < chunk) break;
+        }
+        f->offset += (uint64_t)total;
         f->cosmofs_size = f->offset;
-        return (long)rc;
+        return (long)total;
     }
 
     /* ramfs */
@@ -619,7 +652,18 @@ long vfs_write(int fd, const void *buf, size_t count) {
         if (grow_file(node, end) < 0) return -ENOMEM;
     }
 
-    kmemcpy(node->data + f->offset, buf, count);
+    /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
+    {
+        uint8_t kbuf[4096];
+        size_t done = 0;
+        while (done < count) {
+            size_t chunk = count - done;
+            if (chunk > 4096) chunk = 4096;
+            kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
+            kmemcpy(node->data + f->offset + done, kbuf, chunk);
+            done += chunk;
+        }
+    }
     f->offset = end;
     if (end > node->size) node->size = end;
 

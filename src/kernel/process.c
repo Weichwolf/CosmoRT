@@ -372,7 +372,8 @@ void proc_yield(void) {
 
 process_t *proc_find(uint32_t pid) {
     for (int i = 0; i < PROC_MAX; i++) {
-        if (proc_pool[i].state != PROC_FREE && proc_pool[i].pid == pid)
+        int state = __atomic_load_n(&proc_pool[i].state, __ATOMIC_ACQUIRE);
+        if (state != PROC_FREE && proc_pool[i].pid == pid)
             return &proc_pool[i];
     }
     return 0;
@@ -498,12 +499,12 @@ static void vma_free_tree(vma_t *node) {
 void proc_cleanup(process_t *p) {
     if (!p) return;
 
-    /* Close all FDs */
+    /* Close all FDs — decrement refcount, free when last ref */
     for (int i = 0; i < FD_MAX; i++) {
         int type = p->fds.entries[i].type;
         if (type == FD_FILE) {
             vfs_file_free_obj(p->fds.entries[i].obj);
-        } else if (type == FD_SOCKET || type == FD_PIPE) {
+        } else if (type != FD_NONE && type != FD_SERIAL) {
             fd_cleanup_entry(type, p->fds.entries[i].obj);
         }
         p->fds.entries[i].type = FD_NONE;
@@ -552,13 +553,23 @@ long do_fork(void) {
 
     /* Stop other parent threads during page copy to prevent stale data.
      * Use saved_priority as a marker: set to -2 for threads we suspend.
-     * Only suspend RUNNABLE threads (BLOCKED threads aren't modifying memory,
-     * and RUNNING threads on other cores would need IPI — acceptable for now). */
+     * Suspend RUNNABLE threads directly. For RUNNING threads on other cores,
+     * mark them and send IPI to force them off-CPU before copying. */
+    int need_ipi = 0;
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
-        if (t != cur && t->state == THREAD_RUNNABLE) {
+        if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
             t->state = THREAD_BLOCKED;
             t->saved_priority = -2; /* mark: we stopped this one */
+            if (t->cpu_affinity >= 0) need_ipi = 1;
+            else need_ipi = 1; /* any RUNNING thread may be on another core */
         }
+    }
+    if (need_ipi) {
+        /* Send IPI to all other cores and wait for them to deschedule.
+         * The TLB shootdown vector (0xFE) forces CR3 reload.
+         * After IPI + pause loop, suspended threads are no longer executing. */
+        extern void tlb_shootdown(uint64_t pml4_phys);
+        tlb_shootdown(virt_to_phys(parent->pml4));
     }
 
     /* Deep-copy address space */
@@ -593,11 +604,20 @@ long do_fork(void) {
     for (int si = 0; si < 32; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
-    /* Duplicate fd_table — increment refcount on shared vfs_file objects */
+    /* Duplicate fd_table — increment refcount on all shared FD objects */
     for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];
-        if (parent->fds.entries[i].type == FD_FILE && parent->fds.entries[i].obj)
-            vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
+        if (parent->fds.entries[i].obj) {
+            int ftype = parent->fds.entries[i].type;
+            if (ftype == FD_FILE)
+                vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
+            else if (ftype == FD_PIPE)
+                fd_obj_incref(ftype, parent->fds.entries[i].obj);
+            else if (ftype == FD_SOCKET || ftype == FD_EPOLL ||
+                     ftype == FD_EVENTFD || ftype == FD_TIMERFD ||
+                     ftype == FD_INOTIFY)
+                fd_obj_incref(ftype, parent->fds.entries[i].obj);
+        }
     }
     child->fds.max_fd = parent->fds.max_fd;
 
@@ -729,16 +749,18 @@ static uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
         kmemset(page + str_off, 0x42, 16);
     }
 
-    /* Environment strings */
+    /* Environment strings — with bounds checking to prevent underflow */
     for (int i = envc - 1; i >= 0; i--) {
         int sl = 0; while (kenvp[i][sl]) sl++;
+        if (str_off < (uint64_t)(sl + 1) + 256) return 0; /* not enough space */
         str_off -= (uint64_t)(sl + 1);
         kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
         envp_addrs[i] = stk_page_va + str_off;
     }
-    /* Argument strings */
+    /* Argument strings — with bounds checking to prevent underflow */
     for (int i = argc - 1; i >= 0; i--) {
         int sl = 0; while (kargv[i][sl]) sl++;
+        if (str_off < (uint64_t)(sl + 1) + 256) return 0; /* not enough space */
         str_off -= (uint64_t)(sl + 1);
         kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
         argv_addrs[i] = stk_page_va + str_off;
@@ -1036,12 +1058,14 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
                 for (int i = envc - 1; i >= 0; i--) {
                     int sl = 0; while (kenvp[i][sl]) sl++;
+                    if (str_off < (uint64_t)(sl + 1) + 256) break; /* bounds check */
                     str_off -= (uint64_t)(sl + 1);
                     kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
                     envp_addrs[i] = stk_page_va + str_off;
                 }
                 for (int i = argc - 1; i >= 0; i--) {
                     int sl = 0; while (kargv[i][sl]) sl++;
+                    if (str_off < (uint64_t)(sl + 1) + 256) break; /* bounds check */
                     str_off -= (uint64_t)(sl + 1);
                     kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
                     argv_addrs[i] = stk_page_va + str_off;
@@ -1138,8 +1162,11 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                 int child_pid = (int)child->pid;
                 int exit_status = child->exit_code;
 
-                if (wstatus)
-                    *wstatus = (exit_status & 0xFF) << 8; /* Linux wait status format */
+                if (wstatus) {
+                    /* Bounce via kernel variable to avoid direct user-pointer write */
+                    int kstatus = (exit_status & 0xFF) << 8; /* Linux wait status format */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
 
                 /* Reap: free child resources */
                 proc_cleanup(child);
