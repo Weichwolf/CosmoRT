@@ -106,9 +106,13 @@ void kernel_main(struct boot_info *info) {
     extern void sched_loop(void);
     smp_start_all(sched_loop);
 
-    /* Network — graceful: failure is non-fatal (no NIC in basic QEMU) */
+    /* Drivers — probe and self-register with subsystems */
+    extern int e1000_init(void);
+    e1000_init();  /* registers with net stack if found */
+
+    /* Network — uses whatever NIC driver registered */
     if (net_init() == 0) {
-        serial_puts("net: NIC ready, sending DHCP discover\n");
+        serial_puts("net: stack ready, DHCP discover\n");
         net_dhcp_send_discover();
     } else {
         serial_puts("net: no NIC (ok for basic boot)\n");

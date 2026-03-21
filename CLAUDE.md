@@ -81,21 +81,44 @@ ist Kernel-Konfiguration, transparent fuer Anwendungen.
 
 ## Treiber-Architektur
 
-### Drei Schichten
+### Verzeichnisstruktur
 
 ```
-Userspace:
-  Protokoll-Stacks (WiFi, USB, Audio, Display)
-    reine Software, portiert von Linux, testbar ohne Hardware
-  Treiber-Adapter (iwl, xhci, nvme, hda, ...)
-    duenn, Hardware-spezifisch, MMIO via gemappten Speicher
+src/kernel/       Kernel-Core (Scheduler, VM, Syscalls, IPC)
+                  Importiert: nichts aus src/drivers/
+src/kernel/hw.h   5 Hardware-Primitives (die einzige HW-Schnittstelle)
+src/kernel/net.h  Netzwerk-Stack (NIC-agnostisch via nic_driver_t)
 
-Kernel (CosmoRT):
-  5 Hardware-Primitives (einmalig bei Init aufgerufen)
-  Scheduler, Memory, IPC
+src/drivers/      Treiber-Adapter (Hardware-spezifisch)
+                  Importiert NUR: hw.h, config.h, serial.h, net.h
+                  Importiert NICHT: process.h, sched.h, syscall.h, vma.h
+                  → Mechanisch in Userspace extrahierbar
+src/drivers/net/  NIC-Treiber (e1000, spaeter virtio-net, r8169)
 ```
 
-### Kernel: 5 Hardware-Primitives
+Regel: Treiber in src/drivers/ nutzen AUSSCHLIESSLICH die 5 Primitives
+aus hw.h + Subsystem-Registrierung (z.B. net_nic_register). Keine
+direkten Kernel-Interna. Wenn ein Treiber process.h braucht, ist das
+ein Architektur-Fehler.
+
+### NIC-Treiber-Interface
+
+```c
+// Jeder NIC-Treiber implementiert dieses Interface:
+typedef struct {
+    int  (*send)(const void *data, uint16_t len);
+    int  (*recv)(void *buf, uint16_t bufsize);
+    void (*get_mac)(uint8_t mac[6]);
+    const char *name;
+} nic_driver_t;
+
+// Treiber registriert sich beim Netzwerk-Stack:
+void net_nic_register(const nic_driver_t *nic);
+// Netzwerk-Stack nutzt registrierten Treiber fuer send/recv.
+// Kein #include "e1000.h" im Stack. Kein switch(driver_type).
+```
+
+### 5 Hardware-Primitives (hw.h)
 
 ```c
 int cosmo_mmio_map(uint64_t phys, size_t len, void **virt);
@@ -106,7 +129,8 @@ int cosmo_fw_load(const char *name, void **data, size_t *len);
 ```
 
 Das ist die GESAMTE Hardware-Abstraktion. Kernel macht das Mapping,
-Userspace macht den Zugriff. Kein Syscall pro Register-Zugriff.
+Treiber machen den Zugriff. Kein Syscall pro Register-Zugriff.
+Spaeter werden die 5 Primitives zu Syscalls → Treiber in Userspace.
 
 ### Userspace: Protokoll-Stacks (portiert von Linux)
 

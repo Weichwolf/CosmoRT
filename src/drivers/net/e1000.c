@@ -7,6 +7,7 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
+#include "net.h"
 
 /* ── E1000 Registers ───────────────────────────────── */
 
@@ -266,6 +267,15 @@ int e1000_init(void) {
         if (i < 5) serial_putchar(':');
     }
     serial_putchar('\n');
+
+    /* Register with network stack */
+    static const nic_driver_t e1000_driver = {
+        .send    = e1000_send,
+        .recv    = e1000_recv,
+        .get_mac = e1000_get_mac,
+        .name    = "e1000"
+    };
+    net_nic_register(&e1000_driver);
 
     return 0;
 }

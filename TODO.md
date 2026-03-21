@@ -1,306 +1,217 @@
-# CosmoRT — Audit-Ergebnisse und Anpassungen
+# CosmoRT — Offene Punkte
 
-Stand: 2026-03-20. Audit gegen CosmoLib/CosmoPX Anforderungen.
+Stand: 2026-03-21. Zweiter Audit gegen CosmoLib/CosmoPX.
 
-Das Gute: Architektur stimmt, Boot korrekt, Syscall-Entry sauber,
-Scheduler-Design RT-faehig, ELF-Loader validiert. Fundament ist solide.
-
-Unten die Anpassungen, geordnet nach Abhaengigkeit.
-Jeder Block hat ein klares "fertig wenn"-Kriterium.
-
----
-
-## Phase 1 — Korrektheit (ohne das ist alles andere wertlos)
-
-### 1.1 User-Pointer-Validation
-
-Jeder Syscall der einen User-Pointer dereferenziert ist ein
-Kernel-R/W-Exploit. `do_write(buf)`, `do_uname(buf)`,
-`do_arch_prctl(ARCH_GET_FS, addr)`, `do_writev(iov)` — alle.
-
-```c
-static int user_access_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr; /* overflow */
-}
-```
-
-Vor jeder User-Pointer-Deref aufrufen. Fehler: `-EFAULT`.
-`do_writev` muss sowohl `iov` als auch jedes `iov[i].iov_base` pruefen.
-
-**Fertig wenn:** Kein Syscall dereferenziert unkontrolliert Kernel-Adressen.
-
-### 1.2 FS-Base per Thread (TLS)
-
-Ohne das funktioniert kein Pthread, kein errno, kein Stack Canary.
-Zwei Stellen:
-
-1. `thread_t` bekommt `uint64_t fs_base`.
-2. `ARCH_SET_FS` schreibt `t->fs_base` UND den MSR.
-3. `CLONE_SETTLS` speichert den Wert in `t->fs_base`.
-4. Context Switch (`sched_preempt`): aktuellen FS-Base via
-   `rdmsr(IA32_FS_BASE)` sichern, neuen laden via `wrmsr`.
-5. `proc_enter_ring3` / `thread_run`: FS-Base des Ziel-Threads setzen.
-
-**Fertig wenn:** Zwei Threads mit unterschiedlichem TLS laufen
-korrekt nach Preemption. CosmoPX `errno` Test besteht.
-
-### 1.3 getrandom CSPRNG
-
-RDTSC ist kein Zufall. TLS-Session-Keys sind vorhersagbar.
-
-```c
-static int do_getrandom(void *buf, size_t len, unsigned int flags) {
-    if (!user_access_ok((uint64_t)buf, len)) return -EFAULT;
-    for (size_t i = 0; i < len; i += 8) {
-        uint64_t r;
-        /* RDRAND mit Retry */
-        int ok = 0;
-        for (int t = 0; t < 10 && !ok; t++)
-            asm volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-        if (!ok) return -EIO;
-        size_t n = len - i < 8 ? len - i : 8;
-        memcpy((uint8_t *)buf + i, &r, n);
-    }
-    return (int)len;
-}
-```
-
-CPUID-Check fuer RDRAND (Bit 30 von ECX bei CPUID.01H).
-Fallback: RDSEED, oder Fehler. Kein RDTSC-Fallback.
-
-**Fertig wenn:** `getrandom(buf, 32, 0)` liefert kryptographisch
-sichere Bytes. CosmoLib TLS-Handshake nutzt echten Zufall.
-
-### 1.4 pages_alloc/pages_free Locking
-
-`pages_alloc` und `pages_free` greifen auf die Bitmap ohne Lock zu.
-`page_alloc` hat den Lock, diese beiden nicht.
-
-```c
-uint64_t pages_alloc(size_t count) {
-    uint64_t flags;
-    spin_lock_irq(&page_lock, &flags);
-    /* ... bestehende Logik ... */
-    spin_unlock_irq(&page_lock, flags);
-    return result;
-}
-```
-
-Analog fuer `pages_free`.
-
-**Fertig wenn:** Concurrent mmap-Stress auf SMP keine doppelten
-Pages mehr vergibt.
-
-### 1.5 Futex Blocking
-
-`futex_wait` spinnt 1000 Iterationen und gibt auf. Das ist kein Wait.
-Auf Single-Core ist das ein Livelock.
-
-Richtiges Blocking:
-1. `futex_wait`: Thread-State auf `THREAD_BLOCKED`, in Futex-Waitqueue
-   einhaengen, `thread_return_to_kernel()` → Scheduler waehlt naechsten.
-2. `futex_wake`: Threads aus Waitqueue nehmen, State auf `THREAD_READY`,
-   in Run-Queue einhaengen.
-3. Spurious Wakeup: Aufrufer muss `*uaddr == val` nach Wakeup pruefen
-   (macht CosmoPX schon).
-
-**Fertig wenn:** `pthread_mutex_lock` auf kontentierten Mutex blockiert
-statt zu spinnen. Single-Core QEMU haengt nicht mehr.
+Seit dem ersten Audit (2026-03-20) erledigt:
+user_ok() Pointer-Validation, FS-Base per Thread, getrandom RDRAND,
+Futex Blocking, VFS/ramfs, fork/exec/waitpid, Process Cleanup,
+sched_yield, mmap Overflow-Check, ELF-Loader Failure-Cleanup,
+E1000 + TCP/IP + Socket Syscalls.
 
 ---
 
-## Phase 2 — Fehlende Syscalls (Bootstrap-kritisch)
+## P0 — Sofort (Silent Corruption auf SMP)
 
-Reihenfolge nach Abhaengigkeit im Bootstrap:
-CosmoPX libc → CosmoLib → fetch → Shell → GCC → Ruby → Homebrew.
+### pages_alloc/pages_free ohne Lock
+`page_alloc.c:81-103`. `pages_alloc()` und `pages_free()` greifen auf
+die Bitmap ohne `page_lock` zu. `page_alloc()` hat den Lock. Auf SMP
+koennen DMA-Allokation (`pages_alloc`) und Demand Paging (`page_alloc`)
+gleichzeitig dieselbe Page vergeben.
 
-### 2.1 Filesystem (VFS)
+Fix: `spin_lock_irq`/`spin_unlock_irq` um den Body beider Funktionen.
 
-Ohne open/read/write/close/stat laeuft nichts.
+### sti vor Frame-Completion in Syscall-Entry
+`syscall_entry.asm:23`. `sti` wird ausgefuehrt bevor der Frame-Pointer
+in `[gs:32]` gespeichert ist (Zeile 43). Ein Timer-IRQ zwischen
+Zeile 23 und 43 laesst `sched_preempt` einen unvollstaendigen Frame
+lesen. Register-Korruption, falscher RIP nach Context Switch.
 
-Minimaler VFS:
-- `struct file { int type; /* REGULAR, DIR, PIPE, SOCKET */ ... }`
-- `struct fd_table { struct file *fds[256]; int count; }`
-- Pro Prozess eine `fd_table`.
+Fix: `sti` nach Zeile 43 verschieben (nach `mov [gs:32], rsp`).
 
-Phase 1: ramfs (alles im RAM, genuegt fuer Bootstrap-Test).
-Phase 2: virtio-blk + simples Dateisystem (ext2-read oder eigenes).
+### fork Race bei Page-Copy
+`process.c:508-606`. `copy_address_space` kopiert Parent-Pages waehrend
+der Parent auf einem anderen Core weiterlaeuft. Parent kann Pages
+modifizieren die bereits kopiert wurden → stale Data im Child.
+Schlimmer: mmap/munmap waehrend des Walks kann den VMA-Baum oder
+Page-Tables korruptieren.
 
-Syscalls:
-```
-SYS_OPEN     → vfs_open(path, flags, mode) → fd
-SYS_CLOSE    → vfs_close(fd)
-SYS_READ     → vfs_read(fd, buf, count)
-SYS_WRITE    → vfs_write(fd, buf, count)  /* stdout/stderr schon da */
-SYS_LSEEK    → vfs_lseek(fd, offset, whence)
-SYS_FSTAT    → vfs_fstat(fd, statbuf)
-SYS_STAT     → vfs_stat(path, statbuf)
-SYS_IOCTL    → vfs_ioctl(fd, cmd, arg)  /* TIOCGWINSZ, FIONREAD */
-SYS_FCNTL    → vfs_fcntl(fd, cmd, arg)  /* F_GETFL, F_SETFL */
-SYS_DUP2     → fd_table_dup(old, new)
-SYS_PIPE     → pipe_create() → [read_fd, write_fd]
-SYS_GETCWD   → copy cwd to user buf
-SYS_CHDIR    → set cwd
-```
-
-**Fertig wenn:** `open("/init", O_RDONLY)` → `read()` → `close()` funktioniert
-auf einem ramfs mit eingebetteten Dateien.
-
-### 2.2 fork/exec/waitpid
-
-Ohne das keine Shell, kein `./configure`, kein Build-System.
-
-`fork`:
-1. Neuen Prozess allozieren, PID zuweisen.
-2. Page Tables kopieren (Copy-on-Write oder erstmal Deep Copy).
-3. fd_table duplizieren (alle offenen FDs zeigen auf gleiche file-Structs).
-4. Alle Register des Parent in den Child-Kontext kopieren.
-5. Child bekommt RAX=0, Parent bekommt RAX=child_pid.
-
-`execve`:
-1. ELF laden (existiert schon als `elf_load`).
-2. Altes Adressraum-Mapping ersetzen (neue Page Tables).
-3. Stack mit argv/envp aufbauen.
-4. fd_table beibehalten (ausser FD_CLOEXEC).
-5. Einstiegspunkt anspringen.
-
-`waitpid`:
-1. Blockieren bis Child exitiert.
-2. Exit-Status des Child zurueckgeben.
-3. Zombie-Prozess aufraeumen (Pages freigeben — siehe 2.3).
-
-**Fertig wenn:** `fork() + exec("/bin/echo", "hello")` gibt "hello" aus.
-
-### 2.3 Process Cleanup (Exit)
-
-Aktuell leakt alles bei Exit. Kein Page-Free, kein VMA-Free,
-kein Thread-Free.
-
-`do_exit(status)`:
-1. Alle Threads des Prozesses stoppen.
-2. Alle VMAs freigeben → Pages unmap + page_free.
-3. Alle Page-Table-Pages freigeben (Walk PML4→PDP→PD→PT).
-4. fd_table: alle offenen FDs schliessen.
-5. Thread-Structs + Kernel-Stacks freigeben.
-6. Prozess-Struct als Zombie markieren (fuer waitpid).
-7. Parent benachrichtigen (SIGCHLD oder Waitqueue).
-
-**Fertig wenn:** 1000x `fork+exit` in einer Schleife leakt keinen Speicher.
-
-### 2.4 Signals (minimal)
-
-CosmoPX braucht mindestens:
-- `sigaction(SIGSEGV, ...)` — Crash-Handler
-- `sigaction(SIGPIPE, SIG_IGN)` — Broken Pipe ignorieren
-- `kill(pid, sig)` — Signal senden
-
-Minimale Implementierung:
-- Per-Prozess Signal-Handler-Tabelle (64 Eintraege).
-- `sigaction`: Handler registrieren.
-- Signal-Delivery: Vor Return-to-Userspace pruefen ob Signals pending.
-  Wenn ja: User-Stack modifizieren (Signal-Frame pushen), RIP auf Handler.
-- `sigreturn`: Signal-Frame vom Stack poppen, Original-Kontext wiederherstellen.
-
-**Fertig wenn:** SIGSEGV-Handler faengt NULL-Deref ab.
-
-### 2.5 Networking (Socket API)
-
-Fuer `fetch https://example.com/` braucht CosmoLib:
-```
-socket(AF_INET, SOCK_STREAM, 0)
-connect(fd, addr, len)
-read/write auf Socket-FD
-close(fd)
-getaddrinfo → ist libc, braucht aber socket()
-```
-
-Ansatz: virtio-net Treiber + lwIP oder eigener minimaler TCP/IP Stack.
-Alternativ: erstmal nur als Userspace-Treiber via CosmoLib's Netzwerk-Stack.
-
-**Fertig wenn:** `fetch https://example.com/` auf CosmoRT laeuft.
+Fix: Copy-on-Write (Pages read-only markieren, bei Write-Fault kopieren).
+Kurzfristig: alle Parent-Threads stoppen waehrend fork.
 
 ---
 
-## Phase 3 — Robustheit
+## P1 — Sicherheit (Exploitable)
 
-### 3.1 mmap/munmap Overflow-Check
+### map_user_page ignoriert Protection-Flags
+`process.c:121`. Hardcoded `PTE_PRESENT | PTE_WRITE | PTE_USER`.
+NX-Bit wird nie gesetzt. Read-only VMAs sind schreibbar.
+W^X Violation — Code Injection in .rodata moeglich.
 
-```c
-if (addr + length < addr) return -EINVAL; /* wraparound */
-```
+Fix: Prot-Flags aus VMA durchreichen. `prot_to_pte_flags()` existiert
+bereits in `syscall.c:337`, nur nicht benutzt in `map_user_page`.
 
-In `do_mmap` und `do_munmap`.
+### ASLR mit RDTSC
+`process.c:164-167`. `aslr_rand()` nutzt RDTSC — monoton, vorhersagbar,
+in QEMU-TCG deterministisch. RDRAND ist verfuegbar (wird in getrandom
+bereits benutzt), wird hier aber nicht verwendet.
 
-### 3.2 proc_create_elf Cleanup bei Failure
+Fix: RDRAND statt RDTSC in `aslr_rand()`.
 
-Bei jedem Fehlerpfad in `proc_create_elf` muessen bereits allozierte
-Pages und Page-Tables freigegeben werden. Goto-Cleanup-Pattern:
+### user_ok(path, 1) prueft nur erstes Byte
+`syscall.c:787`. String-Pointer-Validation prueft nur dass das erste
+Byte im User-Space liegt. Ein String der bei `0x7FFFFFFFFFFF` beginnt
+liest mit dem Null-Terminator-Scan in Kernel-Speicher.
 
-```c
-pml4 = alloc_page();
-if (!pml4) goto fail_slab;
-if (elf_load(...) < 0) goto fail_pml4;
-if (!thread_alloc(...)) goto fail_elf;
-return pid;
+Fix: `strnlen_user()` implementieren oder Path in Kernel-Buffer kopieren
+(max 4096 Bytes) mit page-by-page Validation.
 
-fail_elf:   free_address_space(pml4);
-fail_pml4:  page_free(pml4);
-fail_slab:  slab_free(&proc_slab, p);
-            return -ENOMEM;
-```
+### do_clock_getres ohne user_ok
+`syscall.c:683`. `tp->tv_sec = 0` schreibt ohne Pointer-Validation.
+Kernel-Write an beliebige Adresse.
 
-### 3.3 sched_yield implementieren
+Fix: `if (tp && !user_ok((uint64_t)tp, 16)) return -EFAULT;`
 
-```c
-static long do_sched_yield(void) {
-    thread_t *t = current_thread();
-    t->state = THREAD_READY;
-    sched_enqueue(t);
-    thread_return_to_kernel(t); /* longjmp zum Scheduler */
-    return 0; /* unreachable */
-}
-```
+### do_wait4 user_ok unvollstaendig
+`process.c:721`. Prueft nur `< 0x800000000000`, kein Overflow-Check.
+Ein wstatus-Pointer bei `0x7FFFFFFFFFFC` schreibt 4 Bytes ueber die
+User/Kernel-Grenze.
 
-### 3.4 TLB Shootdown (SMP)
-
-Bei `munmap`/`mprotect`/Page-Fault-CoW: IPI an alle Cores die den
-gleichen Adressraum nutzen (gleiche PML4). Empfaenger-Core fuehrt
-`invlpg` aus.
-
-Ohne das ist SMP mit Threads kaputt.
-
-### 3.5 NX-Bit in map_user_page
-
-`map_user_page` muss Protection-Flags respektieren:
-- `PROT_EXEC` → kein NX-Bit
-- Kein `PROT_EXEC` → NX-Bit setzen
-- Kein `PROT_WRITE` → kein PTE_WRITE
-
-### 3.6 Dead Code entfernen
-
-`edf.c` wird nirgends aufgerufen. Entweder einbinden oder entfernen.
-`serial_hex64` existiert 3x — einmal in `serial.c` definieren.
+Fix: `user_ok((uint64_t)wstatus, sizeof(int))` verwenden.
 
 ---
 
-## Reihenfolge
+## P2 — Korrektheit (Funktional kaputt)
 
-```
-1.1 User-Pointer-Validation     ← Sicherheit, 1 Tag
-1.2 FS-Base per Thread           ← Pthreads kaputt ohne, 1 Tag
-1.3 getrandom CSPRNG             ← TLS kaputt ohne, halber Tag
-1.4 pages_alloc Locking          ← SMP kaputt ohne, halber Tag
-1.5 Futex Blocking               ← Pthreads Livelock, 1-2 Tage
-2.1 Filesystem (ramfs)           ← Bootstrap-Blocker, 3-5 Tage
-2.2 fork/exec/waitpid            ← Shell-Blocker, 3-5 Tage
-2.3 Process Cleanup              ← Memory-Leak, 1-2 Tage
-2.4 Signals                      ← CosmoPX braucht's, 2-3 Tage
-2.5 Networking                   ← fetch-Blocker, 5-10 Tage
-3.x Robustheit                   ← Parallel zu Phase 2
-```
+### Kein TLB Shootdown
+`munmap`/`mprotect` flushen nur den lokalen TLB. Andere Cores
+behalten stale Eintraege. Mit CLONE_VM-Threads: Core 2 greift
+auf freigegebene Pages zu.
 
-Phase 1 (Korrektheit) ist Voraussetzung fuer alles andere.
-Ein fehlerhafter Scheduler oder kaputtes TLS macht jeden
-weiteren Test unzuverlaessig.
+Fix: IPI an alle Cores mit gleichem PML4. Empfaenger: `invlpg`
+oder CR3 Reload.
+
+### fork FD-Sharing ohne Refcount
+`process.c:531-535`. FD-Entries werden per Value kopiert. `vfs_file*`
+wird geteilt ohne Referenzzaehlung. Close in einem Prozess gibt
+die Struktur frei, der andere hat einen Dangling Pointer.
+
+Fix: Refcount auf `vfs_file`. `fork` incrementiert, `close` decrementiert.
+
+### do_clone Thread-Liste ohne Lock
+`process.c:593-596`. `threads`-Liste und `thread_count` werden ohne
+Lock modifiziert. Zwei concurrent `clone()` im selben Prozess
+korruptieren die Liste.
+
+Fix: `p->lock` um Thread-Listen-Modifikation.
+
+### cwd ist global statt per-Process
+`vfs.c:28`. `static char cwd[256]` wird von allen Prozessen geteilt.
+`chdir` in einem Prozess aendert das Verzeichnis fuer alle.
+
+Fix: cwd in `process_t` verschieben.
+
+### execve ignoriert argv/envp
+`process.c:611`. `(void)argv; (void)envp;` — Argumente werden nicht
+an den neuen Prozess uebergeben. Shell kann keine Parameter an
+Programme weitergeben. `./configure --prefix=/usr` funktioniert nicht.
+
+Fix: argv/envp auf den neuen User-Stack kopieren (Linux ABI).
+
+### Signal-Delivery an Userspace fehlt
+`syscall.c:960`. `sigaction` registriert Handler, aber Delivery
+(User-Stack modifizieren, RIP auf Handler setzen) ist nicht
+implementiert. `sigreturn` fehlt ebenfalls.
+
+Fix: Vor Return-to-Userspace pending Signals pruefen. Signal-Frame
+auf User-Stack pushen. `sigreturn` Syscall zum Wiederherstellen.
+
+### IPC blocking/waking nicht verbunden
+`ipc.c:58,147`. `ipc_send` und `ipc_notify` haben TODOs fuer
+Thread-Unblocking. `ipc_recv` returnt -2 ("would block") ohne
+tatsaechlich zu blockieren.
+
+Fix: An Futex-Muster anlehnen: THREAD_BLOCKED + Waitqueue.
+
+---
+
+## P3 — Fehlende Features (Bootstrap-Blocker)
+
+Reihenfolge nach Abhaengigkeit:
+Shell → configure → make → GCC → Ruby → Homebrew.
+
+### pipe/pipe2
+Shell-Pipelines (`./configure | grep`, `make 2>&1`). SYS_PIPE2
+returnt -ENOSYS.
+
+### mkdir/rmdir/unlink/rename
+Dateisystem-Mutation. `make`, `tar`, `./configure` brauchen alle vier.
+
+### getdents64
+Verzeichnis-Enumeration. `ls`, `find`, `opendir`/`readdir`.
+
+### ioctl/fcntl
+Terminal-Control (TIOCGWINSZ), FD-Flags (F_GETFL/F_SETFL, F_DUPFD,
+O_NONBLOCK). Beide returnen -ENOSYS.
+
+### readv
+CosmoPX stdio kann readv nutzen. SYS_READV returnt -ENOSYS.
+
+---
+
+## P4 — Robustheit
+
+### net_poll static Buffer
+`net.c:78-102`. `static uint8_t pkt[Q_PKT]` wird von allen Cores
+in `sched_loop` beschrieben. SMP: Packet-Korruption.
+
+Fix: Per-Core Buffer oder Lock/Trylock.
+
+### sock_alloc ohne Lock
+`socket.c:28-36`. Concurrent `socket()` kann denselben Slot vergeben.
+
+Fix: Spinlock um Allokation.
+
+### TCP Sequence/Port vorhersagbar
+`net.c:246,285`. Ephemeral Port ab 49152 inkrementell, Seq=1000.
+TCP Sequence Prediction Attack moeglich.
+
+Fix: RDRAND fuer Initial Sequence Number und Ephemeral Port.
+
+### do_write returnt falsche Laenge
+`syscall.c:61`. Limitiert Output auf 64KB, returnt aber `count`.
+Stille Daten-Trunkierung.
+
+Fix: Tatsaechlich geschriebene Bytes returnen.
+
+### Packet-Queues ohne Lock
+`net.c:47-64`. `q_push`/`q_pop` ohne Synchronisation. SMP:
+verlorene oder doppelt verarbeitete Pakete.
+
+### Idle-Stacks zu klein
+`sched.c:384`. 8KB Idle-Stacks. `vma_find_free` alloziert 16KB
+auf dem Stack. Wenn Syscall-Kontext auf Idle-Stack laeuft: Overflow.
+(Passiert nicht im Normalfall, aber fragil.)
+
+Fix: Idle-Stacks auf 16KB oder 32KB erhoehen. IST fuer NMI/DF/MCE.
+
+### Spinlock CAS statt Load-Wait
+`spinlock.h:20`. CAS-Loop statt volatile Load erzeugt unnoetig
+LOCK CMPXCHG Bus-Traffic bei Contention.
+
+Fix: `__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE)` im Spin-Loop.
+
+---
+
+## Erledigt (seit 2026-03-20)
+
+- [x] User-Pointer-Validation (`user_ok()` in syscall.c)
+- [x] FS-Base per Thread (save/restore in sched_preempt)
+- [x] getrandom CSPRNG (RDRAND + RDSEED)
+- [x] Futex Blocking (THREAD_BLOCKED + Waitqueue)
+- [x] VFS/Filesystem (ramfs, open/read/write/close/stat)
+- [x] fork/exec/waitpid
+- [x] Process Cleanup (proc_cleanup)
+- [x] sched_yield
+- [x] mmap/munmap Overflow-Check
+- [x] ELF-Loader Failure-Cleanup (goto-pattern)
+- [x] Networking (E1000 + TCP/IP + Socket Syscalls)

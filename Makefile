@@ -57,7 +57,7 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/vfs.o \
            $(BUILD)/kernel/hw.o \
            $(BUILD)/kernel/net.o \
-           $(BUILD)/kernel/e1000.o \
+           $(BUILD)/drivers/net/e1000.o \
            $(BUILD)/kernel/socket.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
@@ -67,7 +67,7 @@ ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
-$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user:
+$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net:
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
@@ -170,6 +170,10 @@ $(BUILD)/kernel/memops.o: $(SRC)/kernel/memops.asm | $(BUILD)/kernel
 # ── Kernel C ────────────────────────────────────
 $(BUILD)/kernel/%.o: $(SRC)/kernel/%.c | $(BUILD)/kernel
 	$(CC) $(KCFLAGS) -o $@ $<
+
+# ── Drivers (same flags, include kernel headers) ──
+$(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/net -o $@ $<
 
 # main.o depends on init_bin.h
 $(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h | $(BUILD)/kernel

@@ -1,12 +1,26 @@
-/* CosmoRT Network Stack — IP/UDP/TCP/DHCP/ARP/DNS over E1000
- * ALL packet reception goes through net_poll() → per-protocol queues.
- * Adapted from llmos net.c — removed framebuffer, UDP telnet, HTTP POST.
+/* CosmoRT Network Stack — IP/UDP/TCP/DHCP/ARP/DNS
+ * NIC-agnostic: uses registered nic_driver_t for send/recv/get_mac.
+ * Adapted from llmos net.c.
  */
 
 #include "net.h"
 #include "serial.h"
 #include "timer.h"
-#include "e1000.h"
+
+/* Registered NIC driver (set by driver init, e.g., e1000_init) */
+static const nic_driver_t *nic;
+
+void net_nic_register(const nic_driver_t *driver) {
+    nic = driver;
+    serial_puts("net: NIC registered: ");
+    serial_puts(driver->name);
+    serial_putchar('\n');
+}
+
+/* NIC access macros */
+#define nic_send(data, len)       (nic->send((data), (len)))
+#define nic_recv(buf, bufsize)    (nic->recv((buf), (bufsize)))
+#define nic_get_mac(mac)          (nic->get_mac((mac)))
 
 /* Idle: sti+hlt to wait for interrupt (saves power, wakes on any IRQ) */
 static inline void net_idle(void) {
@@ -77,7 +91,7 @@ static uint16_t ip_checksum(const uint8_t *hdr, int len) {
 
 void net_poll(void) {
     static uint8_t pkt[Q_PKT];
-    int len = e1000_recv(pkt, sizeof(pkt));
+    int len = nic_recv(pkt, sizeof(pkt));
     if (len < 14) return;
     uint16_t etype = get16(pkt + 12);
     if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); return; }
@@ -106,8 +120,8 @@ static void poll_n(int n) { for (int i = 0; i < n; i++) net_poll(); }
 /* ── Init ──────────────────────────────────────────── */
 
 int net_init(void) {
-    if (e1000_init() < 0) return -1;
-    e1000_get_mac(net_my_mac);
+    if (!nic) return -1;  /* no NIC driver registered */
+    nic_get_mac(net_my_mac);
     return 0;
 }
 
@@ -168,7 +182,7 @@ void net_dhcp_send_discover(void) {
     pkt[282]=53; pkt[283]=1; pkt[284]=1;
     pkt[285]=55; pkt[286]=3; pkt[287]=1; pkt[288]=3; pkt[289]=6;
     pkt[290]=255;
-    e1000_send(pkt, 590);
+    nic_send(pkt, 590);
 }
 
 /* ── ARP ───────────────────────────────────────────── */
@@ -184,7 +198,7 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     mcpy(pkt+22, net_my_mac, 6);
     mcpy(pkt+28, net_my_ip, 4);
     mcpy(pkt+38, ip, 4);
-    e1000_send(pkt, 42);
+    nic_send(pkt, 42);
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
@@ -226,7 +240,7 @@ int net_ping(const uint8_t *dst_ip) {
     for (int i = 0; i < 56; i++) pkt[42+i] = (uint8_t)i;
     uint16_t ick = ip_cksum(pkt+34, 64);
     pkt[36]=(uint8_t)(ick>>8); pkt[37]=(uint8_t)ick;
-    e1000_send(pkt, 98);
+    nic_send(pkt, 98);
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
@@ -277,7 +291,7 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     if (dlen>0 && data) mcpy(t+thdr, data, dlen);
     uint16_t ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
     t[16]=(uint8_t)(ck>>8); t[17]=(uint8_t)ck;
-    e1000_send(pkt, (uint16_t)(34+tt));
+    nic_send(pkt, (uint16_t)(34+tt));
 }
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
@@ -472,7 +486,7 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint16_t ic = ip_cksum(pkt+14, 20);
     pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
 
-    e1000_send(pkt, (uint16_t)(14 + ip_len));
+    nic_send(pkt, (uint16_t)(14 + ip_len));
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
