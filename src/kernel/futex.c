@@ -212,18 +212,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 
-    /* Bounded spin (100 iterations), then block */
-    for (int i = 0; i < 100; i++) {
-        old = __sync_val_compare_and_swap(uaddr, 0, tid);
-        if (old == 0)
-            return 0;
-        old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
-        if (old == FUTEX_WAITERS)
-            return 0;
-        __asm__ volatile("pause");
-    }
-
-    /* Spin exhausted — block via wait queue */
+    /* Block via wait queue (no spin — strict spec compliance) */
     {
         process_t *p = self->proc;
         uint32_t pid = p ? p->pid : 0;

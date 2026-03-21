@@ -8,7 +8,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "memops.h"
 
 /* ── PCI Discovery ─────────────────────────────────── */
 
@@ -111,7 +110,7 @@ int virtqueue_setup(virtio_dev_t *dev, int queue_idx, virtqueue_t *vq) {
     void *dma_virt;
     uint64_t dma_phys;
     if (cosmo_dma_alloc(32768, &dma_virt, &dma_phys) < 0) return -1;
-    kmemset(dma_virt, 0, 32768);
+    hw_memset(dma_virt, 0, 32768);
 
     uint8_t *p = (uint8_t *)dma_virt;
     vq->desc  = (struct virtq_desc *)p;
@@ -126,7 +125,7 @@ int virtqueue_setup(virtio_dev_t *dev, int queue_idx, virtqueue_t *vq) {
     vq->last_used  = 0;
     vq->free_head  = 0;
     vq->num_free   = qsz;
-    vq->lock       = (spinlock_t)SPINLOCK_INIT;
+    vq->lock       = (hw_spinlock_t)HW_SPINLOCK_INIT;
 
     /* Build free descriptor chain */
     for (uint16_t i = 0; i < qsz; i++) {

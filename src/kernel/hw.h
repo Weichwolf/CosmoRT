@@ -65,4 +65,19 @@ uint64_t hw_ms(void);
 /* Initialize hardware subsystem. Called once at boot. */
 void hw_init(void);
 
+/* ── Driver-safe primitives (isolation boundary) ──── */
+
+/* Drivers use these instead of kernel-internal spinlock.h / memops.h. */
+
+typedef struct { volatile uint32_t next; volatile uint32_t owner; } hw_spinlock_t;
+#define HW_SPINLOCK_INIT {0, 0}
+
+void hw_spin_lock(hw_spinlock_t *l);
+void hw_spin_unlock(hw_spinlock_t *l);
+void hw_spin_lock_irq(hw_spinlock_t *l, uint64_t *flags);
+void hw_spin_unlock_irq(hw_spinlock_t *l, uint64_t flags);
+
+void hw_memcpy(void *dst, const void *src, size_t len);
+void hw_memset(void *dst, int val, size_t len);
+
 #endif

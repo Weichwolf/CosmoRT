@@ -87,10 +87,15 @@ static long do_write(int fd, const void *buf, size_t count) {
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
     if (fde->type == FD_SERIAL) {
-        const char *s = (const char *)buf;
         size_t actual = count > 0x10000 ? 0x10000 : count;
-        for (size_t i = 0; i < actual; i++)
-            serial_putchar(s[i]);
+        uint8_t kbuf[256];
+        size_t pos = 0;
+        while (pos < actual) {
+            size_t chunk = actual - pos > 256 ? 256 : actual - pos;
+            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            for (size_t j = 0; j < chunk; j++) serial_putchar((char)kbuf[j]);
+            pos += chunk;
+        }
         return (long)actual;
     }
     if (fde->type == FD_FILE)
@@ -137,13 +142,15 @@ static long do_read(int fd, void *buf, size_t count) {
     if (!fde) return -EBADF;
     if (fde->type == FD_SERIAL) {
         extern char serial_getchar(void);
-        char *dst = (char *)buf;
-        for (size_t i = 0; i < count; i++) {
+        uint8_t kbuf[256];
+        size_t got = 0;
+        while (got < count && got < 256) {
             char c = serial_getchar();
-            if (c == 0) return (long)i; /* no more data */
-            dst[i] = c;
+            if (c == 0) break;
+            kbuf[got++] = (uint8_t)c;
         }
-        return (long)count;
+        kmemcpy(buf, kbuf, got);
+        return (long)got;
     }
     if (fde->type == FD_FILE)
         return vfs_read(fd, buf, count);
@@ -1305,7 +1312,9 @@ static long do_sched_setscheduler(int pid, int policy, const struct sched_param_
     t->sched_policy = policy;
     if (param) {
         if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
-        t->priority = param->sched_priority;
+        struct sched_param_k kp;
+        kmemcpy(&kp, param, sizeof(kp));
+        t->priority = kp.sched_priority;
     }
     return 0;
 }
@@ -1321,7 +1330,9 @@ static long do_sched_setparam(int pid, const struct sched_param_k *param) {
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
     if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
-    t->priority = param->sched_priority;
+    struct sched_param_k kp;
+    kmemcpy(&kp, param, sizeof(kp));
+    t->priority = kp.sched_priority;
     return 0;
 }
 
@@ -1856,9 +1867,9 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         HW_CAP_CHECK();
         /* a1 = ptr to { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } */
         if (!user_ok(a1, 22)) return -EFAULT;
-        struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } *args =
-            (void *)a1;
-        return net_port_attach(args->shm_phys, (size_t)args->shm_size, args->mac);
+        struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } kargs;
+        kmemcpy(&kargs, (const void *)a1, sizeof(kargs));
+        return net_port_attach(kargs.shm_phys, (size_t)kargs.shm_size, kargs.mac);
     }
 
     case SYS_COSMO_KEXEC: {

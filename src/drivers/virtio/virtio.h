@@ -7,7 +7,7 @@
 #define VIRTIO_H
 
 #include <stdint.h>
-#include "spinlock.h"
+#include "hw.h"
 
 /* ── Virtio PCI legacy register offsets (from BAR0 I/O) ── */
 
@@ -69,7 +69,7 @@ typedef struct {
     uint16_t last_used;       /* consumer index into used ring */
     uint16_t free_head;       /* head of free descriptor chain */
     uint16_t num_free;        /* free descriptors */
-    spinlock_t lock;
+    hw_spinlock_t lock;
 } virtqueue_t;
 
 /* ── Virtio device ─────────────────────────────────── */

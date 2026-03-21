@@ -9,8 +9,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "spinlock.h"
-#include "memops.h"
 
 /* Virtio-blk request header */
 struct virtio_blk_req {
@@ -33,7 +31,7 @@ static struct virtio_blk_req *req_hdr;
 static uint8_t *data_buf;      /* 4KB data buffer */
 static uint8_t *status_byte;
 
-static spinlock_t blk_lock = SPINLOCK_INIT;
+static hw_spinlock_t blk_lock = HW_SPINLOCK_INIT;
 
 static void blk_irq_handler(void *ctx);
 
@@ -66,7 +64,7 @@ int virtio_blk_init(void) {
         serial_puts("virtio-blk: DMA alloc failed\n");
         return -1;
     }
-    kmemset(dma_virt, 0, 8192);
+    hw_memset(dma_virt, 0, 8192);
     uint8_t *p = (uint8_t *)dma_virt;
     req_hdr     = (struct virtio_blk_req *)p;
     data_buf    = p + 64;  /* aligned, 4KB for block data */
@@ -116,7 +114,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     *status_byte      = 0xFF;
 
     if (type == 1)
-        kmemcpy(data_buf, buf, len);
+        hw_memcpy(data_buf, buf, len);
 
     /* Allocate 3 descriptors for chain: header -> data -> status */
     int head = virtqueue_alloc_descs(&blk_vq, 3);
@@ -156,7 +154,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     virtqueue_free_chain(&blk_vq, (uint16_t)head);
 
     if (type == 0 && *status_byte == 0)
-        kmemcpy(buf, data_buf, len);
+        hw_memcpy(buf, data_buf, len);
 
     return (*status_byte == 0) ? 0 : -1;
 }
@@ -165,17 +163,17 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
 
 int blk_read(uint64_t block, void *buf) {
     uint64_t flags;
-    spin_lock_irq(&blk_lock, &flags);
+    hw_spin_lock_irq(&blk_lock, &flags);
     int rc = do_request(0, block * SECTORS_PER_BLOCK, buf, BLK_SIZE);
-    spin_unlock_irq(&blk_lock, flags);
+    hw_spin_unlock_irq(&blk_lock, flags);
     return rc;
 }
 
 int blk_write(uint64_t block, const void *buf) {
     uint64_t flags;
-    spin_lock_irq(&blk_lock, &flags);
+    hw_spin_lock_irq(&blk_lock, &flags);
     int rc = do_request(1, block * SECTORS_PER_BLOCK, (void *)buf, BLK_SIZE);
-    spin_unlock_irq(&blk_lock, flags);
+    hw_spin_unlock_irq(&blk_lock, flags);
     return rc;
 }
 

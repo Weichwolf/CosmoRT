@@ -14,8 +14,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "memops.h"
-#include "spinlock.h"
 
 /* ── Virtio-GPU command types ──────────────────────── */
 
@@ -119,7 +117,7 @@ static uint8_t *cmd_buf;
 static uint64_t cmd_buf_phys;
 #define CMD_BUF_SIZE 4096
 
-static spinlock_t gpu_lock = SPINLOCK_INIT;
+static hw_spinlock_t gpu_lock = HW_SPINLOCK_INIT;
 
 #define RESOURCE_ID 1
 
@@ -127,8 +125,8 @@ static spinlock_t gpu_lock = SPINLOCK_INIT;
 
 static int gpu_cmd(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len) {
     /* Copy command to DMA buffer */
-    kmemcpy(cmd_buf, cmd, cmd_len);
-    kmemset(cmd_buf + cmd_len, 0, resp_len);
+    hw_memcpy(cmd_buf, cmd, cmd_len);
+    hw_memset(cmd_buf + cmd_len, 0, resp_len);
 
     /* Need 2 descriptors: cmd (out) + response (in) */
     int head = virtqueue_alloc_descs(&ctrlq, 2);
@@ -160,7 +158,7 @@ static int gpu_cmd(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len) {
 
     /* Copy response back */
     if (resp)
-        kmemcpy(resp, cmd_buf + cmd_len, resp_len);
+        hw_memcpy(resp, cmd_buf + cmd_len, resp_len);
 
     return 0;
 }
@@ -192,7 +190,7 @@ int virtio_gpu_init(void) {
     }
     cmd_buf      = (uint8_t *)dma_virt;
     cmd_buf_phys = dma_phys;
-    kmemset(cmd_buf, 0, CMD_BUF_SIZE);
+    hw_memset(cmd_buf, 0, CMD_BUF_SIZE);
 
     virtio_set_driver_ok(&gpu_dev);
 
@@ -240,7 +238,7 @@ int virtio_gpu_init(void) {
         return -1;
     }
     framebuf = (uint32_t *)fb_virt;
-    kmemset(framebuf, 0, framebuf_size);
+    hw_memset(framebuf, 0, framebuf_size);
 
     /* 2. Create 2D resource */
     struct virtio_gpu_resource_create_2d create = {
@@ -320,7 +318,7 @@ void virtio_gpu_flush(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
 
     uint64_t flags;
-    spin_lock_irq(&gpu_lock, &flags);
+    hw_spin_lock_irq(&gpu_lock, &flags);
 
     /* Transfer to host */
     struct virtio_gpu_transfer_to_host_2d xfer = {
@@ -342,5 +340,5 @@ void virtio_gpu_flush(int x, int y, int w, int h) {
     };
     gpu_cmd(&flush, sizeof(flush), &resp, sizeof(resp));
 
-    spin_unlock_irq(&gpu_lock, flags);
+    hw_spin_unlock_irq(&gpu_lock, flags);
 }

@@ -12,8 +12,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "memops.h"
-#include "spinlock.h"
 
 /* ── Virtio-input event (from device) ──────────────── */
 
@@ -46,7 +44,7 @@ static int num_devs;
 
 static struct input_event evring[EVRING_SIZE];
 static volatile int evring_head, evring_count;
-static spinlock_t evring_lock = SPINLOCK_INIT;
+static hw_spinlock_t evring_lock = HW_SPINLOCK_INIT;
 
 static void evring_push(const struct input_event *ev) {
     if (evring_count >= EVRING_SIZE) return;  /* drop on overflow */
@@ -79,7 +77,7 @@ static void input_irq(void *ctx) {
     virtio_isr_read(&d->dev);
 
     uint64_t flags;
-    spin_lock_irq(&evring_lock, &flags);
+    hw_spin_lock_irq(&evring_lock, &flags);
 
     uint32_t len;
     int head;
@@ -99,7 +97,7 @@ static void input_irq(void *ctx) {
         virtqueue_free_chain(&d->eventq, (uint16_t)head);
     }
 
-    spin_unlock_irq(&evring_lock, flags);
+    hw_spin_unlock_irq(&evring_lock, flags);
 
     eventq_refill(d);
 }
@@ -119,7 +117,7 @@ static int init_one(struct input_dev *d) {
     alloc = (alloc + 4095) & ~4095U;
     if (cosmo_dma_alloc(alloc, &dma_virt, &dma_phys) < 0)
         return -1;
-    kmemset(dma_virt, 0, alloc);
+    hw_memset(dma_virt, 0, alloc);
     d->event_bufs      = (uint8_t (*)[EVENT_SIZE])dma_virt;
     d->event_bufs_phys = dma_phys;
 
@@ -229,10 +227,10 @@ int virtio_input_init(void) {
 
 int virtio_input_read(struct input_event *ev) {
     uint64_t flags;
-    spin_lock_irq(&evring_lock, &flags);
+    hw_spin_lock_irq(&evring_lock, &flags);
 
     if (evring_count == 0) {
-        spin_unlock_irq(&evring_lock, flags);
+        hw_spin_unlock_irq(&evring_lock, flags);
         return 0;
     }
 
@@ -240,6 +238,6 @@ int virtio_input_read(struct input_event *ev) {
     evring_head = (evring_head + 1) % EVRING_SIZE;
     evring_count--;
 
-    spin_unlock_irq(&evring_lock, flags);
+    hw_spin_unlock_irq(&evring_lock, flags);
     return 1;
 }

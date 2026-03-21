@@ -128,16 +128,31 @@ int random_get(void *buf, size_t len) {
     while (len > 0) {
         spin_lock_irq(&rng_lock, &flags);
 
-        uint32_t block[16];
-        chacha20_block(block, csprng_state);
-
+        /* Forward secrecy: generate two blocks.
+         * Block 1: re-key material (new key, destroyed immediately).
+         * Block 2: output bytes.
+         * Old key is overwritten before unlock — no window for leakage. */
+        uint32_t key_block[16], out_block[16];
+        chacha20_block(key_block, csprng_state);
         csprng_state[12]++;
         if (csprng_state[12] == 0) csprng_state[13]++;
+
+        chacha20_block(out_block, csprng_state);
+        csprng_state[12]++;
+        if (csprng_state[12] == 0) csprng_state[13]++;
+
+        /* Re-key: old key is gone */
+        for (int i = 0; i < 8; i++)
+            csprng_state[4 + i] = key_block[i];
+
+        /* Wipe key_block */
+        for (int i = 0; i < 16; i++)
+            key_block[i] = 0;
 
         spin_unlock_irq(&rng_lock, flags);
 
         size_t n = len > 64 ? 64 : len;
-        uint8_t *src = (uint8_t *)block;
+        uint8_t *src = (uint8_t *)out_block;
         for (size_t i = 0; i < n; i++)
             out[i] = src[i];
         out += n;

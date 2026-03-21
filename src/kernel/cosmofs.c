@@ -56,6 +56,21 @@ int cosmofs_mount(void) {
 
     mounted = 1;
 
+    /* Reconstruct free_blocks from bitmap (don't trust persisted counter) */
+    {
+        uint64_t used = 0;
+        uint64_t data_blocks = sb.total_blocks - sb.data_start;
+        for (uint32_t bi = 0; bi < sb.bitmap_blocks; bi++) {
+            struct bcache_entry *bbe = bcache_get(sb.bitmap_start + bi);
+            if (!bbe) continue;
+            uint64_t *bits = (uint64_t *)bbe->data;
+            for (int w = 0; w < 512; w++)
+                used += (uint64_t)__builtin_popcountll(bits[w]);
+            bcache_put(bbe);
+        }
+        sb.free_blocks = data_blocks > used ? data_blocks - used : 0;
+    }
+
     serial_puts("cosmofs: mounted (");
     { char t[20]; int i=0; uint64_t mb = sb.total_blocks * 4 / 1024;
       do{t[i++]='0'+(char)(mb%10);mb/=10;}while(mb);
@@ -311,6 +326,8 @@ static uint64_t resolve_block(struct cosmofs_inode *ip, uint64_t file_block, int
             ptrs[file_block] = cosmofs_block_alloc();
             if (ptrs[file_block]) ip->blocks_used++;
             bcache_mark_dirty(be);
+            if (journal_active())
+                journal_write(ip->indirect, be->data);
         }
         uint64_t result = ptrs[file_block];
         bcache_put(be);
@@ -337,6 +354,8 @@ static uint64_t resolve_block(struct cosmofs_inode *ip, uint64_t file_block, int
             ptrs1[idx1] = cosmofs_block_alloc();
             if (ptrs1[idx1]) ip->blocks_used++;
             bcache_mark_dirty(be1);
+            if (journal_active())
+                journal_write(ip->double_indirect, be1->data);
         }
         uint64_t ind2 = ptrs1[idx1];
         bcache_put(be1);
@@ -349,6 +368,8 @@ static uint64_t resolve_block(struct cosmofs_inode *ip, uint64_t file_block, int
             ptrs2[idx2] = cosmofs_block_alloc();
             if (ptrs2[idx2]) ip->blocks_used++;
             bcache_mark_dirty(be2);
+            if (journal_active())
+                journal_write(ind2, be2->data);
         }
         uint64_t result = ptrs2[idx2];
         bcache_put(be2);
@@ -442,20 +463,88 @@ int cosmofs_write(uint64_t ino, const void *buf, size_t offset, size_t len) {
     return (int)len;
 }
 
+/* Free all data blocks referenced by a single-indirect block */
+static void free_indirect_block(uint64_t ind_blk) {
+    struct bcache_entry *be = bcache_get(ind_blk);
+    if (!be) return;
+    uint64_t *ptrs = (uint64_t *)be->data;
+    for (int i = 0; i < 512; i++) {
+        if (ptrs[i]) cosmofs_block_free(ptrs[i]);
+    }
+    bcache_put(be);
+    cosmofs_block_free(ind_blk);
+}
+
 int cosmofs_truncate(uint64_t ino, size_t new_size) {
     struct cosmofs_inode *ip = cosmofs_inode_read(ino);
     if (!ip) return -EIO;
     struct cosmofs_inode inode_copy;
     kmemcpy(&inode_copy, ip, sizeof(inode_copy));
 
-    /* TODO: free blocks beyond new_size */
-    inode_copy.size = new_size;
-    inode_copy.mtime = now_ns();
+    uint64_t old_blocks = (inode_copy.size + COSMOFS_BLOCK_SIZE - 1) / COSMOFS_BLOCK_SIZE;
+    uint64_t new_blocks = new_size == 0 ? 0 :
+        (new_size + COSMOFS_BLOCK_SIZE - 1) / COSMOFS_BLOCK_SIZE;
 
     journal_begin();
-    cosmofs_inode_write(ino, &inode_copy);
-    journal_commit();
 
+    /* Free direct blocks beyond new_blocks */
+    for (uint64_t i = new_blocks; i < COSMOFS_DIRECT_BLOCKS && i < old_blocks; i++) {
+        if (inode_copy.direct[i]) {
+            cosmofs_block_free(inode_copy.direct[i]);
+            inode_copy.direct[i] = 0;
+            if (inode_copy.blocks_used) inode_copy.blocks_used--;
+        }
+    }
+
+    /* Free single-indirect if entirely beyond new_blocks */
+    if (new_blocks <= COSMOFS_DIRECT_BLOCKS && inode_copy.indirect) {
+        free_indirect_block(inode_copy.indirect);
+        inode_copy.indirect = 0;
+    } else if (inode_copy.indirect && old_blocks > COSMOFS_DIRECT_BLOCKS) {
+        /* Partial free within indirect block */
+        uint64_t ind_start = new_blocks > COSMOFS_DIRECT_BLOCKS ?
+            new_blocks - COSMOFS_DIRECT_BLOCKS : 0;
+        struct bcache_entry *be = bcache_get(inode_copy.indirect);
+        if (be) {
+            uint64_t *ptrs = (uint64_t *)be->data;
+            for (uint64_t i = ind_start; i < 512; i++) {
+                if (ptrs[i]) {
+                    cosmofs_block_free(ptrs[i]);
+                    ptrs[i] = 0;
+                    if (inode_copy.blocks_used) inode_copy.blocks_used--;
+                }
+            }
+            bcache_mark_dirty(be);
+            if (journal_active())
+                journal_write(inode_copy.indirect, be->data);
+            bcache_put(be);
+            /* If all entries freed, free the indirect block itself */
+            if (ind_start == 0) {
+                cosmofs_block_free(inode_copy.indirect);
+                inode_copy.indirect = 0;
+            }
+        }
+    }
+
+    /* Free double-indirect if entirely beyond new_blocks */
+    if (new_blocks <= COSMOFS_DIRECT_BLOCKS + 512 && inode_copy.double_indirect) {
+        struct bcache_entry *be1 = bcache_get(inode_copy.double_indirect);
+        if (be1) {
+            uint64_t *ptrs1 = (uint64_t *)be1->data;
+            for (int i = 0; i < 512; i++) {
+                if (ptrs1[i]) free_indirect_block(ptrs1[i]);
+            }
+            bcache_put(be1);
+        }
+        cosmofs_block_free(inode_copy.double_indirect);
+        inode_copy.double_indirect = 0;
+    }
+
+    inode_copy.size = new_size;
+    inode_copy.mtime = now_ns();
+    cosmofs_inode_write(ino, &inode_copy);
+
+    journal_commit();
     return 0;
 }
 

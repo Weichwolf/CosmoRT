@@ -14,6 +14,7 @@
 #include "irq.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "memops.h"
 
 /* ── MMIO Mapping ────────────────────────────────── */
 
@@ -218,3 +219,19 @@ void hw_init(void) {
     }
     serial_puts("hw: 5 primitives ready\n");
 }
+
+/* ── Driver-safe wrappers ─────────────────────────── */
+
+void hw_spin_lock(hw_spinlock_t *l)   { spin_lock((spinlock_t *)l); }
+void hw_spin_unlock(hw_spinlock_t *l) { spin_unlock((spinlock_t *)l); }
+
+void hw_spin_lock_irq(hw_spinlock_t *l, uint64_t *flags) {
+    spin_lock_irq((spinlock_t *)l, flags);
+}
+
+void hw_spin_unlock_irq(hw_spinlock_t *l, uint64_t flags) {
+    spin_unlock_irq((spinlock_t *)l, flags);
+}
+
+void hw_memcpy(void *dst, const void *src, size_t len) { kmemcpy(dst, src, len); }
+void hw_memset(void *dst, int val, size_t len) { kmemset(dst, val, len); }

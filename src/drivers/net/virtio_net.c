@@ -12,8 +12,6 @@
 #include "config.h"
 #include "serial.h"
 #include "net.h"
-#include "memops.h"
-#include "spinlock.h"
 
 /* ── Virtio-net header (prepended to every packet) ── */
 
@@ -53,7 +51,7 @@ static uint64_t rx_bufs_phys;
 static uint64_t tx_bufs_phys;
 
 /* Track which descriptor is used per TX slot */
-static spinlock_t tx_lock = SPINLOCK_INIT;
+static hw_spinlock_t tx_lock = HW_SPINLOCK_INIT;
 
 /* ── RX buffer management ──────────────────────────── */
 
@@ -93,7 +91,7 @@ static int vnet_send(const void *data, uint16_t len) {
         return -1;
 
     uint64_t flags;
-    spin_lock_irq(&tx_lock, &flags);
+    hw_spin_lock_irq(&tx_lock, &flags);
 
     int head = virtqueue_alloc_descs(&txq, 1);
     if (head < 0) {
@@ -105,15 +103,15 @@ static int vnet_send(const void *data, uint16_t len) {
         head = virtqueue_alloc_descs(&txq, 1);
     }
     if (head < 0) {
-        spin_unlock_irq(&tx_lock, flags);
+        hw_spin_unlock_irq(&tx_lock, flags);
         return -1;
     }
 
     /* Build packet: virtio-net header + ethernet frame */
     uint8_t *buf = tx_bufs[head];
     struct virtio_net_hdr *hdr = (struct virtio_net_hdr *)buf;
-    kmemset(hdr, 0, VIRTIO_NET_HDR_SIZE);
-    kmemcpy(buf + VIRTIO_NET_HDR_SIZE, data, len);
+    hw_memset(hdr, 0, VIRTIO_NET_HDR_SIZE);
+    hw_memcpy(buf + VIRTIO_NET_HDR_SIZE, data, len);
 
     txq.desc[head].addr  = tx_bufs_phys + (uint64_t)head * BUF_SIZE;
     txq.desc[head].len   = (uint32_t)(VIRTIO_NET_HDR_SIZE + len);
@@ -123,7 +121,7 @@ static int vnet_send(const void *data, uint16_t len) {
     virtqueue_submit(&txq, (uint16_t)head);
     virtqueue_kick(&net_dev, 1);
 
-    spin_unlock_irq(&tx_lock, flags);
+    hw_spin_unlock_irq(&tx_lock, flags);
     return 0;
 }
 
@@ -142,7 +140,7 @@ static int vnet_recv(void *buf, uint16_t bufsize) {
 
     uint32_t pkt_len = used_len - (uint32_t)VIRTIO_NET_HDR_SIZE;
     if (pkt_len > bufsize) pkt_len = bufsize;
-    kmemcpy(buf, pkt + VIRTIO_NET_HDR_SIZE, pkt_len);
+    hw_memcpy(buf, pkt + VIRTIO_NET_HDR_SIZE, pkt_len);
 
     virtqueue_free_chain(&rxq, (uint16_t)head);
     rx_refill();
@@ -178,8 +176,8 @@ int virtio_net_init(void) {
         serial_puts("virtio-net: DMA alloc failed\n");
         return -1;
     }
-    kmemset(rx_virt, 0, NUM_RX_BUFS * BUF_SIZE);
-    kmemset(tx_virt, 0, NUM_TX_BUFS * BUF_SIZE);
+    hw_memset(rx_virt, 0, NUM_RX_BUFS * BUF_SIZE);
+    hw_memset(tx_virt, 0, NUM_TX_BUFS * BUF_SIZE);
     rx_bufs = (uint8_t (*)[BUF_SIZE])rx_virt;
     tx_bufs = (uint8_t (*)[BUF_SIZE])tx_virt;
     rx_bufs_phys = rx_phys;
