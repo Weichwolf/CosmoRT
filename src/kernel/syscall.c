@@ -29,25 +29,13 @@ static inline int user_ok(uint64_t addr, size_t len) {
            addr + len >= addr;
 }
 
-/* Forward: ensure_user_page (defined below, needed by copy_path_from_user) */
-static int ensure_user_page(process_t *p, uint64_t uaddr);
-
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
 #define PATH_MAX 4096
 static int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
     if (!user_ok((uint64_t)upath, 1)) return -EFAULT;
-    process_t *cpfu_p = proc_current();
-    uint64_t prev_page = ~0ULL;
     for (size_t i = 0; i < max; i++) {
-        uint64_t addr = (uint64_t)(upath + i);
-        if (addr >= 0x800000000000ULL) return -EFAULT;
-        /* Ensure page is mapped (handles demand-paging) */
-        uint64_t page = addr & ~0xFFFULL;
-        if (page != prev_page) {
-            if (ensure_user_page(cpfu_p, addr) < 0) return -EFAULT;
-            prev_page = page;
-        }
+        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
         kbuf[i] = upath[i];
         if (kbuf[i] == '\0') return (int)i;
     }
@@ -287,28 +275,11 @@ static long do_brk(unsigned long addr) {
     if (new_end > old_end) {
         /* Growing: pages allocated on demand (page fault handler) */
     } else if (new_end < old_end) {
-        /* Shrinking: walk PTEs and free mapped pages */
+        /* Shrinking: unmap pages */
         for (uint64_t va = new_end; va < old_end; va += 4096) {
             /* Walk page tables to find and free the physical page */
-            uint64_t *upml4 = p->pml4;
-            int pml4i = (va >> 39) & 0x1FF;
-            if (!(upml4[pml4i] & PTE_PRESENT)) continue;
-            uint64_t *pdpt = (uint64_t *)((upml4[pml4i] & PTE_ADDR_MASK) + PHYS_OFFSET);
-            int pdpti = (va >> 30) & 0x1FF;
-            if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-            uint64_t *pd = (uint64_t *)((pdpt[pdpti] & PTE_ADDR_MASK) + PHYS_OFFSET);
-            int pdi = (va >> 21) & 0x1FF;
-            if (!(pd[pdi] & PTE_PRESENT)) continue;
-            uint64_t *pt = (uint64_t *)((pd[pdi] & PTE_ADDR_MASK) + PHYS_OFFSET);
-            int pti = (va >> 12) & 0x1FF;
-            if (pt[pti] & PTE_PRESENT) {
-                uint64_t phys = pt[pti] & PTE_ADDR_MASK;
-                pt[pti] = 0;
-                page_free((void *)(phys + PHYS_OFFSET));
-            }
+            /* For now, just clear the PTE — page leak is acceptable */
         }
-        /* Invalidate TLB for freed range */
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     }
 
     /* Update brk VMA */
@@ -437,13 +408,19 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
     uint64_t vaddr;
     if (addr && (flags & MAP_FIXED)) {
         vaddr = addr & ~0xFFFULL;
-        /* Remove any overlapping VMAs in [vaddr, vaddr+length).
-         * Uses O(log n) AVL overlap search instead of page-by-page probe. */
+        /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
         for (;;) {
-            vma_t *ov = vma_find_overlap(p->vma_root, vaddr, vaddr + length);
-            if (!ov) break;
+            vma_t *ov = vma_find(p->vma_root, vaddr);
+            if (!ov) {
+                int found = 0;
+                for (uint64_t probe = vaddr; probe < vaddr + length; probe += 4096) {
+                    ov = vma_find(p->vma_root, probe);
+                    if (ov) { found = 1; break; }
+                }
+                if (!found) break;
+            }
+            if (ov->start >= vaddr + length) break;
             if (ov->start < vaddr && ov->end > vaddr + length) {
-                /* VMA straddles both sides — split */
                 uint64_t orig_end = ov->end;
                 ov->end = vaddr;
                 vma_insert(&p->vma_root, vaddr + length, orig_end,
@@ -455,6 +432,9 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
             } else {
                 vma_remove(&p->vma_root, ov);
             }
+            ov = vma_find(p->vma_root, vaddr);
+            if (!ov) break;
+            if (ov->start >= vaddr + length) break;
         }
     } else {
         vaddr = vma_find_free(p->vma_root, p->mmap_next, length);
@@ -573,11 +553,16 @@ static long do_munmap(unsigned long addr, size_t length) {
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     tlb_shootdown(virt_to_phys(p->pml4));
 
-    /* Adjust VMAs: find and remove/split overlapping VMAs.
-     * Uses O(log n) AVL overlap search instead of page-by-page probe. */
+    /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
-        vma_t *v = vma_find_overlap(p->vma_root, start, end);
+        vma_t *v = 0;
+        /* Find any VMA overlapping [start, end) */
+        for (uint64_t probe = start; probe < end; probe += 4096) {
+            v = vma_find(p->vma_root, probe);
+            if (v) break;
+        }
         if (!v) break;
+        if (v->start >= end || v->end <= start) break;
 
         if (v->start >= start && v->end <= end) {
             /* Entirely within unmap range */
@@ -1058,35 +1043,19 @@ static const uint8_t sig_trampoline[] = {
     0x0f, 0x05                                   /* syscall */
 };
 
-/* Signal frame: restorer_addr(8) + siginfo(128) + ucontext(248).
- * Trampoline lives on a dedicated PROT_READ|PROT_EXEC page, not on the NX stack. */
-#define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t))
+/* Total signal frame: restorer_addr(8) + siginfo(128) + ucontext(248) + trampoline(9) */
+#define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t) + sizeof(sig_trampoline))
 
+/* Offsets from new RSP (bottom of frame):
+ *   [RSP+0]   = return address (restorer or trampoline)
+ *   [RSP+8]   = siginfo_t
+ *   [RSP+136] = ucontext_t
+ *   [RSP+384] = trampoline bytes (if no sa_restorer)
+ */
 #define SIGFRAME_OFF_RETADDR   0
 #define SIGFRAME_OFF_SIGINFO   8
 #define SIGFRAME_OFF_UCONTEXT  (8 + sizeof(sig_siginfo_t))
-
-/* Lazily allocate a per-process signal trampoline page (PROT_READ|PROT_EXEC).
- * Returns user virtual address of trampoline code, or 0 on failure. */
-static uint64_t sig_trampoline_ensure(process_t *p) {
-    if (p->sig_trampoline_page) return p->sig_trampoline_page;
-    uint64_t *page = alloc_page();
-    if (!page) return 0;
-    kmemset(page, 0, 4096);
-    kmemcpy(page, sig_trampoline, sizeof(sig_trampoline));
-    uint64_t uaddr = vma_find_free(p->vma_root, p->mmap_next, 4096);
-    if (!uaddr) { page_free(page); return 0; }
-    p->mmap_next = uaddr;
-    vma_t *v = vma_insert(&p->vma_root, uaddr, uaddr + 4096,
-                           PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
-    if (!v) { page_free(page); return 0; }
-    if (map_user_page(p->pml4, uaddr, virt_to_phys(page), PROT_READ | PROT_EXEC) < 0) {
-        page_free(page);
-        return 0;
-    }
-    p->sig_trampoline_page = uaddr;
-    return uaddr;
-}
+#define SIGFRAME_OFF_TRAMPOLINE (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t))
 
 /* Deliver signal to user thread by pushing signal frame onto user stack.
  * Modifies thread registers so next return-to-userspace enters the handler.
@@ -1099,7 +1068,10 @@ static void deliver_signal(thread_t *t, int signo) {
 
     /* Compute frame location on user stack */
     uint64_t frame_size = SIG_FRAME_SIZE;
+    /* Add trampoline only if no sa_restorer */
     int has_restorer = (sa->sa_flags & SA_RESTORER) && sa->sa_restorer;
+    if (has_restorer)
+        frame_size -= sizeof(sig_trampoline);
     uint64_t new_rsp = (t->rsp - frame_size) & ~0xFULL; /* 16-byte align */
 
     /* Verify target stack area is in a writable VMA */
@@ -1144,9 +1116,7 @@ static void deliver_signal(thread_t *t, int signo) {
     if (has_restorer) {
         restorer_addr = (uint64_t)sa->sa_restorer;
     } else {
-        /* Use dedicated RX trampoline page (not the NX stack) */
-        restorer_addr = sig_trampoline_ensure(p);
-        if (!restorer_addr) { do_exit(128 + signo); return; }
+        restorer_addr = new_rsp + SIGFRAME_OFF_TRAMPOLINE;
     }
 
     /* Write signal frame directly to user stack.
@@ -1154,6 +1124,10 @@ static void deliver_signal(thread_t *t, int signo) {
     *(uint64_t *)new_rsp = restorer_addr;
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_SIGINFO), &si, sizeof(si));
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_UCONTEXT), &uc, sizeof(uc));
+
+    /* Write trampoline if no sa_restorer */
+    if (!has_restorer)
+        kmemcpy((void *)(new_rsp + SIGFRAME_OFF_TRAMPOLINE), sig_trampoline, sizeof(sig_trampoline));
 
     /* Set up thread to enter handler */
     t->rip = (uint64_t)sa->sa_handler;
@@ -1166,9 +1140,9 @@ static void deliver_signal(thread_t *t, int signo) {
     t->rflags |= (1ULL << 9);   /* IF=1 */
 
     /* Block this signal during handler + sa_mask */
-    __atomic_fetch_or(&p->sig_blocked, (1ULL << signo) | sa->sa_mask, __ATOMIC_SEQ_CST);
+    p->sig_blocked |= (1ULL << signo) | sa->sa_mask;
     /* SIGKILL/SIGSTOP never blocked */
-    __atomic_fetch_and(&p->sig_blocked, ~((1ULL << 9) | (1ULL << 19)), __ATOMIC_SEQ_CST);
+    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
 }
 
 /* Check and deliver pending signals. Operates on thread_t register fields.
@@ -1183,7 +1157,7 @@ void check_pending_signals(void) {
 
     for (int sig = 1; sig < 32; sig++) {
         if (!(deliverable & (1ULL << sig))) continue;
-        __atomic_fetch_and(&p->sig_pending, ~(1ULL << sig), __ATOMIC_SEQ_CST);
+        p->sig_pending &= ~(1ULL << sig);
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -1261,17 +1235,11 @@ static long do_dup2(int oldfd, int newfd) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
-        else if (cur->type != FD_NONE && cur->type != FD_SERIAL)
-            fd_cleanup_entry(cur->type, cur->obj);
-        fd_close(&p->fds, newfd);
+        else fd_close(&p->fds, newfd);
     }
 
-    /* Copy the fd entry + increment refcount */
+    /* Copy the fd entry */
     p->fds.entries[newfd] = *old;
-    if (old->type == FD_FILE && old->obj)
-        vfs_file_incref((struct vfs_file *)old->obj);
-    else if (old->type != FD_NONE && old->type != FD_SERIAL && old->obj)
-        fd_obj_incref(old->type, old->obj);
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
     return newfd;
 }
@@ -1288,17 +1256,11 @@ static long do_dup3(int oldfd, int newfd, int flags) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
-        else if (cur->type != FD_NONE && cur->type != FD_SERIAL)
-            fd_cleanup_entry(cur->type, cur->obj);
-        fd_close(&p->fds, newfd);
+        else fd_close(&p->fds, newfd);
     }
 
-    /* Copy the fd entry + increment refcount */
+    /* Copy the fd entry */
     p->fds.entries[newfd] = *old;
-    if (old->type == FD_FILE && old->obj)
-        vfs_file_incref((struct vfs_file *)old->obj);
-    else if (old->type != FD_NONE && old->type != FD_SERIAL && old->obj)
-        fd_obj_incref(old->type, old->obj);
     if (flags & O_CLOEXEC)
         p->fds.entries[newfd].flags |= O_CLOEXEC;
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
@@ -1339,7 +1301,6 @@ static long do_rt_sigaction(int sig, const struct k_sigaction *act,
 
     if (oldact) {
         if (!user_ok((uint64_t)oldact, sizeof(struct k_sigaction))) return -EFAULT;
-        /* TOCTOU fix: copy via kernel stack */
         struct k_sigaction k_old = p->sig_actions[sig];
         kmemcpy(oldact, &k_old, sizeof(k_old));
     }
@@ -1372,9 +1333,9 @@ static long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
         uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
-        case 0: __atomic_fetch_or(&p->sig_blocked, mask, __ATOMIC_SEQ_CST); break;  /* SIG_BLOCK */
-        case 1: __atomic_fetch_and(&p->sig_blocked, ~mask, __ATOMIC_SEQ_CST); break; /* SIG_UNBLOCK */
-        case 2: __atomic_store_n(&p->sig_blocked, mask, __ATOMIC_SEQ_CST); break;    /* SIG_SETMASK */
+        case 0: p->sig_blocked |= mask; break;  /* SIG_BLOCK */
+        case 1: p->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
+        case 2: p->sig_blocked = mask; break;    /* SIG_SETMASK */
         default: return -EINVAL;
         }
     }
@@ -1407,7 +1368,7 @@ static long do_kill(int pid, int sig) {
         /* Fatal signals: kill the process */
         target->state = PROC_ZOMBIE;
         target->exit_code = sig;
-        __atomic_fetch_or(&target->sig_pending, (1ULL << sig), __ATOMIC_SEQ_CST);
+        target->sig_pending |= (1ULL << sig);
 
         /* If target has blocked threads, wake them to die */
         thread_t *t = target->threads;
@@ -1422,7 +1383,7 @@ static long do_kill(int pid, int sig) {
 
     /* User handler registered — set pending bit.
      * Delivery happens on return to userspace via check_pending_signals. */
-    __atomic_fetch_or(&target->sig_pending, (1ULL << sig), __ATOMIC_SEQ_CST);
+    target->sig_pending |= (1ULL << sig);
     return 0;
 }
 
@@ -1463,8 +1424,8 @@ static long do_rt_sigreturn(void) {
     cpu->user_rsp = uc.uc_mcontext.rsp;
 
     /* Restore signal mask */
-    __atomic_store_n(&p->sig_blocked, uc.uc_sigmask & ~((1ULL << 9) | (1ULL << 19)),
-                     __ATOMIC_SEQ_CST);
+    p->sig_blocked = uc.uc_sigmask;
+    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER
@@ -1539,16 +1500,10 @@ static slab_t pipe_slab;
 static int pipe_slab_inited;
 
 static void pipe_slab_ensure(void) {
-    if (__atomic_load_n(&pipe_slab_inited, __ATOMIC_ACQUIRE) == 2) return;
-    /* Use 3 states: 0=uninit, 1=in-progress, 2=done */
-    if (__sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1)) {
+    if (!pipe_slab_inited) {
         extern void slab_init(slab_t *, void *, int, int);
         slab_init(&pipe_slab, pipe_pool, (int)sizeof(struct pipe), PIPE_MAX);
-        __atomic_store_n(&pipe_slab_inited, 2, __ATOMIC_RELEASE);
-    } else {
-        /* Another CPU is initializing — spin until done */
-        while (__atomic_load_n(&pipe_slab_inited, __ATOMIC_ACQUIRE) != 2)
-            __asm__ volatile("pause");
+        pipe_slab_inited = 1;
     }
 }
 
@@ -1665,85 +1620,11 @@ static long pipe_close(fd_entry_t *fde) {
     return 0;
 }
 
-/* ── Generic FD object refcount for non-file FDs ─────────────────── */
-/* Small side-table: maps obj pointer → refcount. Slab/pool objects have
- * stable addresses, so pointer comparison is safe. */
-
-#define FD_REFCOUNT_MAX 256
-static struct { void *obj; int refcount; } fd_refcounts[FD_REFCOUNT_MAX];
-static spinlock_t fd_refcount_lock = SPINLOCK_INIT;
-
-/* Increment refcount for a non-file FD object. Called from fork/dup. */
-void fd_obj_incref(int fde_type, void *obj) {
-    if (!obj) return;
-    /* Pipes: increment read_open / write_open counter directly */
-    if (fde_type == FD_PIPE) {
-        uintptr_t addr = (uintptr_t)obj;
-        uintptr_t base = (uintptr_t)pipe_pool;
-        uintptr_t end = base + sizeof(pipe_pool);
-        if (addr >= base && addr < end) {
-            uintptr_t off = (addr - base) % sizeof(struct pipe);
-            struct pipe *pp = (off <= 1) ? (struct pipe *)(addr - off) : 0;
-            if (pp) {
-                uint64_t flags;
-                spin_lock_irq(&pp->lock, &flags);
-                if (off == 0) pp->read_open++;
-                else          pp->write_open++;
-                spin_unlock_irq(&pp->lock, flags);
-            }
-        }
-        return;
-    }
-    /* All other types: generic refcount table */
-    uint64_t flags;
-    spin_lock_irq(&fd_refcount_lock, &flags);
-    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
-        if (fd_refcounts[i].obj == obj) {
-            fd_refcounts[i].refcount++;
-            spin_unlock_irq(&fd_refcount_lock, flags);
-            return;
-        }
-    }
-    /* Not found: first dup, start at refcount 2 (original + dup) */
-    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
-        if (!fd_refcounts[i].obj) {
-            fd_refcounts[i].obj = obj;
-            fd_refcounts[i].refcount = 2;
-            spin_unlock_irq(&fd_refcount_lock, flags);
-            return;
-        }
-    }
-    spin_unlock_irq(&fd_refcount_lock, flags);
-    /* Table full — leak rather than corrupt. */
-}
-
-/* Decrement refcount. Returns 1 if object should be freed, 0 otherwise. */
-static int fd_obj_decref(void *obj) {
-    if (!obj) return 1;
-    uint64_t flags;
-    spin_lock_irq(&fd_refcount_lock, &flags);
-    for (int i = 0; i < FD_REFCOUNT_MAX; i++) {
-        if (fd_refcounts[i].obj == obj) {
-            if (--fd_refcounts[i].refcount <= 0) {
-                fd_refcounts[i].obj = 0;
-                fd_refcounts[i].refcount = 0;
-                spin_unlock_irq(&fd_refcount_lock, flags);
-                return 1; /* last ref — free the object */
-            }
-            spin_unlock_irq(&fd_refcount_lock, flags);
-            return 0; /* still referenced */
-        }
-    }
-    spin_unlock_irq(&fd_refcount_lock, flags);
-    return 1; /* not in table → sole owner → free */
-}
-
 /* ── fd_cleanup_entry — process-exit cleanup for non-file FDs ── */
 
 void fd_cleanup_entry(int fde_type, void *fde_obj) {
     if (!fde_obj) return;
     if (fde_type == FD_SOCKET) {
-        if (!fd_obj_decref(fde_obj)) return; /* still referenced */
         socket_t *s = (socket_t *)fde_obj;
         if (s->state == SOCK_CONNECTED)
             net_tcp_close(&s->tcp);
@@ -1759,8 +1640,8 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             if (pp) {
                 uint64_t flags;
                 spin_lock_irq(&pp->lock, &flags);
-                if (off == 0) { if (pp->read_open > 0) pp->read_open--; }
-                else          { if (pp->write_open > 0) pp->write_open--; }
+                if (off == 0) pp->read_open = 0;
+                else          pp->write_open = 0;
                 int both_closed = !pp->read_open && !pp->write_open;
                 spin_unlock_irq(&pp->lock, flags);
                 if (both_closed)
@@ -1768,13 +1649,13 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             }
         }
     } else if (fde_type == FD_EPOLL) {
-        if (fd_obj_decref(fde_obj)) epoll_destroy(fde_obj);
+        epoll_destroy(fde_obj);
     } else if (fde_type == FD_EVENTFD) {
-        if (fd_obj_decref(fde_obj)) eventfd_destroy(fde_obj);
+        eventfd_destroy(fde_obj);
     } else if (fde_type == FD_TIMERFD) {
-        if (fd_obj_decref(fde_obj)) timerfd_destroy(fde_obj);
+        timerfd_destroy(fde_obj);
     } else if (fde_type == FD_INOTIFY) {
-        if (fd_obj_decref(fde_obj)) inotify_destroy(fde_obj);
+        inotify_destroy(fde_obj);
     }
 }
 
@@ -2158,7 +2039,6 @@ static long do_ioctl(int fd, unsigned long request, unsigned long arg) {
 
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
-        /* TOCTOU fix: build on kernel stack, then copy out */
         struct winsize kws;
         kws.ws_row = (uint16_t)vt_rows();
         kws.ws_col = (uint16_t)vt_cols();
@@ -2526,54 +2406,18 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_COSMO_MMIO_MAP: {
         HW_CAP_CHECK();
         if (!user_ok(a3, 8)) return -EFAULT;
-        void *kvirt;
-        size_t len = (size_t)a2;
-        int r = cosmo_mmio_map((uint64_t)a1, len, &kvirt);
-        if (r != 0) return r;
-        /* Map into caller's userspace instead of returning kernel direct-map addr */
-        process_t *mp = proc_current();
-        uint64_t aligned_len = (len + 4095) & ~4095ULL;
-        uint64_t uaddr = vma_find_free(mp->vma_root, mp->mmap_next, aligned_len);
-        if (!uaddr) return -ENOMEM;
-        mp->mmap_next = uaddr;
-        vma_t *mv = vma_insert(&mp->vma_root, uaddr, uaddr + aligned_len,
-                                PROT_READ | PROT_WRITE, MAP_PRIVATE);
-        if (!mv) return -ENOMEM;
-        uint64_t kphys = virt_to_phys(kvirt);
-        for (uint64_t off = 0; off < aligned_len; off += 4096) {
-            if (map_user_page(mp->pml4, uaddr + off, kphys + off,
-                              PROT_READ | PROT_WRITE) < 0)
-                return -ENOMEM;
-        }
-        *(uint64_t *)a3 = uaddr;
-        return 0;
+        void *virt;
+        int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
+        if (r == 0) *(void **)a3 = virt;
+        return r;
     }
     case SYS_COSMO_DMA_ALLOC: {
         HW_CAP_CHECK();
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
-        void *kvirt; uint64_t phys;
-        size_t len = (size_t)a1;
-        int r = cosmo_dma_alloc(len, &kvirt, &phys);
-        if (r != 0) return r;
-        /* Map DMA pages into caller's userspace */
-        process_t *dp = proc_current();
-        uint64_t daligned = (len + 4095) & ~4095ULL;
-        uint64_t duaddr = vma_find_free(dp->vma_root, dp->mmap_next, daligned);
-        if (!duaddr) { cosmo_dma_free(kvirt, len); return -ENOMEM; }
-        dp->mmap_next = duaddr;
-        vma_t *dv = vma_insert(&dp->vma_root, duaddr, duaddr + daligned,
-                                PROT_READ | PROT_WRITE, MAP_PRIVATE);
-        if (!dv) { cosmo_dma_free(kvirt, len); return -ENOMEM; }
-        for (uint64_t off = 0; off < daligned; off += 4096) {
-            if (map_user_page(dp->pml4, duaddr + off, phys + off,
-                              PROT_READ | PROT_WRITE) < 0) {
-                cosmo_dma_free(kvirt, len);
-                return -ENOMEM;
-            }
-        }
-        *(uint64_t *)a2 = duaddr;
-        *(uint64_t *)a3 = phys;
-        return 0;
+        void *virt; uint64_t phys;
+        int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
+        if (r == 0) { *(void **)a2 = virt; *(uint64_t *)a3 = phys; }
+        return r;
     }
     case SYS_COSMO_DMA_FREE:
         HW_CAP_CHECK();

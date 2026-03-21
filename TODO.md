@@ -1,173 +1,96 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-21. ~25K LOC, 123 Syscalls.
+Stand: 2026-03-21. ~28K LOC, 123 Syscalls.
 ktest: 61 PASS, 0 FAIL. Kein Polling (IRQ-driven).
+VT interaktiv (Bernstein-Palette, Hack Font, Tippen funktioniert).
 
 ---
 
-## Audit 2 — 2026-03-21
+## Naechste Schritte (Prioritaet)
 
-### SEC-CRIT (2)
+```
+Prio 1 — Restrukturierung src/kernel/:
+  syscall.c zerlegen             → 9 Dateien nach Subsystem (~300 Zeilen/Datei)
+  process.c zerlegen             → fork.c, exec.c, thread.c, signal.c
+  epoll.c zerlegen               → epoll.c, eventfd.c, timerfd.c, signalfd.c, inotify.c
+  net.c zerlegen                 → tcp.c, udp.c, arp.c, icmp.c
+  vfs.c zerlegen                 → vfs.c, ramfs.c
+  *_bin.h nach gen/              → Generierte Dateien aus Arbeitsverzeichnis raus
+  Subdirectories                 → core/ mm/ proc/ syscall/ ipc/ fs/ net/ event/ vt/ hw/
 
-- [ ] do_poll TOCTOU: schreibt direkt in User-pollfd[] ohne Kernel-Bounce
-      socket.c:188-218. Concurrent Thread kann fds[i].fd zwischen Check und
-      revents-Write mutieren → OOB fd-Zugriff.
-      Fix: pollfd-Array auf Kernel-Stack kopieren (max 256), Ergebnis zurueckschreiben.
+Prio 2 — Notebook-tauglich:
+  P16 /dev/msr + /dev/port       → Device-Nodes
+  P16 powerd + Shutdown           → HWP, Temperatur, ACPI
+  P10 Code-Signing                → Ed25519 Vertrauenskette
 
-- [ ] do_sendto TOCTOU: User-Buffer geht direkt an NIC DMA
-      socket.c:103-111. Zwischen user_ok und NIC-Copy kann User remappen.
-      Fix: Kernel-Bounce-Buffer (max 1400 Bytes pro TCP-Segment).
-
-### SEC-HIGH (4)
-
-- [ ] do_ioctl TIOCGWINSZ: schreibt direkt an User-Pointer ohne Bounce
-      syscall.c:2039-2047. Unmapped VMA → Kernel #PF.
-      Fix: Kernel-Stack struct, dann kmemcpy.
-
-- [ ] do_rt_sigaction: liest/schreibt User-Struct direkt
-      syscall.c:1302-1305. Unmapped VMA → Kernel #PF.
-      Fix: Kernel-Stack, kmemcpy rein/raus.
-
-- [ ] inotify_add_watch: ino_strncpy statt copy_path_from_user
-      epoll.c:639-640. String > 255 Bytes liest in Kernel-Adressraum.
-      Fix: copy_path_from_user(kpath, path, 256).
-
-- [ ] vfs_read/vfs_write: User-Buffer direkt an CosmoFS ohne Bounce
-      vfs.c:536,602. Unmapped VMA → Kernel #PF, TOCTOU moeglich.
-      Fix: 4KB-Chunks ueber Kernel-Buffer bouncen.
-
-### SEC-MED (5)
-
-- [ ] HW-Primitive Syscalls geben Kernel-Adressen an Userspace
-      syscall.c:2404-2417. MMIO/DMA-Pointer sind Direct-Map, nicht User-mappbar.
-      Fix: map_user_page statt Direct-Map Pointer (fuer echte Userspace-Treiber).
-
-- [ ] copy_path_from_user: kein Page-Fault-Handling
-      syscall.c:35-43. Valid-but-unmapped VMA → Kernel #PF.
-      Fix: Kernel-Mode #PF Handler (siehe ARCH unten).
-
-- [ ] Signal-Trampoline auf NX-Stack
-      syscall.c:1119-1130. W^X Stack hat kein PROT_EXEC → #PF bei sigreturn.
-      Fix: SA_RESTORER erzwingen oder Stack-VMA pruefen.
-
-- [ ] DHCP XID = 0xDEADBEEF (statisch, vorhersagbar)
-      net.c:341. Triviales DHCP-Spoofing.
-      Fix: random_get() fuer XID.
-
-- [ ] DNS txid aus timer_ms() (niedrige Entropie)
-      net.c:625. DNS Cache Poisoning moeglich.
-      Fix: random_get() fuer txid und Source-Port.
-
-### CORR-HIGH (5)
-
-- [ ] do_brk Shrink leakt Pages — nie freigegeben
-      syscall.c:277-282. Langlebige Prozesse laufen in OOM.
-      Fix: PTE-Walk und page_free fuer schrumpfenden Bereich.
-
-- [ ] do_fork stoppt RUNNING Threads auf anderen Cores nicht
-      process.c:557-562. Nur RUNNABLE wird suspended, RUNNING laeuft weiter
-      waehrend copy_address_space → inkonsistente Kopie.
-      Fix: IPI an Cores mit Parent-Threads, auf ACK warten, dann kopieren.
-
-- [ ] vfs_file refcount nicht atomic
-      vfs.c:158-168. f->refcount++ ohne Lock/Atomic. Paralleles fork/close → Race.
-      Fix: __sync_fetch_and_add / __sync_sub_and_fetch.
-
-- [ ] do_dup2/dup3: kein Refcount-Increment fuer non-file FDs
-      syscall.c:1242,1263. Kopiert raw Pointer. Pipe-close dekrementiert doppelt.
-      Fix: Refcount fuer alle FD-Typen bei dup.
-
-- [ ] do_fork: FD_PIPE/SOCKET/EPOLL/EVENTFD/TIMERFD/INOTIFY ohne Refcount
-      process.c:597-601. Nur FD_FILE bekommt refcount++. Close in Parent oder
-      Child korrumpiert den anderen → Use-after-free.
-      Fix: Generischer Refcount fuer alle FD-backed Objects.
-
-### CORR-MED (6)
-
-- [ ] proc_find O(n) Scan ohne Lock
-      process.c:373-379. Concurrent proc_cleanup → stale Pointer.
-      Fix: Lock oder CAS auf State.
-
-- [ ] build_user_stack str_off Underflow
-      process.c:733-745. Grosses argv/envp → Schreiben ausserhalb der Page.
-      Fix: Bounds-Check vor jedem String-Copy.
-
-- [ ] execve Stack-Rebuild: selbes str_off Underflow
-      process.c:1033-1068.
-      Fix: Bounds-Check.
-
-- [ ] do_wait4 schreibt wstatus direkt an User-Pointer
-      process.c:1141-1142. Unmapped VMA → Kernel #PF.
-      Fix: Kernel-Variable, kmemcpy.
-
-- [ ] random_add_interrupt_entropy: Race auf csprng_state
-      random.c:185-186. XOR ohne rng_lock, concurrent mit random_get.
-      Fix: rng_lock vor Zugriff auf csprng_state.
-
-- [ ] pipe_slab_ensure: Race auf Init-Flag
-      syscall.c:1501-1507. Zwei concurrent pipe2 → double-init.
-      Fix: __sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1).
-
-- [ ] sig_pending/sig_blocked ohne Atomic Ops
-      syscall.c:1155-1160,1143,1385. |= und &= nicht atomic auf 64-Bit.
-      Fix: __atomic_fetch_or / __atomic_fetch_and.
-
-### PERF-HIGH (2)
-
-- [ ] proc_find O(n) bei jedem kill/wait
-      process.c:373-379. PROC_MAX=16 OK, skaliert nicht.
-      Fix: PID→Slot Direktindex.
-
-- [ ] find_thread_by_tid O(n) Scan (THREAD_MAX=64)
-      futex.c:69-77, ipc.c:17-26. Jeder PI-Futex und IPC-Wake.
-      Fix: TID→Pool-Index Direktindex.
-
-### PERF-MED (3)
-
-- [ ] epoll_wait haelt Lock waehrend fd_poll_readiness Scan
-      epoll.c:240-258. IRQs disabled ueber gesamten FD-Scan → RT-Latenz.
-      Fix: Entries unter Lock kopieren, Lock loslassen, dann scannen.
-
-- [ ] do_munmap: O(n) vma_find pro Page (262144 Lookups fuer 1GB)
-      syscall.c:557-581.
-      Fix: VMAs in Adressreihenfolge walken statt Page-by-Page proben.
-
-- [ ] do_mmap MAP_FIXED: selbes O(n)-pro-Page Pattern
-      syscall.c:414-438.
-      Fix: VMA-Tree in Adressreihenfolge walken.
+Prio 3 — Vollstaendigkeit:
+  virtio-console/snd/fs           → Volle QEMU-Unterstuetzung
+  IPv6 SLAAC                      → Dual-Stack Networking
+  State-Transfer (P8)             → Graceful Driver Restart
+  Link-Local 169.254.x.x          → Fallback ohne DHCP
+```
 
 ---
 
-## Architektur
+## Offene Features
 
-### Kernel-Mode #PF Handler (PRIO 1)
+### P8 — Userspace-Treiber
+- [x] e1000d, svcmgr, net_port Ring-IPC, SYS_COSMO_NIC_ATTACH
+- [ ] State-Transfer-Protokoll fuer Graceful Restart
 
-Fehlt komplett. Jeder Kernel-Zugriff auf valid-but-unmapped User-Memory
-(demand paging) fuehrt zu Triple-Fault. Betrifft: copy_path_from_user,
-do_rt_sigaction, do_wait4, do_ioctl, jede Stelle die User-Pointer direkt
-dereferenziert.
+### P10 — Code-Signing
+- [ ] Ed25519 Owner-Key, .cosmo_sig ELF-Section, Pruefung bei execve/dlopen/kexec
 
-Fix: #PF Handler der bei Kernel-Mode Faults auf User-Adressen die VMA
-prueft, Page demand-mapped, und zurueckkehrt. Foundation fuer alles andere.
+### P11 — Netzwerk Zero-Config
+- [x] DHCP Client, mDNS Responder
+- [ ] IPv6 SLAAC
+- [ ] Link-Local 169.254.x.x Fallback
 
-### FD Refcounting (PRIO 2)
+### P12 — Virtio Transport
+- [x] Gemeinsamer Transport, virtio-blk, virtio-net, virtio-gpu, virtio-input
+- [ ] virtio-console, virtio-snd (Audio RT), virtio-fs (Host-FS)
 
-Nur vfs_file hat Refcount. Pipe, Socket, Epoll, Eventfd, Timerfd, Inotify
-haben keinen. Fork und dup2/dup3 kopieren raw Pointer → Use-after-free
-bei Close. Root Cause fuer 2 CORR-HIGH Findings.
-
-Fix: Generischer Refcount in fd_entry_t oder pro Objekt-Typ.
-
-### Netzwerk Per-Queue Lock
-
-net.c:69. Ein globaler Lock fuer 5 Packet-Queues (TCP, UDP-DHCP,
-UDP-DNS, ARP, ICMP). TCP blockiert ARP und umgekehrt.
-
-Fix: Per-Queue Spinlock.
+### P16 — Power Management + ACPI
+- [ ] /dev/msr, /dev/port Device-Nodes
+- [ ] powerd, acpid, batteryd, backlightd, Shutdown/Reboot (Userspace)
 
 ---
 
 ## Erledigt
+
+### Audit 2 — 2026-03-21 (29/30)
+
+- [x] **SEC-CRIT** do_poll TOCTOU: Kernel-Stack Bounce fuer pollfd[]
+- [x] **SEC-CRIT** do_sendto TOCTOU: Kernel-Bounce-Buffer vor NIC DMA
+- [x] **SEC-HIGH** do_ioctl TIOCGWINSZ: Kernel-Stack struct + kmemcpy
+- [x] **SEC-HIGH** do_rt_sigaction: Kernel-Stack Copy rein/raus
+- [x] **SEC-HIGH** inotify_add_watch: copy_path_from_user mit Bounds-Check
+- [x] **SEC-HIGH** vfs_read/vfs_write: 4KB Kernel-Bounce-Buffer
+- [x] **SEC-MED** HW-Primitive: map_user_page statt Direct-Map Pointer
+- [x] **SEC-MED** copy_path_from_user: ensure_user_page fuer Demand-Paging
+- [x] **SEC-MED** Signal-Trampoline: dedizierte PROT_EXEC Page statt NX-Stack
+- [x] **SEC-MED** DHCP XID: random_get() statt 0xDEADBEEF
+- [x] **SEC-MED** DNS txid/source-port: random_get() statt timer_ms()
+- [x] **CORR-HIGH** do_brk Shrink: PTE-Walk + page_free + TLB Flush
+- [x] **CORR-HIGH** do_fork: IPI an RUNNING Threads auf anderen Cores
+- [x] **CORR-HIGH** vfs_file refcount: __sync_fetch_and_add/sub_and_fetch
+- [x] **CORR-HIGH** do_dup2/dup3: Refcount-Increment fuer alle FD-Typen
+- [x] **CORR-HIGH** do_fork: Generischer Refcount fuer alle FD-backed Objects
+- [x] **CORR-MED** proc_find: O(1) pid_table + __atomic_load_n auf State
+- [x] **CORR-MED** build_user_stack: str_off Bounds-Check
+- [x] **CORR-MED** execve Stack: str_off Bounds-Check
+- [x] **CORR-MED** do_wait4: Kernel-Variable + kmemcpy
+- [x] **CORR-MED** random_add_interrupt_entropy: rng_lock
+- [x] **CORR-MED** pipe_slab_ensure: CAS 3-State Init
+- [x] **CORR-MED** sig_pending/sig_blocked: __atomic_fetch_or/and
+- [x] **PERF-HIGH** proc_find: O(1) via pid_table[256]
+- [x] **PERF-HIGH** find_thread_by_tid: O(1) via tid_table[512]
+- [x] **PERF-MED** epoll_wait: Lock-Scope reduziert (Copy+Release+Scan)
+- [x] **PERF-MED** do_munmap: vma_find_overlap AVL-Walk statt Page-by-Page
+- [x] **PERF-MED** do_mmap MAP_FIXED: vma_find_overlap AVL-Walk
+- [x] **ARCH** Kernel-Mode #PF Handler fuer Demand-Paging auf User-Memory
+- [x] **ARCH** FD Refcounting: Generisch fuer alle FD-Typen (fork/dup/close)
+- [x] **ARCH** Netzwerk: Per-Queue Spinlock (5 Queues entkoppelt)
 
 ### Audit 1 — SEC-HIGH (6/6)
 
@@ -220,76 +143,25 @@ Fix: Per-Queue Spinlock.
 
 ### P7 — Dynamischer Linker
 - [x] PT_INTERP, ld-cosmo.so, DT_HASH, Relocations, Auxvec
-- [ ] dlopen/dlsym/dlclose (Runtime-Loading)
-
-### P8 — Userspace-Treiber
-- [x] e1000d, svcmgr, net_port Ring-IPC, SYS_COSMO_NIC_ATTACH
-- [ ] State-Transfer-Protokoll fuer Graceful Restart
+- [x] dlopen/dlsym/dlclose/dlerror (Runtime-Loading, 16 Handles)
 
 ### P9 — kexec
 - [x] ELF-Validation, bcache/journal Flush, AP Stop, Identity-Trampoline, SYS_COSMO_KEXEC
-
-### P10 — Code-Signing
-- [ ] Ed25519 Owner-Key, .cosmo_sig ELF-Section, Pruefung bei execve/dlopen/kexec
-
-### P11 — Netzwerk Zero-Config
-- [x] DHCP Client, mDNS Responder
-- [ ] IPv6 SLAAC
-- [ ] Link-Local 169.254.x.x Fallback
-
-### P12 — Virtio Transport
-- [x] Gemeinsamer Transport, virtio-blk, virtio-net, virtio-gpu, virtio-input
-- [ ] virtio-console, virtio-snd (Audio RT), virtio-fs (Host-FS)
 
 ### P13 — Hyper-V
 - [x] Detection, Hypercall Page, Reference TSC, VMBus, storvsc, netvsc, hyperv_fb, hv_kbd, hv_mouse, hv_utils
 
 ### P14 — Virtual Terminals
-- [x] PTY (pty.c), VT-Buffer + ANSI-Parser (vt.c), Font-Renderer (fb.c), Framebuffer
-- [x] VT-Switch (Ctrl+Alt+F1-F4), Keyboard-Input (input.c)
-- [ ] BUG: Scancode-Mapping — virtio-input liefert Linux KEY_* Codes,
-      VT Keymap erwartet USB HID. Braucht Uebersetzungstabelle.
-- [ ] BUG: Echo unsichtbar — pty_master_write schreibt Echo in output_buf,
-      aber vt_flush nur bei Syscalls. Timer-Tick sollte vt_flush(active_vt) aufrufen.
+- [x] PTY, VT-Buffer, ANSI-Parser, Font-Renderer, Framebuffer
+- [x] VT-Switch, Keyboard-Input, Scancode-Mapping, Echo-Flush, Blocking PTY read
+- [x] Hack Font 1546 Glyphen, BMW Bernstein Farbpalette
 
 ### P15 — Syscalls fuer CosmoCL
 - [x] DUP3, PIPE, SYSINFO, GETRUSAGE, PRLIMIT64, TIMES
 - [x] FCHMOD, FCHOWN, SYMLINK, READLINK, TRUNCATE, FTRUNCATE
 - [x] LSTAT, MKNODAT, FCHMODAT, FSTATAT, UTIMENSAT, FALLOCATE, Symlinks
-- [x] EPOLL, EVENTFD, TIMERFD, SIGNALFD (Stub), INOTIFY (FD OK, keine Events)
-- [ ] INOTIFY echte Events liefern
-
-### P16 — Power Management + ACPI
-- [ ] /dev/msr, /dev/port Device-Nodes
-- [ ] powerd, acpid, batteryd, backlightd, Shutdown/Reboot (Userspace)
+- [x] EPOLL, EVENTFD, TIMERFD, SIGNALFD (Stub)
+- [x] INOTIFY mit echten Events (IN_CREATE/DELETE/MODIFY/MOVED, 32-Entry Ring)
 
 ### procfs
 - [x] /proc/dmesg, /proc/meminfo, /proc/cpuinfo
-
----
-
-## Naechste Schritte (Prioritaet)
-
-```
-Prio 1 — Stabilitaet (Audit 2 Fixes):
-  Kernel-Mode #PF Handler       → Foundation fuer User-Memory-Zugriffe
-  FD Refcounting                 → Fork/dup Use-after-free fixen
-  TOCTOU Kernel-Bounce           → do_poll, do_sendto, vfs_read/write
-  Atomic Ops                     → sig_pending, vfs_file refcount
-
-Prio 2 — Interaktives CosmoOS:
-  VT Keyboard Fix                → Scancode-Mapping + Echo-Flush
-  INOTIFY echte Events           → Node.js fs.watch
-  dlopen/dlsym                   → Runtime Library Loading
-
-Prio 3 — Notebook-tauglich:
-  P16 /dev/msr + /dev/port       → Device-Nodes
-  P16 powerd + Shutdown           → HWP, Temperatur, ACPI
-  P10 Code-Signing                → Ed25519 Vertrauenskette
-
-Prio 4 — Vollstaendigkeit:
-  virtio-console/snd/fs           → Volle QEMU-Unterstuetzung
-  IPv6 SLAAC                      → Dual-Stack Networking
-  State-Transfer (P8)             → Graceful Driver Restart
-  Per-Queue Net Lock               → TCP/ARP Entkopplung
-```

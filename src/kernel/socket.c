@@ -103,15 +103,14 @@ long do_connect(int fd, const void *addr, int addrlen) {
 long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen) {
     (void)flags; (void)dest_addr; (void)addrlen;
-    if (len < 0 || len > 1400) return -EINVAL;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
-
-    /* TOCTOU fix: bounce user buffer into kernel before DMA */
-    uint8_t kbuf[1400];
-    kmemcpy(kbuf, buf, (size_t)len);
-    int r = net_tcp_send(&s->tcp, kbuf, (int)len);
+    /* Bounce user buffer to kernel to prevent TOCTOU with NIC DMA */
+    uint8_t kbuf[1500];
+    long todo = len > 1500 ? 1500 : len;
+    kmemcpy(kbuf, buf, (size_t)todo);
+    int r = net_tcp_send(&s->tcp, kbuf, (int)todo);
     return r < 0 ? -EIO : r;
 }
 
@@ -190,7 +189,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     if (!user_ok((uint64_t)fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)))
         return -EFAULT;
 
-    /* TOCTOU fix: copy pollfd array to kernel stack before use */
+    /* Bounce user pollfd[] to kernel stack to prevent TOCTOU */
     struct k_pollfd kfds[256];
     kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
 
@@ -211,7 +210,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             }
             if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
                 /* Check if TCP has buffered data or queue has packets */
-                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_count(&q_tcp) > 0)
+                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
                     kfds[i].revents |= POLLIN;
             }
             if (kfds[i].events & POLLOUT) {
@@ -220,7 +219,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
-            /* Copy results back to user */
+            /* Write back revents to user */
             kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
             return ready;
         }
