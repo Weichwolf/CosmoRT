@@ -156,18 +156,50 @@ Implementierung:
 
 ---
 
-## P10 — Live Patching (Zero-Downtime Kernel-Updates)
+## P10 — Code-Signing (Vertrauenskette)
 
-Fuer die ~2000 Zeilen Kernel-Core die nicht in Userspace koennen.
-Atomarer Function-Pointer-Swap ohne Reboot.
+Kein Live-Patching. Stattdessen: nur signierter Code darf ausgefuehrt
+werden. Schuetzt gegen Manipulation, korrupte Builds, Malware.
 
-Braucht:
-- -fpatchable-function-entry=16 beim Kernel-Build
-- Stop-the-world (alle CPUs synchronisieren)
-- Function-Pointer-Swap in der Patchable-Entry
-- Konsistenz-Check (kein Thread in alter Funktion)
+### Vertrauenskette
 
-Prioritaet: niedrig. kexec reicht fuer die meisten Faelle.
+```
+UEFI Secure Boot
+  → prueft Kernel-Signatur (Owner-Key)
+    → Kernel prueft Treiber-Signaturen (Hot-Swap)
+    → Kernel prueft Service-Signaturen (Restart)
+    → kexec nur mit signiertem Kernel
+    → dlopen nur signierte .so
+```
+
+### Owner-Key (KEIN zentraler Gatekeeper)
+
+- Einmalig generiert, auf dem Geraet gespeichert
+- Ed25519 (klein, schnell, sicher)
+- DU signierst was auf DEINEM Rechner laeuft
+- Kein App Store, kein Microsoft/Apple Trust-Modell
+- BeOS-Philosophie: dein Computer, deine Regeln
+
+### Workflow fuer Claude Code
+
+```
+Claude Code aendert Treiber
+→ cc -o new_driver.so driver.c
+→ cosmo_sign new_driver.so          (signiert mit Owner-Key)
+→ service-manager restart driver    (prueft Signatur)
+→ Hot-Swap passiert
+
+Ohne gueltigen Key: kein kexec, kein Treiber-Load, kein dlopen.
+Schuetzt auch gegen korrupte Builds (Hash stimmt nicht).
+```
+
+### Implementierung
+
+- cosmo_sign Tool (Host + Target): Ed25519 Sign/Verify (~200 Zeilen)
+- ELF-Section .cosmo_sig fuer Signatur (64 Bytes am Ende)
+- Kernel prueft bei execve/dlopen/kexec
+- Owner-Key in /etc/cosmo/owner.pub (oeffentlich)
+- Private Key in /etc/cosmo/owner.key (nur root-lesbar, kein Export)
 
 ---
 
@@ -178,11 +210,11 @@ P6 Signal User-Handler     → Ruby/Node.js auf CosmoRT
 P7 Dynamischer Linker      → Hot-Reload fuer Claude Code
 P8 Userspace-Treiber       → Crash-Isolation, Hot-Reload
 P9 kexec                   → Kernel-Updates ohne Reboot
-P10 Live Patching          → Zero-Downtime (langfristig)
+P10 Code-Signing           → Vertrauenskette, kein unsignierter Code
 ```
 
 Der kritische Pfad fuer "Claude Code entwickelt CosmoOS":
-P6 (Signale) → Claude Code laeuft → P7 (dyn. Linker) → Live-Entwicklung
+P6 (Signale) → Claude Code laeuft → P7 (dyn. Linker) → P10 (Signing) → sichere Live-Entwicklung
 
 ---
 
