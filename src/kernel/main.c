@@ -95,6 +95,10 @@ void kernel_main(struct boot_info *info) {
     extern void hw_init(void);
     hw_init();
 
+    /* Net port (userspace NIC driver bridge) */
+    extern void net_port_init(void);
+    net_port_init();
+
     /* VFS (ramfs) */
     vfs_init();
 

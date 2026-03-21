@@ -14,6 +14,7 @@
 #include "memops.h"
 #include "socket.h"
 #include "hw.h"
+#include "net_port.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -489,6 +490,7 @@ static void do_exit(int status) {
         process_t *p = t->proc;
         t->state = THREAD_DEAD;
         if (p) {
+            net_port_check_driver((int)p->pid);
             p->state = PROC_ZOMBIE;
             p->exit_code = status;
 
@@ -1159,6 +1161,13 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_COSMO_FW_LOAD: {
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         return cosmo_fw_load((const char *)a1, (void **)a2, (size_t *)a3);
+    }
+    case SYS_COSMO_NIC_ATTACH: {
+        /* a1 = ptr to { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } */
+        if (!user_ok(a1, 22)) return -EFAULT;
+        struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } *args =
+            (void *)a1;
+        return net_port_attach(args->shm_phys, (size_t)args->shm_size, args->mac);
     }
 
     default:

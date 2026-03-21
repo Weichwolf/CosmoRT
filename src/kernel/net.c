@@ -12,9 +12,13 @@ static const nic_driver_t *nic;
 
 void net_nic_register(const nic_driver_t *driver) {
     nic = driver;
-    serial_puts("net: NIC registered: ");
-    serial_puts(driver->name);
-    serial_putchar('\n');
+    if (driver) {
+        serial_puts("net: NIC registered: ");
+        serial_puts(driver->name);
+        serial_putchar('\n');
+    } else {
+        serial_puts("net: NIC deregistered\n");
+    }
 }
 
 /* NIC access macros */

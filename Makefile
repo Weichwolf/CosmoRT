@@ -57,6 +57,7 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/vfs.o \
            $(BUILD)/kernel/hw.o \
            $(BUILD)/kernel/net.o \
+           $(BUILD)/kernel/net_port.o \
            $(BUILD)/drivers/net/e1000.o \
            $(BUILD)/kernel/socket.o
 
