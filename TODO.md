@@ -58,7 +58,7 @@ Prio 3 — Vollstaendigkeit:
 
 ## Erledigt
 
-### Audit 2 — 2026-03-21 (29/30)
+### Audit 2 — 2026-03-21 (30/30)
 
 - [x] **SEC-CRIT** do_poll TOCTOU: Kernel-Stack Bounce fuer pollfd[]
 - [x] **SEC-CRIT** do_sendto TOCTOU: Kernel-Bounce-Buffer vor NIC DMA
