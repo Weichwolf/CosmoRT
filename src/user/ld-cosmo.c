@@ -3,7 +3,8 @@
  * Minimal userspace ELF interpreter. Freestanding, no libc.
  * Parses auxv, applies R_X86_64_RELATIVE relocations for PIE,
  * resolves GLOB_DAT/JUMP_SLOT/64 via DT_HASH, loads one level
- * of DT_NEEDED (stub for now), jumps to program entry.
+ * of DT_NEEDED, provides dlopen/dlsym/dlclose/dlerror, jumps
+ * to program entry.
  */
 
 /* ── Types (freestanding, no stdint.h) ──────────── */
@@ -184,8 +185,14 @@ typedef struct {
 #define DT_RELASZ    8
 #define DT_RELAENT   9
 #define DT_STRSZ     10
+#define DT_INIT      12
+#define DT_FINI      13
 #define DT_PLTREL    20
 #define DT_JMPREL    23
+#define DT_INIT_ARRAY   25
+#define DT_FINI_ARRAY   26
+#define DT_INIT_ARRAYSZ 27
+#define DT_FINI_ARRAYSZ 28
 
 #define ELF64_R_TYPE(i) ((uint32_t)((i) & 0xffffffff))
 #define ELF64_R_SYM(i)  ((uint32_t)((i) >> 32))
@@ -211,6 +218,45 @@ typedef struct {
 #define AT_BASE    7
 #define AT_ENTRY   9
 
+/* ── dlopen constants ──────────────────────────── */
+
+#define RTLD_LAZY    1
+#define RTLD_NOW     2
+#define RTLD_DEFAULT ((void *)(uint64_t)-1)
+
+/* ── dl_handle: loaded shared object ─────────────── */
+
+#define DLOPEN_MAX 16
+
+typedef struct {
+    uint64_t    base;       /* relocation base (map_addr - align_min) */
+    uint64_t    map_addr;   /* mmap return value (for munmap) */
+    uint64_t    map_size;   /* total mapped size (for munmap) */
+    Elf64_Sym  *symtab;     /* DT_SYMTAB (mapped) */
+    const char *strtab;     /* DT_STRTAB (mapped) */
+    uint32_t   *hashtab;    /* DT_HASH (mapped) */
+    uint64_t    init;       /* DT_INIT address (0 if none) */
+    uint64_t    fini;       /* DT_FINI address (0 if none) */
+    uint64_t    init_array; /* DT_INIT_ARRAY address (0 if none) */
+    uint64_t    init_arraysz;
+    uint64_t    fini_array; /* DT_FINI_ARRAY address (0 if none) */
+    uint64_t    fini_arraysz;
+    int         in_use;
+    int         refcount;
+} dl_handle_t;
+
+static dl_handle_t dl_handles[DLOPEN_MAX];
+static char dl_errbuf[128];
+static int  dl_err_set;
+
+static void dl_set_error(const char *msg) {
+    size_t n = strlen(msg);
+    if (n >= sizeof(dl_errbuf)) n = sizeof(dl_errbuf) - 1;
+    memcpy(dl_errbuf, msg, n);
+    dl_errbuf[n] = '\0';
+    dl_err_set = 1;
+}
+
 /* ── ELF hash ───────────────────────────────────── */
 
 static uint32_t elf_hash(const char *name) {
@@ -232,6 +278,14 @@ typedef struct {
     const char *strtab;
     uint32_t   *hash;      /* DT_HASH: [nbucket, nchain, buckets..., chains...] */
 } lib_t;
+
+/* Main program lib_t (set during _start, used by dlsym RTLD_DEFAULT) */
+static lib_t dl_main_lib;
+static int   dl_main_lib_valid;
+
+/* All DT_NEEDED libs for RTLD_DEFAULT search */
+static lib_t dl_needed_libs[8];
+static int   dl_needed_libs_count;
 
 /* Look up a symbol by name in a library using DT_HASH.
  * Returns symbol value (base-adjusted) or 0 if not found. */
@@ -554,6 +608,370 @@ static int load_library(const char *name, lib_t *out) {
     return 0;
 }
 
+/* ── dlopen/dlsym/dlclose/dlerror ────────────────── */
+
+typedef void (*init_fn_t)(void);
+
+void *dlopen(const char *filename, int flags) {
+    (void)flags; /* RTLD_LAZY treated as RTLD_NOW — no lazy binding */
+
+    /* NULL filename: return pseudo-handle to main executable */
+    if (!filename) {
+        if (!dl_main_lib_valid) {
+            dl_set_error("dlopen: main program not linked dynamically");
+            return NULL;
+        }
+        /* Use sentinel address as "main program" handle */
+        return (void *)1;
+    }
+
+    /* Find a free slot */
+    dl_handle_t *h = NULL;
+    int slot = -1;
+    for (int i = 0; i < DLOPEN_MAX; i++) {
+        if (!dl_handles[i].in_use) { h = &dl_handles[i]; slot = i; break; }
+    }
+    if (!h) {
+        dl_set_error("dlopen: too many open libraries");
+        return NULL;
+    }
+
+    /* Build path: if filename contains '/', use as-is; else prepend /lib/ */
+    char path[256];
+    int has_slash = 0;
+    for (const char *p = filename; *p; p++) {
+        if (*p == '/') { has_slash = 1; break; }
+    }
+    if (has_slash) {
+        size_t n = strlen(filename);
+        if (n >= sizeof(path)) {
+            dl_set_error("dlopen: path too long");
+            return NULL;
+        }
+        memcpy(path, filename, n + 1);
+    } else {
+        size_t plen = 5; /* "/lib/" */
+        size_t nlen = strlen(filename);
+        if (plen + nlen >= sizeof(path)) {
+            dl_set_error("dlopen: path too long");
+            return NULL;
+        }
+        memcpy(path, "/lib/", 5);
+        memcpy(path + 5, filename, nlen + 1);
+    }
+
+    /* Open file */
+    long fd = sc3(SYS_open, (long)path, O_RDONLY, 0);
+    if (fd < 0) {
+        dl_set_error("dlopen: cannot open library");
+        return NULL;
+    }
+
+    /* Read entire file into anonymous memory */
+    size_t bufcap = 256 * 1024;
+    long buf_addr = sc6(SYS_mmap, 0, (long)bufcap, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (buf_addr < 0) {
+        sc1(SYS_close, fd);
+        dl_set_error("dlopen: mmap failed for read buffer");
+        return NULL;
+    }
+    uint8_t *filebuf = (uint8_t *)buf_addr;
+    size_t filesize = 0;
+
+    for (;;) {
+        if (filesize >= bufcap) break;
+        long n = sc3(SYS_read, fd, (long)(filebuf + filesize), (long)(bufcap - filesize));
+        if (n <= 0) break;
+        filesize += (size_t)n;
+    }
+    sc1(SYS_close, fd);
+
+    /* Validate ELF */
+    if (filesize < sizeof(Elf64_Ehdr)) {
+        sc6(SYS_munmap, buf_addr, (long)bufcap, 0, 0, 0, 0);
+        dl_set_error("dlopen: file too small for ELF header");
+        return NULL;
+    }
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)filebuf;
+    if (eh->e_ident[0] != 0x7f || eh->e_ident[1] != 'E' ||
+        eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F') {
+        sc6(SYS_munmap, buf_addr, (long)bufcap, 0, 0, 0, 0);
+        dl_set_error("dlopen: bad ELF magic");
+        return NULL;
+    }
+
+    /* Compute total mapping extent */
+    uint64_t min_vaddr = (uint64_t)-1, max_vaddr = 0;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (eh->e_phoff + (uint64_t)i * eh->e_phentsize + sizeof(Elf64_Phdr) > filesize)
+            break;
+        Elf64_Phdr *ph = (Elf64_Phdr *)(filebuf + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type == PT_LOAD) {
+            if (ph->p_vaddr < min_vaddr) min_vaddr = ph->p_vaddr;
+            uint64_t end = ph->p_vaddr + ph->p_memsz;
+            if (end > max_vaddr) max_vaddr = end;
+        }
+    }
+
+    if (min_vaddr == (uint64_t)-1 || max_vaddr == 0) {
+        sc6(SYS_munmap, buf_addr, (long)bufcap, 0, 0, 0, 0);
+        dl_set_error("dlopen: no PT_LOAD segments");
+        return NULL;
+    }
+
+    uint64_t align_min = min_vaddr & ~0xFFFULL;
+    uint64_t total_size = ((max_vaddr + 0xFFF) & ~0xFFFULL) - align_min;
+
+    /* Reserve address range */
+    long map_base = sc6(SYS_mmap, 0, (long)total_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map_base < 0) {
+        sc6(SYS_munmap, buf_addr, (long)bufcap, 0, 0, 0, 0);
+        dl_set_error("dlopen: mmap failed for library segments");
+        return NULL;
+    }
+    uint64_t base = (uint64_t)map_base - align_min;
+
+    /* Copy PT_LOAD segments, zero BSS */
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (eh->e_phoff + (uint64_t)i * eh->e_phentsize + sizeof(Elf64_Phdr) > filesize)
+            break;
+        Elf64_Phdr *ph = (Elf64_Phdr *)(filebuf + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        uint64_t vaddr = base + ph->p_vaddr;
+        if (ph->p_filesz > 0 && ph->p_offset + ph->p_filesz <= filesize)
+            memcpy((void *)vaddr, filebuf + ph->p_offset, (size_t)ph->p_filesz);
+        if (ph->p_memsz > ph->p_filesz)
+            memset((void *)(vaddr + ph->p_filesz), 0, (size_t)(ph->p_memsz - ph->p_filesz));
+    }
+
+    /* Set segment permissions */
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (eh->e_phoff + (uint64_t)i * eh->e_phentsize + sizeof(Elf64_Phdr) > filesize)
+            break;
+        Elf64_Phdr *ph = (Elf64_Phdr *)(filebuf + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        int prot = 0;
+        if (ph->p_flags & PF_R) prot |= PROT_READ;
+        if (ph->p_flags & PF_W) prot |= PROT_WRITE;
+        if (ph->p_flags & PF_X) prot |= PROT_EXEC;
+        uint64_t seg_start = (base + ph->p_vaddr) & ~0xFFFULL;
+        uint64_t seg_end = (base + ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
+        sc3(SYS_mprotect, (long)seg_start, (long)(seg_end - seg_start), prot);
+    }
+
+    /* Find PT_DYNAMIC in mapped memory */
+    Elf64_Dyn *dyn_mapped = NULL;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (eh->e_phoff + (uint64_t)i * eh->e_phentsize + sizeof(Elf64_Phdr) > filesize)
+            break;
+        Elf64_Phdr *ph = (Elf64_Phdr *)(filebuf + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type == PT_DYNAMIC) {
+            dyn_mapped = (Elf64_Dyn *)(base + ph->p_vaddr);
+            break;
+        }
+    }
+
+    /* Done with file buffer */
+    sc6(SYS_munmap, buf_addr, (long)bufcap, 0, 0, 0, 0);
+
+    /* Populate handle */
+    h->base = base;
+    h->map_addr = (uint64_t)map_base;
+    h->map_size = total_size;
+    h->symtab = NULL;
+    h->strtab = NULL;
+    h->hashtab = NULL;
+    h->init = 0;
+    h->fini = 0;
+    h->init_array = 0;
+    h->init_arraysz = 0;
+    h->fini_array = 0;
+    h->fini_arraysz = 0;
+    h->in_use = 1;
+    h->refcount = 1;
+
+    if (dyn_mapped) {
+        /* Parse dynamic section */
+        Elf64_Rela *rela = NULL, *jmprel = NULL;
+        uint64_t relasz = 0, pltrelsz = 0;
+
+        for (Elf64_Dyn *d = dyn_mapped; d->d_tag != DT_NULL; d++) {
+            switch (d->d_tag) {
+            case DT_SYMTAB:       h->symtab = (Elf64_Sym *)(base + d->d_val); break;
+            case DT_STRTAB:       h->strtab = (const char *)(base + d->d_val); break;
+            case DT_HASH:         h->hashtab = (uint32_t *)(base + d->d_val); break;
+            case DT_RELA:         rela = (Elf64_Rela *)(base + d->d_val); break;
+            case DT_RELASZ:       relasz = d->d_val; break;
+            case DT_JMPREL:       jmprel = (Elf64_Rela *)(base + d->d_val); break;
+            case DT_PLTRELSZ:     pltrelsz = d->d_val; break;
+            case DT_INIT:         h->init = base + d->d_val; break;
+            case DT_FINI:         h->fini = base + d->d_val; break;
+            case DT_INIT_ARRAY:   h->init_array = base + d->d_val; break;
+            case DT_INIT_ARRAYSZ: h->init_arraysz = d->d_val; break;
+            case DT_FINI_ARRAY:   h->fini_array = base + d->d_val; break;
+            case DT_FINI_ARRAYSZ: h->fini_arraysz = d->d_val; break;
+            default: break;
+            }
+        }
+
+        /* Apply relocations. Search main program + all loaded libs for symbols. */
+        lib_t self_lib = { base, h->symtab, h->strtab, h->hashtab };
+        lib_t search_libs[DLOPEN_MAX + 2];
+        int search_count = 0;
+
+        /* Self first */
+        search_libs[search_count++] = self_lib;
+        /* Main program */
+        if (dl_main_lib_valid)
+            search_libs[search_count++] = dl_main_lib;
+        /* Other loaded libs */
+        for (int i = 0; i < dl_needed_libs_count && search_count < DLOPEN_MAX + 2; i++)
+            search_libs[search_count++] = dl_needed_libs[i];
+
+        if (rela && relasz)
+            apply_rela(rela, relasz / sizeof(Elf64_Rela), base,
+                       h->symtab, h->strtab, search_libs, search_count);
+        if (jmprel && pltrelsz)
+            apply_rela(jmprel, pltrelsz / sizeof(Elf64_Rela), base,
+                       h->symtab, h->strtab, search_libs, search_count);
+    }
+
+    /* Run DT_INIT */
+    if (h->init) {
+        init_fn_t fn = (init_fn_t)h->init;
+        fn();
+    }
+
+    /* Run DT_INIT_ARRAY */
+    if (h->init_array && h->init_arraysz) {
+        uint64_t count = h->init_arraysz / sizeof(uint64_t);
+        uint64_t *arr = (uint64_t *)h->init_array;
+        for (uint64_t i = 0; i < count; i++) {
+            if (arr[i]) {
+                init_fn_t fn = (init_fn_t)arr[i];
+                fn();
+            }
+        }
+    }
+
+    /* Return opaque handle: pointer offset by 2 to distinguish from NULL and (void*)1 */
+    return (void *)(uint64_t)(slot + 2);
+}
+
+void *dlsym(void *handle, const char *symbol) {
+    if (!symbol) {
+        dl_set_error("dlsym: NULL symbol name");
+        return NULL;
+    }
+
+    /* RTLD_DEFAULT: search all loaded objects */
+    if (handle == RTLD_DEFAULT || handle == NULL) {
+        /* Search main program first */
+        if (dl_main_lib_valid) {
+            uint64_t val = lib_lookup(&dl_main_lib, symbol);
+            if (val) return (void *)val;
+        }
+        /* Search all DT_NEEDED libs */
+        for (int i = 0; i < dl_needed_libs_count; i++) {
+            uint64_t val = lib_lookup(&dl_needed_libs[i], symbol);
+            if (val) return (void *)val;
+        }
+        /* Search dlopen'd handles */
+        for (int i = 0; i < DLOPEN_MAX; i++) {
+            if (!dl_handles[i].in_use) continue;
+            lib_t lib = { dl_handles[i].base, dl_handles[i].symtab,
+                          dl_handles[i].strtab, dl_handles[i].hashtab };
+            uint64_t val = lib_lookup(&lib, symbol);
+            if (val) return (void *)val;
+        }
+        dl_set_error("dlsym: symbol not found");
+        return NULL;
+    }
+
+    /* handle == (void*)1: main program */
+    if (handle == (void *)1) {
+        if (!dl_main_lib_valid) {
+            dl_set_error("dlsym: main program has no dynamic symbols");
+            return NULL;
+        }
+        uint64_t val = lib_lookup(&dl_main_lib, symbol);
+        if (val) return (void *)val;
+        dl_set_error("dlsym: symbol not found in main program");
+        return NULL;
+    }
+
+    /* Normal handle: slot index + 2 */
+    int slot = (int)((uint64_t)handle - 2);
+    if (slot < 0 || slot >= DLOPEN_MAX || !dl_handles[slot].in_use) {
+        dl_set_error("dlsym: invalid handle");
+        return NULL;
+    }
+
+    dl_handle_t *h = &dl_handles[slot];
+    lib_t lib = { h->base, h->symtab, h->strtab, h->hashtab };
+    uint64_t val = lib_lookup(&lib, symbol);
+    if (val) return (void *)val;
+
+    dl_set_error("dlsym: symbol not found");
+    return NULL;
+}
+
+int dlclose(void *handle) {
+    if (!handle || handle == (void *)1 || handle == RTLD_DEFAULT) {
+        dl_set_error("dlclose: invalid handle");
+        return -1;
+    }
+
+    int slot = (int)((uint64_t)handle - 2);
+    if (slot < 0 || slot >= DLOPEN_MAX || !dl_handles[slot].in_use) {
+        dl_set_error("dlclose: invalid handle");
+        return -1;
+    }
+
+    dl_handle_t *h = &dl_handles[slot];
+    h->refcount--;
+    if (h->refcount > 0) return 0;
+
+    /* Run DT_FINI_ARRAY (in reverse order) */
+    if (h->fini_array && h->fini_arraysz) {
+        uint64_t count = h->fini_arraysz / sizeof(uint64_t);
+        uint64_t *arr = (uint64_t *)h->fini_array;
+        for (uint64_t i = count; i > 0; i--) {
+            if (arr[i - 1]) {
+                init_fn_t fn = (init_fn_t)arr[i - 1];
+                fn();
+            }
+        }
+    }
+
+    /* Run DT_FINI */
+    if (h->fini) {
+        init_fn_t fn = (init_fn_t)h->fini;
+        fn();
+    }
+
+    /* Unmap the mapped region */
+    sc6(SYS_munmap, (long)h->map_addr, (long)h->map_size, 0, 0, 0, 0);
+
+    h->in_use = 0;
+    h->symtab = NULL;
+    h->strtab = NULL;
+    h->hashtab = NULL;
+    h->base = 0;
+    h->map_addr = 0;
+    h->map_size = 0;
+
+    return 0;
+}
+
+char *dlerror(void) {
+    if (!dl_err_set) return NULL;
+    dl_err_set = 0;
+    return dl_errbuf;
+}
+
 /* ── Entry point ────────────────────────────────── */
 
 void _start(void) {
@@ -701,6 +1119,13 @@ void _start(void) {
     if (jmprel && pltrelsz)
         apply_rela(jmprel, pltrelsz / sizeof(Elf64_Rela), prog_base,
                    prog_lib.symtab, prog_lib.strtab, libs, lib_count);
+
+    /* Expose main program and DT_NEEDED libs to dlsym(RTLD_DEFAULT) */
+    dl_main_lib = prog_lib;
+    dl_main_lib_valid = 1;
+    for (int i = 0; i < lib_count && i < 8; i++)
+        dl_needed_libs[i] = libs[i];
+    dl_needed_libs_count = lib_count < 8 ? lib_count : 8;
 
     puts("ld-cosmo: relocations applied, jumping to entry\n");
 
