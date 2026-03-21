@@ -2,9 +2,8 @@
 
 Stand: 2026-03-21.
 
-ktest: 38 PASS, 0 FAIL, 0 SKIP.
-Kernel: 13664 Zeilen (9871 C + 1718 ASM + 2075 Headers).
-93 Syscalls implementiert. CosmoFS persistent auf virtio-blk.
+ktest: 51 PASS, 0 FAIL, 0 SKIP.
+94 Syscalls implementiert. CosmoFS persistent auf virtio-blk.
 
 ---
 
@@ -56,41 +55,17 @@ Kernel: 13664 Zeilen (9871 C + 1718 ASM + 2075 Headers).
 - [x] mkfs.cosmo (tools/mkfs.c, 181 Zeilen)
 - [x] disk.img 64MB fuer QEMU
 
----
-
-## P6 — Signal User-Handler + sigreturn
-
-Signal-Delivery an Userspace fehlt: check_pending_signals() macht
-SIG_DFL (kill) und SIG_IGN, aber KEINE User-Handler.
-
-Fuer Ruby/Node.js auf CosmoRT brauchen wir:
-- Signal-Frame auf User-Stack pushen (Register + siginfo_t)
-- sigreturn Syscall (SYS_RT_SIGRETURN 15) zum Zurueckkehren
-- SA_SIGINFO Support (siginfo_t + ucontext_t an Handler)
-- SA_RESTART fuer syscall restart nach Signal
-
-Ohne das: kein GC (Ruby), kein V8 (Node.js), kein Claude Code.
-
-### Implementierung (~500 Zeilen)
-
-```
-1. Signal-Frame Layout (auf User-Stack):
-   [padding fuer Alignment]
-   [ucontext_t: uc_mcontext mit allen Registern]
-   [siginfo_t: si_signo, si_errno, si_code, ...]
-   [sa_restorer Trampoline-Adresse (→ SYS_RT_SIGRETURN)]
-
-2. deliver_signal() in sched_preempt/syscall_return:
-   - User-Stack-Pointer senken
-   - Signal-Frame schreiben
-   - RIP auf Handler setzen, RDI=signo, RSI=&siginfo, RDX=&ucontext
-   - Return to userspace → Handler laeuft
-
-3. SYS_RT_SIGRETURN:
-   - Signal-Frame vom Stack lesen
-   - Register wiederherstellen
-   - Zurueck zum unterbrochenen Code
-```
+### P6 — Signal User-Handler + sigreturn
+- [x] k_sigaction struct (handler, flags, restorer, mask) in process_t
+- [x] deliver_signal(): Signal-Frame auf User-Stack (ucontext + siginfo)
+- [x] SYS_RT_SIGRETURN (15): Register aus Signal-Frame wiederherstellen
+- [x] SA_RESTORER Support (libc-kompatibler Trampoline)
+- [x] On-stack Trampoline Fallback (mov rax,15; syscall)
+- [x] Signal-Delivery in SYSCALL-Path, INT 0x80-Path, Timer-Preempt-Path
+- [x] Signal-Blocking waehrend Handler (sa_mask + auto-block)
+- [x] sigprocmask-basiertes Blocking/Unblocking mit Delivery bei Unblock
+- [x] Fork erbt sig_actions + sig_blocked
+- [x] 13 Signal-Tests in ktest (SIG_IGN, User-Handler, sigreturn, blocking)
 
 ---
 
@@ -363,7 +338,6 @@ Kein CPUID Match? → PCI Scan → virtio-Treiber laden.
 
 ```
 Prio 1 (jetzt):
-  P6  Signal User-Handler     → Ruby/Node.js auf CosmoRT
   P13 Hyper-V Support         → Primaere Entwicklungsplattform
 
 Prio 2 (wenn Hyper-V laeuft):

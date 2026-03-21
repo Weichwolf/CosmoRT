@@ -10,6 +10,19 @@
 #include "fd.h"
 #include "vma.h"
 
+/* Signal action (Linux-compatible layout for rt_sigaction) */
+struct k_sigaction {
+    void    *sa_handler;   /* SIG_DFL=0, SIG_IGN=1, or handler address */
+    uint64_t sa_flags;
+    void    *sa_restorer;
+    uint64_t sa_mask;
+};
+
+/* SA_* flags */
+#define SA_SIGINFO   0x00000004
+#define SA_RESTART   0x10000000
+#define SA_RESTORER  0x04000000
+
 /* Process states */
 #define PROC_FREE    0
 #define PROC_ALIVE   1
@@ -38,7 +51,7 @@ typedef struct process {
     /* Signals */
     uint64_t    sig_pending;        /* bitmask of pending signals */
     uint64_t    sig_blocked;        /* bitmask of blocked signals (sigprocmask) */
-    void       *sig_handlers[32];   /* SIG_DFL=0, SIG_IGN=1, or handler address */
+    struct k_sigaction sig_actions[32]; /* per-signal action (handler, flags, restorer, mask) */
 
     /* Working directory */
     char        cwd[256];

@@ -569,6 +569,12 @@ long do_fork(void) {
         if (!parent->cwd[ci]) break;
     }
 
+    /* Inherit signal state */
+    child->sig_pending = 0; /* child starts with no pending signals */
+    child->sig_blocked = parent->sig_blocked;
+    for (int si = 0; si < 32; si++)
+        child->sig_actions[si] = parent->sig_actions[si];
+
     /* Duplicate fd_table — increment refcount on shared vfs_file objects */
     for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];

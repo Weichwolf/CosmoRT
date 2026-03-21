@@ -295,6 +295,29 @@ void sched_preempt(void *frame_ptr) {
     /* Check if from Ring 3 (CS RPL = 3) */
     if ((f[18] & 3) != 3) return; /* kernel mode — don't preempt */
 
+    /* Check signals even without context switch. Save frame into thread_t,
+     * run signal delivery, write back (only if signals were actually delivered). */
+    extern void check_pending_signals(void);
+    {
+        process_t *p = cur->proc;
+        uint64_t deliverable = p ? (p->sig_pending & ~p->sig_blocked) : 0;
+        if (deliverable) {
+            /* Save frame → thread_t */
+            cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
+            cur->r11 = f[4]; cur->r10 = f[5]; cur->r9 = f[6];  cur->r8 = f[7];
+            cur->rbp = f[8]; cur->rdi = f[9]; cur->rsi = f[10]; cur->rdx = f[11];
+            cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
+            cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
+            check_pending_signals();
+            /* Write back (signal handler may have modified rip/rsp/rdi/rsi/rdx) */
+            f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;
+            f[4] = cur->r11; f[5] = cur->r10; f[6] = cur->r9;  f[7] = cur->r8;
+            f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
+            f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
+            f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
+        }
+    }
+
     /* SCHED_FIFO: never preempt (runs until yield/block) */
     if (cur->sched_policy == SCHED_FIFO) return;
 
@@ -351,6 +374,12 @@ void sched_preempt(void *frame_ptr) {
                          "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
     }
 
+    /* Check for pending signals before returning to userspace.
+     * deliver_signal modifies next->rip/rsp/rdi/rsi/rdx, so check
+     * BEFORE writing thread state into the interrupt frame. */
+    extern void check_pending_signals(void);
+    check_pending_signals();
+
     /* Restore next thread context into interrupt frame */
     f[0] = next->r15; f[1] = next->r14; f[2] = next->r13; f[3] = next->r12;
     f[4] = next->r11; f[5] = next->r10; f[6] = next->r9;  f[7] = next->r8;
@@ -358,10 +387,6 @@ void sched_preempt(void *frame_ptr) {
     f[12] = next->rcx; f[13] = next->rbx; f[14] = next->rax;
     f[17] = next->rip; f[18] = 0x2B; /* CS user code 64 */
     f[19] = next->rflags; f[20] = next->rsp; f[21] = 0x23; /* SS user data */
-
-    /* Check for pending signals before returning to userspace */
-    extern void check_pending_signals(void);
-    check_pending_signals();
 }
 
 /* Scheduler init */

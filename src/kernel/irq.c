@@ -117,12 +117,41 @@ void irq_register(int vector, irq_handler_t handler) {
 void irq_dispatch(int vector, irq_frame_t *frame) {
     /* INT 0x80: syscall from Ring 3 (legacy path) */
     if (vector == 0x80) {
+        long sysnum = (long)frame->rax;
         frame->rax = (uint64_t)sys_handler(
-            (long)frame->rax, (long)frame->rdi, (long)frame->rsi,
+            sysnum, (long)frame->rdi, (long)frame->rsi,
             (long)frame->rdx, (long)frame->r10, (long)frame->r8,
             (long)frame->r9);
-        extern void check_pending_signals(void);
-        check_pending_signals();
+        /* Signal delivery for INT 0x80 path: sync irq_frame ↔ thread_t */
+        if (sysnum != 15 /* SYS_RT_SIGRETURN */) {
+            extern void check_pending_signals(void);
+            thread_t *t = percpu_self()->current_thread;
+            if (t && t->proc && (t->proc->sig_pending & ~t->proc->sig_blocked)) {
+                /* Save irq frame → thread_t */
+                t->r15 = frame->r15; t->r14 = frame->r14;
+                t->r13 = frame->r13; t->r12 = frame->r12;
+                t->r11 = frame->r11; t->r10 = frame->r10;
+                t->r9  = frame->r9;  t->r8  = frame->r8;
+                t->rbp = frame->rbp; t->rdi = frame->rdi;
+                t->rsi = frame->rsi; t->rdx = frame->rdx;
+                t->rcx = frame->rcx; t->rbx = frame->rbx;
+                t->rax = frame->rax;
+                t->rip = frame->rip; t->rflags = frame->rflags;
+                t->rsp = frame->rsp;
+                check_pending_signals();
+                /* Write back thread_t → irq frame */
+                frame->r15 = t->r15; frame->r14 = t->r14;
+                frame->r13 = t->r13; frame->r12 = t->r12;
+                frame->r11 = t->r11; frame->r10 = t->r10;
+                frame->r9  = t->r9;  frame->r8  = t->r8;
+                frame->rbp = t->rbp; frame->rdi = t->rdi;
+                frame->rsi = t->rsi; frame->rdx = t->rdx;
+                frame->rcx = t->rcx; frame->rbx = t->rbx;
+                frame->rax = t->rax;
+                frame->rip = t->rip; frame->rflags = t->rflags;
+                frame->rsp = t->rsp;
+            }
+        }
         return;
     }
 
