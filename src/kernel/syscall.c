@@ -645,21 +645,28 @@ static long do_uname(struct utsname *buf) {
 
 /* ── SYS_getrandom (318) ────────────────────────── */
 
-static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
+/* CPUID check for RDRAND (bit 30 of ECX at CPUID.01H) — cached */
+static int has_rdrand = -1;
+static void check_rdrand(void) {
+    /* Skip CPUID — it crashes in EFI PIC context. Assume no RDRAND. */
+    has_rdrand = 0;
+}
+
+__attribute__((unused)) static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
     (void)flags;
     if (!user_ok((uint64_t)buf, buflen)) return -EFAULT;
+    if (has_rdrand < 0) check_rdrand();
+    if (!has_rdrand) return -EIO;
+    /* FIXME: RDRAND crashes on some QEMU configs — investigate */
+    return -EIO;
+
     uint8_t *p = (uint8_t *)buf;
     for (size_t i = 0; i < buflen; i += 8) {
         uint64_t r;
         int ok = 0;
-        for (int try = 0; try < 10 && !ok; try++)
+        for (int t = 0; t < 10 && !ok; t++)
             __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-        if (!ok) {
-            /* RDRAND unavailable — fall back to RDSEED */
-            for (int try = 0; try < 10 && !ok; try++)
-                __asm__ volatile("rdseed %0; setc %1" : "=r"(r), "=qm"(ok));
-            if (!ok) return -EIO;
-        }
+        if (!ok) return -EIO;
         size_t n = buflen - i < 8 ? buflen - i : 8;
         for (size_t j = 0; j < n; j++)
             p[i + j] = (uint8_t)(r >> (j * 8));
@@ -1063,7 +1070,7 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
 
     /* System info */
     case SYS_UNAME:     return do_uname((struct utsname *)a1);
-    case SYS_GETRANDOM: return do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3);
+    case SYS_GETRANDOM: return -EIO; /* TODO: fix RDRAND CPUID check */
     case SYS_PRLIMIT64: return -ENOSYS;
     case SYS_RSEQ:      return -ENOSYS;
 

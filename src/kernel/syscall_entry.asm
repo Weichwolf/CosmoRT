@@ -20,9 +20,8 @@ syscall_entry_asm:
     swapgs
     mov [gs:8], rsp             ; save user RSP
     mov rsp, [gs:0]             ; load kernel RSP
-    sti
 
-    ; Save all user registers
+    ; Save ALL user registers BEFORE enabling interrupts
     push rcx                    ; +0x70: user RIP
     push r11                    ; +0x68: user RFLAGS
     push rax                    ; +0x60: syscall number
@@ -39,8 +38,9 @@ syscall_entry_asm:
     push r14                    ; +0x08
     push r15                    ; +0x00
 
-    ; Store frame pointer in percpu (for clone())
+    ; Store frame pointer THEN enable interrupts (P0 fix: sti race)
     mov [gs:32], rsp
+    sti
 
     ; Call sys_handler(num, a1, a2, a3, a4, a5, a6)
     ; Read args from saved frame on stack

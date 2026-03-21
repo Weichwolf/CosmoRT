@@ -148,6 +148,40 @@ bench: $(SRC)/kernel/kbench_bin.h
 	@sed -n '/Kernel Benchmark/,/Benchmark Complete/p' /tmp/cosmo-serial.log
 	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
 
+# ── Hardware test binary ─────────────────────────
+$(BUILD)/user/ktest.o: $(SRC)/user/ktest.c | $(BUILD)/user
+	$(CC) $(UCFLAGS) -c -o $@ $<
+
+$(BUILD)/user/ktest: $(BUILD)/user/ktest.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+
+$(SRC)/kernel/ktest_bin.h: $(BUILD)/user/ktest
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated ktest binary (%d bytes) */' % len(data)); \
+	print('static const unsigned char ktest_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long ktest_bin_size = %d;' % len(data))" > $@
+	@echo "ktest_bin.h: $$(wc -c < $<) bytes"
+
+# Build + boot with hardware test
+test-hw: $(SRC)/kernel/ktest_bin.h
+	@cp $(SRC)/kernel/init_bin.h $(SRC)/kernel/init_bin.h.bak 2>/dev/null; true
+	@sed 's/ktest_bin/init_bin/g; s/ktest_bin_size/init_bin_size/g' \
+	  $(SRC)/kernel/ktest_bin.h > $(SRC)/kernel/init_bin.h
+	$(MAKE) all
+	@rm -f /tmp/cosmo-serial.log
+	timeout 30 $(QEMU) -cpu qemu64 -smp 1 -m 256 \
+	  -bios /usr/share/ovmf/OVMF.fd \
+	  -drive file=$(ESP_IMG),format=raw \
+	  -serial file:/tmp/cosmo-serial.log \
+	  -display none -no-reboot || true
+	@echo "=== Hardware Test Results ==="
+	@sed -n '/Hardware Test/,/PASSED\|failed/p' /tmp/cosmo-serial.log
+	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
+
 # ── Bootloader (EFI) ────────────────────────────
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
 	$(CC) $(EFI_CFLAGS) -o $@ $<
@@ -241,4 +275,4 @@ test-boot: $(ESP_IMG)
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h
+	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h
