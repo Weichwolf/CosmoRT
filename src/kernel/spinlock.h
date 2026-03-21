@@ -17,7 +17,7 @@ typedef struct {
 
 static inline void spin_lock(spinlock_t *l) {
     uint32_t ticket = __sync_fetch_and_add(&l->next, 1);
-    while (__sync_val_compare_and_swap(&l->owner, ticket, ticket) != ticket)
+    while (__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE) != ticket)
         __asm__ volatile("pause");
 }
 

@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "timer.h"
 #include "syscall.h"
+#include "spinlock.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -24,14 +25,19 @@ static inline int user_ok(uint64_t addr, size_t len) {
 
 /* Socket pool */
 static socket_t sockets[MAX_SOCKETS];
+static spinlock_t sock_lock = SPINLOCK_INIT;
 
 static socket_t *sock_alloc(void) {
+    uint64_t flags;
+    spin_lock_irq(&sock_lock, &flags);
     for (int i = 0; i < MAX_SOCKETS; i++) {
         if (sockets[i].state == SOCK_UNUSED) {
             sockets[i].state = SOCK_CREATED;
+            spin_unlock_irq(&sock_lock, flags);
             return &sockets[i];
         }
     }
+    spin_unlock_irq(&sock_lock, flags);
     return 0;
 }
 

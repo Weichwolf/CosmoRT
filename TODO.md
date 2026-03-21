@@ -2,7 +2,7 @@
 
 Stand: 2026-03-21.
 
-ktest Ergebnis: 38 PASS, 0 FAIL, 0 SKIP.
+ktest Ergebnis: 38 PASS, 0 FAIL, 0 SKIP. (P3+P4 erledigt)
 
 ---
 
@@ -87,27 +87,29 @@ wecken blockierte Threads via blocked_tid + sched_add.
 
 ---
 
-## P3 — Fehlende Features (Bootstrap-Blocker)
+## ~~P3 — Fehlende Features (Bootstrap-Blocker)~~
 
-Shell → configure → make → GCC → Ruby → Homebrew.
+Erledigt.
 
-- pipe/pipe2 (Shell-Pipelines)
-- mkdir/rmdir/unlink/rename (Dateisystem-Mutation)
-- getdents64 (ls, find, readdir)
-- ioctl/fcntl (Terminal-Control, FD-Flags)
-- readv (CosmoPX stdio)
+- ~~pipe/pipe2 (Shell-Pipelines)~~
+- ~~mkdir/rmdir/unlink/rename (Dateisystem-Mutation)~~
+- ~~getdents64 (ls, find, readdir)~~
+- ~~ioctl/fcntl (Terminal-Control, FD-Flags)~~
+- ~~readv (CosmoPX stdio)~~
 
 ---
 
-## P4 — Robustheit
+## ~~P4 — Robustheit~~
 
-- net_poll static Buffer (SMP Packet-Korruption)
-- sock_alloc ohne Lock (concurrent socket())
-- TCP Sequence/Port vorhersagbar (RDRAND statt inkrementell)
-- do_write returnt falsche Laenge (64KB Limit, returnt count)
-- Packet-Queues ohne Lock (SMP)
-- Idle-Stacks 8KB zu klein (vma_find_free braucht 16KB+)
-- Spinlock CAS statt Load-Wait (unnoetig LOCK CMPXCHG)
+Erledigt.
+
+- ~~net_poll static Buffer (SMP Packet-Korruption)~~
+- ~~sock_alloc ohne Lock (concurrent socket())~~
+- ~~TCP Sequence/Port vorhersagbar (CSPRNG statt inkrementell)~~
+- ~~do_write returnt falsche Laenge (64KB Limit, returnt count)~~
+- ~~Packet-Queues ohne Lock (SMP)~~
+- ~~Idle-Stacks 8KB zu klein (16KB jetzt)~~
+- ~~Spinlock CAS statt Load-Wait (atomic load statt LOCK CMPXCHG)~~
 
 ---
 
@@ -286,3 +288,19 @@ Aber: das ist THE Feature das CosmoOS von einem Toy-OS unterscheidet.
 - [x] execve argv/envp (kopieren + Stack-Rebuild)
 - [x] Signal-Delivery minimal (SIG_DFL/SIG_IGN in INT 0x80 + preempt)
 - [x] IPC blocking/waking (spin-yield + blocked_tid wake)
+- [x] Boot-Filesystem: /tmp, /dev, /proc, /bin, /etc bei vfs_init
+- [x] pipe/pipe2 (SYS_PIPE2 293, FD_PIPE, PIPE_BUF_SIZE 4096)
+- [x] mkdir/rmdir/unlink/rename (SYS_MKDIR 83, RMDIR 84, UNLINK 87, RENAME 82)
+- [x] mkdirat/unlinkat/renameat2 (258, 263, 316)
+- [x] getdents64 (SYS_GETDENTS64 217, linux_dirent64)
+- [x] ioctl (SYS_IOCTL 16, TIOCGWINSZ 80x24)
+- [x] fcntl (SYS_FCNTL 72, F_GETFL/F_SETFL/F_DUPFD/F_GETFD/F_SETFD)
+- [x] readv (SYS_READV 19, scatter read)
+- [x] writev generalisiert (alle FD-Typen, nicht nur Serial)
+- [x] net_poll Stack-lokaler Buffer (SMP-safe)
+- [x] sock_alloc Spinlock
+- [x] TCP Seq/Port CSPRNG (random_get statt inkrementell)
+- [x] do_write returnt actual statt count
+- [x] Packet-Queues Spinlock (net_q_lock)
+- [x] Idle-Stacks 16KB (war 8KB)
+- [x] Spinlock atomic load statt CAS (kein LOCK CMPXCHG im Spin-Loop)

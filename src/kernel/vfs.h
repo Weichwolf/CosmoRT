@@ -99,6 +99,12 @@ int vfs_fstat(int fd, struct k_stat *buf);
 int vfs_getcwd(char *buf, size_t size);
 int vfs_chdir(const char *path);
 
+/* Directory/file mutation */
+int vfs_mkdir(const char *path);
+int vfs_rmdir(const char *path);
+int vfs_unlink(const char *path);
+int vfs_rename(const char *oldpath, const char *newpath);
+
 /* Populate ramfs with a file (for init binary, etc.) */
 int vfs_add_file(const char *path, const void *data, size_t len);
 

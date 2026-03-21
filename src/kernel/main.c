@@ -103,6 +103,11 @@ void kernel_main(struct boot_info *info) {
 
     /* VFS (ramfs) */
     vfs_init();
+    vfs_create("/tmp", VFS_DIR);
+    vfs_create("/dev", VFS_DIR);
+    vfs_create("/proc", VFS_DIR);
+    vfs_create("/bin", VFS_DIR);
+    vfs_create("/etc", VFS_DIR);
 
     /* Futex subsystem (wait queue hash table + slab pool) */
     extern void futex_init(void);

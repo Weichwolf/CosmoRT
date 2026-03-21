@@ -6,6 +6,7 @@
 #include "net.h"
 #include "serial.h"
 #include "timer.h"
+#include "spinlock.h"
 
 /* Registered NIC driver (set by driver init, e.g., e1000_init) */
 static const nic_driver_t *nic;
@@ -61,23 +62,34 @@ static uint16_t ip_cksum(const uint8_t *d, int len) {
 
 pkt_queue_t q_tcp, q_udp_dhcp, q_udp_dns, q_arp, q_icmp;
 static uint16_t dns_local_port = 0;
+static spinlock_t net_q_lock = SPINLOCK_INIT;
 
 static void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
-    if (q->count >= Q_SIZE) return;
-    int idx = (q->head + q->count) % Q_SIZE;
-    int l = len > Q_PKT ? Q_PKT : len;
-    mcpy(q->data[idx], pkt, l);
-    q->len[idx] = l;
-    q->count++;
+    uint64_t flags;
+    spin_lock_irq(&net_q_lock, &flags);
+    if (q->count < Q_SIZE) {
+        int idx = (q->head + q->count) % Q_SIZE;
+        int l = len > Q_PKT ? Q_PKT : len;
+        mcpy(q->data[idx], pkt, l);
+        q->len[idx] = l;
+        q->count++;
+    }
+    spin_unlock_irq(&net_q_lock, flags);
 }
 
 static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
-    if (q->count == 0) return 0;
+    uint64_t flags;
+    spin_lock_irq(&net_q_lock, &flags);
+    if (q->count == 0) {
+        spin_unlock_irq(&net_q_lock, flags);
+        return 0;
+    }
     int l = q->len[q->head];
     if (l > bufsize) l = bufsize;
     mcpy(buf, q->data[q->head], l);
     q->head = (q->head + 1) % Q_SIZE;
     q->count--;
+    spin_unlock_irq(&net_q_lock, flags);
     return l;
 }
 
@@ -94,7 +106,7 @@ static uint16_t ip_checksum(const uint8_t *hdr, int len) {
 /* ── Central Packet Dispatcher ─────────────────────── */
 
 void net_poll(void) {
-    static uint8_t pkt[Q_PKT];
+    uint8_t pkt[Q_PKT];
     int len = nic_recv(pkt, sizeof(pkt));
     if (len < 14) return;
     uint16_t etype = get16(pkt + 12);
@@ -261,7 +273,10 @@ int net_ping(const uint8_t *dst_ip) {
 
 /* ── TCP ───────────────────────────────────────────── */
 
-static uint16_t tcp_ephemeral = 49152;
+static int net_random(void *buf, int len) {
+    extern int random_get(void *, unsigned long);
+    return random_get(buf, (unsigned long)len);
+}
 
 static void build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
                           const uint8_t *dst_ip, uint8_t proto, uint16_t plen) {
@@ -300,7 +315,10 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     mcpy(c->dst_ip, dst_ip, 4); c->remote_port = port;
-    c->local_port = ++tcp_ephemeral; c->seq=1000; c->ack=0; c->state=0;
+    uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
+    uint16_t rport; net_random(&rport, (int)sizeof(rport));
+    c->local_port = (uint16_t)((rport % 16384) + 49152);
+    c->seq = rseq; c->ack = 0; c->state = 0;
     c->rxbuf_pos = c->rxbuf_len = 0;
     serial_puts("tcp: ARP\n");
     if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;

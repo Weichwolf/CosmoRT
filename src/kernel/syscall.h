@@ -83,6 +83,16 @@
 #define SYS_RT_SIGRETURN      15
 #define SYS_GETPPID           110
 
+/* Filesystem mutation */
+#define SYS_RENAME            82
+#define SYS_MKDIR             83
+#define SYS_RMDIR             84
+#define SYS_UNLINK            87
+#define SYS_GETDENTS64        217
+#define SYS_MKDIRAT           258
+#define SYS_UNLINKAT          263
+#define SYS_RENAMEAT2         316
+
 /* Timers / clocks */
 #define SYS_NANOSLEEP         35
 #define SYS_GETTIMEOFDAY      96
@@ -141,6 +151,10 @@
 #define ENOSYS    38
 #define ERANGE    34
 #define ENAMETOOLONG 36
+#define EEXIST    17
+#define ENOTTY    25
+#define EPIPE     32
+#define ENOTEMPTY 39
 #define ETIMEDOUT 110
 
 /* Main syscall dispatcher — called from ASM entry and INT 0x80 */

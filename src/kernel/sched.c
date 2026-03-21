@@ -385,7 +385,7 @@ void sched_init(void) {
 }
 
 /* Per-core ISR stack for idle HLT */
-static uint8_t idle_stacks[SMP_MAX_CORES][8192] __attribute__((aligned(16)));
+static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 
 /* Scheduler loop — runs on each core (BSP + APs) */
 void sched_loop(void) {

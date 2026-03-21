@@ -462,6 +462,91 @@ int vfs_chdir(const char *path) {
     return 0;
 }
 
+/* ── Directory/file mutation ─────────────────────── */
+
+int vfs_mkdir(const char *path) {
+    struct vfs_node *existing = vfs_lookup(path);
+    if (existing) return -EEXIST;
+    struct vfs_node *n = vfs_create(path, VFS_DIR);
+    if (!n) return -ENOENT; /* parent doesn't exist */
+    return 0;
+}
+
+/* Remove child from parent's linked list */
+static int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
+    struct vfs_node **pp = &parent->children;
+    while (*pp) {
+        if (*pp == child) {
+            *pp = child->next;
+            child->next = 0;
+            child->parent = 0;
+            return 0;
+        }
+        pp = &(*pp)->next;
+    }
+    return -ENOENT;
+}
+
+int vfs_rmdir(const char *path) {
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
+    if (node->type != VFS_DIR) return -ENOTDIR;
+    if (node->children) return -ENOTEMPTY;
+    if (node == root_node) return -EINVAL;
+    if (!node->parent) return -EINVAL;
+    unlink_child(node->parent, node);
+    slab_free(&node_slab, node);
+    return 0;
+}
+
+int vfs_unlink(const char *path) {
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
+    if (node->type == VFS_DIR) return -EISDIR;
+    if (!node->parent) return -EINVAL;
+    unlink_child(node->parent, node);
+    /* Free file data */
+    if (node->data && node->capacity > 0) {
+        int npages = (int)((node->capacity + 4095) / 4096);
+        if (npages > 0) pages_free(node->data, npages);
+    }
+    slab_free(&node_slab, node);
+    return 0;
+}
+
+int vfs_rename(const char *oldpath, const char *newpath) {
+    struct vfs_node *node = vfs_lookup(oldpath);
+    if (!node) return -ENOENT;
+    if (node == root_node) return -EINVAL;
+
+    /* Remove existing destination if any */
+    struct vfs_node *dst = vfs_lookup(newpath);
+    if (dst) {
+        if (dst->type == VFS_DIR && dst->children) return -ENOTEMPTY;
+        if (dst->parent) unlink_child(dst->parent, dst);
+        if (dst->type == VFS_FILE && dst->data && dst->capacity > 0) {
+            int np = (int)((dst->capacity + 4095) / 4096);
+            if (np > 0) pages_free(dst->data, np);
+        }
+        slab_free(&node_slab, dst);
+    }
+
+    /* Find new parent */
+    const char *basename;
+    struct vfs_node *new_parent = lookup_parent(newpath, &basename);
+    if (!new_parent || new_parent->type != VFS_DIR) return -ENOENT;
+
+    /* Unlink from old parent */
+    if (node->parent) unlink_child(node->parent, node);
+
+    /* Update name and link to new parent */
+    kstrncpy(node->name, basename, 256);
+    node->parent = new_parent;
+    node->next = new_parent->children;
+    new_parent->children = node;
+    return 0;
+}
+
 /* ── Populate ramfs ──────────────────────────────── */
 
 int vfs_add_file(const char *path, const void *data, size_t len) {

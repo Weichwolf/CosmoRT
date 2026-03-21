@@ -16,6 +16,7 @@
 #include "hw.h"
 #include "net_port.h"
 #include "irq.h"
+#include "spinlock.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -36,6 +37,13 @@ static int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
     }
     return -ENAMETOOLONG;
 }
+
+/* Forward declarations for pipe (implemented before dispatcher) */
+struct pipe;
+static struct pipe *pipe_from_fd(fd_entry_t *fde, int *is_write);
+static long pipe_read(struct pipe *pp, void *buf, size_t count);
+static long pipe_write(struct pipe *pp, const void *buf, size_t count);
+static long pipe_close(fd_entry_t *fde);
 
 /* Syscall saved frame layout (matches syscall_entry.asm push order) */
 typedef struct {
@@ -74,14 +82,21 @@ static long do_write(int fd, const void *buf, size_t count) {
     if (!fde) return -EBADF;
     if (fde->type == FD_SERIAL) {
         const char *s = (const char *)buf;
-        for (size_t i = 0; i < count && i < 0x10000; i++)
+        size_t actual = count > 0x10000 ? 0x10000 : count;
+        for (size_t i = 0; i < actual; i++)
             serial_putchar(s[i]);
-        return (long)count;
+        return (long)actual;
     }
     if (fde->type == FD_FILE)
         return vfs_write(fd, buf, count);
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
+    if (fde->type == FD_PIPE) {
+        int is_write = 0;
+        struct pipe *pp = pipe_from_fd(fde, &is_write);
+        if (!pp || !is_write) return -EBADF;
+        return pipe_write(pp, buf, count);
+    }
     return -EBADF;
 }
 
@@ -92,17 +107,13 @@ struct iovec { const void *iov_base; size_t iov_len; };
 static long do_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
     if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
-    process_t *p = proc_current();
-    if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde || fde->type != FD_SERIAL) return -EBADF;
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
         if (!user_ok((uint64_t)iov[i].iov_base, iov[i].iov_len)) return -EFAULT;
-        const char *s = (const char *)iov[i].iov_base;
-        for (size_t j = 0; j < iov[i].iov_len && j < 0x10000; j++)
-            serial_putchar(s[j]);
-        total += (long)iov[i].iov_len;
+        long r = do_write(fd, (void *)iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < iov[i].iov_len) break;
     }
     return total;
 }
@@ -129,6 +140,12 @@ static long do_read(int fd, void *buf, size_t count) {
         return vfs_read(fd, buf, count);
     if (fde->type == FD_SOCKET)
         return socket_read(fd, buf, (long)count);
+    if (fde->type == FD_PIPE) {
+        int is_write = 0;
+        struct pipe *pp = pipe_from_fd(fde, &is_write);
+        if (!pp || is_write) return -EBADF;
+        return pipe_read(pp, buf, count);
+    }
     return -EBADF;
 }
 
@@ -636,6 +653,11 @@ static long do_close(int fd) {
         return vfs_close(fd);
     if (fde->type == FD_SOCKET)
         return socket_close(fd);
+    if (fde->type == FD_PIPE) {
+        long r = pipe_close(fde);
+        fd_close(&p->fds, fd);
+        return r;
+    }
     return fd_close(&p->fds, fd);
 }
 
@@ -1034,6 +1056,332 @@ static long do_sched_getparam(int pid, struct sched_param_k *param) {
     return 0;
 }
 
+/* ── SYS_pipe2 (293) ─────────────────────────────── */
+
+#define PIPE_BUF_SIZE 4096
+#define PIPE_MAX      32
+
+struct pipe {
+    uint8_t buf[PIPE_BUF_SIZE];
+    int read_pos, write_pos, count;
+    int read_open, write_open;
+    spinlock_t lock;
+};
+
+static struct pipe pipe_pool[PIPE_MAX];
+static slab_t pipe_slab;
+static int pipe_slab_inited;
+
+static void pipe_slab_ensure(void) {
+    if (!pipe_slab_inited) {
+        extern void slab_init(slab_t *, void *, int, int);
+        slab_init(&pipe_slab, pipe_pool, (int)sizeof(struct pipe), PIPE_MAX);
+        pipe_slab_inited = 1;
+    }
+}
+
+static long pipe_read(struct pipe *pp, void *buf, size_t count) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    if (pp->count == 0) {
+        int wr_open = pp->write_open;
+        spin_unlock_irq(&pp->lock, flags);
+        return wr_open ? (long)-EAGAIN : 0; /* EOF if write end closed */
+    }
+    size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
+    uint8_t *dst = (uint8_t *)buf;
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = pp->buf[pp->read_pos];
+        pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+    }
+    pp->count -= (int)n;
+    spin_unlock_irq(&pp->lock, flags);
+    return (long)n;
+}
+
+static long pipe_write(struct pipe *pp, const void *buf, size_t count) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    if (!pp->read_open) {
+        spin_unlock_irq(&pp->lock, flags);
+        return -EPIPE;
+    }
+    size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
+    size_t n = count > space ? space : count;
+    if (n == 0) {
+        spin_unlock_irq(&pp->lock, flags);
+        return (long)-EAGAIN;
+    }
+    const uint8_t *src = (const uint8_t *)buf;
+    for (size_t i = 0; i < n; i++) {
+        pp->buf[pp->write_pos] = src[i];
+        pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+    }
+    pp->count += (int)n;
+    spin_unlock_irq(&pp->lock, flags);
+    return (long)n;
+}
+
+static long do_pipe2(int *fds, int flags) {
+    (void)flags;
+    if (!user_ok((uint64_t)fds, 2 * sizeof(int))) return -EFAULT;
+
+    pipe_slab_ensure();
+    struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
+    if (!pp) return -ENOMEM;
+
+    pp->read_pos = pp->write_pos = pp->count = 0;
+    pp->read_open = pp->write_open = 1;
+    pp->lock = (spinlock_t)SPINLOCK_INIT;
+
+    process_t *p = proc_current();
+    if (!p) { slab_free(&pipe_slab, pp); return -EFAULT; }
+
+    int rfd = fd_alloc(&p->fds, FD_PIPE, pp, O_RDONLY);
+    if (rfd < 0) { slab_free(&pipe_slab, pp); return -EMFILE; }
+    int wfd = fd_alloc(&p->fds, FD_PIPE, (void *)((uint8_t *)pp + 1), O_WRONLY);
+    if (wfd < 0) {
+        fd_close(&p->fds, rfd);
+        slab_free(&pipe_slab, pp);
+        return -EMFILE;
+    }
+    /* Mark write-end fd: we encode read/write via pointer offset.
+     * Read end: obj == pp. Write end: obj == pp+1 (non-aligned marker). */
+
+    fds[0] = rfd;
+    fds[1] = wfd;
+    return 0;
+}
+
+/* Helper: get pipe struct + is_write from fd */
+static struct pipe *pipe_from_fd(fd_entry_t *fde, int *is_write) {
+    if (!fde || fde->type != FD_PIPE || !fde->obj) return 0;
+    /* Read end: obj is aligned to struct pipe. Write end: obj = pp + 1 byte */
+    uintptr_t addr = (uintptr_t)fde->obj;
+    /* Check if addr is within pipe_pool + offset 1 (write end) */
+    uintptr_t base = (uintptr_t)pipe_pool;
+    uintptr_t end = base + sizeof(pipe_pool);
+    if (addr >= base && addr < end) {
+        uintptr_t off = (addr - base) % sizeof(struct pipe);
+        if (off == 0) {
+            *is_write = 0;
+            return (struct pipe *)addr;
+        } else if (off == 1) {
+            *is_write = 1;
+            return (struct pipe *)(addr - 1);
+        }
+    }
+    return 0;
+}
+
+static long pipe_close(fd_entry_t *fde) {
+    int is_write = 0;
+    struct pipe *pp = pipe_from_fd(fde, &is_write);
+    if (!pp) return -EBADF;
+
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    if (is_write) pp->write_open = 0;
+    else pp->read_open = 0;
+    int both_closed = !pp->read_open && !pp->write_open;
+    spin_unlock_irq(&pp->lock, flags);
+
+    if (both_closed)
+        slab_free(&pipe_slab, pp);
+    return 0;
+}
+
+/* ── SYS_readv (19) ──────────────────────────────── */
+
+static long do_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
+    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
+    long total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (!user_ok((uint64_t)iov[i].iov_base, iov[i].iov_len)) return -EFAULT;
+        long r = do_read(fd, (void *)iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < iov[i].iov_len) break; /* short read */
+    }
+    return total;
+}
+
+/* ── SYS_mkdir/rmdir/unlink/rename ───────────────── */
+
+static long do_mkdir(const char *path, int mode) {
+    (void)mode;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_mkdir(kpath);
+}
+
+static long do_mkdirat(int dirfd, const char *path, int mode) {
+    (void)dirfd; /* AT_FDCWD only */
+    return do_mkdir(path, mode);
+}
+
+static long do_rmdir(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_rmdir(kpath);
+}
+
+static long do_unlink(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_unlink(kpath);
+}
+
+static long do_unlinkat(int dirfd, const char *path, int flags) {
+    (void)dirfd;
+    if (flags & 0x200) /* AT_REMOVEDIR */
+        return do_rmdir(path);
+    return do_unlink(path);
+}
+
+static long do_rename(const char *oldpath, const char *newpath) {
+    char kold[PATH_MAX], knew[PATH_MAX];
+    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_rename(kold, knew);
+}
+
+static long do_renameat2(int olddirfd, const char *oldpath,
+                          int newdirfd, const char *newpath, int flags) {
+    (void)olddirfd; (void)newdirfd; (void)flags;
+    return do_rename(oldpath, newpath);
+}
+
+/* ── SYS_getdents64 (217) ───────────────────────── */
+
+struct linux_dirent64 {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[1]; /* flexible */
+};
+
+static long do_getdents64(int fd, void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type != FD_FILE) return -EBADF;
+
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    if (!f || !f->node || f->node->type != VFS_DIR) return -ENOTDIR;
+
+    struct vfs_node *dir = f->node;
+    uint8_t *out = (uint8_t *)buf;
+    size_t written = 0;
+
+    /* Walk to the child at offset f->offset */
+    struct vfs_node *child = dir->children;
+    uint64_t idx = 0;
+    while (child && idx < f->offset) {
+        child = child->next;
+        idx++;
+    }
+
+    while (child) {
+        int nlen = 0;
+        while (child->name[nlen]) nlen++;
+        /* d_reclen: header (19 bytes) + name + NUL, rounded up to 8 */
+        size_t reclen = (19 + (size_t)nlen + 1 + 7) & ~(size_t)7;
+        if (written + reclen > count) break;
+
+        struct linux_dirent64 *ent = (struct linux_dirent64 *)(out + written);
+        ent->d_ino = child->ino;
+        ent->d_off = (int64_t)(f->offset + 1);
+        ent->d_reclen = (uint16_t)reclen;
+        ent->d_type = (child->type == VFS_DIR) ? 4 : 8; /* DT_DIR / DT_REG */
+        for (int i = 0; i < nlen; i++)
+            ((char *)ent + 19)[i] = child->name[i];
+        ((char *)ent + 19)[nlen] = 0;
+        /* Zero padding */
+        for (size_t i = 19 + (size_t)nlen + 1; i < reclen; i++)
+            ((uint8_t *)ent)[i] = 0;
+
+        written += reclen;
+        f->offset++;
+        child = child->next;
+    }
+
+    return (long)written;
+}
+
+/* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
+
+#define TIOCGWINSZ 0x5413
+#define F_DUPFD    0
+#define F_GETFD    1
+#define F_SETFD    2
+#define F_GETFL    3
+#define F_SETFL    4
+
+struct winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
+
+static long do_ioctl(int fd, unsigned long request, unsigned long arg) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+
+    if (request == TIOCGWINSZ) {
+        if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
+        struct winsize *ws = (struct winsize *)arg;
+        ws->ws_row = 24;
+        ws->ws_col = 80;
+        ws->ws_xpixel = 0;
+        ws->ws_ypixel = 0;
+        return 0;
+    }
+    return -ENOTTY;
+}
+
+static long do_fcntl(int fd, int cmd, long arg) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+
+    switch (cmd) {
+    case F_GETFL: return fde->flags;
+    case F_SETFL: fde->flags = (int)arg; return 0;
+    case F_GETFD: return (fde->flags & O_CLOEXEC) ? 1 : 0;
+    case F_SETFD: {
+        if (arg & 1) fde->flags |= O_CLOEXEC;
+        else fde->flags &= ~O_CLOEXEC;
+        return 0;
+    }
+    case F_DUPFD: {
+        /* Find lowest fd >= arg */
+        for (int i = (int)arg; i < FD_MAX; i++) {
+            if (!fd_get(&p->fds, i) || p->fds.entries[i].type == FD_NONE) {
+                p->fds.entries[i] = *fde;
+                if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
+                /* Increment refcount for vfs_file if needed */
+                if (fde->type == FD_FILE && fde->obj) {
+                    extern void vfs_file_incref(struct vfs_file *f);
+                    vfs_file_incref((struct vfs_file *)fde->obj);
+                }
+                return i;
+            }
+        }
+        return -EMFILE;
+    }
+    default: return -EINVAL;
+    }
+}
+
 /* ── Dispatcher ──────────────────────────────────── */
 
 long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
@@ -1154,12 +1502,25 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
     case SYS_SOCKETPAIR:  return -ENOSYS;
     case SYS_POLL:        return do_poll((void *)a1, (int)a2, (int)a3);
 
+    /* Filesystem mutation */
+    case SYS_MKDIR:      return do_mkdir((const char *)a1, (int)a2);
+    case SYS_MKDIRAT:    return do_mkdirat((int)a1, (const char *)a2, (int)a3);
+    case SYS_RMDIR:      return do_rmdir((const char *)a1);
+    case SYS_UNLINK:     return do_unlink((const char *)a1);
+    case SYS_UNLINKAT:   return do_unlinkat((int)a1, (const char *)a2, (int)a3);
+    case SYS_RENAME:     return do_rename((const char *)a1, (const char *)a2);
+    case SYS_RENAMEAT2:  return do_renameat2((int)a1, (const char *)a2,
+                                              (int)a3, (const char *)a4, (int)a5);
+    case SYS_GETDENTS64: return do_getdents64((int)a1, (void *)a2, (size_t)a3);
+
+    /* Pipe / IO */
+    case SYS_PIPE2:  return do_pipe2((int *)a1, (int)a2);
+    case SYS_READV:  return do_readv((int)a1, (const struct iovec *)a2, (int)a3);
+    case SYS_IOCTL:  return do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3);
+    case SYS_FCNTL:  return do_fcntl((int)a1, (int)a2, a3);
+
     /* Stubs */
     case SYS_ACCESS: return 0; /* pretend everything is accessible */
-    case SYS_IOCTL:  return -ENOSYS;
-    case SYS_FCNTL:  return -ENOSYS;
-    case SYS_PIPE2:  return -ENOSYS;
-    case SYS_READV:  return -ENOSYS;
 
     /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
     case SYS_COSMO_MMIO_MAP: {
