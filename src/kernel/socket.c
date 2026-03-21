@@ -203,7 +203,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             }
             if ((fds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
                 /* Check if TCP has buffered data or queue has packets */
-                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
+                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_count(&q_tcp) > 0)
                     fds[i].revents |= POLLIN;
             }
             if (fds[i].events & POLLOUT) {

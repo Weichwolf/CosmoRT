@@ -64,13 +64,16 @@ static uint16_t ip_cksum(const uint8_t *d, int len) {
 
 /* ── Packet Queues ─────────────────────────────────── */
 
-pkt_queue_t q_tcp, q_udp_dhcp, q_udp_dns, q_arp, q_icmp;
+pkt_queue_t q_tcp      = PKT_QUEUE_INIT;
+pkt_queue_t q_udp_dhcp = PKT_QUEUE_INIT;
+pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
+pkt_queue_t q_arp      = PKT_QUEUE_INIT;
+pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 static uint16_t dns_local_port = 0;
-static spinlock_t net_q_lock = SPINLOCK_INIT;
 
 static void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
     uint64_t flags;
-    spin_lock_irq(&net_q_lock, &flags);
+    spin_lock_irq(&q->lock, &flags);
     if (q->count < Q_SIZE) {
         int idx = (q->head + q->count) % Q_SIZE;
         int l = len > Q_PKT ? Q_PKT : len;
@@ -78,14 +81,14 @@ static void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
         q->len[idx] = l;
         q->count++;
     }
-    spin_unlock_irq(&net_q_lock, flags);
+    spin_unlock_irq(&q->lock, flags);
 }
 
 static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     uint64_t flags;
-    spin_lock_irq(&net_q_lock, &flags);
+    spin_lock_irq(&q->lock, &flags);
     if (q->count == 0) {
-        spin_unlock_irq(&net_q_lock, flags);
+        spin_unlock_irq(&q->lock, flags);
         return 0;
     }
     int l = q->len[q->head];
@@ -93,7 +96,7 @@ static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     mcpy(buf, q->data[q->head], l);
     q->head = (q->head + 1) % Q_SIZE;
     q->count--;
-    spin_unlock_irq(&net_q_lock, flags);
+    spin_unlock_irq(&q->lock, flags);
     return l;
 }
 
