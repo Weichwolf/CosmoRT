@@ -316,7 +316,9 @@ static void timer_handler(int vector) {
     __sync_fetch_and_add(&tick_count, 1);
     extern void random_add_interrupt_entropy(void);
     random_add_interrupt_entropy();
-    /* No net_poll here — E1000 uses IRQ-driven receive */
+    /* VT flush is event-driven: triggered by PTY writes in syscall context,
+     * not polled from timer. Keyboard echo: IRQ queues to PTY,
+     * next pty_slave_read syscall flushes. */
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

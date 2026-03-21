@@ -208,6 +208,9 @@ static long do_read(int fd, void *buf, size_t count) {
         size_t want = count > 256 ? 256 : count;
         int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
         if (got > 0) kmemcpy(buf, kbuf, (size_t)got);
+        /* Flush VT after read — renders echo from line discipline */
+        extern void vt_flush(int vt_id);
+        vt_flush(pty_id);
         return got > 0 ? (long)got : (long)-EAGAIN;
     }
     return -EBADF;
