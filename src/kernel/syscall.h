@@ -77,21 +77,60 @@
 #define SYS_GETCWD            79
 #define SYS_CHDIR             80
 #define SYS_LSEEK             8
+#define SYS_PIPE              22
 #define SYS_PIPE2             293
+#define SYS_DUP3              292
 #define SYS_OPENAT            257
 #define SYS_READV             19
 #define SYS_RT_SIGRETURN      15
 #define SYS_GETPPID           110
 
 /* Filesystem mutation */
+#define SYS_TRUNCATE          76
+#define SYS_FTRUNCATE         77
 #define SYS_RENAME            82
 #define SYS_MKDIR             83
 #define SYS_RMDIR             84
+#define SYS_LINK              86
 #define SYS_UNLINK            87
+#define SYS_SYMLINK           88
+#define SYS_READLINK          89
+#define SYS_FCHMOD            91
+#define SYS_FCHOWN            93
 #define SYS_GETDENTS64        217
 #define SYS_MKDIRAT           258
+#define SYS_MKNODAT           259
+#define SYS_FSTATAT           262
 #define SYS_UNLINKAT          263
+#define SYS_FCHMODAT          268
+#define SYS_UTIMENSAT         280
+#define SYS_FALLOCATE         285
 #define SYS_RENAMEAT2         316
+
+/* lstat */
+#define SYS_LSTAT             6
+
+/* AT constants */
+#define AT_FDCWD              (-100)
+#define AT_SYMLINK_NOFOLLOW   0x100
+#define AT_REMOVEDIR          0x200
+
+/* Misc */
+#define SYS_GETRUSAGE         98
+#define SYS_SYSINFO           99
+#define SYS_TIMES             100
+
+/* epoll / eventfd / timerfd / signalfd / inotify */
+#define SYS_EPOLL_WAIT        232
+#define SYS_EPOLL_CTL         233
+#define SYS_INOTIFY_ADD_WATCH 254
+#define SYS_INOTIFY_RM_WATCH  255
+#define SYS_TIMERFD_CREATE    283
+#define SYS_TIMERFD_SETTIME   286
+#define SYS_SIGNALFD4         289
+#define SYS_EVENTFD2          290
+#define SYS_EPOLL_CREATE1     291
+#define SYS_INOTIFY_INIT1     294
 
 /* Timers / clocks */
 #define SYS_NANOSLEEP         35
@@ -156,6 +195,8 @@
 #define ENOTTY    25
 #define EPIPE     32
 #define ENOTEMPTY 39
+#define ELOOP     40
+#define EOPNOTSUPP 95
 #define ETIMEDOUT 110
 
 /* Clean up a single FD entry (socket, pipe, etc.) during process exit.

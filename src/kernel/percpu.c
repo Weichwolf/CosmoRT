@@ -23,11 +23,12 @@ void percpu_init_bsp(void) {
     p->user_rsp = 0;
     p->current_thread = 0;
     p->in_kernel = 1;
+    p->self = p;
 
     /* Set KERNEL_GS_BASE so swapgs in SYSCALL entry loads our percpu */
     wrmsr(MSR_KERNEL_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
-    /* Set GS_BASE to 0 for now (user starts with GS=0) */
-    wrmsr(MSR_GS_BASE, 0);
+    /* Also set GS_BASE so percpu_self works before first swapgs */
+    wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
 
     serial_puts("percpu: BSP init\n");
 }
@@ -40,12 +41,14 @@ void percpu_init_ap(int core_id) {
     p->user_rsp = 0;
     p->current_thread = 0;
     p->in_kernel = 1;
+    p->self = p;
 
     wrmsr(MSR_KERNEL_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
-    wrmsr(MSR_GS_BASE, 0);
+    wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
 }
 
-percpu_t *percpu_self(void) {
+/* Slow path: LAPIC MMIO lookup (early boot before GS is set) */
+percpu_t *percpu_self_slow(void) {
     int id = smp_core_id();
     if (id < 0 || id >= SMP_MAX_CORES) id = 0;
     return &percpu_data[id];

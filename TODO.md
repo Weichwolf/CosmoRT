@@ -1,7 +1,7 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-21. ~22K LOC, 100 Quelldateien, 95 Syscalls.
-ktest: 51 PASS, 0 FAIL. Kein Polling (IRQ-driven).
+Stand: 2026-03-21. ~25K LOC, 123 Syscalls.
+ktest: 61 PASS, 0 FAIL. Kein Polling (IRQ-driven).
 
 ---
 
@@ -31,11 +31,12 @@ ktest: 51 PASS, 0 FAIL. Kein Polling (IRQ-driven).
 - [x] slab_free: Pool-Membership + Alignment-Check
 - [x] vma_find_free: AVL-Traversal statt 16KB Stack-Array (512B)
 
-Akzeptabel (kein Fix noetig):
+Erledigt:
 - [x] fork: Parent-Threads gestoppt (THREAD_BLOCKED + saved_priority=-2)
 - [x] sched_rebalance: bounded O(ncores), nur 1x/s, skip bei <4 Cores
-- IPC globaler Lock: akzeptabel bei IPC_MAX_ENDPOINTS=64
-- percpu_self LAPIC MMIO: unvermeidbar ohne rdgsbase, akzeptabel
+
+- [x] percpu_self: GS-basiert (self-Pointer bei gs:40, ~3 Zyklen statt ~100)
+- [x] IPC: per-Endpoint Lock (globaler Lock nur noch fuer Allokation)
 
 ---
 
@@ -145,18 +146,28 @@ Akzeptabel (kein Fix noetig):
 
 ---
 
-## In Arbeit
+### procfs
+- [x] /proc/dmesg — Kernel-Log aus 64KB Ring-Buffer
+- [x] /proc/meminfo — Buddy-Allocator Stats
+- [x] /proc/cpuinfo — Cores, TSC-Frequenz
 
-### procfs — Virtuelles Filesystem (/proc)
+### P15 — Syscalls fuer CosmoCL (in Arbeit)
 
-Ring-Buffer (64KB) in serial.c, jeder serial_putchar → COM1 + Ring.
-procfs generiert Inhalt on-the-fly aus Kernel-Daten.
+Misc (erledigt):
+- [x] DUP3, PIPE, SYSINFO, GETRUSAGE, PRLIMIT64, TIMES
 
-- [ ] /proc/dmesg — Kernel-Log (liest aus Ring-Buffer)
-- [ ] /proc/meminfo — Buddy-Allocator Stats
-- [ ] /proc/cpuinfo — Cores, TSC-Frequenz
+Filesystem-Metadata (erledigt):
+- [x] FCHMOD FCHOWN SYMLINK READLINK TRUNCATE FTRUNCATE
+- [x] LSTAT MKNODAT FCHMODAT FSTATAT UTIMENSAT FALLOCATE
+- [x] Symlinks: COSMOFS_TYPE_SYMLINK, Target als File-Data
+- [ ] LINK (hard links): -ENOSYS (CosmoFS hat keine)
 
-Kein Disk-I/O, kein /tmp/dmesg. `cat /proc/dmesg` liest direkt.
+Event-APIs (erledigt):
+- [x] EPOLL_CREATE1 EPOLL_CTL EPOLL_WAIT (epoll.c, Slab-basiert)
+- [x] EVENTFD2 (Counter-basiert, read/write)
+- [x] TIMERFD_CREATE TIMERFD_SETTIME (CLOCK_MONOTONIC)
+- [x] SIGNALFD4 (Stub, -ENOSYS)
+- [x] INOTIFY_INIT1 INOTIFY_ADD_WATCH INOTIFY_RM_WATCH (FD OK, keine Events)
 
 ---
 
@@ -171,47 +182,42 @@ Pruefung bei execve/dlopen/kexec.
 
 Nicht angefangen. Braucht: PTY, VT-Buffer, Font-Renderer,
 ANSI-Emulation, VT-Switch (Ctrl+Alt+F1-F4).
+Kein Framebuffer-earlycon — Bildschirm bleibt schwarz bis VT steht.
+Boot-Messages nur auf COM1 + /proc/dmesg. Silent Boot.
 Abhaengig von: virtio-input oder hv_kbd fuer Keyboard-Events.
 
-### P15 — Fehlende Syscalls fuer CosmoCL
+### P16 — Power Management + ACPI
 
-```
-Haben (95):  read write open close stat fstat lseek mmap munmap
-             mprotect brk clone fork execve wait4 kill pipe2 dup2
-             getcwd chdir mkdir mkdirat rmdir unlink unlinkat rename
-             renameat2 getdents64 ioctl fcntl readv writev poll
-             socket connect bind listen accept sendto recvfrom
-             sendmsg recvmsg getsockname getpeername setsockopt
-             getsockopt shutdown socketpair futex clock_gettime
-             clock_getres clock_nanosleep nanosleep gettimeofday
-             getpid getppid gettid getuid geteuid getgid getegid
-             uname access openat getrandom arch_prctl rt_sigaction
-             rt_sigprocmask rt_sigreturn sched_yield sched_getscheduler
-             sched_setscheduler sched_getparam sched_setparam
-             sched_getaffinity sched_setaffinity set_tid_address
-             prlimit64 set_robust_list rseq mlock mlockall munlock
-             munlockall
-             + 9 CosmoRT-spezifische (512-520)
+Microkernel-Split: Kernel stellt Device-Nodes bereit,
+Userspace-Daemons machen den Rest. Keine neuen Syscalls.
 
-Fehlen (gruppiert nach Bedarf):
+Kernel (Device-Nodes, ~200 Zeilen):
+- [ ] /dev/msr — lseek(fd, MSR_NR, SEEK_SET) + read/write(fd, &val, 8)
+      MSR-Allowlist (kein IA32_LSTAR etc.), is_driver bei open
+- [ ] /dev/port — lseek(fd, PORT, SEEK_SET) + read/write(fd, &val, width)
+      I/O-Port Zugriff (ACPI PM-Register, EC), is_driver bei open
 
-  Filesystem-Metadata:
-    FCHMOD FCHOWN LINK SYMLINK READLINK TRUNCATE FTRUNCATE
-    LSTAT MKNODAT FCHMODAT FSTATAT UTIMENSAT FALLOCATE
+Zugriff ueber bestehende Syscalls: open + lseek + read + write.
+Wie Linux /dev/cpu/N/msr und /dev/port.
 
-  Event-APIs (Node.js/libuv):
-    EPOLL_CREATE1 EPOLL_CTL EPOLL_WAIT
-    EVENTFD SIGNALFD TIMERFD_CREATE TIMERFD_SETTIME
-    INOTIFY_INIT1 INOTIFY_ADD_WATCH INOTIFY_RM_WATCH
+Userspace-Daemons (ueber svcmgr):
+- [ ] powerd — HWP P-States (MSR IA32_HWP_REQUEST), CPU-Temp
+      (MSR IA32_THERM_STATUS), Thermal-Throttle Policy.
+      RT-Cores: max perf. Idle POSIX-Cores: power-save.
+- [ ] acpid — ACPI-Tabellen parsen (RSDP→XSDT→FADT),
+      AML-Interpreter (minimal oder ACPICA portiert),
+      Events (Lid, Power-Button) via GPE.
+- [ ] batteryd — EC-Abfrage via /dev/port, _BST/_BIF,
+      Status publishen (/proc oder IPC).
+- [ ] backlightd — ACPI _BCL/_BCM oder GPU-Register.
+- [ ] Shutdown/Reboot — PM1a_CNT via /dev/port write.
 
-  Misc:
-    DUP3 PIPE SYSINFO GETRUSAGE SETRLIMIT TIMES
-```
-
-Fuer "Hello World" + printf: reicht.
-Fuer Ruby/Python: + Filesystem-Metadata.
-Fuer Node.js: + EPOLL + EVENTFD + TIMERFD + INOTIFY.
-Fuer Claude Code: alles oben.
+Reihenfolge:
+  1. /dev/msr + /dev/port Device-Nodes (Kernel)
+  2. powerd: HWP + Temperatur (kein ACPI noetig)
+  3. Shutdown/Reboot via ACPI PM-Register
+  4. ACPI-Tabellen parsen (statisch, kein AML)
+  5. AML-Interpreter (Batterie, Backlight, Sleep)
 
 ---
 
@@ -219,19 +225,22 @@ Fuer Claude Code: alles oben.
 
 ```
 Prio 1 — Interaktives CosmoOS:
-  procfs                        → /proc/dmesg, /proc/meminfo, /proc/cpuinfo
-  P14 Virtual Terminals + PTY   → Bash-Prompt auf Framebuffer
-  Framebuffer earlycon          → Boot-Messages auf Bildschirm (kein COM1 noetig)
-  P15 Filesystem-Metadata       → SYMLINK, READLINK, TRUNCATE, CHMOD
+  P14 Virtual Terminals + PTY   → Silent Boot, dann Bash auf Framebuffer
   dlopen/dlsym                  → Runtime Library Loading
 
-Prio 2 — Node.js / Claude Code:
-  EPOLL + EVENTFD + TIMERFD     → Async I/O (libuv braucht das)
-  INOTIFY                       → File-Watching
+Prio 2 — Notebook-tauglich:
+  P16 /dev/msr + /dev/port      → Device-Nodes, keine neuen Syscalls
+  P16 powerd                    → HWP + Temperatur (Userspace)
+  P16 Shutdown/Reboot           → ACPI PM-Register (Userspace)
   P10 Code-Signing              → Vertrauenskette (Ed25519)
 
-Prio 3 — Vollstaendigkeit:
+Prio 3 — Node.js / Claude Code:
+  INOTIFY Events                → Echte File-Watching Events liefern
+  dlopen/dlsym                  → Runtime Library Loading
+
+Prio 4 — Vollstaendigkeit:
   virtio-console/snd/fs         → Volle QEMU-Unterstuetzung
   IPv6 SLAAC                    → Dual-Stack Networking
   State-Transfer (P8)           → Graceful Driver Restart
+  P16 ACPI AML                  → Batterie, Backlight, Sleep
 ```

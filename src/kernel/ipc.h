@@ -32,8 +32,8 @@ typedef struct {
     ipc_msg_t msg;          /* buffered message */
     int      blocked_pid;   /* pid of blocked process (-1 if none) */
     int      blocked_tid;   /* tid of blocked thread (-1 if none) */
-    /* Notification word (async) */
-    uint64_t notify_word;   /* bitmask of pending notifications */
+    uint64_t notify_word;   /* bitmask of pending notifications (async) */
+    uint64_t _lock;         /* per-endpoint spinlock (used as spinlock_t) */
 } ipc_endpoint_t;
 
 /* Wait set for wait_any */

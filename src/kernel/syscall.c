@@ -18,6 +18,7 @@
 #include "irq.h"
 #include "spinlock.h"
 #include "procfs.h"
+#include "epoll.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -109,6 +110,8 @@ static long do_write(int fd, const void *buf, size_t count) {
         if (!pp || !is_write) return -EBADF;
         return pipe_write(pp, buf, count);
     }
+    if (fde->type == FD_EVENTFD)
+        return eventfd_write(fde->obj, buf, (long)count);
     return -EBADF;
 }
 
@@ -177,6 +180,10 @@ static long do_read(int fd, void *buf, size_t count) {
         if (!pp || is_write) return -EBADF;
         return pipe_read(pp, buf, count);
     }
+    if (fde->type == FD_EVENTFD)
+        return eventfd_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_TIMERFD)
+        return timerfd_read(fde->obj, buf, (long)count);
     return -EBADF;
 }
 
@@ -724,6 +731,10 @@ static long do_close(int fd) {
         fd_close(&p->fds, fd);
         return r;
     }
+    if (fde->type == FD_EPOLL)   { epoll_destroy(fde->obj);   return fd_close(&p->fds, fd); }
+    if (fde->type == FD_EVENTFD) { eventfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_TIMERFD) { timerfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(&p->fds, fd); }
     return fd_close(&p->fds, fd);
 }
 
@@ -768,7 +779,7 @@ static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
 
 /* ── SYS_clock_gettime (228) / SYS_clock_getres (229) ── */
 
-struct k_timespec { long tv_sec; long tv_nsec; };
+/* struct k_timespec defined in epoll.h (K_TIMESPEC_DEFINED guard) */
 struct k_timeval  { long tv_sec; long tv_usec; };
 
 static long do_clock_gettime(int clk_id, struct k_timespec *tp) {
@@ -1134,7 +1145,7 @@ static long do_stat(const char *path, struct k_stat *buf) {
     return vfs_stat(kpath, buf);
 }
 
-/* ── SYS_dup2 (33) ──────────────────────────────── */
+/* ── SYS_dup2 (33) / SYS_dup3 (292) ────────────── */
 
 static long do_dup2(int oldfd, int newfd) {
     process_t *p = proc_current();
@@ -1153,6 +1164,29 @@ static long do_dup2(int oldfd, int newfd) {
 
     /* Copy the fd entry */
     p->fds.entries[newfd] = *old;
+    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
+    return newfd;
+}
+
+static long do_dup3(int oldfd, int newfd, int flags) {
+    if (oldfd == newfd) return -EINVAL;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
+    fd_entry_t *old = fd_get(&p->fds, oldfd);
+    if (!old) return -EBADF;
+
+    /* Close newfd if open */
+    fd_entry_t *cur = fd_get(&p->fds, newfd);
+    if (cur) {
+        if (cur->type == FD_FILE) vfs_close(newfd);
+        else fd_close(&p->fds, newfd);
+    }
+
+    /* Copy the fd entry */
+    p->fds.entries[newfd] = *old;
+    if (flags & O_CLOEXEC)
+        p->fds.entries[newfd].flags |= O_CLOEXEC;
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
     return newfd;
 }
@@ -1537,7 +1571,102 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
                     slab_free(&pipe_slab, pp);
             }
         }
+    } else if (fde_type == FD_EPOLL) {
+        epoll_destroy(fde_obj);
+    } else if (fde_type == FD_EVENTFD) {
+        eventfd_destroy(fde_obj);
+    } else if (fde_type == FD_TIMERFD) {
+        timerfd_destroy(fde_obj);
+    } else if (fde_type == FD_INOTIFY) {
+        inotify_destroy(fde_obj);
     }
+}
+
+/* ── fd_poll_readiness — check what events are ready on an FD ── */
+
+uint32_t fd_poll_readiness(int fd, uint32_t interest) {
+    process_t *p = proc_current();
+    if (!p) return EPOLLHUP | EPOLLERR;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return EPOLLHUP | EPOLLERR;
+
+    uint32_t ready = 0;
+
+    switch (fde->type) {
+    case FD_SERIAL:
+        if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        break;
+
+    case FD_SOCKET: {
+        socket_t *s = (socket_t *)fde->obj;
+        if (!s) { ready |= EPOLLERR; break; }
+        if ((interest & EPOLLIN) && s->state == SOCK_CONNECTED) {
+            extern pkt_queue_t q_tcp;
+            if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
+                ready |= EPOLLIN;
+        }
+        if ((interest & EPOLLOUT) && s->state == SOCK_CONNECTED)
+            ready |= EPOLLOUT;
+        break;
+    }
+
+    case FD_PIPE: {
+        int is_write = 0;
+        struct pipe *pp = pipe_from_fd(fde, &is_write);
+        if (!pp) { ready |= EPOLLERR; break; }
+        if (!is_write) {
+            if (interest & EPOLLIN) {
+                if (pp->count > 0) ready |= EPOLLIN;
+                if (!pp->write_open) ready |= EPOLLIN | EPOLLHUP;
+            }
+        } else {
+            if (interest & EPOLLOUT) {
+                if (pp->count < PIPE_BUF_SIZE) ready |= EPOLLOUT;
+                if (!pp->read_open) ready |= EPOLLERR | EPOLLHUP;
+            }
+        }
+        break;
+    }
+
+    case FD_EVENTFD: {
+        eventfd_t *efd = (eventfd_t *)fde->obj;
+        if (!efd) { ready |= EPOLLERR; break; }
+        if ((interest & EPOLLIN) && efd->counter > 0) ready |= EPOLLIN;
+        if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        break;
+    }
+
+    case FD_TIMERFD: {
+        timerfd_t *tfd = (timerfd_t *)fde->obj;
+        if (!tfd) { ready |= EPOLLERR; break; }
+        /* Check for expired timer */
+        if (tfd->armed && timer_ms() >= tfd->expire_ms) {
+            uint64_t irqf;
+            spin_lock_irq(&tfd->lock, &irqf);
+            while (tfd->armed && timer_ms() >= tfd->expire_ms) {
+                tfd->expirations++;
+                if (tfd->interval_ms > 0)
+                    tfd->expire_ms += tfd->interval_ms;
+                else
+                    tfd->armed = 0;
+            }
+            spin_unlock_irq(&tfd->lock, irqf);
+        }
+        if ((interest & EPOLLIN) && tfd->expirations > 0) ready |= EPOLLIN;
+        break;
+    }
+
+    case FD_FILE:
+        if (interest & EPOLLIN)  ready |= EPOLLIN;
+        if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        break;
+
+    default:
+        if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        break;
+    }
+
+    return ready;
 }
 
 /* ── SYS_readv (19) ──────────────────────────────── */
@@ -1591,7 +1720,7 @@ static long do_unlink(const char *path) {
 
 static long do_unlinkat(int dirfd, const char *path, int flags) {
     (void)dirfd;
-    if (flags & 0x200) /* AT_REMOVEDIR */
+    if (flags & AT_REMOVEDIR)
         return do_rmdir(path);
     return do_unlink(path);
 }
@@ -1609,6 +1738,144 @@ static long do_renameat2(int olddirfd, const char *oldpath,
                           int newdirfd, const char *newpath, int flags) {
     (void)olddirfd; (void)newdirfd; (void)flags;
     return do_rename(oldpath, newpath);
+}
+
+/* ── SYS_fchmod (91) ─────────────────────────────── */
+
+static long do_fchmod(int fd, uint32_t mode) {
+    return vfs_fchmod(fd, mode);
+}
+
+/* ── SYS_fchown (93) ─────────────────────────────── */
+
+static long do_fchown(int fd, uint32_t uid, uint32_t gid) {
+    return vfs_fchown(fd, uid, gid);
+}
+
+/* ── SYS_link (86) ───────────────────────────────── */
+
+static long do_link(const char *oldpath, const char *newpath) {
+    char kold[PATH_MAX], knew[PATH_MAX];
+    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_link(kold, knew);
+}
+
+/* ── SYS_symlink (88) ───────────────────────────── */
+
+static long do_symlink(const char *target, const char *linkpath) {
+    char ktarget[PATH_MAX], klink[PATH_MAX];
+    int r = copy_path_from_user(ktarget, target, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(klink, linkpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_symlink(ktarget, klink);
+}
+
+/* ── SYS_readlink (89) ──────────────────────────── */
+
+static long do_readlink(const char *path, char *buf, size_t bufsiz) {
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    if (!user_ok((uint64_t)buf, bufsiz)) return -EFAULT;
+    return vfs_readlink(kpath, buf, bufsiz);
+}
+
+/* ── SYS_truncate (76) / SYS_ftruncate (77) ─────── */
+
+static long do_truncate(const char *path, int64_t length) {
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_truncate(kpath, length);
+}
+
+static long do_ftruncate(int fd, int64_t length) {
+    return vfs_ftruncate(fd, length);
+}
+
+/* ── SYS_lstat (6) ──────────────────────────────── */
+
+static long do_lstat(const char *path, struct k_stat *buf) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_lstat(kpath, buf);
+}
+
+/* ── SYS_fstatat (262) ─────────────────────────── */
+
+static long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
+    (void)dirfd; /* AT_FDCWD only */
+    if (flags & AT_SYMLINK_NOFOLLOW)
+        return do_lstat(path, buf);
+    return do_stat(path, buf);
+}
+
+/* ── SYS_fchmodat (268) ─────────────────────────── */
+
+static long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
+    (void)dirfd; (void)flags; /* AT_FDCWD only */
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_chmod(kpath, mode);
+}
+
+/* ── SYS_utimensat (280) ────────────────────────── */
+
+static long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
+    (void)dirfd; /* AT_FDCWD only */
+    if (!path) return 0; /* futimens with NULL path = no-op for now */
+
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+
+    int64_t ktimes[4];
+    if (utimes) {
+        if (!user_ok((uint64_t)utimes, 32)) return -EFAULT;
+        kmemcpy(ktimes, utimes, 32); /* 2 × struct timespec = 2 × 16 bytes */
+    }
+
+    return vfs_utimensat(kpath, utimes ? ktimes : 0, flags);
+}
+
+/* ── SYS_fallocate (285) ────────────────────────── */
+
+static long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
+    if (mode != 0) return -EOPNOTSUPP;
+    if (offset < 0 || len <= 0) return -EINVAL;
+    int64_t end = offset + len;
+    /* Only extend, never shrink — check current size via fstat */
+    struct k_stat st;
+    int rc = vfs_fstat(fd, &st);
+    if (rc < 0) return rc;
+    if (end <= st.st_size) return 0;
+    return vfs_ftruncate(fd, end);
+}
+
+/* ── SYS_mknodat (259) ──────────────────────────── */
+
+static long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
+    (void)dirfd; (void)dev; /* AT_FDCWD only */
+
+    /* Only S_IFREG (regular files) supported */
+    if ((mode & S_IFMT) != S_IFREG && (mode & S_IFMT) != 0)
+        return -EPERM;
+
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+
+    /* Create as regular file via open+close */
+    int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
+    if (fd < 0) return fd;
+    return vfs_close(fd);
 }
 
 /* ── SYS_getdents64 (217) ───────────────────────── */
@@ -1735,6 +2002,136 @@ static long do_fcntl(int fd, int cmd, long arg) {
     }
 }
 
+/* ── SYS_sysinfo (99) ────────────────────────────── */
+
+struct k_sysinfo {
+    long uptime;
+    unsigned long loads[3];
+    unsigned long totalram;
+    unsigned long freeram;
+    unsigned long sharedram;
+    unsigned long bufferram;
+    unsigned long totalswap;
+    unsigned long freeswap;
+    unsigned short procs;
+    unsigned short pad;       /* alignment */
+    unsigned long totalhigh;
+    unsigned long freehigh;
+    unsigned int  mem_unit;
+};
+
+static long do_sysinfo(struct k_sysinfo *info) {
+    if (!user_ok((uint64_t)info, sizeof(struct k_sysinfo))) return -EFAULT;
+    struct k_sysinfo ksi;
+    kmemset(&ksi, 0, sizeof(ksi));
+    ksi.uptime = (long)(timer_ms() / 1000);
+    ksi.totalram = (unsigned long)page_alloc_total() * 4096;
+    ksi.freeram  = (unsigned long)page_alloc_free()  * 4096;
+    /* Count live processes */
+    unsigned short nprocs = 0;
+    for (int i = 0; i < PROC_MAX; i++)
+        if (proc_pool[i].state == PROC_ALIVE) nprocs++;
+    ksi.procs = nprocs;
+    ksi.mem_unit = 1;
+    kmemcpy(info, &ksi, sizeof(ksi));
+    return 0;
+}
+
+/* ── SYS_getrusage (98) ─────────────────────────── */
+
+struct k_timeval_ru { long tv_sec; long tv_usec; };
+
+struct k_rusage {
+    struct k_timeval_ru ru_utime;
+    struct k_timeval_ru ru_stime;
+    long ru_maxrss;
+    long ru_ixrss;
+    long ru_idrss;
+    long ru_isrss;
+    long ru_minflt;
+    long ru_majflt;
+    long ru_nswap;
+    long ru_inblock;
+    long ru_oublock;
+    long ru_msgsnd;
+    long ru_msgrcv;
+    long ru_nsignals;
+    long ru_nvcsw;
+    long ru_nivcsw;
+};
+
+#define RUSAGE_SELF     0
+#define RUSAGE_CHILDREN (-1)
+
+static long do_getrusage(int who, struct k_rusage *usage) {
+    if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN) return -EINVAL;
+    if (!user_ok((uint64_t)usage, sizeof(struct k_rusage))) return -EFAULT;
+    struct k_rusage kru;
+    kmemset(&kru, 0, sizeof(kru));
+    kmemcpy(usage, &kru, sizeof(kru));
+    return 0;
+}
+
+/* ── SYS_prlimit64 (302) ────────────────────────── */
+
+struct k_rlimit {
+    unsigned long rlim_cur;
+    unsigned long rlim_max;
+};
+
+#define RLIMIT_STACK   3
+#define RLIMIT_NOFILE  7
+#define RLIMIT_AS      9
+#define RLIM_INFINITY  (~0UL)
+
+static long do_prlimit64(int pid, int resource,
+                         const struct k_rlimit *new_rlim,
+                         struct k_rlimit *old_rlim) {
+    (void)pid; (void)new_rlim; /* ignore set for now */
+    if (old_rlim) {
+        if (!user_ok((uint64_t)old_rlim, sizeof(struct k_rlimit))) return -EFAULT;
+        struct k_rlimit krl;
+        switch (resource) {
+        case RLIMIT_STACK:
+            krl.rlim_cur = 8 * 1024 * 1024;      /* 8 MB */
+            krl.rlim_max = 64 * 1024 * 1024;     /* 64 MB */
+            break;
+        case RLIMIT_NOFILE:
+            krl.rlim_cur = FD_MAX;
+            krl.rlim_max = FD_MAX;
+            break;
+        case RLIMIT_AS:
+            krl.rlim_cur = RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
+        default:
+            krl.rlim_cur = RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
+        }
+        kmemcpy(old_rlim, &krl, sizeof(krl));
+    }
+    return 0;
+}
+
+/* ── SYS_times (100) ────────────────────────────── */
+
+struct k_tms {
+    long tms_utime;
+    long tms_stime;
+    long tms_cutime;
+    long tms_cstime;
+};
+
+static long do_times(struct k_tms *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct k_tms))) return -EFAULT;
+    struct k_tms ktms;
+    kmemset(&ktms, 0, sizeof(ktms));
+    kmemcpy(buf, &ktms, sizeof(ktms));
+    /* Return clock ticks since boot (assume 100 Hz CLK_TCK) */
+    return (long)(timer_ms() / 10);
+}
+
 /* ── Dispatcher ──────────────────────────────────── */
 
 static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
@@ -1795,7 +2192,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     /* System info */
     case SYS_UNAME:     return do_uname((struct utsname *)a1);
     case SYS_GETRANDOM: return do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3);
-    case SYS_PRLIMIT64: return -ENOSYS;
+    case SYS_PRLIMIT64: return do_prlimit64((int)a1, (int)a2,
+                                           (const struct k_rlimit *)a3,
+                                           (struct k_rlimit *)a4);
+    case SYS_SYSINFO:   return do_sysinfo((struct k_sysinfo *)a1);
+    case SYS_GETRUSAGE: return do_getrusage((int)a1, (struct k_rusage *)a2);
+    case SYS_TIMES:     return do_times((struct k_tms *)a1);
     case SYS_RSEQ:      return -ENOSYS;
 
     /* Timers / clocks */
@@ -1830,7 +2232,11 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_LSEEK:  return do_lseek((int)a1, a2, (int)a3);
     case SYS_FSTAT:  return do_fstat((int)a1, (struct k_stat *)a2);
     case SYS_STAT:   return do_stat((const char *)a1, (struct k_stat *)a2);
+    case SYS_LSTAT:  return do_lstat((const char *)a1, (struct k_stat *)a2);
+    case SYS_FSTATAT: return do_fstatat((int)a1, (const char *)a2,
+                                         (struct k_stat *)a3, (int)a4);
     case SYS_DUP2:   return do_dup2((int)a1, (int)a2);
+    case SYS_DUP3:   return do_dup3((int)a1, (int)a2, (int)a3);
     case SYS_GETCWD: return do_getcwd((char *)a1, (size_t)a2);
     case SYS_CHDIR:  return do_chdir((const char *)a1);
 
@@ -1867,7 +2273,21 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                                               (int)a3, (const char *)a4, (int)a5);
     case SYS_GETDENTS64: return do_getdents64((int)a1, (void *)a2, (size_t)a3);
 
+    /* Filesystem metadata */
+    case SYS_FCHMOD:     return do_fchmod((int)a1, (uint32_t)a2);
+    case SYS_FCHOWN:     return do_fchown((int)a1, (uint32_t)a2, (uint32_t)a3);
+    case SYS_LINK:       return do_link((const char *)a1, (const char *)a2);
+    case SYS_SYMLINK:    return do_symlink((const char *)a1, (const char *)a2);
+    case SYS_READLINK:   return do_readlink((const char *)a1, (char *)a2, (size_t)a3);
+    case SYS_TRUNCATE:   return do_truncate((const char *)a1, (int64_t)a2);
+    case SYS_FTRUNCATE:  return do_ftruncate((int)a1, (int64_t)a2);
+    case SYS_FCHMODAT:   return do_fchmodat((int)a1, (const char *)a2, (uint32_t)a3, (int)a4);
+    case SYS_UTIMENSAT:  return do_utimensat((int)a1, (const char *)a2, (const void *)a3, (int)a4);
+    case SYS_FALLOCATE:  return do_fallocate((int)a1, (int)a2, (int64_t)a3, (int64_t)a4);
+    case SYS_MKNODAT:    return do_mknodat((int)a1, (const char *)a2, (uint32_t)a3, (uint64_t)a4);
+
     /* Pipe / IO */
+    case SYS_PIPE:   return do_pipe2((int *)a1, 0);
     case SYS_PIPE2:  return do_pipe2((int *)a1, (int)a2);
     case SYS_READV:  return do_readv((int)a1, (const struct iovec *)a2, (int)a3);
     case SYS_IOCTL:  return do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3);
@@ -1875,6 +2295,23 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
 
     /* Stubs */
     case SYS_ACCESS: return 0; /* pretend everything is accessible */
+
+    /* epoll / eventfd / timerfd / signalfd / inotify */
+    case SYS_EPOLL_CREATE1:     return do_epoll_create1((int)a1);
+    case SYS_EPOLL_CTL:         return do_epoll_ctl((int)a1, (int)a2, (int)a3,
+                                                     (struct epoll_event *)a4);
+    case SYS_EPOLL_WAIT:        return do_epoll_wait((int)a1, (struct epoll_event *)a2,
+                                                      (int)a3, (int)a4);
+    case SYS_EVENTFD2:          return do_eventfd2((unsigned int)a1, (int)a2);
+    case SYS_TIMERFD_CREATE:    return do_timerfd_create((int)a1, (int)a2);
+    case SYS_TIMERFD_SETTIME:   return do_timerfd_settime((int)a1, (int)a2,
+                                         (const struct k_itimerspec *)a3,
+                                         (struct k_itimerspec *)a4);
+    case SYS_SIGNALFD4:         return do_signalfd4((int)a1, (const uint64_t *)a2, (int)a3);
+    case SYS_INOTIFY_INIT1:     return do_inotify_init1((int)a1);
+    case SYS_INOTIFY_ADD_WATCH: return do_inotify_add_watch((int)a1, (const char *)a2,
+                                                             (uint32_t)a3);
+    case SYS_INOTIFY_RM_WATCH:  return do_inotify_rm_watch((int)a1, (int)a2);
 
     /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
     /* Capability check: only processes with is_driver may use these */

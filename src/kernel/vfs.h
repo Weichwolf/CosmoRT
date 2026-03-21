@@ -17,6 +17,7 @@
 #define VFS_FILE    1
 #define VFS_DIR     2
 #define VFS_PIPE    3
+#define VFS_SYMLINK 4
 
 /* Open flags (Linux-compatible) */
 #ifndef O_RDONLY
@@ -54,6 +55,7 @@ struct k_stat {
 #define S_IFREG  0100000
 #define S_IFDIR  0040000
 #define S_IFIFO  0010000
+#define S_IFLNK  0120000
 #define S_IRWXU  0700
 #define S_IRUSR  0400
 #define S_IWUSR  0200
@@ -62,11 +64,14 @@ struct k_stat {
 /* Filesystem node (inode equivalent) */
 struct vfs_node {
     char name[256];
-    int type;               /* VFS_FILE or VFS_DIR */
+    int type;               /* VFS_FILE, VFS_DIR, VFS_SYMLINK */
     uint8_t *data;          /* file content (page-allocated) */
     size_t size;            /* current file size */
     size_t capacity;        /* allocated capacity */
     uint64_t ino;           /* inode number */
+    uint32_t mode;          /* permission bits */
+    uint32_t uid, gid;      /* owner (single-user: always 0) */
+    char symlink_target[256]; /* symlink target (VFS_SYMLINK only) */
     struct vfs_node *children;  /* linked list (for directories) */
     struct vfs_node *next;      /* sibling link */
     struct vfs_node *parent;    /* parent directory */
@@ -105,6 +110,7 @@ long vfs_lseek(int fd, long offset, int whence);
 
 /* Stat operations */
 int vfs_stat(const char *path, struct k_stat *buf);
+int vfs_lstat(const char *path, struct k_stat *buf);
 int vfs_fstat(int fd, struct k_stat *buf);
 
 /* Directory operations */
@@ -116,6 +122,21 @@ int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *oldpath, const char *newpath);
+
+/* Symlink operations */
+int vfs_symlink(const char *target, const char *linkpath);
+int vfs_readlink(const char *path, char *buf, size_t bufsiz);
+
+/* Hard link (returns -ENOSYS if not supported) */
+int vfs_link(const char *oldpath, const char *newpath);
+
+/* Metadata operations */
+int vfs_chmod(const char *path, uint32_t mode);
+int vfs_fchmod(int fd, uint32_t mode);
+int vfs_fchown(int fd, uint32_t uid, uint32_t gid);
+int vfs_truncate(const char *path, int64_t length);
+int vfs_ftruncate(int fd, int64_t length);
+int vfs_utimensat(const char *path, const int64_t times[4], int flags);
 
 /* Populate ramfs with a file (for init binary, etc.) */
 int vfs_add_file(const char *path, const void *data, size_t len);

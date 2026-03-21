@@ -149,6 +149,10 @@ void kernel_main(struct boot_info *info) {
     extern void futex_init(void);
     futex_init();
 
+    /* Epoll/eventfd/timerfd subsystem */
+    extern void epoll_init(void);
+    epoll_init();
+
     /* SMP — APs enter scheduler loop */
     extern void sched_loop(void);
     smp_start_all(sched_loop);

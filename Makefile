@@ -73,6 +73,7 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/cosmofs.o \
            $(BUILD)/kernel/kexec.o \
            $(BUILD)/kernel/socket.o \
+           $(BUILD)/kernel/epoll.o \
            $(BUILD)/kernel/hyperv.o \
            $(BUILD)/drivers/hyperv/vmbus.o \
            $(BUILD)/drivers/hyperv/storvsc.o \

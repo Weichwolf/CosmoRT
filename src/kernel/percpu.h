@@ -21,6 +21,7 @@ typedef struct percpu {
     int            core_id;         /* offset 24 */
     int            in_kernel;       /* offset 28 */
     uint64_t       syscall_frame;   /* offset 32: saved regs pointer for clone() */
+    struct percpu *self;            /* offset 40: self-pointer for GS-relative access */
 } percpu_t;
 
 extern percpu_t percpu_data[SMP_MAX_CORES];
@@ -31,8 +32,17 @@ void percpu_init_bsp(void);
 /* Initialize AP per-CPU data (called on each AP startup) */
 void percpu_init_ap(int core_id);
 
-/* Get current core's percpu (via LAPIC ID, works without swapgs) */
-percpu_t *percpu_self(void);
+/* Get current core's percpu.
+ * In kernel context (after swapgs): reads GS:40 self-pointer (fast, ~3 cycles).
+ * Fallback for early boot / IRQ without swapgs: LAPIC ID lookup. */
+static inline percpu_t *percpu_self(void) {
+    percpu_t *p;
+    __asm__ volatile("mov %%gs:40, %0" : "=r"(p));
+    if (__builtin_expect(p != 0, 1)) return p;
+    /* Fallback: LAPIC ID (early boot before GS is set) */
+    extern percpu_t *percpu_self_slow(void);
+    return percpu_self_slow();
+}
 
 /* Get current thread on this core */
 struct thread *thread_current(void);

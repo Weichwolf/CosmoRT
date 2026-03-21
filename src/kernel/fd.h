@@ -17,6 +17,10 @@
 #define FD_DEVICE  4
 #define FD_FILE    5
 #define FD_PROCFS  6   /* /proc virtual files */
+#define FD_EPOLL   7
+#define FD_EVENTFD 8
+#define FD_TIMERFD 9
+#define FD_INOTIFY 10
 
 /* Open flags (subset of POSIX) */
 #define O_RDONLY   0x0000
