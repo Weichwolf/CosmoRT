@@ -728,6 +728,10 @@ int vt_pty_id(int vt_id) {
     return vts[vt_id].pty_id;
 }
 
+static int kbd_present = 0;
+int vt_has_keyboard(void) { return kbd_present; }
+void vt_set_keyboard(void) { kbd_present = 1; }
+
 /* ── Helper to print number to serial ──────────────── */
 
 static void serial_int(int v) {

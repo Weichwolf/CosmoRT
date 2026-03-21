@@ -39,4 +39,8 @@ int vt_pty_id(int vt_id);
 /* Drain PTY output and render (called from timer tick or explicit flush). */
 void vt_flush(int vt_id);
 
+/* Keyboard presence (for deciding whether init gets PTY or serial fds). */
+int vt_has_keyboard(void);
+void vt_set_keyboard(void);
+
 #endif

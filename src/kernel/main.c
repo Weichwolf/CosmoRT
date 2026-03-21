@@ -200,7 +200,9 @@ void kernel_main(struct boot_info *info) {
     {
         extern void virtio_input_set_callback(void (*)(uint16_t, uint16_t, int32_t));
         extern void vt_input_cb(uint16_t type, uint16_t code, int32_t value);
+        extern void vt_set_keyboard(void);
         virtio_input_set_callback(vt_input_cb);
+        vt_set_keyboard();
     }
 
     /* Network — uses whatever NIC driver registered */
@@ -280,6 +282,8 @@ void kernel_main(struct boot_info *info) {
         serial_puts("FATAL: failed to load init\n");
         __asm__ volatile("cli; hlt");
     }
+
+    /* PTY redirect handled by vt_shell for qemu-gui, not here */
 
     serial_puts("--- Entering userspace ---\n\n");
 
