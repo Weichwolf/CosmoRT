@@ -120,6 +120,15 @@ static void read_mac(void) {
     mac_addr[5] = (hi >> 8) & 0xFF;
 }
 
+/* ── IRQ Handler (called on packet receive) ────────── */
+
+static void e1000_irq_handler(void *ctx) {
+    (void)ctx;
+    e1000_read(E1000_ICR); /* read + auto-clear interrupt cause */
+    extern void net_poll(void);
+    net_poll();
+}
+
 /* ── Init ──────────────────────────────────────────── */
 
 int e1000_init(void) {
@@ -253,8 +262,7 @@ int e1000_init(void) {
     e1000_write(E1000_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP |
                             (15 << 4) | (64 << 12));
 
-    /* Disable interrupts — polling via net_poll */
-    e1000_write(E1000_IMC, 0xFFFFFFFF);
+    /* Clear pending interrupts */
     e1000_read(E1000_ICR);
 
     serial_puts("e1000: MAC=");
@@ -276,6 +284,18 @@ int e1000_init(void) {
         .name    = "e1000"
     };
     net_nic_register(&e1000_driver);
+
+    /* Enable RX interrupts (IRQ-driven, no polling) */
+    uint32_t irq_reg;
+    cosmo_pci_config_read(found_bus, found_dev, 0, 0x3C, &irq_reg);
+    int irq_line = (int)(irq_reg & 0xFF);
+    cosmo_irq_register(irq_line, e1000_irq_handler, 0);
+    e1000_write(E1000_IMS, 0x84); /* RXT0 + LSC (RX timer + link status) */
+
+    serial_puts("e1000: IRQ ");
+    serial_putchar('0' + (irq_line / 10));
+    serial_putchar('0' + (irq_line % 10));
+    serial_puts(" (interrupt-driven)\n");
 
     return 0;
 }

@@ -234,7 +234,9 @@ bench: $(SRC)/kernel/kbench_bin.h
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
-	  -display none -no-reboot || true
+	  -display none -no-reboot \
+	  -device e1000,netdev=net0 \
+	  -netdev user,id=net0 || true
 	@echo "=== Benchmark Results ==="
 	@sed -n '/Kernel Benchmark/,/Benchmark Complete/p' /tmp/cosmo-serial.log
 	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
@@ -268,7 +270,9 @@ test-hw: $(SRC)/kernel/ktest_bin.h
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
-	  -display none -no-reboot || true
+	  -display none -no-reboot \
+	  -device e1000,netdev=net0 \
+	  -netdev user,id=net0 || true
 	@echo "=== Hardware Test Results ==="
 	@sed -n '/Hardware Test/,/PASSED\|failed/p' /tmp/cosmo-serial.log
 	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
@@ -334,7 +338,9 @@ QEMU_FLAGS = -cpu qemu64 -smp 1 -m 256 \
              -drive file=$(ESP_IMG),format=raw \
              -serial stdio \
              -display none \
-             -no-reboot
+             -no-reboot \
+             -device e1000,netdev=net0 \
+             -netdev user,id=net0
 
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
@@ -364,7 +370,9 @@ test-boot: $(ESP_IMG)
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
-	        -display none -no-reboot || true
+	        -display none -no-reboot \
+	        -device e1000,netdev=net0 \
+	        -netdev user,id=net0 || true
 	@echo "=== Serial output ==="
 	@cat /tmp/cosmo-serial.log 2>/dev/null || echo "(no output)"
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
@@ -377,7 +385,9 @@ test-boot-disk: $(ESP_IMG) disk.img
 	        -drive file=$(ESP_IMG),format=raw \
 	        -drive file=disk.img,if=virtio,format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
-	        -display none -no-reboot || true
+	        -display none -no-reboot \
+	        -device e1000,netdev=net0 \
+	        -netdev user,id=net0 || true
 	@echo "=== Serial output ==="
 	@cat /tmp/cosmo-serial.log 2>/dev/null || echo "(no output)"
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \

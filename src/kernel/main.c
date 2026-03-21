@@ -178,8 +178,70 @@ void kernel_main(struct boot_info *info) {
 
     /* Network — uses whatever NIC driver registered */
     if (net_init() == 0) {
-        serial_puts("net: stack ready, DHCP discover\n");
+        serial_puts("net: DHCP...");
         net_dhcp_send_discover();
+
+        /* Blocking DHCP wait (up to 5 seconds, retry every 1s) */
+        uint64_t dhcp_deadline = timer_ms() + 5000;
+        uint64_t last_discover = timer_ms();
+        int dhcp_ok = 0;
+        while (timer_ms() < dhcp_deadline) {
+            net_poll();
+            if (net_dhcp_check()) {
+                dhcp_ok = 1;
+                break;
+            }
+            if (timer_ms() - last_discover > 1000) {
+                net_dhcp_send_discover();
+                last_discover = timer_ms();
+            }
+            timer_sleep_ms(10);
+        }
+
+        if (dhcp_ok) {
+            serial_puts("ok ");
+            /* Print IP */
+            for (int i = 0; i < 4; i++) {
+                uint8_t b = net_my_ip[i];
+                if (b >= 100) serial_putchar('0' + b / 100);
+                if (b >= 10) serial_putchar('0' + (b / 10) % 10);
+                serial_putchar('0' + b % 10);
+                if (i < 3) serial_putchar('.');
+            }
+            serial_puts(" gw ");
+            for (int i = 0; i < 4; i++) {
+                uint8_t b = net_gw_ip[i];
+                if (b >= 100) serial_putchar('0' + b / 100);
+                if (b >= 10) serial_putchar('0' + (b / 10) % 10);
+                serial_putchar('0' + b % 10);
+                if (i < 3) serial_putchar('.');
+            }
+            if (net_dns_ip[0]) {
+                serial_puts(" dns ");
+                for (int i = 0; i < 4; i++) {
+                    uint8_t b = net_dns_ip[i];
+                    if (b >= 100) serial_putchar('0' + b / 100);
+                    if (b >= 10) serial_putchar('0' + (b / 10) % 10);
+                    serial_putchar('0' + b % 10);
+                    if (i < 3) serial_putchar('.');
+                }
+            }
+            /* mDNS hostname: cosmo-XXXX where XXXX = last 4 hex of MAC */
+            {
+                char hn[] = "cosmo-0000";
+                const char *hex = "0123456789abcdef";
+                hn[6] = hex[net_my_mac[4] >> 4];
+                hn[7] = hex[net_my_mac[4] & 0xF];
+                hn[8] = hex[net_my_mac[5] >> 4];
+                hn[9] = hex[net_my_mac[5] & 0xF];
+                net_set_hostname(hn);
+                serial_puts("\nnet: hostname ");
+                serial_puts(hn);
+                serial_puts(".local\n");
+            }
+        } else {
+            serial_puts("timeout (no network)\n");
+        }
     } else {
         serial_puts("net: no NIC (ok for basic boot)\n");
     }

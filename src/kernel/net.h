@@ -61,8 +61,11 @@ int net_http_get(const uint8_t *dst_ip, uint16_t port,
 /* DNS */
 int net_dns_resolve(const char *hostname, uint8_t ip_out[4]);
 
-/* Polling — call from idle loop */
+/* Polling — call from idle loop and timer interrupt */
 void net_poll(void);
+
+/* mDNS hostname (e.g., "cosmo-3456") — set after DHCP */
+void net_set_hostname(const char *name);
 
 /* Queue type */
 #define Q_SIZE NET_QUEUE_SIZE
