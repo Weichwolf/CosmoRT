@@ -19,11 +19,12 @@
 
 /* ── ANSI 16-color palette ─────────────────────────── */
 
+/* BMW Bernstein — warm amber on black, like classic instrument clusters */
 static const uint32_t ansi_colors[16] = {
-    0x000000, 0xAA0000, 0x00AA00, 0xAA5500,  /* black, red, green, brown */
-    0x0000AA, 0xAA00AA, 0x00AAAA, 0xAAAAAA,  /* blue, magenta, cyan, white */
-    0x555555, 0xFF5555, 0x55FF55, 0xFFFF55,  /* bright: black, red, green, yellow */
-    0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,  /* bright: blue, magenta, cyan, white */
+    0x000000, 0xCC3300, 0x669900, 0xCC8800,  /* black, red, green, brown */
+    0x336699, 0x994499, 0x339999, 0xFF8C00,  /* blue, magenta, cyan, DEFAULT (amber) */
+    0x663300, 0xFF6633, 0x99CC33, 0xFFCC33,  /* bright: dim, orange, lime, gold */
+    0x6699CC, 0xCC66CC, 0x66CCCC, 0xFFAA33,  /* bright: blue, magenta, cyan, bright amber */
 };
 
 /* ── Per-VT state ──────────────────────────────────── */
