@@ -1,6 +1,6 @@
 /* CosmoRT Buddy Allocator — power-of-2 free lists, O(1) single-page alloc
  *
- * Orders: 0=4KB, 1=8KB, ..., 9=2MB. MAX_ORDER=9 matches x86_64 huge page.
+ * Orders: 0=4KB, 1=8KB, ..., 9=2MB (x86_64 huge page boundary).
  * Free blocks stored in-place (first 8 bytes of free page = next pointer).
  * Bitmap tracks allocated pages for buddy merging.
  * Bitmap itself lives in first usable UEFI region — no static limits.
@@ -14,7 +14,7 @@
 
 #define PAGE_SHIFT  12
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
-#define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB — x86_64 huge page boundary */
+#define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB */
 
 /* 8GB direct-map cap (entry.asm maps PML4[256..263]) */
 #define DIRECT_MAP_LIMIT (8ULL * 1024 * 1024 * 1024)
@@ -168,7 +168,6 @@ static void add_region(uint64_t phys_start, uint64_t phys_end) {
 
         uint64_t npages = 1ULL << order;
         total_pages += npages;
-        /* Bitmap bits are already clear (= free) from zeroing */
 
         addr += npages << PAGE_SHIFT;
     }
@@ -238,14 +237,8 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         return;
     }
 
-    /* Zero the bitmap (all bits clear = all free) */
-    kmemset(buddy_bitmap, 0, bitmap_bytes);
-
-    /* Mark ALL pages as allocated initially (set all bits).
-     * add_region will clear bits for pages it adds. Actually, no —
-     * add_region leaves bits clear (free). But we need non-usable pages
-     * to be marked allocated. Simpler: set entire bitmap, then clear
-     * as we add regions. */
+    /* Mark all pages as allocated (set all bits).
+     * Pass 3 clears bits for usable regions as they are added. */
     kmemset(buddy_bitmap, 0xFF, bitmap_bytes);
 
     /* Init free lists */
@@ -268,16 +261,13 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         /* Skip bitmap area within this region */
         uint64_t bm_end = bitmap_phys + bitmap_pages * PAGE_SIZE;
         if (phys >= bitmap_phys && phys < bm_end) {
-            /* Region starts inside bitmap — skip bitmap part */
             phys = bm_end;
         } else if (phys < bitmap_phys && end > bitmap_phys) {
-            /* Bitmap is in the middle of this region — split */
-            /* Clear bits and add the part before bitmap */
+            /* Bitmap splits this region — add part before bitmap */
             uint64_t pfn_start = phys >> PAGE_SHIFT;
-            uint64_t pfn_end = bitmap_phys >> PAGE_SHIFT;
-            for (uint64_t p = pfn_start; p < pfn_end; p++) bm_clear(p);
+            uint64_t pfn_end_bm = bitmap_phys >> PAGE_SHIFT;
+            for (uint64_t p = pfn_start; p < pfn_end_bm; p++) bm_clear(p);
             add_region(phys, bitmap_phys);
-            /* Continue with part after bitmap */
             phys = bm_end;
         }
 
@@ -291,11 +281,6 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         add_region(phys, end);
     }
 
-    /* Mark all free pages as allocated in bitmap for consistency:
-     * bitmap bit set = allocated. But we just cleared them.
-     * The free lists contain free blocks. The bitmap says "free".
-     * On alloc, we set bits. On free, we clear bits. Correct. */
-
     serial_puts("buddy: ");
     serial_dec(total_pages);
     serial_puts(" pages (");
@@ -303,18 +288,6 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     serial_puts(" MB), bitmap ");
     serial_dec(bitmap_pages);
     serial_puts(" pages\n");
-
-    /* Order distribution */
-    serial_puts("buddy: orders");
-    for (int o = 0; o <= MAX_ORDER; o++) {
-        int cnt = 0;
-        for (struct free_block *b = free_lists[o]; b; b = b->next) cnt++;
-        if (cnt > 0) {
-            serial_puts(" ["); serial_dec((uint64_t)o);
-            serial_puts("]="); serial_dec((uint64_t)cnt);
-        }
-    }
-    serial_putchar('\n');
 
     if (truncated)
         serial_puts("buddy: WARNING — RAM above 8GB truncated (direct-map limit)\n");
@@ -331,14 +304,8 @@ void *page_alloc(void) {
 
 void page_free(void *page) {
     if (!page) return;
-    uint64_t phys = virt_to_phys(page);
-    uint64_t pfn = phys >> PAGE_SHIFT;
-    if (pfn >= max_pfn) {
-        serial_puts("page_free: pfn out of range! phys=");
-        serial_hex64(phys);
-        serial_puts("\n");
-        return;
-    }
+    uint64_t pfn = virt_to_phys(page) >> PAGE_SHIFT;
+    if (pfn >= max_pfn) return; /* not tracked by buddy — ignore */
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(page, 0);

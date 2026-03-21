@@ -1,2 +1,3 @@
 build/
 disk.img
+src/kernel/ktest_bin.h
