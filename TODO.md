@@ -226,7 +226,7 @@ Haben:
   [x] virtio-blk     (306 Zeilen)
 
 Fehlen:
-  [ ] virtio-net      (~400 Zeilen) — ersetzt E1000
+  [ ] virtio-net      (~400 Zeilen) — Alternative zu E1000
   [ ] virtio-gpu      (~600 Zeilen) — 2D Framebuffer
   [ ] virtio-input    (~300 Zeilen) — Tastatur + Maus
   [ ] virtio-console  (~200 Zeilen) — Terminal
