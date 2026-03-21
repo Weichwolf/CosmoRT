@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "config.h"
+#include "spinlock.h"
 
 /* ── NIC driver interface (implemented by each driver) ── */
 
@@ -67,14 +68,32 @@ void net_poll(void);
 /* mDNS hostname (e.g., "cosmo-3456") — set after DHCP */
 void net_set_hostname(const char *name);
 
-/* Queue type */
+/* Queue type — each queue has its own spinlock.
+ *
+ * Lock ordering (lower number = outer lock):
+ *   1. No queue lock nests inside another queue lock.
+ *   2. q_push/q_pop each take exactly one queue lock, never two.
+ *   3. net_poll dispatches to one queue per packet — no cross-queue lock.
+ *   4. IRQ-safe: spin_lock_irq (cli before lock, restore after unlock).
+ *
+ * Deadlock-free by construction: single-lock operations only.
+ */
 #define Q_SIZE NET_QUEUE_SIZE
 #define Q_PKT  NET_PKT_SIZE
 typedef struct {
-    uint8_t data[Q_SIZE][Q_PKT];
-    int     len[Q_SIZE];
-    int     head, count;
+    uint8_t    data[Q_SIZE][Q_PKT];
+    int        len[Q_SIZE];
+    int        head, count;
+    spinlock_t lock;
 } pkt_queue_t;
+
+#define PKT_QUEUE_INIT { .head = 0, .count = 0, .lock = SPINLOCK_INIT }
+
+/* Atomic read of queue packet count (safe without lock for polling hints) */
+static inline int q_count(const pkt_queue_t *q) {
+    return __atomic_load_n(&q->count, __ATOMIC_ACQUIRE);
+}
+
 extern pkt_queue_t q_tcp;
 
 /* Network state */
