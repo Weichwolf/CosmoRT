@@ -356,9 +356,9 @@ P6 (Signale) → P13.1-13.5 (Boot) → P13.6 (Netz) → Node.js → Claude Code
 
 ---
 
-## P14 — Virtual Terminals (F1-F4 Desktop-Switching)
+## P14 — Virtual Terminals (Ctrl+Alt+F1-F4 Desktop-Switching)
 
-4 virtuelle Terminals. F1-F4 switcht welches sichtbar ist.
+4 virtuelle Terminals. Ctrl+Alt+F1-F4 switcht welches sichtbar ist.
 Jede VT hat eigene Bash-Instanz. Dem Kernel ist egal ob auf
 einer VT eine Shell oder ein Window-Manager laeuft.
 
@@ -382,7 +382,7 @@ F4: bash --login    (tty4, Shell)
    Tastatur-Input → Master schreibt in Slave → Bash liest
 
 3. **VT-Switch** (~100 Zeilen)
-   Keyboard-Handler: F1-F4 → active_vt = n
+   Keyboard-Handler: Ctrl+Alt+F1-F4 → active_vt = n
    Framebuffer neu zeichnen aus dem Buffer der aktiven VT
    Hintergrund-VTs laufen weiter (Bash-Prozesse stoppen nicht)
 
