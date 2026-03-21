@@ -116,7 +116,26 @@ $(SRC)/kernel/init_bin.h: $(BUILD)/user/init
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(SRC)/kernel/init_bin.h
+init-bin: $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h
+
+# ── Dynamic linker (ld-cosmo.so, embedded in kernel) ──
+$(BUILD)/user/ld-cosmo.o: $(SRC)/user/ld-cosmo.c | $(BUILD)/user
+	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
+	      -fno-plt -mno-red-zone -nostdlib -Wall -Wextra -Werror -O2 -c -o $@ $<
+
+$(BUILD)/user/ld-cosmo: $(BUILD)/user/ld-cosmo.o $(SRC)/user/interp.ld
+	$(LD) -T $(SRC)/user/interp.ld -o $@ $<
+
+$(SRC)/kernel/ld_cosmo_bin.h: $(BUILD)/user/ld-cosmo
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated ld-cosmo binary (%d bytes) */' % len(data)); \
+	print('static const unsigned char ld_cosmo_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long ld_cosmo_bin_size = %d;' % len(data))" > $@
+	@echo "ld_cosmo_bin.h: $$(wc -c < $<) bytes"
 
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
@@ -229,9 +248,9 @@ $(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
 $(BUILD)/drivers/blk/%.o: $(SRC)/drivers/blk/%.c | $(BUILD)/drivers/blk
 	$(CC) $(KCFLAGS) -I$(SRC)/drivers/blk -o $@ $<
 
-# main.o depends on init_bin.h
-$(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h | $(BUILD)/kernel
-	$(CC) $(KCFLAGS) -o $@ $<
+# main.o depends on init_bin.h and ld_cosmo_bin.h
+$(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h | $(BUILD)/kernel
+	$(CC) $(KCFLAGS) -DHAVE_LD_COSMO -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -310,5 +329,5 @@ test-boot-disk: $(ESP_IMG) disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h
+	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h
 	rm -f tools/mkfs disk.img

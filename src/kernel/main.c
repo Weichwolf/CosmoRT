@@ -23,6 +23,11 @@
 
 #include "init_bin.h"
 
+/* Dynamic linker binary (embedded, registered in VFS at /lib/ld-cosmo.so) */
+#ifdef HAVE_LD_COSMO
+#include "ld_cosmo_bin.h"
+#endif
+
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
 uint64_t g_heap_size;
@@ -131,6 +136,13 @@ void kernel_main(struct boot_info *info) {
         vfs_create("/bin", VFS_DIR);
         vfs_create("/etc", VFS_DIR);
     }
+
+    /* Dynamic linker: register at /lib/ld-cosmo.so */
+#ifdef HAVE_LD_COSMO
+    vfs_create("/lib", VFS_DIR);
+    vfs_add_file("/lib/ld-cosmo.so", ld_cosmo_bin, ld_cosmo_bin_size);
+    serial_puts("vfs: /lib/ld-cosmo.so registered\n");
+#endif
 
     /* Futex subsystem (wait queue hash table + slab pool) */
     extern void futex_init(void);
