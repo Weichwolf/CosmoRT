@@ -150,13 +150,23 @@ int random_get(void *buf, size_t len) {
 
 void random_add_interrupt_entropy(void) {
     if (!rng_initialized) return;
+    static uint32_t irq_count;
+    if ((++irq_count & 63) != 0) return;
+
+    /* RDTSC jitter (always available) */
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    static uint32_t irq_count;
-    if ((++irq_count & 63) == 0) {
-        entropy_mix(((uint64_t)hi << 32) | lo);
-        /* Re-key CSPRNG with fresh entropy */
-        for (int i = 0; i < 8; i++)
-            csprng_state[4 + i] ^= entropy_pool[i];
+    entropy_mix(((uint64_t)hi << 32) | lo);
+
+    /* RDRAND — primary entropy source when available */
+    if (memops_has_rdrand) {
+        uint64_t r;
+        int ok = 0;
+        __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
+        if (ok) entropy_mix(r);
     }
+
+    /* Re-key CSPRNG with fresh entropy */
+    for (int i = 0; i < 8; i++)
+        csprng_state[4 + i] ^= entropy_pool[i];
 }
