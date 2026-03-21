@@ -111,6 +111,137 @@ Shell → configure → make → GCC → Ruby → Homebrew.
 
 ---
 
+## P5 — CosmoFS + virtio-blk (Persistentes Dateisystem)
+
+/tmp und / muessen auf Disk liegen. ramfs reicht nur fuer Bootstrap.
+CosmoFS: eigenes Dateisystem, inspiriert von BeOS BFS. Kein ext2-Port,
+kein "minimal erstmal" — gleich richtig.
+
+### Design
+
+```
+Superblock (Block 0, 4KB):
+  magic: "CosmoFS\0"
+  version: 1
+  block_size: 4096
+  total_blocks: uint64_t
+  free_blocks: uint64_t
+  bitmap_start: uint64_t      (Block-Nummer der Free-Bitmap)
+  root_inode: uint64_t        (Block-Nummer des Root-Inode)
+  journal_start: uint64_t     (Block-Nummer des Journal-Rings)
+  journal_size: uint32_t      (Bloecke)
+
+Inode (256 Bytes, 16 pro Block):
+  type: uint16_t              (file, dir, symlink, device)
+  flags: uint16_t
+  uid, gid: uint32_t          (immer 0 fuer Single-User)
+  size: uint64_t
+  blocks_used: uint64_t
+  ctime, mtime, atime: uint64_t  (Nanosekunden seit Epoch)
+  direct[12]: uint64_t        (12 × 4KB = 48KB direkt)
+  indirect: uint64_t          (4KB/8 = 512 Eintraege → 2MB)
+  double_indirect: uint64_t   (512 × 512 = 262144 → 1GB)
+  triple_indirect: uint64_t   (512^3 → 512GB)
+  attr_block: uint64_t        (B+ Tree Root fuer Attribute)
+  stream_block: uint64_t      (benannte Neben-Streams)
+  reserved[4]: uint64_t
+
+Directory-Eintraege (B+ Tree):
+  Sortiert nach Name. Leaf enthalt (name, inode_number).
+  O(log n) Lookup fuer Millionen Dateien.
+
+Journal (Metadata-only, Write-Ahead):
+  Ring-Buffer: [Transaction-Header][Metadata-Blocks][Commit-Record]
+  Bei Crash: Replay uncommitted Transactions → konsistent.
+  Kein fsck. Kein Datenverlust bei Metadata.
+
+Attribute (pro Datei, B+ Tree):
+  Beliebige Key-Value-Paare:
+    "audio:artist" = "Bach"
+    "email:from" = "cosmo@example.com"
+    "mime:type" = "text/plain"
+  Index ueber Attribute → Queries:
+    cosmo_query("mime:type == audio/* AND size > 1MB")
+
+Streams (pro Datei):
+  Haupt-Stream: normaler Datei-Inhalt (read/write)
+  Benannte Streams: Thumbnails, Previews, Caches
+    open("/photo.jpg:thumbnail") → Stream-Zugriff
+```
+
+### Komponenten
+
+1. **virtio-blk Treiber** (src/drivers/blk/virtio_blk.c)
+   Ueber hw.h Primitives (cosmo_mmio_map, cosmo_dma_alloc, cosmo_irq_register).
+   API: blk_read(block_nr, buf), blk_write(block_nr, buf).
+   Existiert bereits in ~/Git/llmos/src/drivers/block/virtio_blk.c als Referenz.
+
+2. **Block-Cache** (src/kernel/bcache.c)
+   LRU Cache fuer Disk-Blocks im RAM. Write-Back mit Journal-Schutz.
+   Reduziert I/O: hot Blocks (Superblock, Bitmap, Directory) bleiben im RAM.
+
+3. **B+ Tree** (src/kernel/btree.c)
+   Generisch: fuer Directories UND Attribute-Indices.
+   Insert, Delete, Search, Range-Query. Persistent auf Disk-Blocks.
+
+4. **Journal** (src/kernel/journal.c)
+   Write-Ahead-Log fuer Metadata-Operationen.
+   Transaction: begin → write metadata blocks → commit.
+   Recovery: bei Boot pruefen, uncommitted Transactions replaying.
+
+5. **CosmoFS** (src/kernel/cosmofs.c)
+   Superblock lesen, Inode lesen/schreiben, Block allozieren/freigeben,
+   Directory-Operationen (lookup, create, delete, rename).
+   Attribute-Operationen (get, set, remove, query).
+
+6. **VFS Mount-Layer** (src/kernel/vfs.c erweitern)
+   Mount-Table: Pfad-Prefix → FS-Backend.
+   "/" → CosmoFS auf virtio-blk
+   "/dev/shm" → ramfs (bestehend)
+   Dispatch in vfs_open/read/write nach Mount-Point.
+
+7. **mkfs.cosmo** (tools/mkfs.c)
+   Host-Tool: erstellt CosmoFS-Image fuer QEMU.
+   Schreibt Superblock, Bitmap, Root-Directory, Journal.
+
+### CosmoLib-API (nicht POSIX-gebunden)
+
+```c
+// Benannte Attribute (BeOS-Stil)
+int cosmo_attr_set(int fd, const char *name, const void *val, size_t len);
+int cosmo_attr_get(int fd, const char *name, void *val, size_t len);
+int cosmo_attr_remove(int fd, const char *name);
+int cosmo_attr_list(int fd, char *buf, size_t bufsize);
+
+// Attribut-Queries (Datenbank-artig)
+int cosmo_query_open(const char *query);  // "type==audio AND size>1MB"
+int cosmo_query_next(int qfd, char *path, size_t pathlen);
+void cosmo_query_close(int qfd);
+
+// Benannte Streams (NTFS-artig)
+int cosmo_stream_open(int fd, const char *stream_name, int flags);
+```
+
+### Reihenfolge
+
+```
+5.1 virtio-blk Treiber (src/drivers/blk/)     — Referenz in llmos
+5.2 Block-Cache (LRU, Write-Back)              — 200-300 Zeilen
+5.3 B+ Tree (generisch, persistent)            — 400-600 Zeilen
+5.4 Journal (WAL, Ring-Buffer)                  — 200-300 Zeilen
+5.5 CosmoFS Core (Superblock, Inode, Bitmap)   — 400-600 Zeilen
+5.6 CosmoFS Dirs (B+ Tree Directories)         — 200-300 Zeilen
+5.7 CosmoFS Attrs (B+ Tree Attributes)         — 200-300 Zeilen
+5.8 VFS Mount-Layer                             — 100-200 Zeilen
+5.9 mkfs.cosmo (Host-Tool)                     — 200-300 Zeilen
+5.10 /tmp auf CosmoFS, /dev/shm auf ramfs
+```
+
+Geschaetzte Groesse: ~2500-3500 Zeilen. Verdoppelt den Kernel fast.
+Aber: das ist THE Feature das CosmoOS von einem Toy-OS unterscheidet.
+
+---
+
 ## Erledigt
 
 - [x] User-Pointer-Validation (user_ok)
