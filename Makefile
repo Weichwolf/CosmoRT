@@ -71,7 +71,15 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/journal.o \
            $(BUILD)/kernel/cosmofs.o \
            $(BUILD)/kernel/kexec.o \
-           $(BUILD)/kernel/socket.o
+           $(BUILD)/kernel/socket.o \
+           $(BUILD)/kernel/hyperv.o \
+           $(BUILD)/drivers/hyperv/vmbus.o \
+           $(BUILD)/drivers/hyperv/storvsc.o \
+           $(BUILD)/drivers/hyperv/netvsc.o \
+           $(BUILD)/drivers/hyperv/hyperv_fb.o \
+           $(BUILD)/drivers/hyperv/hv_kbd.o \
+           $(BUILD)/drivers/hyperv/hv_mouse.o \
+           $(BUILD)/drivers/hyperv/hv_utils.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
@@ -80,7 +88,7 @@ ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
-$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio $(BUILD)/drivers/gpu $(BUILD)/drivers/input:
+$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio $(BUILD)/drivers/gpu $(BUILD)/drivers/input $(BUILD)/drivers/hyperv:
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
@@ -320,6 +328,9 @@ $(BUILD)/drivers/gpu/%.o: $(SRC)/drivers/gpu/%.c | $(BUILD)/drivers/gpu
 
 $(BUILD)/drivers/input/%.o: $(SRC)/drivers/input/%.c | $(BUILD)/drivers/input
 	$(CC) $(KCFLAGS) -I$(SRC)/drivers/input -I$(SRC)/drivers/virtio -o $@ $<
+
+$(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/hyperv -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
 $(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h | $(BUILD)/kernel

@@ -150,15 +150,39 @@ void kernel_main(struct boot_info *info) {
     smp_start_all(sched_loop);
 
     /* Drivers — probe and self-register with subsystems */
+    extern int hyperv_detect(void);
+    extern void hyperv_init(void);
+    extern void hyperv_synic_init(void);
+    extern int vmbus_init(void);
+    extern int storvsc_init(void);
+    extern int netvsc_init(void);
+    extern int hyperv_fb_init(void);
+    extern int hv_kbd_init(void);
+    extern int hv_mouse_init(void);
+    extern int hv_utils_init(void);
     extern int e1000_init(void);
     extern int virtio_net_init(void);
     extern int virtio_gpu_init(void);
     extern int virtio_input_init(void);
 
-    e1000_init();        /* registers with net stack if found */
-    virtio_net_init();   /* alternative NIC, registers if found */
-    virtio_gpu_init();   /* 2D framebuffer if found */
-    virtio_input_init(); /* keyboard/mouse if found */
+    if (hyperv_detect()) {
+        serial_puts("Hyper-V detected\n");
+        hyperv_init();
+        hyperv_synic_init();
+        if (vmbus_init() == 0) {
+            storvsc_init();     /* block device */
+            netvsc_init();      /* network adapter */
+            hyperv_fb_init();   /* framebuffer */
+            hv_kbd_init();      /* keyboard */
+            hv_mouse_init();    /* mouse */
+            hv_utils_init();    /* heartbeat, shutdown, timesync */
+        }
+    } else {
+        e1000_init();        /* registers with net stack if found */
+        virtio_net_init();   /* alternative NIC, registers if found */
+        virtio_gpu_init();   /* 2D framebuffer if found */
+        virtio_input_init(); /* keyboard/mouse if found */
+    }
 
     /* Network — uses whatever NIC driver registered */
     if (net_init() == 0) {
