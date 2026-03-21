@@ -69,44 +69,47 @@ static int key_shift;
 static int key_ctrl;
 static int key_alt;
 
-/* ── USB HID scancode → ASCII (US layout) ──────────── */
+/* ── Linux KEY_* code → ASCII (US layout) ──────────── */
+/* virtio-input sends Linux input event codes, NOT USB HID scancodes.
+ * KEY_A=30, KEY_B=48, etc. (AT scancode order). */
 
-/* Format: [scancode] = { normal, shifted } */
 static const uint8_t keymap_normal[256] = {
-    [0x04] = 'a', [0x05] = 'b', [0x06] = 'c', [0x07] = 'd',
-    [0x08] = 'e', [0x09] = 'f', [0x0A] = 'g', [0x0B] = 'h',
-    [0x0C] = 'i', [0x0D] = 'j', [0x0E] = 'k', [0x0F] = 'l',
-    [0x10] = 'm', [0x11] = 'n', [0x12] = 'o', [0x13] = 'p',
-    [0x14] = 'q', [0x15] = 'r', [0x16] = 's', [0x17] = 't',
-    [0x18] = 'u', [0x19] = 'v', [0x1A] = 'w', [0x1B] = 'x',
-    [0x1C] = 'y', [0x1D] = 'z',
-    [0x1E] = '1', [0x1F] = '2', [0x20] = '3', [0x21] = '4',
-    [0x22] = '5', [0x23] = '6', [0x24] = '7', [0x25] = '8',
-    [0x26] = '9', [0x27] = '0',
-    [0x28] = '\n', [0x29] = 0x1B, [0x2A] = '\b', [0x2B] = '\t',
-    [0x2C] = ' ',
-    [0x2D] = '-', [0x2E] = '=', [0x2F] = '[', [0x30] = ']',
-    [0x31] = '\\', [0x33] = ';', [0x34] = '\'', [0x35] = '`',
-    [0x36] = ',', [0x37] = '.', [0x38] = '/',
+    [2]='1', [3]='2', [4]='3', [5]='4', [6]='5', [7]='6', [8]='7', [9]='8',
+    [10]='9', [11]='0', [12]='-', [13]='=', [14]='\b', [15]='\t',
+    [16]='q', [17]='w', [18]='e', [19]='r', [20]='t', [21]='y', [22]='u',
+    [23]='i', [24]='o', [25]='p', [26]='[', [27]=']', [28]='\n',
+    [30]='a', [31]='s', [32]='d', [33]='f', [34]='g', [35]='h', [36]='j',
+    [37]='k', [38]='l', [39]=';', [40]='\'', [41]='`',
+    [43]='\\',
+    [44]='z', [45]='x', [46]='c', [47]='v', [48]='b', [49]='n', [50]='m',
+    [51]=',', [52]='.', [53]='/',
+    [57]=' ',
+    [1]=0x1B, /* Escape */
 };
 
 static const uint8_t keymap_shifted[256] = {
-    [0x04] = 'A', [0x05] = 'B', [0x06] = 'C', [0x07] = 'D',
-    [0x08] = 'E', [0x09] = 'F', [0x0A] = 'G', [0x0B] = 'H',
-    [0x0C] = 'I', [0x0D] = 'J', [0x0E] = 'K', [0x0F] = 'L',
-    [0x10] = 'M', [0x11] = 'N', [0x12] = 'O', [0x13] = 'P',
-    [0x14] = 'Q', [0x15] = 'R', [0x16] = 'S', [0x17] = 'T',
-    [0x18] = 'U', [0x19] = 'V', [0x1A] = 'W', [0x1B] = 'X',
-    [0x1C] = 'Y', [0x1D] = 'Z',
-    [0x1E] = '!', [0x1F] = '@', [0x20] = '#', [0x21] = '$',
-    [0x22] = '%', [0x23] = '^', [0x24] = '&', [0x25] = '*',
-    [0x26] = '(', [0x27] = ')',
-    [0x28] = '\n', [0x29] = 0x1B, [0x2A] = '\b', [0x2B] = '\t',
-    [0x2C] = ' ',
-    [0x2D] = '_', [0x2E] = '+', [0x2F] = '{', [0x30] = '}',
-    [0x31] = '|', [0x33] = ':', [0x34] = '"', [0x35] = '~',
-    [0x36] = '<', [0x37] = '>', [0x38] = '?',
+    [2]='!', [3]='@', [4]='#', [5]='$', [6]='%', [7]='^', [8]='&', [9]='*',
+    [10]='(', [11]=')', [12]='_', [13]='+', [14]='\b', [15]='\t',
+    [16]='Q', [17]='W', [18]='E', [19]='R', [20]='T', [21]='Y', [22]='U',
+    [23]='I', [24]='O', [25]='P', [26]='{', [27]='}', [28]='\n',
+    [30]='A', [31]='S', [32]='D', [33]='F', [34]='G', [35]='H', [36]='J',
+    [37]='K', [38]='L', [39]=':', [40]='"', [41]='~',
+    [43]='|',
+    [44]='Z', [45]='X', [46]='C', [47]='V', [48]='B', [49]='N', [50]='M',
+    [51]='<', [52]='>', [53]='?',
+    [57]=' ',
+    [1]=0x1B,
 };
+
+/* Linux KEY_* modifier codes */
+#define KEY_LEFTSHIFT  42
+#define KEY_RIGHTSHIFT 54
+#define KEY_LEFTCTRL   29
+#define KEY_RIGHTCTRL  97
+#define KEY_LEFTALT    56
+#define KEY_RIGHTALT   100
+#define KEY_F1         59
+#define KEY_F4         62
 
 /* ── Codepoint → glyph index (binary search on font_map) ── */
 
@@ -609,17 +612,17 @@ void vt_render_dirty(int vt_id) {
 /* ── Keyboard events ───────────────────────────────── */
 
 void vt_keyboard_event(uint16_t scancode, int pressed) {
-    /* USB HID modifier scancodes */
-    if (scancode == 0xE1 || scancode == 0xE5) { key_shift = pressed; return; }
-    if (scancode == 0xE0 || scancode == 0xE4) { key_ctrl = pressed; return; }
-    if (scancode == 0xE2 || scancode == 0xE6) { key_alt = pressed; return; }
+    /* Linux KEY_* modifier codes */
+    if (scancode == KEY_LEFTSHIFT || scancode == KEY_RIGHTSHIFT) { key_shift = pressed; return; }
+    if (scancode == KEY_LEFTCTRL  || scancode == KEY_RIGHTCTRL)  { key_ctrl = pressed; return; }
+    if (scancode == KEY_LEFTALT   || scancode == KEY_RIGHTALT)   { key_alt = pressed; return; }
 
-    if (!pressed) return; /* key-up — only process presses */
+    if (!pressed) return;
 
     /* Ctrl+Alt+F1-F4 → VT switch */
     if (key_ctrl && key_alt) {
-        if (scancode >= 0x3A && scancode <= 0x3D) {
-            vt_switch((int)(scancode - 0x3A));
+        if (scancode >= KEY_F1 && scancode <= KEY_F4) {
+            vt_switch((int)(scancode - KEY_F1));
             return;
         }
     }

@@ -174,8 +174,13 @@ int pty_master_write(int id, const char *buf, int len) {
         }
     }
 
-    /* Wake blocked reader if data available in input buffer */
-    if (p->blocked_reader && ring_count(p->input_head, p->input_tail) > 0) {
+    /* Wake blocked reader if input data OR echo output pending.
+     * Echo output needs a vt_flush which only runs in process context
+     * (during the reader's do_read syscall). Waking the reader with
+     * no input is fine — it re-blocks after flushing echo. */
+    if (p->blocked_reader &&
+        (ring_count(p->input_head, p->input_tail) > 0 ||
+         ring_count(p->output_head, p->output_tail) > 0)) {
         thread_t *reader = p->blocked_reader;
         p->blocked_reader = 0;
         sched_add(reader);

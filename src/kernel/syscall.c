@@ -245,6 +245,11 @@ static long do_read(int fd, void *buf, size_t count) {
                 pty->blocked_reader = t;
                 spin_unlock_irq(&pty->lock, irqf);
 
+                /* Flush VT before blocking — renders echo from
+                 * keyboard input that woke us without line data */
+                extern void vt_flush(int vt_id);
+                vt_flush(pty_id);
+
                 save_user_state_for_block(t, -EAGAIN);
                 t->state = THREAD_BLOCKED;
                 __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
