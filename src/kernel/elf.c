@@ -48,6 +48,12 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
         serial_puts(" memsz="); serial_hex64(ph->p_memsz);
         serial_putchar('\n');
 
+        /* Derive protection flags from ELF p_flags (PF_R=4, PF_W=2, PF_X=1) */
+        int seg_prot = 0;
+        if (ph->p_flags & 4) seg_prot |= PROT_READ;
+        if (ph->p_flags & 2) seg_prot |= PROT_WRITE;
+        if (ph->p_flags & 1) seg_prot |= PROT_EXEC;
+
         /* Map pages for this segment */
         uint64_t seg_start = ph->p_vaddr & ~0xFFFULL;
         uint64_t seg_end = (ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
@@ -76,7 +82,7 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
             }
             /* BSS (memsz > filesz) is already zeroed by alloc_page */
 
-            if (map_user_page(user_pml4, va, virt_to_phys(page)) < 0) {
+            if (map_user_page(user_pml4, va, virt_to_phys(page), seg_prot) < 0) {
                 serial_puts("elf: map failed\n");
                 return -1;
             }
@@ -92,7 +98,7 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
         uint64_t va = stack_top - (uint64_t)(i + 1) * 4096;
         uint64_t *page = alloc_page();
         if (!page) { serial_puts("elf: stack OOM\n"); return -1; }
-        if (map_user_page(user_pml4, va, virt_to_phys(page)) < 0)
+        if (map_user_page(user_pml4, va, virt_to_phys(page), PROT_READ | PROT_WRITE) < 0)
             return -1;
     }
 
@@ -144,7 +150,7 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
     uint64_t *frame_page = alloc_page();
     if (!frame_page) return -1;
     /* Remap this page (overwrites the previous mapping, which is fine) */
-    map_user_page(user_pml4, stack_frame_va, virt_to_phys(frame_page));
+    map_user_page(user_pml4, stack_frame_va, virt_to_phys(frame_page), PROT_READ | PROT_WRITE);
 
     /* Write stack contents at the end of this page */
     /* Page spans [stack_frame_va, stack_frame_va + 4096)

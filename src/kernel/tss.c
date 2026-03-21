@@ -100,9 +100,10 @@ void syscall_init(void) {
      * Clear IF (0x200), TF (0x100), DF (0x400) */
     wrmsr(0xC0000084, 0x700);
 
-    /* Enable SYSCALL/SYSRET (IA32_EFER bit 0 = SCE) */
+    /* Enable SYSCALL/SYSRET (IA32_EFER bit 0 = SCE) + NX bit (bit 11 = NXE) */
     uint64_t efer = rdmsr(0xC0000080);
-    efer |= 1; /* SCE */
+    efer |= 1;          /* SCE */
+    efer |= (1 << 11);  /* NXE — required for PTE_NX enforcement */
     wrmsr(0xC0000080, efer);
 
     serial_puts("syscall: LSTAR mode\n");

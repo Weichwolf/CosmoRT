@@ -37,22 +37,21 @@ Erledigt: sti nach Frame-Save verschoben (61762fa).
 
 ## P1 — Sicherheit (Exploitable)
 
-### map_user_page ignoriert Protection-Flags
-Hardcoded `PTE_PRESENT | PTE_WRITE | PTE_USER`. NX-Bit nie gesetzt.
-Read-only VMAs sind schreibbar. W^X Violation.
+### ~~map_user_page ignoriert Protection-Flags~~
+Erledigt: prot Parameter, prot_to_pte(), NX-Bit via EFER.NXE.
+W^X enforced. AP Cores bekommen NXE via syscall_init() in ap_main.
 
 ### ~~ASLR mit RDTSC~~
 Erledigt: `aslr_rand()` nutzt jetzt ChaCha20 CSPRNG (random.c).
 
-### user_ok(path, 1) prueft nur erstes Byte
-String-Pointer-Validation prueft nicht die gesamte String-Laenge.
-Kernel-Memory-Read moeglich.
+### ~~user_ok(path, 1) prueft nur erstes Byte~~
+Erledigt: copy_path_from_user() kopiert Byte-fuer-Byte mit Grenz-Check.
 
-### do_clock_getres ohne user_ok
-Schreibt ohne Pointer-Validation.
+### ~~do_clock_getres ohne user_ok~~
+Erledigt: user_ok Check hinzugefuegt.
 
-### do_wait4 user_ok unvollstaendig
-Kein Overflow-Check auf wstatus-Pointer.
+### ~~do_wait4 user_ok unvollstaendig~~
+Erledigt: Overflow-safe Validation mit user_ok(addr, sizeof(int)).
 
 ---
 
@@ -140,3 +139,6 @@ Shell → configure → make → GCC → Ruby → Homebrew.
 - [x] ChaCha20 CSPRNG (random.c — kein RDRAND noetig, 6 Entropie-Quellen)
 - [x] ASLR via CSPRNG statt RDTSC
 - [x] getrandom immer verfuegbar (38 PASS, 0 SKIP)
+- [x] map_user_page mit Protection-Flags (NX-Bit, W^X, EFER.NXE)
+- [x] copy_path_from_user (String-Boundary-Check statt user_ok(path,1))
+- [x] do_clock_getres + do_wait4 user_ok Fixes

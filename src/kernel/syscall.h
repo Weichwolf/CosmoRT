@@ -140,6 +140,7 @@
 #define ENOEXEC   8
 #define ENOSYS    38
 #define ERANGE    34
+#define ENAMETOOLONG 36
 #define ETIMEDOUT 110
 
 /* Main syscall dispatcher — called from ASM entry and INT 0x80 */

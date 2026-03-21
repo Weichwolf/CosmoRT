@@ -23,6 +23,19 @@ static inline int user_ok(uint64_t addr, size_t len) {
            addr + len >= addr;
 }
 
+/* Copy user path string to kernel buffer with full bounds checking.
+ * Returns string length (excluding NUL) or negative errno. */
+#define PATH_MAX 4096
+static int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
+    if (!user_ok((uint64_t)upath, 1)) return -EFAULT;
+    for (size_t i = 0; i < max; i++) {
+        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
+        kbuf[i] = upath[i];
+        if (kbuf[i] == '\0') return (int)i;
+    }
+    return -ENAMETOOLONG;
+}
+
 /* Syscall saved frame layout (matches syscall_entry.asm push order) */
 typedef struct {
     uint64_t r15, r14, r13, r12, rbp, rbx;
@@ -155,7 +168,6 @@ static long do_brk(unsigned long addr) {
 /* ── Pre-fault helper: allocate + map all pages in range ── */
 
 static void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
-    (void)prot;
     for (uint64_t va = start; va < end; va += 4096) {
         /* Check if already mapped */
         int pml4i = (va >> 39) & 0x1FF;
@@ -176,7 +188,7 @@ static void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, in
         if (!mapped) {
             uint64_t *page = alloc_page();
             if (page)
-                map_user_page(user_pml4, va, virt_to_phys(page));
+                map_user_page(user_pml4, va, virt_to_phys(page), prot);
         }
     }
 }
@@ -669,6 +681,7 @@ static long do_clock_gettime(int clk_id, struct k_timespec *tp) {
 
 static long do_clock_getres(int clk_id, struct k_timespec *tp) {
     (void)clk_id;
+    if (tp && !user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
     if (tp) { tp->tv_sec = 0; tp->tv_nsec = 1000000; } /* 1ms resolution */
     return 0;
 }
@@ -762,15 +775,19 @@ static long do_sched_yield(void) {
 /* ── SYS_open (2) / SYS_openat (257) ────────────────── */
 
 static long do_open(const char *path, int flags, int mode) {
-    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
-    return vfs_open(path, flags, mode);
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_open(kpath, flags, mode);
 }
 
 static long do_openat(int dirfd, const char *path, int flags, int mode) {
     /* Only AT_FDCWD (-100) supported for now */
     (void)dirfd;
-    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
-    return vfs_open(path, flags, mode);
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_open(kpath, flags, mode);
 }
 
 /* ── SYS_lseek (8) ──────────────────────────────── */
@@ -787,9 +804,11 @@ static long do_fstat(int fd, struct k_stat *buf) {
 }
 
 static long do_stat(const char *path, struct k_stat *buf) {
-    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
     if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    return vfs_stat(path, buf);
+    return vfs_stat(kpath, buf);
 }
 
 /* ── SYS_dup2 (33) ──────────────────────────────── */
@@ -825,8 +844,10 @@ static long do_getcwd(char *buf, size_t size) {
 }
 
 static long do_chdir(const char *path) {
-    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
-    return vfs_chdir(path);
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_chdir(kpath);
 }
 
 /* ── Signals (2.4) ───────────────────────────────── */

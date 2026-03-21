@@ -73,6 +73,10 @@ static void ap_main(void) {
     /* Per-CPU data init for this AP */
     percpu_init_ap((int)apic_id);
 
+    /* Set up SYSCALL/SYSRET + EFER.NXE on this core */
+    extern void syscall_init(void);
+    syscall_init();
+
     serial_puts("SMP: Core ");
     if (apic_id >= 10) serial_putchar('0' + (apic_id / 10));
     serial_putchar('0' + (apic_id % 10));

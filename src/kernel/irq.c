@@ -161,7 +161,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     uint64_t *page = alloc_page();
                     if (page) {
                         if (map_user_page(p->pml4, page_addr,
-                                          virt_to_phys(page)) == 0) {
+                                          virt_to_phys(page), vma->prot) == 0) {
                             return; /* resume execution */
                         }
                         page_free(page);

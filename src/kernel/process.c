@@ -22,6 +22,15 @@
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
 #define PTE_PS      (1ULL << 7)
+#define PTE_NX      (1ULL << 63)
+
+/* Convert PROT_* flags to x86 PTE flags (leaf entry only) */
+static uint64_t prot_to_pte(int prot) {
+    uint64_t flags = PTE_PRESENT | PTE_USER;
+    if (prot & PROT_WRITE) flags |= PTE_WRITE;
+    if (!(prot & PROT_EXEC)) flags |= PTE_NX;
+    return flags;
+}
 
 /* ── Slab pools ─────────────────────────────────── */
 
@@ -100,7 +109,7 @@ static uint64_t *get_or_alloc_level(uint64_t *table, int idx) {
     return new_tbl;
 }
 
-int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys) {
+int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) {
     /* User pages only in lower half */
     if (vaddr >= 0x800000000000ULL) return -1;
 
@@ -109,6 +118,7 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys) {
     int pd_idx   = (vaddr >> 21) & 0x1FF;
     int pt_idx   = (vaddr >> 12) & 0x1FF;
 
+    /* Intermediate levels always need WRITE+USER so the CPU can walk them */
     uint64_t *pdpt = get_or_alloc_level(user_pml4, pml4_idx);
     if (!pdpt) return -1;
 
@@ -118,7 +128,8 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys) {
     uint64_t *pt = get_or_alloc_level(pd, pd_idx);
     if (!pt) return -1;
 
-    pt[pt_idx] = phys | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    /* Only the leaf PTE restricts access based on prot */
+    pt[pt_idx] = phys | prot_to_pte(prot);
     return 0;
 }
 
@@ -400,7 +411,7 @@ static void copy_one_vma(vma_t *v, void *arg) {
         void *src = phys_to_virt(src_phys);
         kmemcpy(new_page, src, 4096);
 
-        if (map_user_page(ctx->dst_pml4, va, virt_to_phys(new_page)) < 0) {
+        if (map_user_page(ctx->dst_pml4, va, virt_to_phys(new_page), v->prot) < 0) {
             page_free(new_page);
             ctx->err = 1;
             return;
@@ -631,6 +642,19 @@ long do_fork(void) {
 
 /* ── execve (2.2) ────────────────────────────────── */
 
+/* Copy user path string to kernel buffer (same as in syscall.c).
+ * Duplicated here because process.c is a separate compilation unit. */
+#define PATH_MAX_PROC 4096
+static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
+    if ((uint64_t)upath >= 0x800000000000ULL) return -EFAULT;
+    for (size_t i = 0; i < max; i++) {
+        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
+        kbuf[i] = upath[i];
+        if (kbuf[i] == '\0') return (int)i;
+    }
+    return -36; /* ENAMETOOLONG */
+}
+
 long do_execve(const char *path, char *const argv[], char *const envp[]) {
     (void)argv; (void)envp; /* TODO: pass argv/envp to new process */
 
@@ -638,8 +662,13 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *p = cur->proc;
 
+    /* Copy path to kernel buffer before using it */
+    char kpath[PATH_MAX_PROC];
+    int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
+    if (plen < 0) return -EFAULT;
+
     /* Look up the file in VFS */
-    struct vfs_node *node = vfs_lookup(path);
+    struct vfs_node *node = vfs_lookup(kpath);
     if (!node) return -ENOENT;
     if (node->type != VFS_FILE) return -EACCES;
     if (!node->data || node->size == 0) return -ENOEXEC;
@@ -742,7 +771,9 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
 
-    if (wstatus && !((uint64_t)wstatus < 0x800000000000ULL))
+    if (wstatus && !((uint64_t)wstatus < 0x800000000000ULL &&
+                     (uint64_t)wstatus + sizeof(int) <= 0x800000000000ULL &&
+                     (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
         return -EFAULT;
 
     /* Find matching child */
