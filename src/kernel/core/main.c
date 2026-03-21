@@ -25,21 +25,21 @@
 #include "fb.h"
 #include "input.h"
 
-#include "init_bin.h"
+#include "gen/init_bin.h"
 
 /* Dynamic linker binary (embedded, registered in VFS at /lib/ld-cosmo.so) */
 #ifdef HAVE_LD_COSMO
-#include "ld_cosmo_bin.h"
+#include "gen/ld_cosmo_bin.h"
 #endif
 
 /* Userspace E1000 driver (embedded, registered in VFS at /bin/e1000d) */
 #ifdef HAVE_E1000D
-#include "e1000d_bin.h"
+#include "gen/e1000d_bin.h"
 #endif
 
 /* Service manager (embedded, registered in VFS at /bin/svcmgr) */
 #ifdef HAVE_SVCMGR
-#include "svcmgr_bin.h"
+#include "gen/svcmgr_bin.h"
 #endif
 
 /* ISR stacks now in sched.c (per-core idle_stacks) */

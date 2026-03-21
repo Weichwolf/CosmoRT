@@ -13,7 +13,7 @@
 #include "serial.h"
 #include "memops.h"
 #include "page_alloc.h"
-#include "font_atlas.h"
+#include "gen/font_atlas.h"
 
 #define VT_MAX 4
 

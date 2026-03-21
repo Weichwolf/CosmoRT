@@ -13,7 +13,7 @@
 #include "memops.h"
 
 /* Trampoline binary (assembled from ap_trampoline.asm → flat binary → C header) */
-#include "ap_trampoline_bin.h"
+#include "gen/ap_trampoline_bin.h"
 
 /* LAPIC MMIO (direct-map addresses) */
 #define LAPIC_ID      (0xFEE00020ULL + PHYS_OFFSET)
