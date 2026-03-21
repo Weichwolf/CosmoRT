@@ -1,0 +1,645 @@
+/* CosmoRT Syscall Layer — file I/O syscalls */
+
+#include "internal.h"
+
+long do_write(int fd, const void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    if (fde->type == FD_SERIAL) {
+        size_t actual = count > 0x10000 ? 0x10000 : count;
+        uint8_t kbuf[256];
+        size_t pos = 0;
+        while (pos < actual) {
+            size_t chunk = actual - pos > 256 ? 256 : actual - pos;
+            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            for (size_t j = 0; j < chunk; j++) serial_putchar((char)kbuf[j]);
+            pos += chunk;
+        }
+        return (long)actual;
+    }
+    if (fde->type == FD_FILE)
+        return vfs_write(fd, buf, count);
+    if (fde->type == FD_SOCKET)
+        return socket_write(fd, buf, (long)count);
+    if (fde->type == FD_PIPE) {
+        int is_write = 0;
+        struct pipe *pp = pipe_from_fd(fde, &is_write);
+        if (!pp || !is_write) return -EBADF;
+        return pipe_write(pp, buf, count);
+    }
+    if (fde->type == FD_EVENTFD)
+        return eventfd_write(fde->obj, buf, (long)count);
+    if (fde->type == FD_PTY_SLAVE) {
+        int pty_id = (int)(long)fde->obj;
+        uint8_t kbuf[256];
+        size_t pos = 0;
+        size_t actual = count > 0x10000 ? 0x10000 : count;
+        while (pos < actual) {
+            size_t chunk = actual - pos > 256 ? 256 : actual - pos;
+            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            int w = pty_slave_write(pty_id, (const char *)kbuf, (int)chunk);
+            if (w <= 0) break;
+            pos += (size_t)w;
+        }
+        /* Flush VT output for immediate rendering */
+        vt_flush(pty_id);
+        return (long)pos;
+    }
+    return -EBADF;
+}
+
+/* ── SYS_writev (20) ────────────────────────────── */
+
+long do_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > 16) return -EINVAL;
+    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
+    /* Copy iov array to kernel stack to prevent TOCTOU */
+    struct iovec k_iov[16];
+    kmemcpy(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec));
+    long total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (!user_ok((uint64_t)k_iov[i].iov_base, k_iov[i].iov_len)) return -EFAULT;
+        long r = do_write(fd, (void *)k_iov[i].iov_base, k_iov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < k_iov[i].iov_len) break;
+    }
+    return total;
+}
+
+/* ── SYS_read (0) ────────────────────────────────── */
+
+long do_read(int fd, void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    if (fde->type == FD_SERIAL) {
+        extern char serial_getchar(void);
+        uint8_t kbuf[256];
+        size_t got = 0;
+        while (got < count && got < 256) {
+            char c = serial_getchar();
+            if (c == 0) break;
+            kbuf[got++] = (uint8_t)c;
+        }
+        kmemcpy(buf, kbuf, got);
+        return (long)got;
+    }
+    if (fde->type == FD_FILE)
+        return vfs_read(fd, buf, count);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (!pf) return -EBADF;
+        /* Read into kernel buffer, then copy to user */
+        char kbuf[4096];
+        int want = (int)count;
+        if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
+        int got = procfs_read(pf->handle, kbuf, want, pf->offset);
+        if (got > 0) {
+            kmemcpy(buf, kbuf, (size_t)got);
+            pf->offset += got;
+        }
+        return (long)got;
+    }
+    if (fde->type == FD_SOCKET)
+        return socket_read(fd, buf, (long)count);
+    if (fde->type == FD_PIPE) {
+        int is_write = 0;
+        struct pipe *pp = pipe_from_fd(fde, &is_write);
+        if (!pp || is_write) return -EBADF;
+        return pipe_read(pp, buf, count);
+    }
+    if (fde->type == FD_EVENTFD)
+        return eventfd_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_TIMERFD)
+        return timerfd_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_INOTIFY)
+        return inotify_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_PTY_SLAVE) {
+        int pty_id = (int)(long)fde->obj;
+        uint8_t kbuf[256];
+        size_t want = count > 256 ? 256 : count;
+        int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
+        if (got > 0) {
+            kmemcpy(buf, kbuf, (size_t)got);
+            /* Flush VT after read — renders echo from line discipline */
+            extern void vt_flush(int vt_id);
+            vt_flush(pty_id);
+            return (long)got;
+        }
+        /* No data — block until pty_master_write wakes us.
+         * Thread resumes at userspace with rax=-EAGAIN; the read loop
+         * in vt_shell (or libc) retries the syscall. */
+        {
+            extern uint64_t pml4[];
+            thread_t *t = thread_current();
+            pty_t *pty = pty_get(pty_id);
+            if (t && pty) {
+                uint64_t irqf;
+                spin_lock_irq(&pty->lock, &irqf);
+                /* Re-check under lock — data may have arrived between
+                 * the unlocked pty_slave_read and acquiring the lock */
+                int avail = (pty->input_tail - pty->input_head
+                             + PTY_BUF_SIZE) % PTY_BUF_SIZE;
+                if (avail > 0) {
+                    int n = avail > (int)want ? (int)want : avail;
+                    for (int i = 0; i < n; i++) {
+                        kbuf[i] = (uint8_t)pty->input_buf[pty->input_head];
+                        pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
+                    }
+                    spin_unlock_irq(&pty->lock, irqf);
+                    kmemcpy(buf, kbuf, (size_t)n);
+                    extern void vt_flush(int vt_id);
+                    vt_flush(pty_id);
+                    return (long)n;
+                }
+                pty->blocked_reader = t;
+                spin_unlock_irq(&pty->lock, irqf);
+
+                /* Flush VT before blocking — renders echo from
+                 * keyboard input that woke us without line data */
+                extern void vt_flush(int vt_id);
+                vt_flush(pty_id);
+
+                save_user_state_for_block(t, -EAGAIN);
+                t->state = THREAD_BLOCKED;
+                __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+                thread_return_to_kernel(t);
+            }
+        }
+        return -EAGAIN;
+    }
+    return -EBADF;
+}
+
+/* ── SYS_readv (19) ──────────────────────────────── */
+
+long do_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
+    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
+    /* Copy iov to kernel to prevent TOCTOU — cap at 64 on stack */
+    if (iovcnt > 64) iovcnt = 64;
+    struct iovec kiov[64];
+    kmemcpy(kiov, iov, (size_t)iovcnt * sizeof(struct iovec));
+    long total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (!user_ok((uint64_t)kiov[i].iov_base, kiov[i].iov_len)) return -EFAULT;
+        long r = do_read(fd, (void *)kiov[i].iov_base, kiov[i].iov_len);
+        if (r < 0) return total > 0 ? total : r;
+        total += r;
+        if ((size_t)r < kiov[i].iov_len) break; /* short read */
+    }
+    return total;
+}
+
+/* ── SYS_close (3) ───────────────────────────────── */
+
+long do_close(int fd) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    if (fde->type == FD_FILE)
+        return vfs_close(fd);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (pf) {
+            procfs_close(pf->handle);
+            procfs_fd_free(pf);
+        }
+        return fd_close(&p->fds, fd);
+    }
+    if (fde->type == FD_SOCKET)
+        return socket_close(fd);
+    if (fde->type == FD_PIPE) {
+        long r = pipe_close(fde);
+        fd_close(&p->fds, fd);
+        return r;
+    }
+    if (fde->type == FD_EPOLL)   { epoll_destroy(fde->obj);   return fd_close(&p->fds, fd); }
+    if (fde->type == FD_EVENTFD) { eventfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_TIMERFD) { timerfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_PTY_MASTER || fde->type == FD_PTY_SLAVE)
+        return fd_close(&p->fds, fd);
+    return fd_close(&p->fds, fd);
+}
+
+/* ── SYS_open (2) / SYS_openat (257) ────────────────── */
+
+long do_open(const char *path, int flags, int mode) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_open(kpath, flags, mode);
+}
+
+long do_openat(int dirfd, const char *path, int flags, int mode) {
+    /* Only AT_FDCWD (-100) supported for now */
+    (void)dirfd;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_open(kpath, flags, mode);
+}
+
+/* ── SYS_lseek (8) ──────────────────────────────── */
+
+long do_lseek(int fd, long offset, int whence) {
+    return vfs_lseek(fd, offset, whence);
+}
+
+/* ── SYS_fstat (5) / SYS_stat (4) ───────────────── */
+
+long do_fstat(int fd, struct k_stat *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_fstat(fd, buf);
+}
+
+long do_stat(const char *path, struct k_stat *buf) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_stat(kpath, buf);
+}
+
+/* ── SYS_dup2 (33) / SYS_dup3 (292) ────────────── */
+
+long do_dup2(int oldfd, int newfd) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
+    fd_entry_t *old = fd_get(&p->fds, oldfd);
+    if (!old) return -EBADF;
+    if (oldfd == newfd) return newfd;
+
+    /* Close newfd if open */
+    fd_entry_t *cur = fd_get(&p->fds, newfd);
+    if (cur) {
+        if (cur->type == FD_FILE) vfs_close(newfd);
+        else fd_close(&p->fds, newfd);
+    }
+
+    /* Copy the fd entry */
+    p->fds.entries[newfd] = *old;
+    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
+    return newfd;
+}
+
+long do_dup3(int oldfd, int newfd, int flags) {
+    if (oldfd == newfd) return -EINVAL;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
+    fd_entry_t *old = fd_get(&p->fds, oldfd);
+    if (!old) return -EBADF;
+
+    /* Close newfd if open */
+    fd_entry_t *cur = fd_get(&p->fds, newfd);
+    if (cur) {
+        if (cur->type == FD_FILE) vfs_close(newfd);
+        else fd_close(&p->fds, newfd);
+    }
+
+    /* Copy the fd entry */
+    p->fds.entries[newfd] = *old;
+    if (flags & O_CLOEXEC)
+        p->fds.entries[newfd].flags |= O_CLOEXEC;
+    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
+    return newfd;
+}
+
+/* ── SYS_getcwd (79) / SYS_chdir (80) ──────────── */
+
+long do_getcwd(char *buf, size_t size) {
+    if (!user_ok((uint64_t)buf, size)) return -EFAULT;
+    int r = vfs_getcwd(buf, size);
+    if (r < 0) return r;
+    return (long)(uint64_t)buf; /* Linux returns pointer */
+}
+
+long do_chdir(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_chdir(kpath);
+}
+
+/* ── SYS_lstat (6) ──────────────────────────────── */
+
+long do_lstat(const char *path, struct k_stat *buf) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
+    return vfs_lstat(kpath, buf);
+}
+
+/* ── SYS_fstatat (262) ─────────────────────────── */
+
+long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
+    (void)dirfd; /* AT_FDCWD only */
+    if (flags & AT_SYMLINK_NOFOLLOW)
+        return do_lstat(path, buf);
+    return do_stat(path, buf);
+}
+
+/* ── SYS_mkdir/rmdir/unlink/rename ───────────────── */
+
+long do_mkdir(const char *path, int mode) {
+    (void)mode;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_mkdir(kpath);
+}
+
+long do_mkdirat(int dirfd, const char *path, int mode) {
+    (void)dirfd; /* AT_FDCWD only */
+    return do_mkdir(path, mode);
+}
+
+long do_rmdir(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_rmdir(kpath);
+}
+
+long do_unlink(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    return vfs_unlink(kpath);
+}
+
+long do_unlinkat(int dirfd, const char *path, int flags) {
+    (void)dirfd;
+    if (flags & AT_REMOVEDIR)
+        return do_rmdir(path);
+    return do_unlink(path);
+}
+
+long do_rename(const char *oldpath, const char *newpath) {
+    char kold[PATH_MAX], knew[PATH_MAX];
+    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_rename(kold, knew);
+}
+
+long do_renameat2(int olddirfd, const char *oldpath,
+                          int newdirfd, const char *newpath, int flags) {
+    (void)olddirfd; (void)newdirfd; (void)flags;
+    return do_rename(oldpath, newpath);
+}
+
+/* ── SYS_fchmod (91) ─────────────────────────────── */
+
+long do_fchmod(int fd, uint32_t mode) {
+    return vfs_fchmod(fd, mode);
+}
+
+/* ── SYS_fchown (93) ─────────────────────────────── */
+
+long do_fchown(int fd, uint32_t uid, uint32_t gid) {
+    return vfs_fchown(fd, uid, gid);
+}
+
+/* ── SYS_link (86) ───────────────────────────────── */
+
+long do_link(const char *oldpath, const char *newpath) {
+    char kold[PATH_MAX], knew[PATH_MAX];
+    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_link(kold, knew);
+}
+
+/* ── SYS_symlink (88) ───────────────────────────── */
+
+long do_symlink(const char *target, const char *linkpath) {
+    char ktarget[PATH_MAX], klink[PATH_MAX];
+    int r = copy_path_from_user(ktarget, target, PATH_MAX);
+    if (r < 0) return r;
+    r = copy_path_from_user(klink, linkpath, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_symlink(ktarget, klink);
+}
+
+/* ── SYS_readlink (89) ──────────────────────────── */
+
+long do_readlink(const char *path, char *buf, size_t bufsiz) {
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    if (!user_ok((uint64_t)buf, bufsiz)) return -EFAULT;
+    return vfs_readlink(kpath, buf, bufsiz);
+}
+
+/* ── SYS_truncate (76) / SYS_ftruncate (77) ─────── */
+
+long do_truncate(const char *path, int64_t length) {
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_truncate(kpath, length);
+}
+
+long do_ftruncate(int fd, int64_t length) {
+    return vfs_ftruncate(fd, length);
+}
+
+/* ── SYS_fchmodat (268) ─────────────────────────── */
+
+long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
+    (void)dirfd; (void)flags; /* AT_FDCWD only */
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+    return vfs_chmod(kpath, mode);
+}
+
+/* ── SYS_utimensat (280) ────────────────────────── */
+
+long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
+    (void)dirfd; /* AT_FDCWD only */
+    if (!path) return 0; /* futimens with NULL path = no-op for now */
+
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+
+    int64_t ktimes[4];
+    if (utimes) {
+        if (!user_ok((uint64_t)utimes, 32)) return -EFAULT;
+        kmemcpy(ktimes, utimes, 32); /* 2 × struct timespec = 2 × 16 bytes */
+    }
+
+    return vfs_utimensat(kpath, utimes ? ktimes : 0, flags);
+}
+
+/* ── SYS_fallocate (285) ────────────────────────── */
+
+long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
+    if (mode != 0) return -EOPNOTSUPP;
+    if (offset < 0 || len <= 0) return -EINVAL;
+    int64_t end = offset + len;
+    /* Only extend, never shrink — check current size via fstat */
+    struct k_stat st;
+    int rc = vfs_fstat(fd, &st);
+    if (rc < 0) return rc;
+    if (end <= st.st_size) return 0;
+    return vfs_ftruncate(fd, end);
+}
+
+/* ── SYS_mknodat (259) ──────────────────────────── */
+
+long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
+    (void)dirfd; (void)dev; /* AT_FDCWD only */
+
+    /* Only S_IFREG (regular files) supported */
+    if ((mode & S_IFMT) != S_IFREG && (mode & S_IFMT) != 0)
+        return -EPERM;
+
+    char kpath[PATH_MAX];
+    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    if (r < 0) return r;
+
+    /* Create as regular file via open+close */
+    int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
+    if (fd < 0) return fd;
+    return vfs_close(fd);
+}
+
+/* ── SYS_getdents64 (217) ───────────────────────── */
+
+struct linux_dirent64 {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[1]; /* flexible */
+};
+
+long do_getdents64(int fd, void *buf, size_t count) {
+    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type != FD_FILE) return -EBADF;
+
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    if (!f || !f->node || f->node->type != VFS_DIR) return -ENOTDIR;
+
+    struct vfs_node *dir = f->node;
+    uint8_t *out = (uint8_t *)buf;
+    size_t written = 0;
+
+    /* Walk to the child at offset f->offset */
+    struct vfs_node *child = dir->children;
+    uint64_t idx = 0;
+    while (child && idx < f->offset) {
+        child = child->next;
+        idx++;
+    }
+
+    while (child) {
+        int nlen = 0;
+        while (child->name[nlen]) nlen++;
+        /* d_reclen: header (19 bytes) + name + NUL, rounded up to 8 */
+        size_t reclen = (19 + (size_t)nlen + 1 + 7) & ~(size_t)7;
+        if (written + reclen > count) break;
+
+        struct linux_dirent64 *ent = (struct linux_dirent64 *)(out + written);
+        ent->d_ino = child->ino;
+        ent->d_off = (int64_t)(f->offset + 1);
+        ent->d_reclen = (uint16_t)reclen;
+        ent->d_type = (child->type == VFS_DIR) ? 4 : 8; /* DT_DIR / DT_REG */
+        for (int i = 0; i < nlen; i++)
+            ((char *)ent + 19)[i] = child->name[i];
+        ((char *)ent + 19)[nlen] = 0;
+        /* Zero padding */
+        for (size_t i = 19 + (size_t)nlen + 1; i < reclen; i++)
+            ((uint8_t *)ent)[i] = 0;
+
+        written += reclen;
+        f->offset++;
+        child = child->next;
+    }
+
+    return (long)written;
+}
+
+/* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
+
+#define TIOCGWINSZ 0x5413
+#define F_DUPFD    0
+#define F_GETFD    1
+#define F_SETFD    2
+#define F_GETFL    3
+#define F_SETFL    4
+
+struct winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
+
+long do_ioctl(int fd, unsigned long request, unsigned long arg) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+
+    if (request == TIOCGWINSZ) {
+        if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
+        struct winsize *ws = (struct winsize *)arg;
+        ws->ws_row = (uint16_t)vt_rows();
+        ws->ws_col = (uint16_t)vt_cols();
+        ws->ws_xpixel = 0;
+        ws->ws_ypixel = 0;
+        return 0;
+    }
+    return -ENOTTY;
+}
+
+long do_fcntl(int fd, int cmd, long arg) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+
+    switch (cmd) {
+    case F_GETFL: return fde->flags;
+    case F_SETFL: fde->flags = (int)arg; return 0;
+    case F_GETFD: return (fde->flags & O_CLOEXEC) ? 1 : 0;
+    case F_SETFD: {
+        if (arg & 1) fde->flags |= O_CLOEXEC;
+        else fde->flags &= ~O_CLOEXEC;
+        return 0;
+    }
+    case F_DUPFD: {
+        /* Find lowest fd >= arg */
+        for (int i = (int)arg; i < FD_MAX; i++) {
+            if (!fd_get(&p->fds, i) || p->fds.entries[i].type == FD_NONE) {
+                p->fds.entries[i] = *fde;
+                if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
+                /* Increment refcount for vfs_file if needed */
+                if (fde->type == FD_FILE && fde->obj) {
+                    extern void vfs_file_incref(struct vfs_file *f);
+                    vfs_file_incref((struct vfs_file *)fde->obj);
+                }
+                return i;
+            }
+        }
+        return -EMFILE;
+    }
+    default: return -EINVAL;
+    }
+}

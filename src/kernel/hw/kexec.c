@@ -34,7 +34,7 @@ static inline int user_ok(uint64_t addr, size_t len) {
 }
 
 /* Trampoline binary (assembled from kexec_tramp.asm → flat binary → C header) */
-#include "kexec_tramp_bin.h"
+#include "gen/kexec_tramp_bin.h"
 
 /* Kernel PML4 from entry.asm — has identity map in PML4[0..7] */
 extern uint64_t pml4[];

@@ -1,0 +1,282 @@
+/* CosmoRT Syscall Dispatcher — routes syscall numbers to handlers */
+
+#include "internal.h"
+
+/* Copy user path string to kernel buffer with full bounds checking.
+ * Returns string length (excluding NUL) or negative errno. */
+int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
+    if (!user_ok((uint64_t)upath, 1)) return -EFAULT;
+    for (size_t i = 0; i < max; i++) {
+        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
+        kbuf[i] = upath[i];
+        if (kbuf[i] == '\0') return (int)i;
+    }
+    return -ENAMETOOLONG;
+}
+
+/* Save user register state from syscall frame into thread_t.
+ * Used by clone, futex_wait, and any syscall that blocks. */
+void save_user_state_for_block(thread_t *t, long return_value) {
+    percpu_t *cpu = percpu_self();
+    syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
+    t->rip    = frame->rcx;       /* user RIP */
+    t->rflags = frame->r11;       /* user RFLAGS */
+    t->rsp    = cpu->user_rsp;    /* user RSP */
+    t->rax    = (uint64_t)return_value;
+    t->rbx = frame->rbx; t->rcx = frame->rcx; t->rdx = frame->rdx;
+    t->rsi = frame->rsi; t->rdi = frame->rdi; t->rbp = frame->rbp;
+    t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
+    t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
+    t->r14 = frame->r14; t->r15 = frame->r15;
+}
+
+/* ── Dispatcher ──────────────────────────────────── */
+
+static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    switch (num) {
+    /* I/O */
+    case SYS_READ:          return do_read((int)a1, (void *)a2, (size_t)a3);
+    case SYS_WRITE:         return do_write((int)a1, (const void *)a2, (size_t)a3);
+    case SYS_WRITEV:        return do_writev((int)a1, (const struct iovec *)a2, (int)a3);
+    case SYS_CLOSE:         return do_close((int)a1);
+
+    /* Memory */
+    case SYS_BRK:           return do_brk((unsigned long)a1);
+    case SYS_MMAP:          return do_mmap((unsigned long)a1, (size_t)a2, (int)a3,
+                                           (int)a4, (int)a5, a6);
+    case SYS_MUNMAP:        return do_munmap((unsigned long)a1, (size_t)a2);
+    case SYS_MPROTECT:      return do_mprotect((unsigned long)a1, (size_t)a2, (int)a3);
+    case SYS_MLOCK:         return do_mlock((unsigned long)a1, (size_t)a2);
+    case SYS_MUNLOCK:       return do_munlock((unsigned long)a1, (size_t)a2);
+    case SYS_MLOCKALL:      return do_mlockall((int)a1);
+    case SYS_MUNLOCKALL:    return do_munlockall();
+
+    /* Process lifecycle */
+    case SYS_EXIT:          do_exit((int)a1); return 0;
+    case SYS_EXIT_GROUP:    do_exit((int)a1); return 0;
+    case SYS_CLONE:         return do_clone((unsigned long)a1, (void *)a2,
+                                            (int *)a3, (int *)a4, (unsigned long)a5);
+    case SYS_FORK:          return do_fork();
+    case SYS_EXECVE:        return do_execve((const char *)a1,
+                                             (char *const *)a2, (char *const *)a3);
+    case SYS_WAIT4:         return do_wait4((int)a1, (int *)a2, (int)a3, (void *)a4);
+
+    /* Thread/TLS */
+    case SYS_ARCH_PRCTL:    return do_arch_prctl((int)a1, (unsigned long)a2);
+    case SYS_SET_TID_ADDRESS: {
+        thread_t *t = thread_current();
+        return t ? (long)t->tid : 1;
+    }
+    case SYS_SET_ROBUST_LIST: return 0;
+
+    /* Signals */
+    case SYS_RT_SIGACTION:    return do_rt_sigaction((int)a1,
+                                       (const void *)a2,
+                                       (void *)a3, (size_t)a4);
+    case SYS_RT_SIGPROCMASK:  return do_rt_sigprocmask((int)a1,
+                                       (const uint64_t *)a2, (uint64_t *)a3, (size_t)a4);
+    case SYS_RT_SIGRETURN:    return do_rt_sigreturn();
+    case SYS_KILL:            return do_kill((int)a1, (int)a2);
+
+    /* Identity */
+    case SYS_GETPID:  { process_t *p = proc_current(); return p ? (long)p->pid : 1; }
+    case SYS_GETPPID: { process_t *p = proc_current(); return p ? (long)p->parent_pid : 0; }
+    case SYS_GETTID:  { thread_t *t = thread_current(); return t ? (long)t->tid : 1; }
+    case SYS_GETUID:  return 0;
+    case SYS_GETGID:  return 0;
+    case SYS_GETEUID: return 0;
+    case SYS_GETEGID: return 0;
+
+    /* System info */
+    case SYS_UNAME:     return do_uname((void *)a1);
+    case SYS_GETRANDOM: return do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3);
+    case SYS_PRLIMIT64: return do_prlimit64((int)a1, (int)a2,
+                                           (const void *)a3, (void *)a4);
+    case SYS_SYSINFO:   return do_sysinfo((void *)a1);
+    case SYS_GETRUSAGE: return do_getrusage((int)a1, (void *)a2);
+    case SYS_TIMES:     return do_times((void *)a1);
+    case SYS_RSEQ:      return -ENOSYS;
+
+    /* Timers / clocks */
+    case SYS_CLOCK_GETTIME:   return do_clock_gettime((int)a1, (void *)a2);
+    case SYS_CLOCK_GETRES:    return do_clock_getres((int)a1, (void *)a2);
+    case SYS_CLOCK_NANOSLEEP: return do_clock_nanosleep((int)a1, (int)a2,
+                                       (const void *)a3, (void *)a4);
+    case SYS_NANOSLEEP:       return do_nanosleep((const void *)a1, (void *)a2);
+    case SYS_GETTIMEOFDAY:    return do_gettimeofday((void *)a1, (void *)a2);
+
+    /* Scheduling */
+    case SYS_SCHED_SETAFFINITY: return do_sched_setaffinity((int)a1, (size_t)a2, (const uint64_t *)a3);
+    case SYS_SCHED_GETAFFINITY: return do_sched_getaffinity((int)a1, (size_t)a2, (uint64_t *)a3);
+    case SYS_SCHED_YIELD:       return do_sched_yield();
+    case SYS_SCHED_SETSCHEDULER: return do_sched_setscheduler((int)a1, (int)a2, (const void *)a3);
+    case SYS_SCHED_GETSCHEDULER: return do_sched_getscheduler((int)a1);
+    case SYS_SCHED_SETPARAM:    return do_sched_setparam((int)a1, (const void *)a2);
+    case SYS_SCHED_GETPARAM:    return do_sched_getparam((int)a1, (void *)a2);
+
+    /* Futex */
+    case SYS_FUTEX:
+        if (!user_ok((uint64_t)a1, 4)) return -EFAULT;
+        return do_futex((uint32_t *)a1, (int)a2, (uint32_t)a3,
+                                        (const struct timespec *)a4,
+                                        (uint32_t *)a5, (uint32_t)a6);
+
+    /* Filesystem */
+    case SYS_OPEN:   return do_open((const char *)a1, (int)a2, (int)a3);
+    case SYS_OPENAT: return do_openat((int)a1, (const char *)a2, (int)a3, (int)a4);
+    case SYS_LSEEK:  return do_lseek((int)a1, a2, (int)a3);
+    case SYS_FSTAT:  return do_fstat((int)a1, (struct k_stat *)a2);
+    case SYS_STAT:   return do_stat((const char *)a1, (struct k_stat *)a2);
+    case SYS_LSTAT:  return do_lstat((const char *)a1, (struct k_stat *)a2);
+    case SYS_FSTATAT: return do_fstatat((int)a1, (const char *)a2,
+                                         (struct k_stat *)a3, (int)a4);
+    case SYS_DUP2:   return do_dup2((int)a1, (int)a2);
+    case SYS_DUP3:   return do_dup3((int)a1, (int)a2, (int)a3);
+    case SYS_GETCWD: return do_getcwd((char *)a1, (size_t)a2);
+    case SYS_CHDIR:  return do_chdir((const char *)a1);
+
+    /* Network / sockets */
+    case SYS_SOCKET:      return do_socket((int)a1, (int)a2, (int)a3);
+    case SYS_CONNECT:     return do_connect((int)a1, (const void *)a2, (int)a3);
+    case SYS_BIND:        return do_bind((int)a1, (const void *)a2, (int)a3);
+    case SYS_LISTEN:      return do_listen((int)a1, (int)a2);
+    case SYS_ACCEPT:      return do_accept((int)a1, (void *)a2, (int *)a3);
+    case SYS_SENDTO:      return do_sendto((int)a1, (const void *)a2, a3, (int)a4,
+                                           (const void *)a5, (int)a6);
+    case SYS_RECVFROM:    return do_recvfrom((int)a1, (void *)a2, a3, (int)a4,
+                                             (void *)a5, (int *)a6);
+    case SYS_SETSOCKOPT:  return do_setsockopt((int)a1, (int)a2, (int)a3,
+                                               (const void *)a4, (int)a5);
+    case SYS_GETSOCKOPT:  return do_getsockopt((int)a1, (int)a2, (int)a3,
+                                               (void *)a4, (int *)a5);
+    case SYS_GETSOCKNAME: return do_getsockname((int)a1, (void *)a2, (int *)a3);
+    case SYS_GETPEERNAME: return do_getpeername((int)a1, (void *)a2, (int *)a3);
+    case SYS_SENDMSG:     return -ENOSYS;
+    case SYS_RECVMSG:     return -ENOSYS;
+    case SYS_SHUTDOWN:     return 0;
+    case SYS_SOCKETPAIR:  return -ENOSYS;
+    case SYS_POLL:        return do_poll((void *)a1, (int)a2, (int)a3);
+
+    /* Filesystem mutation */
+    case SYS_MKDIR:      return do_mkdir((const char *)a1, (int)a2);
+    case SYS_MKDIRAT:    return do_mkdirat((int)a1, (const char *)a2, (int)a3);
+    case SYS_RMDIR:      return do_rmdir((const char *)a1);
+    case SYS_UNLINK:     return do_unlink((const char *)a1);
+    case SYS_UNLINKAT:   return do_unlinkat((int)a1, (const char *)a2, (int)a3);
+    case SYS_RENAME:     return do_rename((const char *)a1, (const char *)a2);
+    case SYS_RENAMEAT2:  return do_renameat2((int)a1, (const char *)a2,
+                                              (int)a3, (const char *)a4, (int)a5);
+    case SYS_GETDENTS64: return do_getdents64((int)a1, (void *)a2, (size_t)a3);
+
+    /* Filesystem metadata */
+    case SYS_FCHMOD:     return do_fchmod((int)a1, (uint32_t)a2);
+    case SYS_FCHOWN:     return do_fchown((int)a1, (uint32_t)a2, (uint32_t)a3);
+    case SYS_LINK:       return do_link((const char *)a1, (const char *)a2);
+    case SYS_SYMLINK:    return do_symlink((const char *)a1, (const char *)a2);
+    case SYS_READLINK:   return do_readlink((const char *)a1, (char *)a2, (size_t)a3);
+    case SYS_TRUNCATE:   return do_truncate((const char *)a1, (int64_t)a2);
+    case SYS_FTRUNCATE:  return do_ftruncate((int)a1, (int64_t)a2);
+    case SYS_FCHMODAT:   return do_fchmodat((int)a1, (const char *)a2, (uint32_t)a3, (int)a4);
+    case SYS_UTIMENSAT:  return do_utimensat((int)a1, (const char *)a2, (const void *)a3, (int)a4);
+    case SYS_FALLOCATE:  return do_fallocate((int)a1, (int)a2, (int64_t)a3, (int64_t)a4);
+    case SYS_MKNODAT:    return do_mknodat((int)a1, (const char *)a2, (uint32_t)a3, (uint64_t)a4);
+
+    /* Pipe / IO */
+    case SYS_PIPE:   return do_pipe2((int *)a1, 0);
+    case SYS_PIPE2:  return do_pipe2((int *)a1, (int)a2);
+    case SYS_READV:  return do_readv((int)a1, (const struct iovec *)a2, (int)a3);
+    case SYS_IOCTL:  return do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3);
+    case SYS_FCNTL:  return do_fcntl((int)a1, (int)a2, a3);
+
+    /* Stubs */
+    case SYS_ACCESS: return 0; /* pretend everything is accessible */
+
+    /* epoll / eventfd / timerfd / signalfd / inotify */
+    case SYS_EPOLL_CREATE1:     return do_epoll_create1((int)a1);
+    case SYS_EPOLL_CTL:         return do_epoll_ctl((int)a1, (int)a2, (int)a3,
+                                                     (struct epoll_event *)a4);
+    case SYS_EPOLL_WAIT:        return do_epoll_wait((int)a1, (struct epoll_event *)a2,
+                                                      (int)a3, (int)a4);
+    case SYS_EVENTFD2:          return do_eventfd2((unsigned int)a1, (int)a2);
+    case SYS_TIMERFD_CREATE:    return do_timerfd_create((int)a1, (int)a2);
+    case SYS_TIMERFD_SETTIME:   return do_timerfd_settime((int)a1, (int)a2,
+                                         (const struct k_itimerspec *)a3,
+                                         (struct k_itimerspec *)a4);
+    case SYS_SIGNALFD4:         return do_signalfd4((int)a1, (const uint64_t *)a2, (int)a3);
+    case SYS_INOTIFY_INIT1:     return do_inotify_init1((int)a1);
+    case SYS_INOTIFY_ADD_WATCH: return do_inotify_add_watch((int)a1, (const char *)a2,
+                                                             (uint32_t)a3);
+    case SYS_INOTIFY_RM_WATCH:  return do_inotify_rm_watch((int)a1, (int)a2);
+
+    /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
+    /* Capability check: only processes with is_driver may use these */
+#define HW_CAP_CHECK() do { \
+    process_t *_p = proc_current(); \
+    if (!_p || !_p->is_driver) return -EPERM; \
+} while (0)
+
+    case SYS_COSMO_MMIO_MAP: {
+        HW_CAP_CHECK();
+        if (!user_ok(a3, 8)) return -EFAULT;
+        void *virt;
+        int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
+        if (r == 0) *(void **)a3 = virt;
+        return r;
+    }
+    case SYS_COSMO_DMA_ALLOC: {
+        HW_CAP_CHECK();
+        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
+        void *virt; uint64_t phys;
+        int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
+        if (r == 0) { *(void **)a2 = virt; *(uint64_t *)a3 = phys; }
+        return r;
+    }
+    case SYS_COSMO_DMA_FREE:
+        HW_CAP_CHECK();
+        cosmo_dma_free((void *)a1, (size_t)a2);
+        return 0;
+    case SYS_COSMO_IRQ_REGISTER:
+        HW_CAP_CHECK();
+        return cosmo_irq_register((int)a1, (void (*)(void *))a2, (void *)a3);
+    case SYS_COSMO_PCI_READ: {
+        HW_CAP_CHECK();
+        if (!user_ok(a4, 4)) return -EFAULT;
+        return cosmo_pci_config_read((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t *)a5);
+    }
+    case SYS_COSMO_PCI_WRITE:
+        HW_CAP_CHECK();
+        return cosmo_pci_config_write((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t)a5);
+    case SYS_COSMO_FW_LOAD: {
+        HW_CAP_CHECK();
+        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
+        return cosmo_fw_load((const char *)a1, (void **)a2, (size_t *)a3);
+    }
+    case SYS_COSMO_NIC_ATTACH: {
+        HW_CAP_CHECK();
+        if (!user_ok(a1, 22)) return -EFAULT;
+        struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } kargs;
+        kmemcpy(&kargs, (const void *)a1, sizeof(kargs));
+        return net_port_attach(kargs.shm_phys, (size_t)kargs.shm_size, kargs.mac);
+    }
+
+    case SYS_COSMO_KEXEC: {
+        HW_CAP_CHECK();
+        if (!user_ok(a1, (size_t)a2)) return -EFAULT;
+        extern int do_kexec(const void *, size_t);
+        return do_kexec((const void *)a1, (size_t)a2);
+    }
+#undef HW_CAP_CHECK
+
+    default:
+        serial_puts("syscall: unhandled #");
+        serial_hex64((uint64_t)num);
+        serial_putchar('\n');
+        return -ENOSYS;
+    }
+}
+
+long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long result = sys_dispatch(num, a1, a2, a3, a4, a5, a6);
+    check_signals_syscall_path(&result, num);
+    return result;
+}

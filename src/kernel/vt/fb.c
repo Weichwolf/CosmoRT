@@ -15,7 +15,7 @@
 #include "serial.h"
 #include "page_alloc.h"
 #include "memops.h"
-#include "font_atlas.h"
+#include "gen/font_atlas.h"
 
 /* ── Fixed-point 16.16 ──────────────────────────────── */
 

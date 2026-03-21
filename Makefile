@@ -22,7 +22,7 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -Wall -Wextra -Werror -O2 -c \
-           -I$(SRC)/kernel -std=c11
+           -I$(SRC)/kernel/include -I$(SRC)/kernel -std=c11
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
            -Bsymbolic -L$(EFI_LIB)
@@ -33,59 +33,83 @@ ESP_IMG  = $(BUILD)/cosmo-rt.img
 # Object files
 BOOT_OBJ = $(BUILD)/boot/boot.o
 
-KERN_OBJ = $(BUILD)/kernel/entry.o \
+# ── ASM objects (kernel root) ──
+KERN_ASM = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/irq_asm.o \
            $(BUILD)/kernel/context.o \
            $(BUILD)/kernel/syscall_entry.o \
-           $(BUILD)/kernel/main.o \
-           $(BUILD)/kernel/serial.o \
-           $(BUILD)/kernel/page_alloc.o \
-           $(BUILD)/kernel/paging.o \
-           $(BUILD)/kernel/irq.o \
-           $(BUILD)/kernel/timer.o \
-           $(BUILD)/kernel/tss.o \
-           $(BUILD)/kernel/process.o \
-           $(BUILD)/kernel/sched.o \
-           $(BUILD)/kernel/ipc.o \
-           $(BUILD)/kernel/smp.o \
-           $(BUILD)/kernel/elf.o \
-           $(BUILD)/kernel/syscall.o \
-           $(BUILD)/kernel/futex.o \
-           $(BUILD)/kernel/slab.o \
-           $(BUILD)/kernel/percpu.o \
-           $(BUILD)/kernel/vma.o \
-           $(BUILD)/kernel/memops.o \
-           $(BUILD)/kernel/random.o \
-           $(BUILD)/kernel/vfs.o \
-           $(BUILD)/kernel/procfs.o \
-           $(BUILD)/kernel/hw.o \
-           $(BUILD)/kernel/net.o \
-           $(BUILD)/kernel/net_port.o \
-           $(BUILD)/drivers/virtio/virtio.o \
-           $(BUILD)/drivers/net/e1000.o \
-           $(BUILD)/drivers/net/virtio_net.o \
-           $(BUILD)/drivers/blk/virtio_blk.o \
-           $(BUILD)/drivers/gpu/virtio_gpu.o \
-           $(BUILD)/drivers/input/virtio_input.o \
-           $(BUILD)/kernel/bcache.o \
-           $(BUILD)/kernel/btree.o \
-           $(BUILD)/kernel/journal.o \
-           $(BUILD)/kernel/cosmofs.o \
-           $(BUILD)/kernel/kexec.o \
-           $(BUILD)/kernel/socket.o \
-           $(BUILD)/kernel/epoll.o \
-           $(BUILD)/kernel/hyperv.o \
-           $(BUILD)/drivers/hyperv/vmbus.o \
-           $(BUILD)/drivers/hyperv/storvsc.o \
-           $(BUILD)/drivers/hyperv/netvsc.o \
-           $(BUILD)/drivers/hyperv/hyperv_fb.o \
-           $(BUILD)/drivers/hyperv/hv_kbd.o \
-           $(BUILD)/drivers/hyperv/hv_mouse.o \
-           $(BUILD)/drivers/hyperv/hv_utils.o \
-           $(BUILD)/kernel/pty.o \
-           $(BUILD)/kernel/vt.o \
-           $(BUILD)/kernel/fb.o \
-           $(BUILD)/kernel/input.o
+           $(BUILD)/kernel/memops.o
+
+# ── Kernel C objects by subdirectory ──
+KERN_CORE = $(BUILD)/kernel/core/main.o \
+            $(BUILD)/kernel/core/irq.o \
+            $(BUILD)/kernel/core/sched.o \
+            $(BUILD)/kernel/core/edf.o \
+            $(BUILD)/kernel/core/timer.o \
+            $(BUILD)/kernel/core/smp.o \
+            $(BUILD)/kernel/core/tss.o \
+            $(BUILD)/kernel/core/percpu.o
+
+KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
+            $(BUILD)/kernel/mm/paging.o \
+            $(BUILD)/kernel/mm/vma.o \
+            $(BUILD)/kernel/mm/slab.o \
+            $(BUILD)/kernel/mm/random.o
+
+KERN_PROC = $(BUILD)/kernel/proc/process.o \
+            $(BUILD)/kernel/proc/elf.o
+
+KERN_SYSCALL = $(BUILD)/kernel/syscall/dispatch.o \
+               $(BUILD)/kernel/syscall/sys_file.o \
+               $(BUILD)/kernel/syscall/sys_mem.o \
+               $(BUILD)/kernel/syscall/sys_proc.o \
+               $(BUILD)/kernel/syscall/sys_signal.o \
+               $(BUILD)/kernel/syscall/sys_time.o \
+               $(BUILD)/kernel/syscall/sys_ipc.o
+
+KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
+            $(BUILD)/kernel/ipc/futex.o \
+            $(BUILD)/kernel/ipc/net_port.o
+
+KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
+            $(BUILD)/kernel/fs/cosmofs.o \
+            $(BUILD)/kernel/fs/btree.o \
+            $(BUILD)/kernel/fs/bcache.o \
+            $(BUILD)/kernel/fs/journal.o \
+            $(BUILD)/kernel/fs/procfs.o
+
+KERN_NET  = $(BUILD)/kernel/net/net.o \
+            $(BUILD)/kernel/net/socket.o
+
+KERN_EVENT = $(BUILD)/kernel/event/epoll.o
+
+KERN_VT   = $(BUILD)/kernel/vt/vt.o \
+            $(BUILD)/kernel/vt/pty.o \
+            $(BUILD)/kernel/vt/fb.o \
+            $(BUILD)/kernel/vt/input.o
+
+KERN_HW   = $(BUILD)/kernel/hw/hw.o \
+            $(BUILD)/kernel/hw/serial.o \
+            $(BUILD)/kernel/hw/kexec.o \
+            $(BUILD)/kernel/hw/hyperv.o
+
+KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
+            $(BUILD)/drivers/net/e1000.o \
+            $(BUILD)/drivers/net/virtio_net.o \
+            $(BUILD)/drivers/blk/virtio_blk.o \
+            $(BUILD)/drivers/gpu/virtio_gpu.o \
+            $(BUILD)/drivers/input/virtio_input.o \
+            $(BUILD)/drivers/hyperv/vmbus.o \
+            $(BUILD)/drivers/hyperv/storvsc.o \
+            $(BUILD)/drivers/hyperv/netvsc.o \
+            $(BUILD)/drivers/hyperv/hyperv_fb.o \
+            $(BUILD)/drivers/hyperv/hv_kbd.o \
+            $(BUILD)/drivers/hyperv/hv_mouse.o \
+            $(BUILD)/drivers/hyperv/hv_utils.o
+
+KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
+           $(KERN_SYSCALL) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
+           $(KERN_EVENT) $(KERN_VT) $(KERN_HW) $(KERN_DRV)
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
@@ -94,14 +118,21 @@ ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
-$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio $(BUILD)/drivers/gpu $(BUILD)/drivers/input $(BUILD)/drivers/hyperv:
+KDIRS = $(BUILD)/kernel $(BUILD)/kernel/core $(BUILD)/kernel/mm \
+        $(BUILD)/kernel/proc $(BUILD)/kernel/syscall $(BUILD)/kernel/ipc \
+        $(BUILD)/kernel/fs $(BUILD)/kernel/net $(BUILD)/kernel/event \
+        $(BUILD)/kernel/vt $(BUILD)/kernel/hw
+DDIRS = $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio \
+        $(BUILD)/drivers/gpu $(BUILD)/drivers/input $(BUILD)/drivers/hyperv
+
+$(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS):
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
 $(BUILD)/kernel/ap_trampoline.bin: $(SRC)/kernel/ap_trampoline.asm | $(BUILD)/kernel
 	$(NASM) -f bin -o $@ $<
 
-$(SRC)/kernel/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
+$(SRC)/kernel/gen/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated AP trampoline (%d bytes) */' % len(data)); \
@@ -113,14 +144,14 @@ $(SRC)/kernel/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
 	@echo "ap_trampoline_bin.h: $$(wc -c < $<) bytes"
 
 # smp.o depends on trampoline header
-$(BUILD)/kernel/smp.o: $(SRC)/kernel/smp.c $(SRC)/kernel/ap_trampoline_bin.h | $(BUILD)/kernel
-	$(CC) $(KCFLAGS) -o $@ $<
+$(BUILD)/kernel/core/smp.o: $(SRC)/kernel/core/smp.c $(SRC)/kernel/gen/ap_trampoline_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── kexec trampoline (64-bit, flat binary → C header) ──
 $(BUILD)/kernel/kexec_tramp.bin: $(SRC)/kernel/kexec_tramp.asm | $(BUILD)/kernel
 	$(NASM) -f bin -o $@ $<
 
-$(SRC)/kernel/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin
+$(SRC)/kernel/gen/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated kexec trampoline (%d bytes) */' % len(data)); \
@@ -132,8 +163,8 @@ $(SRC)/kernel/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin
 	@echo "kexec_tramp_bin.h: $$(wc -c < $<) bytes"
 
 # kexec.o depends on trampoline header
-$(BUILD)/kernel/kexec.o: $(SRC)/kernel/kexec.c $(SRC)/kernel/kexec_tramp_bin.h | $(BUILD)/kernel
-	$(CC) $(KCFLAGS) -o $@ $<
+$(BUILD)/kernel/hw/kexec.o: $(SRC)/kernel/hw/kexec.c $(SRC)/kernel/gen/kexec_tramp_bin.h | $(BUILD)/kernel/hw
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── Init binary (embedded in kernel) ─────────────
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
@@ -143,7 +174,7 @@ $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 $(BUILD)/user/init: $(BUILD)/user/init.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
-$(SRC)/kernel/init_bin.h: $(BUILD)/user/init
+$(SRC)/kernel/gen/init_bin.h: $(BUILD)/user/init
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated init binary (%d bytes) */' % len(data)); \
@@ -154,7 +185,7 @@ $(SRC)/kernel/init_bin.h: $(BUILD)/user/init
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h
+init-bin: $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/ld_cosmo_bin.h $(SRC)/kernel/gen/e1000d_bin.h $(SRC)/kernel/gen/svcmgr_bin.h
 
 # ── Dynamic linker (ld-cosmo.so, embedded in kernel) ──
 $(BUILD)/user/ld-cosmo.o: $(SRC)/user/ld-cosmo.c | $(BUILD)/user
@@ -164,7 +195,7 @@ $(BUILD)/user/ld-cosmo.o: $(SRC)/user/ld-cosmo.c | $(BUILD)/user
 $(BUILD)/user/ld-cosmo: $(BUILD)/user/ld-cosmo.o $(SRC)/user/interp.ld
 	$(LD) -T $(SRC)/user/interp.ld -o $@ $<
 
-$(SRC)/kernel/ld_cosmo_bin.h: $(BUILD)/user/ld-cosmo
+$(SRC)/kernel/gen/ld_cosmo_bin.h: $(BUILD)/user/ld-cosmo
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated ld-cosmo binary (%d bytes) */' % len(data)); \
@@ -182,7 +213,7 @@ $(BUILD)/user/e1000d.o: $(SRC)/user/e1000d.c | $(BUILD)/user
 $(BUILD)/user/e1000d: $(BUILD)/user/e1000d.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
-$(SRC)/kernel/e1000d_bin.h: $(BUILD)/user/e1000d
+$(SRC)/kernel/gen/e1000d_bin.h: $(BUILD)/user/e1000d
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated e1000d binary (%d bytes) */' % len(data)); \
@@ -200,7 +231,7 @@ $(BUILD)/user/svcmgr.o: $(SRC)/user/svcmgr.c | $(BUILD)/user
 $(BUILD)/user/svcmgr: $(BUILD)/user/svcmgr.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
-$(SRC)/kernel/svcmgr_bin.h: $(BUILD)/user/svcmgr
+$(SRC)/kernel/gen/svcmgr_bin.h: $(BUILD)/user/svcmgr
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated svcmgr binary (%d bytes) */' % len(data)); \
@@ -230,7 +261,7 @@ $(BUILD)/user/kbench.o: $(SRC)/user/kbench.c | $(BUILD)/user
 $(BUILD)/user/kbench: $(BUILD)/user/kbench.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
-$(SRC)/kernel/kbench_bin.h: $(BUILD)/user/kbench
+$(SRC)/kernel/gen/kbench_bin.h: $(BUILD)/user/kbench
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated kbench binary (%d bytes) */' % len(data)); \
@@ -242,10 +273,10 @@ $(SRC)/kernel/kbench_bin.h: $(BUILD)/user/kbench
 	@echo "kbench_bin.h: $$(wc -c < $<) bytes"
 
 # Build + boot with benchmark instead of init
-bench: $(SRC)/kernel/kbench_bin.h
-	@cp $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/init_bin.h.bak
+bench: $(SRC)/kernel/gen/kbench_bin.h
+	@cp $(SRC)/kernel/gen/kbench_bin.h $(SRC)/kernel/gen/init_bin.h.bak
 	@sed 's/kbench_bin/init_bin/g; s/kbench_bin_size/init_bin_size/g' \
-	  $(SRC)/kernel/kbench_bin.h > $(SRC)/kernel/init_bin.h
+	  $(SRC)/kernel/gen/kbench_bin.h > $(SRC)/kernel/gen/init_bin.h
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
 	timeout 300 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
@@ -257,7 +288,7 @@ bench: $(SRC)/kernel/kbench_bin.h
 	  -netdev user,id=net0 || true
 	@echo "=== Benchmark Results ==="
 	@sed -n '/Kernel Benchmark/,/Benchmark Complete/p' /tmp/cosmo-serial.log
-	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
+	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 
 # ── Hardware test binary ─────────────────────────
 $(BUILD)/user/ktest.o: $(SRC)/user/ktest.c | $(BUILD)/user
@@ -266,7 +297,7 @@ $(BUILD)/user/ktest.o: $(SRC)/user/ktest.c | $(BUILD)/user
 $(BUILD)/user/ktest: $(BUILD)/user/ktest.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
-$(SRC)/kernel/ktest_bin.h: $(BUILD)/user/ktest
+$(SRC)/kernel/gen/ktest_bin.h: $(BUILD)/user/ktest
 	@python3 -c "\
 	data=open('$<','rb').read(); \
 	print('/* Auto-generated ktest binary (%d bytes) */' % len(data)); \
@@ -278,10 +309,10 @@ $(SRC)/kernel/ktest_bin.h: $(BUILD)/user/ktest
 	@echo "ktest_bin.h: $$(wc -c < $<) bytes"
 
 # Build + boot with hardware test
-test-hw: $(SRC)/kernel/ktest_bin.h
-	@cp $(SRC)/kernel/init_bin.h $(SRC)/kernel/init_bin.h.bak 2>/dev/null; true
+test-hw: $(SRC)/kernel/gen/ktest_bin.h
+	@cp $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/init_bin.h.bak 2>/dev/null; true
 	@sed 's/ktest_bin/init_bin/g; s/ktest_bin_size/init_bin_size/g' \
-	  $(SRC)/kernel/ktest_bin.h > $(SRC)/kernel/init_bin.h
+	  $(SRC)/kernel/gen/ktest_bin.h > $(SRC)/kernel/gen/init_bin.h
 	@rm -f $(BUILD)/kernel/main.o
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
@@ -294,7 +325,7 @@ test-hw: $(SRC)/kernel/ktest_bin.h
 	  -netdev user,id=net0 || true
 	@echo "=== Hardware Test Results ==="
 	@sed -n '/Hardware Test/,/PASSED\|failed/p' /tmp/cosmo-serial.log
-	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
+	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 
 # ── Bootloader (EFI) ────────────────────────────
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
@@ -316,8 +347,35 @@ $(BUILD)/kernel/syscall_entry.o: $(SRC)/kernel/syscall_entry.asm | $(BUILD)/kern
 $(BUILD)/kernel/memops.o: $(SRC)/kernel/memops.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-# ── Kernel C ────────────────────────────────────
-$(BUILD)/kernel/%.o: $(SRC)/kernel/%.c | $(BUILD)/kernel
+# ── Kernel C (subdirectories) ────────────────────
+$(BUILD)/kernel/core/%.o: $(SRC)/kernel/core/%.c | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/mm/%.o: $(SRC)/kernel/mm/%.c | $(BUILD)/kernel/mm
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/proc/%.o: $(SRC)/kernel/proc/%.c | $(BUILD)/kernel/proc
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/syscall/%.o: $(SRC)/kernel/syscall/%.c | $(BUILD)/kernel/syscall
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/syscall -o $@ $<
+
+$(BUILD)/kernel/ipc/%.o: $(SRC)/kernel/ipc/%.c | $(BUILD)/kernel/ipc
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/fs/%.o: $(SRC)/kernel/fs/%.c | $(BUILD)/kernel/fs
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/net/%.o: $(SRC)/kernel/net/%.c | $(BUILD)/kernel/net
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/event/%.o: $(SRC)/kernel/event/%.c | $(BUILD)/kernel/event
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/vt/%.o: $(SRC)/kernel/vt/%.c | $(BUILD)/kernel/vt
+	$(CC) $(KCFLAGS) -o $@ $<
+
+$(BUILD)/kernel/hw/%.o: $(SRC)/kernel/hw/%.c | $(BUILD)/kernel/hw
 	$(CC) $(KCFLAGS) -o $@ $<
 
 # ── Drivers (same flags, include kernel headers) ──
@@ -340,8 +398,8 @@ $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(KCFLAGS) -I$(SRC)/drivers/hyperv -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
-$(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h | $(BUILD)/kernel
-	$(CC) $(KCFLAGS) -DHAVE_LD_COSMO -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
+$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/ld_cosmo_bin.h $(SRC)/kernel/gen/e1000d_bin.h $(SRC)/kernel/gen/svcmgr_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_LD_COSMO -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -384,11 +442,11 @@ $(BUILD)/user/vt_shell: $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
 qemu-gui: $(BUILD)/user/vt_shell
-	@cp $(SRC)/kernel/init_bin.h $(SRC)/kernel/init_bin.h.bak 2>/dev/null; true
-	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(SRC)/kernel/init_bin.h
+	@cp $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/init_bin.h.bak 2>/dev/null; true
+	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(SRC)/kernel/gen/init_bin.h
 	@rm -f $(BUILD)/kernel/main.o
 	$(MAKE) all
-	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
+	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
 qemu-disk: $(ESP_IMG) disk.img
@@ -441,5 +499,5 @@ test-boot-disk: $(ESP_IMG) disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h $(SRC)/kernel/kexec_tramp_bin.h
+	rm -f $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/ap_trampoline_bin.h $(SRC)/kernel/gen/kbench_bin.h $(SRC)/kernel/gen/ktest_bin.h $(SRC)/kernel/gen/ld_cosmo_bin.h $(SRC)/kernel/gen/e1000d_bin.h $(SRC)/kernel/gen/svcmgr_bin.h $(SRC)/kernel/gen/kexec_tramp_bin.h
 	rm -f tools/mkfs disk.img
