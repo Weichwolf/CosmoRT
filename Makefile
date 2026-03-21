@@ -60,8 +60,12 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/hw.o \
            $(BUILD)/kernel/net.o \
            $(BUILD)/kernel/net_port.o \
+           $(BUILD)/drivers/virtio/virtio.o \
            $(BUILD)/drivers/net/e1000.o \
+           $(BUILD)/drivers/net/virtio_net.o \
            $(BUILD)/drivers/blk/virtio_blk.o \
+           $(BUILD)/drivers/gpu/virtio_gpu.o \
+           $(BUILD)/drivers/input/virtio_input.o \
            $(BUILD)/kernel/bcache.o \
            $(BUILD)/kernel/btree.o \
            $(BUILD)/kernel/journal.o \
@@ -76,7 +80,7 @@ ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
-$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk:
+$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio $(BUILD)/drivers/gpu $(BUILD)/drivers/input:
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
@@ -303,10 +307,19 @@ $(BUILD)/kernel/%.o: $(SRC)/kernel/%.c | $(BUILD)/kernel
 
 # ── Drivers (same flags, include kernel headers) ──
 $(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
-	$(CC) $(KCFLAGS) -I$(SRC)/drivers/net -o $@ $<
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/net -I$(SRC)/drivers/virtio -o $@ $<
 
 $(BUILD)/drivers/blk/%.o: $(SRC)/drivers/blk/%.c | $(BUILD)/drivers/blk
-	$(CC) $(KCFLAGS) -I$(SRC)/drivers/blk -o $@ $<
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/blk -I$(SRC)/drivers/virtio -o $@ $<
+
+$(BUILD)/drivers/virtio/%.o: $(SRC)/drivers/virtio/%.c | $(BUILD)/drivers/virtio
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/virtio -o $@ $<
+
+$(BUILD)/drivers/gpu/%.o: $(SRC)/drivers/gpu/%.c | $(BUILD)/drivers/gpu
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/gpu -I$(SRC)/drivers/virtio -o $@ $<
+
+$(BUILD)/drivers/input/%.o: $(SRC)/drivers/input/%.c | $(BUILD)/drivers/input
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/input -I$(SRC)/drivers/virtio -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
 $(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h | $(BUILD)/kernel

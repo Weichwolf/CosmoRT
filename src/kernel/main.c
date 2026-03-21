@@ -174,7 +174,14 @@ void kernel_main(struct boot_info *info) {
 
     /* Drivers — probe and self-register with subsystems */
     extern int e1000_init(void);
-    e1000_init();  /* registers with net stack if found */
+    extern int virtio_net_init(void);
+    extern int virtio_gpu_init(void);
+    extern int virtio_input_init(void);
+
+    e1000_init();        /* registers with net stack if found */
+    virtio_net_init();   /* alternative NIC, registers if found */
+    virtio_gpu_init();   /* 2D framebuffer if found */
+    virtio_input_init(); /* keyboard/mouse if found */
 
     /* Network — uses whatever NIC driver registered */
     if (net_init() == 0) {

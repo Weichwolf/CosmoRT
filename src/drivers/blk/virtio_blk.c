@@ -1,67 +1,17 @@
-/* CosmoRT virtio-blk driver — PCI legacy interface
+/* CosmoRT virtio-blk driver — uses shared virtio transport
  *
- * Adapted from llmos. Key differences:
- * - Uses hw.h primitives (cosmo_mmio_map, cosmo_dma_alloc, cosmo_pci_config_read/write)
- * - All DMA addresses via virt_to_phys()
- * - 4KB block API (translates to 512-byte sectors internally)
- * - Higher-half kernel
+ * PCI legacy interface (QEMU default).
+ * 4KB block API — translates to 512-byte sectors internally.
  */
 
 #include "virtio_blk.h"
+#include "virtio.h"
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
 #include "timer.h"
 #include "spinlock.h"
 #include "memops.h"
-
-/* ── Port I/O (virtio legacy uses I/O ports) ──────── */
-
-static inline void outb(uint16_t p, uint8_t v)  { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
-static inline void outw(uint16_t p, uint16_t v) { __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p)); }
-static inline void outl(uint16_t p, uint32_t v) { __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
-static inline uint32_t inl(uint16_t p)  { uint32_t v; __asm__ volatile("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
-
-/* ── Virtio legacy PCI register offsets (from BAR0 I/O) ── */
-
-#define VIRTIO_DEV_FEATURES   0x00
-#define VIRTIO_DRV_FEATURES   0x04
-#define VIRTIO_QUEUE_ADDR     0x08
-#define VIRTIO_QUEUE_SIZE     0x0C
-#define VIRTIO_QUEUE_SEL      0x0E
-#define VIRTIO_QUEUE_NOTIFY   0x10
-#define VIRTIO_DEV_STATUS     0x12
-#define VIRTIO_ISR_STATUS     0x13
-#define VIRTIO_BLK_CAPACITY   0x14
-
-/* ── Virtqueue structures ─────────────────────────── */
-
-struct virtq_desc {
-    uint64_t addr;
-    uint32_t len;
-    uint16_t flags;
-    uint16_t next;
-} __attribute__((packed));
-
-#define VIRTQ_DESC_F_NEXT   1
-#define VIRTQ_DESC_F_WRITE  2  /* device writes to buffer */
-
-struct virtq_avail {
-    uint16_t flags;
-    uint16_t idx;
-    uint16_t ring[];
-} __attribute__((packed));
-
-struct virtq_used_elem {
-    uint32_t id;
-    uint32_t len;
-} __attribute__((packed));
-
-struct virtq_used {
-    uint16_t flags;
-    uint16_t idx;
-    struct virtq_used_elem ring[];
-} __attribute__((packed));
 
 /* Virtio-blk request header */
 struct virtio_blk_req {
@@ -70,20 +20,14 @@ struct virtio_blk_req {
     uint64_t sector;
 } __attribute__((packed));
 
-#define VIRTQ_MAX 256
 #define SECTORS_PER_BLOCK (BLK_SIZE / 512)
 
 /* ── Driver state ─────────────────────────────────── */
 
-static uint16_t io_base;
-static uint16_t dev_qsz;
+static virtio_dev_t blk_dev;
+static virtqueue_t  blk_vq;
 static uint64_t capacity_sectors;
 static int initialized;
-
-static struct virtq_desc  *vq_desc;
-static struct virtq_avail *vq_avail;
-static struct virtq_used  *vq_used;
-static uint16_t vq_last_used;
 
 /* Per-request DMA buffers */
 static struct virtio_blk_req *req_hdr;
@@ -95,113 +39,44 @@ static spinlock_t blk_lock = SPINLOCK_INIT;
 /* ── Init ─────────────────────────────────────────── */
 
 int virtio_blk_init(void) {
-    /* PCI scan: vendor 0x1AF4, device 0x1001 (legacy) or 0x1042 (modern) */
-    int found_bus = -1, found_dev = -1;
-
-    for (int bus = 0; bus < 256 && found_bus < 0; bus++) {
-        for (int dev = 0; dev < 32 && found_bus < 0; dev++) {
-            uint32_t id;
-            if (cosmo_pci_config_read(bus, dev, 0, 0, &id) < 0) continue;
-            if (id == 0xFFFFFFFF) continue;
-            uint16_t vendor = id & 0xFFFF;
-            uint16_t device = (id >> 16) & 0xFFFF;
-            if (vendor == 0x1AF4 && (device == 0x1001 || device == 0x1042)) {
-                /* Verify subsystem: virtio-blk = subsys device ID 2 */
-                uint32_t subsys;
-                cosmo_pci_config_read(bus, dev, 0, 0x2C, &subsys);
-                uint16_t subsys_dev = (subsys >> 16) & 0xFFFF;
-                /* Legacy: device 0x1001 with subsys 2 = block.
-                 * Modern: device 0x1042 is specifically block. */
-                if (device == 0x1042 || subsys_dev == 2) {
-                    found_bus = bus;
-                    found_dev = dev;
-                }
-            }
-        }
-    }
-
-    if (found_bus < 0) {
+    /* PCI scan: virtio-blk = device 0x1001 (legacy) or subsys 2 */
+    if (virtio_pci_find(0x1001, 2, &blk_dev) < 0) {
         serial_puts("virtio-blk: not found\n");
         return -1;
     }
     serial_puts("virtio-blk: found on PCI ");
-    { char t[4]; t[0]='0'+found_bus/10; t[1]='0'+found_bus%10; t[2]=':'; t[3]=0; serial_puts(t); }
-    { char t[3]; t[0]='0'+found_dev/10; t[1]='0'+found_dev%10; t[2]=0; serial_puts(t); }
+    { char t[4]; t[0]='0'+blk_dev.pci_bus/10; t[1]='0'+blk_dev.pci_bus%10; t[2]=':'; t[3]=0; serial_puts(t); }
+    { char t[3]; t[0]='0'+blk_dev.pci_dev/10; t[1]='0'+blk_dev.pci_dev%10; t[2]=0; serial_puts(t); }
     serial_putchar('\n');
 
-    /* Get BAR0 — virtio legacy uses I/O space */
-    uint32_t bar0;
-    cosmo_pci_config_read(found_bus, found_dev, 0, 0x10, &bar0);
-    io_base = (uint16_t)(bar0 & 0xFFFC);
+    /* Init device, accept all features */
+    virtio_dev_init(&blk_dev, 0xFFFFFFFF);
 
-    /* Enable bus mastering + I/O space */
-    uint32_t cmd;
-    cosmo_pci_config_read(found_bus, found_dev, 0, 0x04, &cmd);
-    cmd |= (1 << 2) | (1 << 0);  /* bus master + I/O space */
-    cosmo_pci_config_write(found_bus, found_dev, 0, 0x04, cmd);
-
-    /* Reset device */
-    outb(io_base + VIRTIO_DEV_STATUS, 0);
-    /* Acknowledge */
-    outb(io_base + VIRTIO_DEV_STATUS, 1);
-    /* Driver loaded */
-    outb(io_base + VIRTIO_DEV_STATUS, 1 | 2);
-
-    /* Negotiate features — accept all (legacy: no FEATURES_OK step) */
-    uint32_t features = inl(io_base + VIRTIO_DEV_FEATURES);
-    outl(io_base + VIRTIO_DRV_FEATURES, features);
-
-    /* Select and query virtqueue 0 */
-    outw(io_base + VIRTIO_QUEUE_SEL, 0);
-    dev_qsz = (uint16_t)(inl(io_base + VIRTIO_QUEUE_SIZE) & 0xFFFF);
-    if (dev_qsz == 0) dev_qsz = 128;
-    if (dev_qsz > VIRTQ_MAX) dev_qsz = VIRTQ_MAX;
-
-    /* Allocate DMA memory for virtqueue + request buffers.
-     * Layout: [descriptors][avail ring][padding to 4KB][used ring][req_hdr][data_buf][status]
-     * Conservative: 64KB covers everything. */
-    void *dma_virt;
-    uint64_t dma_phys;
-    if (cosmo_dma_alloc(65536, &dma_virt, &dma_phys) < 0) {
-        serial_puts("virtio-blk: DMA alloc failed\n");
+    /* Setup virtqueue 0 (requestq) */
+    if (virtqueue_setup(&blk_dev, 0, &blk_vq) < 0) {
+        serial_puts("virtio-blk: VQ setup failed\n");
         return -1;
     }
 
-    /* Zero everything */
-    kmemset(dma_virt, 0, 65536);
-
-    /* Layout virtqueue (page-aligned base) */
+    /* Allocate DMA buffers for request header + data + status */
+    void *dma_virt;
+    uint64_t dma_phys;
+    if (cosmo_dma_alloc(8192, &dma_virt, &dma_phys) < 0) {
+        serial_puts("virtio-blk: DMA alloc failed\n");
+        return -1;
+    }
+    kmemset(dma_virt, 0, 8192);
     uint8_t *p = (uint8_t *)dma_virt;
-    vq_desc  = (struct virtq_desc *)p;
-    vq_avail = (struct virtq_avail *)(p + dev_qsz * sizeof(struct virtq_desc));
-
-    /* Used ring must be page-aligned (virtio spec) */
-    uint64_t avail_end = (uint64_t)vq_avail + 4 + 2 * dev_qsz;
-    vq_used = (struct virtq_used *)((avail_end + 4095) & ~4095ULL);
-
-    /* Request buffers after used ring */
-    uint8_t *after_used = (uint8_t *)vq_used + 4 + 8 * dev_qsz;
-    after_used = (uint8_t *)(((uint64_t)after_used + 15) & ~15ULL);
-    req_hdr    = (struct virtio_blk_req *)after_used;
-    data_buf   = after_used + 64;  /* 64 > sizeof(virtio_blk_req), aligned */
-    /* data_buf needs 4KB for a full block read */
+    req_hdr     = (struct virtio_blk_req *)p;
+    data_buf    = p + 64;  /* aligned, 4KB for block data */
     status_byte = data_buf + BLK_SIZE;
 
-    /* Tell device the queue physical address (in 4096-byte pages) */
-    uint32_t qpfn = (uint32_t)(virt_to_phys(vq_desc) / 4096);
-    outl(io_base + VIRTIO_QUEUE_ADDR, qpfn);
+    /* Device ready */
+    virtio_set_driver_ok(&blk_dev);
 
-    /* Sync indices */
-    vq_avail->idx = 0;
-    vq_avail->flags = 0;
-    vq_last_used = vq_used->idx;
-
-    /* Driver ready */
-    outb(io_base + VIRTIO_DEV_STATUS, 1 | 2 | 4);
-
-    /* Read capacity (in 512-byte sectors) */
-    capacity_sectors  = inl(io_base + VIRTIO_BLK_CAPACITY);
-    capacity_sectors |= ((uint64_t)inl(io_base + VIRTIO_BLK_CAPACITY + 4)) << 32;
+    /* Read capacity (in 512-byte sectors) from device config */
+    capacity_sectors  = virtio_cfg_read32(&blk_dev, 0);
+    capacity_sectors |= ((uint64_t)virtio_cfg_read32(&blk_dev, 4)) << 32;
 
     initialized = 1;
 
@@ -210,7 +85,7 @@ int virtio_blk_init(void) {
       do{t[i++]='0'+(char)(mb%10);mb/=10;}while(mb);
       while(i--) serial_putchar(t[i]); }
     serial_puts(" MB, qsz=");
-    { char t[8]; int i=0; uint16_t v=dev_qsz;
+    { char t[8]; int i=0; uint16_t v=blk_vq.size;
       do{t[i++]='0'+(char)(v%10);v/=10;}while(v);
       while(i--) serial_putchar(t[i]); }
     serial_putchar('\n');
@@ -218,7 +93,7 @@ int virtio_blk_init(void) {
     return 0;
 }
 
-/* ── Single sector I/O ────────────────────────────── */
+/* ── Single block I/O ─────────────────────────────── */
 
 static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     if (!initialized) return -1;
@@ -228,48 +103,46 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     req_hdr->sector   = sector;
     *status_byte      = 0xFF;
 
-    /* Copy write data to DMA buffer */
     if (type == 1)
         kmemcpy(data_buf, buf, len);
 
-    /* 3-descriptor chain: header → data → status */
-    vq_desc[0].addr  = virt_to_phys(req_hdr);
-    vq_desc[0].len   = sizeof(*req_hdr);
-    vq_desc[0].flags = VIRTQ_DESC_F_NEXT;
-    vq_desc[0].next  = 1;
+    /* Allocate 3 descriptors for chain: header -> data -> status */
+    int head = virtqueue_alloc_descs(&blk_vq, 3);
+    if (head < 0) return -1;
 
-    vq_desc[1].addr  = virt_to_phys(data_buf);
-    vq_desc[1].len   = len;
-    vq_desc[1].flags = (type == 0 ? VIRTQ_DESC_F_WRITE : 0) | VIRTQ_DESC_F_NEXT;
-    vq_desc[1].next  = 2;
+    /* Header (device reads) */
+    uint16_t d0 = (uint16_t)head;
+    blk_vq.desc[d0].addr  = virt_to_phys(req_hdr);
+    blk_vq.desc[d0].len   = sizeof(*req_hdr);
+    blk_vq.desc[d0].flags = VIRTQ_DESC_F_NEXT;
+    uint16_t d1 = blk_vq.desc[d0].next;
 
-    vq_desc[2].addr  = virt_to_phys(status_byte);
-    vq_desc[2].len   = 1;
-    vq_desc[2].flags = VIRTQ_DESC_F_WRITE;
-    vq_desc[2].next  = 0;
+    /* Data (device reads for write, writes for read) */
+    blk_vq.desc[d1].addr  = virt_to_phys(data_buf);
+    blk_vq.desc[d1].len   = len;
+    blk_vq.desc[d1].flags = (type == 0 ? VIRTQ_DESC_F_WRITE : 0) | VIRTQ_DESC_F_NEXT;
+    uint16_t d2 = blk_vq.desc[d1].next;
 
-    /* Submit to available ring */
-    uint16_t avail_idx = vq_avail->idx;
-    vq_avail->ring[avail_idx % dev_qsz] = 0;  /* head descriptor */
-    __asm__ volatile("sfence" ::: "memory");
-    vq_avail->idx = avail_idx + 1;
-    __asm__ volatile("sfence" ::: "memory");
+    /* Status (device writes) */
+    blk_vq.desc[d2].addr  = virt_to_phys(status_byte);
+    blk_vq.desc[d2].len   = 1;
+    blk_vq.desc[d2].flags = VIRTQ_DESC_F_WRITE;
 
-    /* Notify device */
-    outw(io_base + VIRTIO_QUEUE_NOTIFY, 0);
+    virtqueue_submit(&blk_vq, (uint16_t)head);
+    virtqueue_kick(&blk_dev, 0);
 
-    /* Poll for completion with timeout */
+    /* Poll for completion */
     uint64_t deadline = timer_ms() + 2000;
-    while (vq_used->idx == vq_last_used) {
+    while (virtqueue_get_used(&blk_vq, 0) < 0) {
         if (timer_ms() > deadline) {
             serial_puts("virtio-blk: I/O timeout\n");
+            virtqueue_free_chain(&blk_vq, (uint16_t)head);
             return -1;
         }
         __asm__ volatile("pause");
     }
-    vq_last_used = vq_used->idx;
+    virtqueue_free_chain(&blk_vq, (uint16_t)head);
 
-    /* Copy read data from DMA buffer */
     if (type == 0 && *status_byte == 0)
         kmemcpy(buf, data_buf, len);
 
@@ -281,10 +154,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
 int blk_read(uint64_t block, void *buf) {
     uint64_t flags;
     spin_lock_irq(&blk_lock, &flags);
-
-    uint64_t sector = block * SECTORS_PER_BLOCK;
-    int rc = do_request(0, sector, buf, BLK_SIZE);
-
+    int rc = do_request(0, block * SECTORS_PER_BLOCK, buf, BLK_SIZE);
     spin_unlock_irq(&blk_lock, flags);
     return rc;
 }
@@ -292,10 +162,7 @@ int blk_read(uint64_t block, void *buf) {
 int blk_write(uint64_t block, const void *buf) {
     uint64_t flags;
     spin_lock_irq(&blk_lock, &flags);
-
-    uint64_t sector = block * SECTORS_PER_BLOCK;
-    int rc = do_request(1, sector, (void *)buf, BLK_SIZE);
-
+    int rc = do_request(1, block * SECTORS_PER_BLOCK, (void *)buf, BLK_SIZE);
     spin_unlock_irq(&blk_lock, flags);
     return rc;
 }
