@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-/* Higher-half direct physical map: PML4[256..263] → first 8GB */
+/* Higher-half direct physical map: PML4[256..259] → up to 2TB */
 #define PHYS_OFFSET    0xFFFF800000000000ULL
 
 #define phys_to_virt(p) ((void *)((uint64_t)(p) + PHYS_OFFSET))

@@ -2,7 +2,7 @@
  *
  * entry.asm maps initial 8GB (enough to boot).
  * paging_init extends the direct map to cover ALL physical RAM.
- * PD pages are static (2MB BSS for 512GB — no dynamic allocation needed).
+ * PD pages are static (8MB BSS for 2TB — no dynamic allocation needed).
  */
 
 #include "paging.h"
