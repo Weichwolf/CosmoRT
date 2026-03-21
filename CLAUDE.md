@@ -431,11 +431,49 @@ Erstmal funktional, dann sauber.
 6. Netzwerk-Syscalls (socket/connect/read/write)
 7. fetch laeuft und gibt HTML aus
 
+## Repo-Struktur
+
+CosmoOS ist drei getrennte Repos. Nicht zusammenfuehren.
+
+```
+~/Git/CosmoRT/     Kernel (dieses Repo)
+                   Freestanding, UEFI Boot, kein libc
+                   Build: make → BOOTX64.EFI
+                   Test: make qemu (ktest in QEMU, 38 PASS)
+
+~/Git/CosmoPX/     Userland (POSIX-Plattform)
+                   libc, sh, coreutils, make, tar, gzip, toolchain, brew
+                   Build: make -C libc lib
+                   Test: make -C libc test (141 PASS)
+
+~/Git/CosmoLib/    Convenience-Library
+                   HTTP, TLS, Crypto, JSON, RegExp
+                   Wird von Apps genutzt, nicht vom Kernel
+```
+
+Warum getrennt:
+- Verschiedene Build-Umgebungen (Freestanding vs Hosted)
+- Verschiedene Compiler-Flags (-ffreestanding vs -nostdinc)
+- Verschiedene Test-Infrastruktur (QEMU vs Host)
+- Verschiedene Release-Zyklen
+
+Integration ueber Build-Skript (nicht Monorepo):
+```sh
+# ~/Git/CosmoOS/build.sh (oder in CosmoRT Makefile)
+make -C ~/Git/CosmoPX/libc lib           # libc bauen
+make -C ~/Git/CosmoPX/coreutils          # Userland bauen
+make -C ~/Git/CosmoPX/sh                 # Shell bauen
+make -C ~/Git/CosmoRT                    # Kernel bauen
+~/Git/CosmoRT/tools/mkfs disk.img        # Filesystem-Image
+# → packe Kernel + Userland-Binaries in QEMU/Hyper-V Image
+# → qemu-system-x86_64 ... oder Hyper-V VM starten
+```
+
 ## Regeln
 
 - Kernel in C11 + minimales Assembly (arch/)
 - llmos-Code als Referenz, nicht blind kopieren — verstehen und anpassen
-- QEMU ist die primaere Test-Plattform
+- QEMU und Hyper-V als Test-Plattformen
 - Serial Console fuer Debug-Output (kein Grafik noetig)
 - Linux Syscall-Nummern (Kompatibilitaet)
 - `make qemu` muss den Kernel booten
