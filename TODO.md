@@ -332,17 +332,22 @@ Kein CPUID Match? → PCI Scan → virtio-Treiber laden.
 ## Naechste Schritte (Prioritaet)
 
 ```
-P6  Signal User-Handler     → Ruby/Node.js auf CosmoRT
-P7  Dynamischer Linker      → Hot-Reload fuer Claude Code
-P8  Userspace-Treiber       → Crash-Isolation, Hot-Reload
-P9  kexec                   → Kernel-Updates ohne Reboot
-P10 Code-Signing            → Vertrauenskette
-P11 Virtio-Treiber          → Volle QEMU/KVM-Unterstuetzung
-P12 Hyper-V Support         → Primaere Entwicklungsplattform
+Prio 1 (jetzt):
+  P6  Signal User-Handler     → Ruby/Node.js auf CosmoRT
+  P12 Hyper-V Support         → Primaere Entwicklungsplattform
+
+Prio 2 (wenn Hyper-V laeuft):
+  P11 Virtio-Treiber          → Volle QEMU/KVM-Unterstuetzung
+  P7  Dynamischer Linker      → Hot-Reload fuer Claude Code
+  P8  Userspace-Treiber       → Crash-Isolation, Hot-Reload
+
+Prio 3 (wenn CosmoOS produktiv ist):
+  P9  kexec                   → Kernel-Updates ohne Reboot
+  P10 Code-Signing            → Vertrauenskette (Ed25519, Owner-Key)
 ```
 
 Schnellster Weg zu "CosmoOS in Hyper-V mit Claude Code":
-P6 → P12.1-12.5 (Boot) → P12.6 (Netz) → Node.js → Claude Code
+P6 (Signale) → P12.1-12.5 (Boot) → P12.6 (Netz) → Node.js → Claude Code
 
 ---
 
