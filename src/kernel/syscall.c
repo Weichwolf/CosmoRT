@@ -29,13 +29,25 @@ static inline int user_ok(uint64_t addr, size_t len) {
            addr + len >= addr;
 }
 
+/* Forward: ensure_user_page (defined below, needed by copy_path_from_user) */
+static int ensure_user_page(process_t *p, uint64_t uaddr);
+
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
 #define PATH_MAX 4096
 static int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
     if (!user_ok((uint64_t)upath, 1)) return -EFAULT;
+    process_t *cpfu_p = proc_current();
+    uint64_t prev_page = ~0ULL;
     for (size_t i = 0; i < max; i++) {
-        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
+        uint64_t addr = (uint64_t)(upath + i);
+        if (addr >= 0x800000000000ULL) return -EFAULT;
+        /* Ensure page is mapped (handles demand-paging) */
+        uint64_t page = addr & ~0xFFFULL;
+        if (page != prev_page) {
+            if (ensure_user_page(cpfu_p, addr) < 0) return -EFAULT;
+            prev_page = page;
+        }
         kbuf[i] = upath[i];
         if (kbuf[i] == '\0') return (int)i;
     }
@@ -1046,19 +1058,35 @@ static const uint8_t sig_trampoline[] = {
     0x0f, 0x05                                   /* syscall */
 };
 
-/* Total signal frame: restorer_addr(8) + siginfo(128) + ucontext(248) + trampoline(9) */
-#define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t) + sizeof(sig_trampoline))
+/* Signal frame: restorer_addr(8) + siginfo(128) + ucontext(248).
+ * Trampoline lives on a dedicated PROT_READ|PROT_EXEC page, not on the NX stack. */
+#define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t))
 
-/* Offsets from new RSP (bottom of frame):
- *   [RSP+0]   = return address (restorer or trampoline)
- *   [RSP+8]   = siginfo_t
- *   [RSP+136] = ucontext_t
- *   [RSP+384] = trampoline bytes (if no sa_restorer)
- */
 #define SIGFRAME_OFF_RETADDR   0
 #define SIGFRAME_OFF_SIGINFO   8
 #define SIGFRAME_OFF_UCONTEXT  (8 + sizeof(sig_siginfo_t))
-#define SIGFRAME_OFF_TRAMPOLINE (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t))
+
+/* Lazily allocate a per-process signal trampoline page (PROT_READ|PROT_EXEC).
+ * Returns user virtual address of trampoline code, or 0 on failure. */
+static uint64_t sig_trampoline_ensure(process_t *p) {
+    if (p->sig_trampoline_page) return p->sig_trampoline_page;
+    uint64_t *page = alloc_page();
+    if (!page) return 0;
+    kmemset(page, 0, 4096);
+    kmemcpy(page, sig_trampoline, sizeof(sig_trampoline));
+    uint64_t uaddr = vma_find_free(p->vma_root, p->mmap_next, 4096);
+    if (!uaddr) { page_free(page); return 0; }
+    p->mmap_next = uaddr;
+    vma_t *v = vma_insert(&p->vma_root, uaddr, uaddr + 4096,
+                           PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+    if (!v) { page_free(page); return 0; }
+    if (map_user_page(p->pml4, uaddr, virt_to_phys(page), PROT_READ | PROT_EXEC) < 0) {
+        page_free(page);
+        return 0;
+    }
+    p->sig_trampoline_page = uaddr;
+    return uaddr;
+}
 
 /* Deliver signal to user thread by pushing signal frame onto user stack.
  * Modifies thread registers so next return-to-userspace enters the handler.
@@ -1071,10 +1099,7 @@ static void deliver_signal(thread_t *t, int signo) {
 
     /* Compute frame location on user stack */
     uint64_t frame_size = SIG_FRAME_SIZE;
-    /* Add trampoline only if no sa_restorer */
     int has_restorer = (sa->sa_flags & SA_RESTORER) && sa->sa_restorer;
-    if (has_restorer)
-        frame_size -= sizeof(sig_trampoline);
     uint64_t new_rsp = (t->rsp - frame_size) & ~0xFULL; /* 16-byte align */
 
     /* Verify target stack area is in a writable VMA */
@@ -1119,7 +1144,9 @@ static void deliver_signal(thread_t *t, int signo) {
     if (has_restorer) {
         restorer_addr = (uint64_t)sa->sa_restorer;
     } else {
-        restorer_addr = new_rsp + SIGFRAME_OFF_TRAMPOLINE;
+        /* Use dedicated RX trampoline page (not the NX stack) */
+        restorer_addr = sig_trampoline_ensure(p);
+        if (!restorer_addr) { do_exit(128 + signo); return; }
     }
 
     /* Write signal frame directly to user stack.
@@ -1127,10 +1154,6 @@ static void deliver_signal(thread_t *t, int signo) {
     *(uint64_t *)new_rsp = restorer_addr;
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_SIGINFO), &si, sizeof(si));
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_UCONTEXT), &uc, sizeof(uc));
-
-    /* Write trampoline if no sa_restorer */
-    if (!has_restorer)
-        kmemcpy((void *)(new_rsp + SIGFRAME_OFF_TRAMPOLINE), sig_trampoline, sizeof(sig_trampoline));
 
     /* Set up thread to enter handler */
     t->rip = (uint64_t)sa->sa_handler;
@@ -2503,18 +2526,54 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_COSMO_MMIO_MAP: {
         HW_CAP_CHECK();
         if (!user_ok(a3, 8)) return -EFAULT;
-        void *virt;
-        int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
-        if (r == 0) *(void **)a3 = virt;
-        return r;
+        void *kvirt;
+        size_t len = (size_t)a2;
+        int r = cosmo_mmio_map((uint64_t)a1, len, &kvirt);
+        if (r != 0) return r;
+        /* Map into caller's userspace instead of returning kernel direct-map addr */
+        process_t *mp = proc_current();
+        uint64_t aligned_len = (len + 4095) & ~4095ULL;
+        uint64_t uaddr = vma_find_free(mp->vma_root, mp->mmap_next, aligned_len);
+        if (!uaddr) return -ENOMEM;
+        mp->mmap_next = uaddr;
+        vma_t *mv = vma_insert(&mp->vma_root, uaddr, uaddr + aligned_len,
+                                PROT_READ | PROT_WRITE, MAP_PRIVATE);
+        if (!mv) return -ENOMEM;
+        uint64_t kphys = virt_to_phys(kvirt);
+        for (uint64_t off = 0; off < aligned_len; off += 4096) {
+            if (map_user_page(mp->pml4, uaddr + off, kphys + off,
+                              PROT_READ | PROT_WRITE) < 0)
+                return -ENOMEM;
+        }
+        *(uint64_t *)a3 = uaddr;
+        return 0;
     }
     case SYS_COSMO_DMA_ALLOC: {
         HW_CAP_CHECK();
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
-        void *virt; uint64_t phys;
-        int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
-        if (r == 0) { *(void **)a2 = virt; *(uint64_t *)a3 = phys; }
-        return r;
+        void *kvirt; uint64_t phys;
+        size_t len = (size_t)a1;
+        int r = cosmo_dma_alloc(len, &kvirt, &phys);
+        if (r != 0) return r;
+        /* Map DMA pages into caller's userspace */
+        process_t *dp = proc_current();
+        uint64_t daligned = (len + 4095) & ~4095ULL;
+        uint64_t duaddr = vma_find_free(dp->vma_root, dp->mmap_next, daligned);
+        if (!duaddr) { cosmo_dma_free(kvirt, len); return -ENOMEM; }
+        dp->mmap_next = duaddr;
+        vma_t *dv = vma_insert(&dp->vma_root, duaddr, duaddr + daligned,
+                                PROT_READ | PROT_WRITE, MAP_PRIVATE);
+        if (!dv) { cosmo_dma_free(kvirt, len); return -ENOMEM; }
+        for (uint64_t off = 0; off < daligned; off += 4096) {
+            if (map_user_page(dp->pml4, duaddr + off, phys + off,
+                              PROT_READ | PROT_WRITE) < 0) {
+                cosmo_dma_free(kvirt, len);
+                return -ENOMEM;
+            }
+        }
+        *(uint64_t *)a2 = duaddr;
+        *(uint64_t *)a3 = phys;
+        return 0;
     }
     case SYS_COSMO_DMA_FREE:
         HW_CAP_CHECK();

@@ -341,7 +341,13 @@ void net_dhcp_send_discover(void) {
     put16(pkt+34, 68); put16(pkt+36, 67);
     put16(pkt+38, 576-14-20);
     pkt[42]=1; pkt[43]=1; pkt[44]=6;
-    put32(pkt+46, 0xDEADBEEF);
+    {
+        extern int random_get(void *, unsigned long);
+        uint32_t dhcp_xid;
+        if (random_get(&dhcp_xid, sizeof(dhcp_xid)) < 0)
+            dhcp_xid = (uint32_t)timer_ms(); /* fallback if CSPRNG not seeded */
+        put32(pkt+46, dhcp_xid);
+    }
     mcpy(pkt+70, net_my_mac, 6);
     pkt[278]=99; pkt[279]=130; pkt[280]=83; pkt[281]=99;
     pkt[282]=53; pkt[283]=1; pkt[284]=1;
@@ -614,7 +620,13 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint8_t gw_mac[6];
     if (net_arp_resolve(net_gw_ip, gw_mac) < 0) return -1;
 
-    dns_local_port = (uint16_t)(49152 + (timer_ms() & 0x3FFF));
+    {
+        extern int random_get(void *, unsigned long);
+        uint16_t rnd16;
+        if (random_get(&rnd16, sizeof(rnd16)) < 0)
+            rnd16 = (uint16_t)(timer_ms() & 0xFFFF);
+        dns_local_port = (uint16_t)(49152 + (rnd16 & 0x3FFF));
+    }
 
     uint8_t pkt[256]; mzero(pkt, sizeof(pkt));
     mcpy(pkt, gw_mac, 6); mcpy(pkt+6, net_my_mac, 6);
@@ -625,7 +637,12 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     put16(pkt+34, dns_local_port); put16(pkt+36, 53);
 
     uint8_t *dns = pkt + 42;
-    uint16_t txid = (uint16_t)(timer_ms() & 0xFFFF);
+    uint16_t txid;
+    {
+        extern int random_get(void *, unsigned long);
+        if (random_get(&txid, sizeof(txid)) < 0)
+            txid = (uint16_t)(timer_ms() & 0xFFFF);
+    }
     put16(dns, txid);
     put16(dns+2, 0x0100);
     put16(dns+4, 1);
