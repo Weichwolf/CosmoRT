@@ -101,20 +101,36 @@ void kernel_main(struct boot_info *info) {
     extern void net_port_init(void);
     net_port_init();
 
-    /* VFS (ramfs — replaced by CosmoFS on disk later) */
+    /* Block driver (probe before VFS so we know if disk is present) */
+    extern int virtio_blk_init(void);
+    extern uint64_t blk_capacity(void);
+    extern void bcache_init(void);
+    int has_disk = (virtio_blk_init() == 0 && blk_capacity() > 0);
+    if (has_disk) bcache_init();
+
+    /* VFS (ramfs always available for /dev/shm; CosmoFS for / if disk present) */
     vfs_init();
-    vfs_create("/home", VFS_DIR);
-    vfs_create("/home/Documents", VFS_DIR);
-    vfs_create("/home/Downloads", VFS_DIR);
-    vfs_create("/home/Pictures", VFS_DIR);
-    vfs_create("/home/Music", VFS_DIR);
-    vfs_create("/home/Videos", VFS_DIR);
-    vfs_create("/home/Projects", VFS_DIR);
-    vfs_create("/tmp", VFS_DIR);
-    vfs_create("/bin", VFS_DIR);
-    vfs_create("/etc", VFS_DIR);
     vfs_create("/dev", VFS_DIR);
     vfs_create("/dev/shm", VFS_DIR);
+
+    if (has_disk) {
+        extern void vfs_mount_cosmofs(void);
+        vfs_mount_cosmofs();
+    }
+
+    /* ramfs directories (fallback for no-disk boots) */
+    if (!has_disk) {
+        vfs_create("/home", VFS_DIR);
+        vfs_create("/home/Documents", VFS_DIR);
+        vfs_create("/home/Downloads", VFS_DIR);
+        vfs_create("/home/Pictures", VFS_DIR);
+        vfs_create("/home/Music", VFS_DIR);
+        vfs_create("/home/Videos", VFS_DIR);
+        vfs_create("/home/Projects", VFS_DIR);
+        vfs_create("/tmp", VFS_DIR);
+        vfs_create("/bin", VFS_DIR);
+        vfs_create("/etc", VFS_DIR);
+    }
 
     /* Futex subsystem (wait queue hash table + slab pool) */
     extern void futex_init(void);

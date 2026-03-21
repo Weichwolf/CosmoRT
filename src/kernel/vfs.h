@@ -1,7 +1,11 @@
-/* CosmoRT VFS — minimal in-memory filesystem (ramfs)
+/* CosmoRT VFS — filesystem dispatch layer
  *
- * No disk, no persistence. Files live in page-allocated RAM.
- * Slab-allocated vfs_node pool, linked-list directories.
+ * Two backends:
+ *   VFS_BACKEND_RAM    — in-memory ramfs (original, used for /dev/shm and no-disk boots)
+ *   VFS_BACKEND_COSMOFS — persistent CosmoFS on virtio-blk
+ *
+ * Path routing: CosmoFS is root "/" when mounted. /dev/shm always ramfs.
+ * Slab-allocated vfs_node pool, linked-list directories (ramfs only).
  */
 #ifndef VFS_H
 #define VFS_H
@@ -68,13 +72,21 @@ struct vfs_node {
     struct vfs_node *parent;    /* parent directory */
 };
 
+/* Filesystem backend */
+#define VFS_BACKEND_RAM     0
+#define VFS_BACKEND_COSMOFS 1
+
 /* Open file (per-fd state) */
 struct vfs_file {
     int type;               /* VFS_FILE, VFS_DIR, VFS_PIPE */
     int flags;              /* O_RDONLY, O_WRONLY, O_RDWR */
     int refcount;           /* reference count (fork shares vfs_file) */
+    int backend;            /* VFS_BACKEND_RAM or VFS_BACKEND_COSMOFS */
     uint64_t offset;        /* current read/write position */
-    struct vfs_node *node;
+    struct vfs_node *node;  /* ramfs node (NULL for cosmofs) */
+    uint64_t cosmofs_ino;   /* CosmoFS inode number (0 for ramfs) */
+    uint64_t cosmofs_size;  /* cached size for cosmofs files */
+    uint64_t cosmofs_dir_ino; /* parent dir inode for cosmofs getdents */
 };
 
 /* Initialize VFS — create root directory "/" */
@@ -107,6 +119,9 @@ int vfs_rename(const char *oldpath, const char *newpath);
 
 /* Populate ramfs with a file (for init binary, etc.) */
 int vfs_add_file(const char *path, const void *data, size_t len);
+
+/* Mount CosmoFS as root filesystem (called from main after bcache_init) */
+void vfs_mount_cosmofs(void);
 
 /* Increment refcount on a vfs_file (for fork fd duplication) */
 void vfs_file_incref(struct vfs_file *f);

@@ -1,5 +1,6 @@
 # CosmoRT Build System
 
+HOST_CC  = gcc
 CC       = gcc
 NASM     = nasm
 LD       = ld
@@ -60,16 +61,21 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/net.o \
            $(BUILD)/kernel/net_port.o \
            $(BUILD)/drivers/net/e1000.o \
+           $(BUILD)/drivers/blk/virtio_blk.o \
+           $(BUILD)/kernel/bcache.o \
+           $(BUILD)/kernel/btree.o \
+           $(BUILD)/kernel/journal.o \
+           $(BUILD)/kernel/cosmofs.o \
            $(BUILD)/kernel/socket.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
-.PHONY: all clean qemu stop init-bin
+.PHONY: all clean qemu stop init-bin disk
 
 all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
-$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net:
+$(BUILD)/boot $(BUILD)/kernel $(BUILD)/user $(BUILD)/drivers/net $(BUILD)/drivers/blk:
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
@@ -111,6 +117,15 @@ $(SRC)/kernel/init_bin.h: $(BUILD)/user/init
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
 init-bin: $(SRC)/kernel/init_bin.h
+
+# ── mkfs.cosmo (host tool) + disk image ─────────
+tools/mkfs: tools/mkfs.c
+	$(HOST_CC) -Wall -Wextra -O2 -o $@ $<
+
+disk.img: tools/mkfs
+	./tools/mkfs $@ 64
+
+disk: disk.img
 
 # ── Benchmark binary ────────────────────────────
 UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -211,6 +226,9 @@ $(BUILD)/kernel/%.o: $(SRC)/kernel/%.c | $(BUILD)/kernel
 $(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
 	$(CC) $(KCFLAGS) -I$(SRC)/drivers/net -o $@ $<
 
+$(BUILD)/drivers/blk/%.o: $(SRC)/drivers/blk/%.c | $(BUILD)/drivers/blk
+	$(CC) $(KCFLAGS) -I$(SRC)/drivers/blk -o $@ $<
+
 # main.o depends on init_bin.h
 $(BUILD)/kernel/main.o: $(SRC)/kernel/main.c $(SRC)/kernel/init_bin.h | $(BUILD)/kernel
 	$(CC) $(KCFLAGS) -o $@ $<
@@ -246,6 +264,9 @@ QEMU_FLAGS = -cpu qemu64 -smp 1 -m 256 \
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
+qemu-disk: $(ESP_IMG) disk.img
+	$(QEMU) $(QEMU_FLAGS) -drive file=disk.img,if=virtio,format=raw
+
 qemu-net: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS) -device e1000,netdev=net0 -netdev user,id=net0
 
@@ -274,6 +295,20 @@ test-boot: $(ESP_IMG)
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
 	  echo "=== PASS ===" || echo "=== FAIL ==="
 
+test-boot-disk: $(ESP_IMG) disk.img
+	@rm -f /tmp/cosmo-serial.log
+	timeout 10 $(QEMU) -cpu qemu64 -smp 1 -m 256 \
+	        -bios /usr/share/ovmf/OVMF.fd \
+	        -drive file=$(ESP_IMG),format=raw \
+	        -drive file=disk.img,if=virtio,format=raw \
+	        -serial file:/tmp/cosmo-serial.log \
+	        -display none -no-reboot || true
+	@echo "=== Serial output ==="
+	@cat /tmp/cosmo-serial.log 2>/dev/null || echo "(no output)"
+	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
+	  echo "=== PASS ===" || echo "=== FAIL ==="
+
 clean:
 	rm -rf $(BUILD)
 	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h
+	rm -f tools/mkfs disk.img

@@ -1,6 +1,7 @@
-/* CosmoRT VFS — minimal in-memory filesystem (ramfs) */
+/* CosmoRT VFS — filesystem dispatch (ramfs + CosmoFS) */
 
 #include "vfs.h"
+#include "cosmofs.h"
 #include "fd.h"
 #include "process.h"
 #include "percpu.h"
@@ -41,6 +42,73 @@ static void kstrncpy(char *dst, const char *src, int max) {
     int i = 0;
     while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
     dst[i] = 0;
+}
+
+/* ── CosmoFS routing ─────────────────────────────── */
+
+/* Returns 1 if path should use ramfs (not CosmoFS) */
+static int is_ramfs_path(const char *path) {
+    if (!cosmofs_mounted()) return 1;
+    /* /dev/shm always ramfs */
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='s' && path[6]=='h' && path[7]=='m' &&
+        (path[8]=='/' || path[8]==0))
+        return 1;
+    return 0;
+}
+
+/* Walk a CosmoFS path component-by-component, returning the inode number.
+ * Returns 0 on failure (inode 0 is invalid). */
+static uint64_t cosmofs_walk(const char *path) {
+    if (!path || path[0] != '/') return 0;
+    if (path[0] == '/' && path[1] == 0) return cosmofs_root_ino();
+
+    uint64_t cur = cosmofs_root_ino();
+    const char *p = path + 1;
+
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+
+        /* Extract component */
+        const char *start = p;
+        while (*p && *p != '/') p++;
+        int len = (int)(p - start);
+
+        char name[256];
+        int cplen = len < 255 ? len : 255;
+        for (int i = 0; i < cplen; i++) name[i] = start[i];
+        name[cplen] = 0;
+
+        uint64_t child;
+        if (cosmofs_dir_lookup(cur, name, &child) < 0)
+            return 0;
+        cur = child;
+    }
+    return cur;
+}
+
+/* Walk to parent directory, extract basename. Returns parent inode or 0. */
+static uint64_t cosmofs_walk_parent(const char *path, const char **basename_out) {
+    if (!path || path[0] != '/') return 0;
+
+    int len = kstrlen(path);
+    int last_slash = 0;
+    for (int i = len - 1; i >= 0; i--) {
+        if (path[i] == '/') { last_slash = i; break; }
+    }
+    *basename_out = path + last_slash + 1;
+    if (!**basename_out) return 0;
+
+    if (last_slash == 0) return cosmofs_root_ino();
+
+    /* Build parent path */
+    char parent_path[256];
+    int plen = last_slash < 255 ? last_slash : 255;
+    for (int i = 0; i < plen; i++) parent_path[i] = path[i];
+    parent_path[plen] = 0;
+
+    return cosmofs_walk(parent_path);
 }
 
 /* ── Node allocation ─────────────────────────────── */
@@ -235,10 +303,72 @@ static struct vfs_node *ensure_dirs(const char *path) {
 
 int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
+
+    /* CosmoFS path? */
+    if (!is_ramfs_path(path)) {
+        uint64_t ino = cosmofs_walk(path);
+
+        if (ino == 0 && (flags & O_CREAT)) {
+            /* Create file on CosmoFS */
+            const char *basename;
+            uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+            if (parent_ino == 0) return -ENOENT;
+
+            /* Ensure parent is a directory */
+            struct cosmofs_inode *pip = cosmofs_inode_read(parent_ino);
+            if (!pip || pip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+
+            /* Allocate inode */
+            uint64_t new_ino = cosmofs_inode_alloc();
+            if (new_ino == 0) return -ENOMEM;
+
+            /* Set up as file */
+            struct cosmofs_inode new_in;
+            kmemset(&new_in, 0, sizeof(new_in));
+            new_in.type = COSMOFS_TYPE_FILE;
+            cosmofs_inode_write(new_ino, &new_in);
+
+            /* Add to parent directory */
+            cosmofs_dir_create(parent_ino, basename, new_ino);
+            ino = new_ino;
+        }
+
+        if (ino == 0) return -ENOENT;
+
+        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+        if (!ip) return -EIO;
+
+        if ((flags & O_DIRECTORY) && ip->type != COSMOFS_TYPE_DIR)
+            return -ENOTDIR;
+
+        struct vfs_file *f = file_alloc();
+        if (!f) return -ENOMEM;
+
+        f->type = (ip->type == COSMOFS_TYPE_DIR) ? VFS_DIR : VFS_FILE;
+        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+        f->refcount = 1;
+        f->backend = VFS_BACKEND_COSMOFS;
+        f->offset = 0;
+        f->node = 0;
+        f->cosmofs_ino = ino;
+        f->cosmofs_size = ip->size;
+        f->cosmofs_dir_ino = 0;
+
+        if ((flags & O_TRUNC) && ip->type == COSMOFS_TYPE_FILE)
+            cosmofs_truncate(ino, 0);
+
+        process_t *p = proc_current();
+        if (!p) { file_free(f); return -EFAULT; }
+
+        int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
+        if (fd < 0) { file_free(f); return -EMFILE; }
+        return fd;
+    }
+
+    /* ramfs path */
     struct vfs_node *node = vfs_lookup(path);
 
     if (!node && (flags & O_CREAT)) {
-        /* Ensure parent directories exist */
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
     }
@@ -253,14 +383,17 @@ int vfs_open(const char *path, int flags, int mode) {
     f->type = node->type;
     f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
     f->refcount = 1;
+    f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
     f->node = node;
+    f->cosmofs_ino = 0;
+    f->cosmofs_size = 0;
+    f->cosmofs_dir_ino = 0;
 
     if ((flags & O_TRUNC) && node->type == VFS_FILE) {
         node->size = 0;
     }
 
-    /* Allocate FD in current process */
     process_t *p = proc_current();
     if (!p) { file_free(f); return -EFAULT; }
 
@@ -323,12 +456,22 @@ long vfs_read(int fd, void *buf, size_t count) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (!f || !f->node) return -EBADF;
+    if (!f) return -EBADF;
 
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        if (f->type != VFS_FILE) return -EISDIR;
+        int rc = cosmofs_read(f->cosmofs_ino, buf, (size_t)f->offset, count);
+        if (rc < 0) return rc;
+        f->offset += (uint64_t)rc;
+        return (long)rc;
+    }
+
+    /* ramfs */
+    if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
 
-    if (f->offset >= node->size) return 0; /* EOF */
+    if (f->offset >= node->size) return 0;
 
     size_t avail = node->size - (size_t)f->offset;
     if (count > avail) count = avail;
@@ -348,8 +491,24 @@ long vfs_write(int fd, const void *buf, size_t count) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (!f || !f->node) return -EBADF;
+    if (!f) return -EBADF;
 
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        if (f->type != VFS_FILE) return -EISDIR;
+        if (f->flags & O_APPEND) {
+            /* Re-read inode size for append */
+            struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
+            if (ip) f->offset = ip->size;
+        }
+        int rc = cosmofs_write(f->cosmofs_ino, buf, (size_t)f->offset, count);
+        if (rc < 0) return rc;
+        f->offset += (uint64_t)rc;
+        f->cosmofs_size = f->offset;
+        return (long)rc;
+    }
+
+    /* ramfs */
+    if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
 
@@ -376,14 +535,27 @@ long vfs_lseek(int fd, long offset, int whence) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (!f || !f->node) return -EBADF;
+    if (!f) return -EBADF;
 
     long new_off;
-    switch (whence) {
-    case SEEK_SET: new_off = offset; break;
-    case SEEK_CUR: new_off = (long)f->offset + offset; break;
-    case SEEK_END: new_off = (long)f->node->size + offset; break;
-    default: return -EINVAL;
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        uint64_t sz = f->cosmofs_size;
+        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
+        if (ip) sz = ip->size;
+        switch (whence) {
+        case SEEK_SET: new_off = offset; break;
+        case SEEK_CUR: new_off = (long)f->offset + offset; break;
+        case SEEK_END: new_off = (long)sz + offset; break;
+        default: return -EINVAL;
+        }
+    } else {
+        if (!f->node) return -EBADF;
+        switch (whence) {
+        case SEEK_SET: new_off = offset; break;
+        case SEEK_CUR: new_off = (long)f->offset + offset; break;
+        case SEEK_END: new_off = (long)f->node->size + offset; break;
+        default: return -EINVAL;
+        }
     }
 
     if (new_off < 0) return -EINVAL;
@@ -409,7 +581,36 @@ static void fill_stat(struct vfs_node *node, struct k_stat *buf) {
         buf->st_mode = S_IFIFO | S_IRUSR | S_IWUSR;
 }
 
+static void fill_cosmofs_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_stat *buf) {
+    kmemset(buf, 0, sizeof(struct k_stat));
+    buf->st_ino = ino;
+    buf->st_dev = 1;  /* CosmoFS device */
+    buf->st_nlink = 1;
+    buf->st_size = (int64_t)ip->size;
+    buf->st_blksize = 4096;
+    buf->st_blocks = (int64_t)((ip->size + 511) / 512);
+    buf->st_atime_sec = (int64_t)(ip->atime / 1000000000ULL);
+    buf->st_atime_nsec = (int64_t)(ip->atime % 1000000000ULL);
+    buf->st_mtime_sec = (int64_t)(ip->mtime / 1000000000ULL);
+    buf->st_mtime_nsec = (int64_t)(ip->mtime % 1000000000ULL);
+    buf->st_ctime_sec = (int64_t)(ip->ctime / 1000000000ULL);
+    buf->st_ctime_nsec = (int64_t)(ip->ctime % 1000000000ULL);
+
+    if (ip->type == COSMOFS_TYPE_DIR)
+        buf->st_mode = S_IFDIR | S_IRWXU;
+    else
+        buf->st_mode = S_IFREG | S_IRUSR | S_IWUSR | S_IXUSR;
+}
+
 int vfs_stat(const char *path, struct k_stat *buf) {
+    if (!is_ramfs_path(path)) {
+        uint64_t ino = cosmofs_walk(path);
+        if (ino == 0) return -ENOENT;
+        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+        if (!ip) return -EIO;
+        fill_cosmofs_stat(ino, ip, buf);
+        return 0;
+    }
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     fill_stat(node, buf);
@@ -434,8 +635,16 @@ int vfs_fstat(int fd, struct k_stat *buf) {
     if (fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (!f || !f->node) return -EBADF;
+    if (!f) return -EBADF;
 
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
+        if (!ip) return -EIO;
+        fill_cosmofs_stat(f->cosmofs_ino, ip, buf);
+        return 0;
+    }
+
+    if (!f->node) return -EBADF;
     fill_stat(f->node, buf);
     return 0;
 }
@@ -452,6 +661,17 @@ int vfs_getcwd(char *buf, size_t size) {
 }
 
 int vfs_chdir(const char *path) {
+    if (!is_ramfs_path(path)) {
+        uint64_t ino = cosmofs_walk(path);
+        if (ino == 0) return -ENOENT;
+        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+        if (!ip || ip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+        char *cwd = get_cwd();
+        if (!cwd) return -EFAULT;
+        kstrncpy(cwd, path, 256);
+        return 0;
+    }
+
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     if (node->type != VFS_DIR) return -ENOTDIR;
@@ -465,10 +685,30 @@ int vfs_chdir(const char *path) {
 /* ── Directory/file mutation ─────────────────────── */
 
 int vfs_mkdir(const char *path) {
+    if (!is_ramfs_path(path)) {
+        /* Check if exists */
+        uint64_t ino = cosmofs_walk(path);
+        if (ino != 0) return -EEXIST;
+
+        const char *basename;
+        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        if (parent_ino == 0) return -ENOENT;
+
+        uint64_t new_ino = cosmofs_inode_alloc();
+        if (new_ino == 0) return -ENOMEM;
+
+        struct cosmofs_inode dir_in;
+        kmemset(&dir_in, 0, sizeof(dir_in));
+        dir_in.type = COSMOFS_TYPE_DIR;
+        cosmofs_inode_write(new_ino, &dir_in);
+
+        return cosmofs_dir_create(parent_ino, basename, new_ino);
+    }
+
     struct vfs_node *existing = vfs_lookup(path);
     if (existing) return -EEXIST;
     struct vfs_node *n = vfs_create(path, VFS_DIR);
-    if (!n) return -ENOENT; /* parent doesn't exist */
+    if (!n) return -ENOENT;
     return 0;
 }
 
@@ -488,6 +728,21 @@ static int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
 }
 
 int vfs_rmdir(const char *path) {
+    if (!is_ramfs_path(path)) {
+        const char *basename;
+        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        if (parent_ino == 0) return -ENOENT;
+        uint64_t child_ino;
+        if (cosmofs_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
+        struct cosmofs_inode *ip = cosmofs_inode_read(child_ino);
+        if (!ip || ip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+        /* Check empty (size == entry count in our dir impl) */
+        if (ip->size > 0) return -ENOTEMPTY;
+        int rc = cosmofs_dir_remove(parent_ino, basename);
+        if (rc == 0) cosmofs_inode_free(child_ino);
+        return rc;
+    }
+
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     if (node->type != VFS_DIR) return -ENOTDIR;
@@ -500,12 +755,28 @@ int vfs_rmdir(const char *path) {
 }
 
 int vfs_unlink(const char *path) {
+    if (!is_ramfs_path(path)) {
+        const char *basename;
+        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        if (parent_ino == 0) return -ENOENT;
+        uint64_t child_ino;
+        if (cosmofs_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
+        struct cosmofs_inode *ip = cosmofs_inode_read(child_ino);
+        if (!ip) return -EIO;
+        if (ip->type == COSMOFS_TYPE_DIR) return -EISDIR;
+        int rc = cosmofs_dir_remove(parent_ino, basename);
+        if (rc == 0) {
+            /* TODO: free file data blocks */
+            cosmofs_inode_free(child_ino);
+        }
+        return rc;
+    }
+
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     if (node->type == VFS_DIR) return -EISDIR;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
-    /* Free file data */
     if (node->data && node->capacity > 0) {
         int npages = (int)((node->capacity + 4095) / 4096);
         if (npages > 0) pages_free(node->data, npages);
@@ -515,11 +786,23 @@ int vfs_unlink(const char *path) {
 }
 
 int vfs_rename(const char *oldpath, const char *newpath) {
+    if (!is_ramfs_path(oldpath) && !is_ramfs_path(newpath)) {
+        const char *old_base;
+        uint64_t old_parent = cosmofs_walk_parent(oldpath, &old_base);
+        if (old_parent == 0) return -ENOENT;
+
+        const char *new_base;
+        uint64_t new_parent = cosmofs_walk_parent(newpath, &new_base);
+        if (new_parent == 0) return -ENOENT;
+
+        return cosmofs_dir_rename(old_parent, old_base, new_parent, new_base);
+    }
+
+    /* ramfs path */
     struct vfs_node *node = vfs_lookup(oldpath);
     if (!node) return -ENOENT;
     if (node == root_node) return -EINVAL;
 
-    /* Remove existing destination if any */
     struct vfs_node *dst = vfs_lookup(newpath);
     if (dst) {
         if (dst->type == VFS_DIR && dst->children) return -ENOTEMPTY;
@@ -531,15 +814,12 @@ int vfs_rename(const char *oldpath, const char *newpath) {
         slab_free(&node_slab, dst);
     }
 
-    /* Find new parent */
     const char *basename;
     struct vfs_node *new_parent = lookup_parent(newpath, &basename);
     if (!new_parent || new_parent->type != VFS_DIR) return -ENOENT;
 
-    /* Unlink from old parent */
     if (node->parent) unlink_child(node->parent, node);
 
-    /* Update name and link to new parent */
     kstrncpy(node->name, basename, 256);
     node->parent = new_parent;
     node->next = new_parent->children;
@@ -573,4 +853,14 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
     serial_puts(" bytes)\n");
 
     return 0;
+}
+
+/* ── Mount CosmoFS ────────────────────────────────── */
+
+void vfs_mount_cosmofs(void) {
+    extern int cosmofs_mount(void);
+    if (cosmofs_mount() == 0)
+        serial_puts("vfs: CosmoFS mounted as /\n");
+    else
+        serial_puts("vfs: CosmoFS mount failed, using ramfs\n");
 }
