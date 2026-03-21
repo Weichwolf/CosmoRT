@@ -15,6 +15,7 @@
 #include "socket.h"
 #include "hw.h"
 #include "net_port.h"
+#include "irq.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {
@@ -393,9 +394,9 @@ static long do_munmap(unsigned long addr, size_t length) {
 
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
-    /* TLB flush: reload CR3 on current core.
-     * TODO: cross-core IPI shootdown for SMP with shared address spaces. */
+    /* TLB flush: local + cross-core IPI shootdown */
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
@@ -438,6 +439,8 @@ static long do_mprotect(unsigned long addr, size_t len, int prot) {
 
     /* Update PTE permissions */
     update_pte_prot(p->pml4, start, end, prot);
+    /* TLB shootdown for other cores sharing this address space */
+    tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Update VMA prot flags, splitting if needed */
     for (uint64_t probe = start; probe < end; ) {
@@ -605,10 +608,15 @@ static long do_clone(unsigned long flags, void *child_stack,
         *child_tid = t->tid;
     }
 
-    /* Add to process thread list */
-    t->proc_next = cur->proc->threads;
-    cur->proc->threads = t;
-    cur->proc->thread_count++;
+    /* Add to process thread list (under lock for concurrent clone safety) */
+    {
+        uint64_t lflags;
+        spin_lock_irq(&cur->proc->lock, &lflags);
+        t->proc_next = cur->proc->threads;
+        cur->proc->threads = t;
+        cur->proc->thread_count++;
+        spin_unlock_irq(&cur->proc->lock, lflags);
+    }
 
     /* Add to scheduler */
     extern void sched_add(thread_t *t);
@@ -770,6 +778,31 @@ void save_user_state_for_block(thread_t *t, long return_value) {
 
 static long do_sched_yield(void) {
     return 0;  /* hint only — timer preemption handles actual switching */
+}
+
+/* ── Signal delivery (minimal: SIG_DFL + SIG_IGN) ──── */
+
+void check_pending_signals(void) {
+    process_t *p = proc_current();
+    if (!p) return;
+    uint64_t deliverable = p->sig_pending & ~p->sig_blocked;
+    if (!deliverable) return;
+
+    for (int sig = 1; sig < 32; sig++) {
+        if (!(deliverable & (1ULL << sig))) continue;
+        p->sig_pending &= ~(1ULL << sig);
+
+        void *handler = p->sig_handlers[sig];
+        if (handler == (void *)1) continue; /* SIG_IGN */
+
+        /* SIG_DFL or user handler (user handlers treated as DFL for now) */
+        /* Fatal signals: SIGKILL=9, SIGSEGV=11, SIGPIPE=13, SIGTERM=15, SIGABRT=6 */
+        if (sig == 9 || sig == 11 || sig == 13 || sig == 15 || sig == 6) {
+            do_exit(128 + sig); /* doesn't return */
+        }
+        /* SIGCHLD (17): default is ignore */
+        /* Others: ignore for now */
+    }
 }
 
 /* ── SYS_open (2) / SYS_openat (257) ────────────────── */

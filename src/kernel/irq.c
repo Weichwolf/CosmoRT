@@ -121,6 +121,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             (long)frame->rax, (long)frame->rdi, (long)frame->rsi,
             (long)frame->rdx, (long)frame->r10, (long)frame->r8,
             (long)frame->r9);
+        extern void check_pending_signals(void);
+        check_pending_signals();
         return;
     }
 
@@ -253,6 +255,29 @@ static void default_exception(int vector) {
     __asm__ volatile("cli; hlt");
 }
 
+/* ── TLB Shootdown IPI ─────────────────────────────── */
+
+static volatile uint64_t shootdown_pml4 = 0;
+
+static void tlb_shootdown_handler(int vector) {
+    (void)vector;
+    percpu_t *cpu = percpu_self();
+    thread_t *t = cpu->current_thread;
+    if (t && t->proc && virt_to_phys(t->proc->pml4) == shootdown_pml4) {
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    }
+    lapic_eoi();
+}
+
+void tlb_shootdown(uint64_t pml4_phys) {
+    shootdown_pml4 = pml4_phys;
+    __asm__ volatile("mfence" ::: "memory");
+    /* Send IPI to all other cores: all-excluding-self shorthand, vector 0xFE */
+    volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
+    *icr_lo = 0x000C0000 | 0xFE;  /* dest shorthand=all-excl-self, vector=0xFE */
+    for (volatile int i = 0; i < 1000; i++) __asm__ volatile("pause");
+}
+
 /* ── Timer ─────────────────────────────────────────── */
 
 static volatile uint64_t tick_count = 0;
@@ -279,6 +304,9 @@ void irq_init(void) {
         irq_register(i, default_exception);
 
     idt_set_entry_user(0x80, ensure_high(isr_stub_table[0x80]));
+
+    /* TLB shootdown IPI vector */
+    irq_register(0xFE, tlb_shootdown_handler);
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);

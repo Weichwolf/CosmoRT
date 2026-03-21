@@ -31,6 +31,7 @@ typedef struct {
     int      owner_pid;     /* process that created this endpoint */
     ipc_msg_t msg;          /* buffered message */
     int      blocked_pid;   /* pid of blocked process (-1 if none) */
+    int      blocked_tid;   /* tid of blocked thread (-1 if none) */
     /* Notification word (async) */
     uint64_t notify_word;   /* bitmask of pending notifications */
 } ipc_endpoint_t;

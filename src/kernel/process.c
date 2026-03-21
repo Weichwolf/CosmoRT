@@ -16,6 +16,7 @@
 #include "vfs.h"
 #include "memops.h"
 #include "syscall.h"
+#include "irq.h"
 
 /* Page table flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -207,6 +208,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
 
     p->brk_base = brk_end;
     p->brk_current = brk_end;
+    p->cwd[0] = '/'; p->cwd[1] = '\0';
     fd_table_init(&p->fds);
 
     /* Create VMA for the stack region */
@@ -439,6 +441,9 @@ static int copy_address_space(process_t *child, process_t *parent) {
 void free_address_space(uint64_t *user_pml4) {
     if (!user_pml4) return;
 
+    /* Flush TLB on other cores that may have this PML4 cached */
+    tlb_shootdown(virt_to_phys(user_pml4));
+
     /* Walk lower half only (PML4[0..255] = user space) */
     for (int i = 0; i < 256; i++) {
         if (!(user_pml4[i] & PTE_PRESENT)) continue;
@@ -482,9 +487,6 @@ void proc_cleanup(process_t *p) {
     /* Close all FDs */
     for (int i = 0; i < FD_MAX; i++) {
         if (p->fds.entries[i].type == FD_FILE) {
-            /* Free the vfs_file object */
-            /* VFS file structs are slab-allocated; just free them */
-            extern void vfs_file_free_obj(void *obj);
             vfs_file_free_obj(p->fds.entries[i].obj);
         }
         p->fds.entries[i].type = FD_NONE;
@@ -562,12 +564,18 @@ long do_fork(void) {
     child->brk_current = parent->brk_current;
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
+    for (int ci = 0; ci < 256; ci++) {
+        child->cwd[ci] = parent->cwd[ci];
+        if (!parent->cwd[ci]) break;
+    }
 
-    /* Duplicate fd_table */
-    for (int i = 0; i < FD_MAX; i++)
+    /* Duplicate fd_table — increment refcount on shared vfs_file objects */
+    for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];
+        if (parent->fds.entries[i].type == FD_FILE && parent->fds.entries[i].obj)
+            vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
+    }
     child->fds.max_fd = parent->fds.max_fd;
-    /* Note: VFS file objects are shared (no refcount yet — acceptable for bootstrap) */
 
     /* Create child thread with parent's saved registers */
     thread_t *ct = thread_alloc();
@@ -655,9 +663,12 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     return -36; /* ENAMETOOLONG */
 }
 
-long do_execve(const char *path, char *const argv[], char *const envp[]) {
-    (void)argv; (void)envp; /* TODO: pass argv/envp to new process */
+/* Max entries and string length for execve argv/envp */
+#define EXECVE_MAX_ARGS  16
+#define EXECVE_MAX_ENVS  16
+#define EXECVE_MAX_STRLEN 256
 
+long do_execve(const char *path, char *const argv[], char *const envp[]) {
     thread_t *cur = thread_current();
     if (!cur || !cur->proc) return -EFAULT;
     process_t *p = cur->proc;
@@ -666,6 +677,44 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     char kpath[PATH_MAX_PROC];
     int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
     if (plen < 0) return -EFAULT;
+
+    /* Copy argv/envp from userspace before destroying address space */
+    char kargv[EXECVE_MAX_ARGS][EXECVE_MAX_STRLEN];
+    int argc = 0;
+    if (argv && (uint64_t)argv < 0x800000000000ULL) {
+        for (int i = 0; i < EXECVE_MAX_ARGS; i++) {
+            char *const *ap = &argv[i];
+            if ((uint64_t)ap + sizeof(char *) > 0x800000000000ULL) break;
+            char *arg = *ap;
+            if (!arg) break;
+            if ((uint64_t)arg >= 0x800000000000ULL) break;
+            int r = copy_path_from_user_proc(kargv[argc], arg, EXECVE_MAX_STRLEN);
+            if (r < 0) break;
+            argc++;
+        }
+    }
+    /* If no argv provided, use path as argv[0] */
+    if (argc == 0) {
+        int ci = 0;
+        while (ci < EXECVE_MAX_STRLEN - 1 && kpath[ci]) { kargv[0][ci] = kpath[ci]; ci++; }
+        kargv[0][ci] = '\0';
+        argc = 1;
+    }
+
+    char kenvp[EXECVE_MAX_ENVS][EXECVE_MAX_STRLEN];
+    int envc = 0;
+    if (envp && (uint64_t)envp < 0x800000000000ULL) {
+        for (int i = 0; i < EXECVE_MAX_ENVS; i++) {
+            char *const *ep = &envp[i];
+            if ((uint64_t)ep + sizeof(char *) > 0x800000000000ULL) break;
+            char *env = *ep;
+            if (!env) break;
+            if ((uint64_t)env >= 0x800000000000ULL) break;
+            int r = copy_path_from_user_proc(kenvp[envc], env, EXECVE_MAX_STRLEN);
+            if (r < 0) break;
+            envc++;
+        }
+    }
 
     /* Look up the file in VFS */
     struct vfs_node *node = vfs_lookup(kpath);
@@ -727,8 +776,64 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         vma_insert(&p->vma_root, brk_end, brk_end,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
 
-    /* ELF segment VMAs */
-    /* Re-parse from the loaded pages — entry already validated in elf_load */
+    /* Rebuild stack with real argv/envp.
+     * elf_load set up a minimal stack; we overwrite the stack-top page. */
+    {
+        uint64_t stk_page_va = stack_top - 4096;
+        uint64_t pte = read_pte(p->pml4, stk_page_va);
+        if (pte & PTE_PRESENT) {
+            uint8_t *page = (uint8_t *)phys_to_virt(pte & ~0xFFFULL);
+            /* Zero the page, rebuild from scratch */
+            kmemset(page, 0, 4096);
+
+            /* Write strings at the top of the page */
+            uint64_t str_off = 4096; /* offset within page, grows downward */
+            uint64_t argv_addrs[EXECVE_MAX_ARGS];
+            uint64_t envp_addrs[EXECVE_MAX_ENVS];
+
+            /* Environment strings */
+            for (int i = envc - 1; i >= 0; i--) {
+                int sl = 0; while (kenvp[i][sl]) sl++;
+                str_off -= (uint64_t)(sl + 1);
+                kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
+                envp_addrs[i] = stk_page_va + str_off;
+            }
+            /* Argument strings */
+            for (int i = argc - 1; i >= 0; i--) {
+                int sl = 0; while (kargv[i][sl]) sl++;
+                str_off -= (uint64_t)(sl + 1);
+                kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
+                argv_addrs[i] = stk_page_va + str_off;
+            }
+
+            /* Align str_off down to 8 bytes */
+            str_off &= ~7ULL;
+
+            /* Build pointer/value area below the strings */
+            uint64_t *stk = (uint64_t *)(page + str_off);
+
+            /* auxv (AT_NULL) */
+            *(--stk) = 0;         /* AT_NULL value */
+            *(--stk) = AT_NULL;
+            *(--stk) = 4096;     /* AT_PAGESZ value */
+            *(--stk) = AT_PAGESZ;
+            *(--stk) = entry;    /* AT_ENTRY value */
+            *(--stk) = AT_ENTRY;
+            /* envp[] */
+            *(--stk) = 0;         /* envp terminator */
+            for (int i = envc - 1; i >= 0; i--)
+                *(--stk) = envp_addrs[i];
+            /* argv[] */
+            *(--stk) = 0;         /* argv terminator */
+            for (int i = argc - 1; i >= 0; i--)
+                *(--stk) = argv_addrs[i];
+            /* argc */
+            *(--stk) = (uint64_t)argc;
+
+            stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
+            stack_ptr = (stack_ptr & ~0xFULL) - 8;
+        }
+    }
 
     /* Close O_CLOEXEC fds */
     for (int i = 0; i < FD_MAX; i++) {

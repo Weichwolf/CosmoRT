@@ -23,9 +23,11 @@ static slab_t file_slab;
 static struct vfs_node *root_node;
 static uint64_t next_ino = 1;
 
-/* Per-process cwd — stored as path string for simplicity.
- * TODO: move to process_t when needed. For now, global. */
-static char cwd[256] = "/";
+/* cwd is now per-process (process_t.cwd). Helper to get it: */
+static char *get_cwd(void) {
+    process_t *p = proc_current();
+    return p ? p->cwd : 0;
+}
 
 /* ── String helpers ──────────────────────────────── */
 
@@ -66,9 +68,17 @@ static void file_free(struct vfs_file *f) {
     slab_free(&file_slab, f);
 }
 
+/* Increment refcount on a vfs_file (for fork fd duplication) */
+void vfs_file_incref(struct vfs_file *f) {
+    if (f) f->refcount++;
+}
+
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj) {
-    if (obj) file_free((struct vfs_file *)obj);
+    if (!obj) return;
+    struct vfs_file *f = (struct vfs_file *)obj;
+    if (--f->refcount <= 0)
+        file_free(f);
 }
 
 /* ── Init ────────────────────────────────────────── */
@@ -242,6 +252,7 @@ int vfs_open(const char *path, int flags, int mode) {
 
     f->type = node->type;
     f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+    f->refcount = 1;
     f->offset = 0;
     f->node = node;
 
@@ -267,7 +278,10 @@ int vfs_close(int fd) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (f) file_free(f);
+    if (f) {
+        if (--f->refcount <= 0)
+            file_free(f);
+    }
 
     fde->type = FD_NONE;
     fde->obj = 0;
@@ -429,6 +443,8 @@ int vfs_fstat(int fd, struct k_stat *buf) {
 /* ── CWD ─────────────────────────────────────────── */
 
 int vfs_getcwd(char *buf, size_t size) {
+    char *cwd = get_cwd();
+    if (!cwd) return -EFAULT;
     int len = kstrlen(cwd);
     if ((size_t)(len + 1) > size) return -ERANGE;
     kmemcpy(buf, cwd, (size_t)(len + 1));
@@ -440,6 +456,8 @@ int vfs_chdir(const char *path) {
     if (!node) return -ENOENT;
     if (node->type != VFS_DIR) return -ENOTDIR;
 
+    char *cwd = get_cwd();
+    if (!cwd) return -EFAULT;
     kstrncpy(cwd, path, 256);
     return 0;
 }

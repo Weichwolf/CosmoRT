@@ -358,6 +358,10 @@ void sched_preempt(void *frame_ptr) {
     f[12] = next->rcx; f[13] = next->rbx; f[14] = next->rax;
     f[17] = next->rip; f[18] = 0x2B; /* CS user code 64 */
     f[19] = next->rflags; f[20] = next->rsp; f[21] = 0x23; /* SS user data */
+
+    /* Check for pending signals before returning to userspace */
+    extern void check_pending_signals(void);
+    check_pending_signals();
 }
 
 /* Scheduler init */

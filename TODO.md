@@ -57,27 +57,33 @@ Erledigt: Overflow-safe Validation mit user_ok(addr, sizeof(int)).
 
 ## P2 — Korrektheit (Funktional kaputt)
 
-### Kein TLB Shootdown
-munmap/mprotect flushen nur lokalen TLB. SMP mit CLONE_VM-Threads:
-stale Pages auf anderen Cores.
+### ~~Kein TLB Shootdown~~
+Erledigt: IPI-basierter TLB Shootdown (vector 0xFE). munmap, mprotect,
+free_address_space senden IPI an alle Cores mit gleichem PML4.
 
-### fork FD-Sharing ohne Refcount
-vfs_file* wird geteilt ohne Referenzzaehlung. Close → Dangling Pointer.
+### ~~fork FD-Sharing ohne Refcount~~
+Erledigt: vfs_file hat refcount. fork inkrementiert, close dekrementiert.
+Nur bei refcount==0 wird freigegeben.
 
-### do_clone Thread-Liste ohne Lock
-Concurrent clone() im selben Prozess korruptiert Thread-Liste.
+### ~~do_clone Thread-Liste ohne Lock~~
+Erledigt: spin_lock_irq(&proc->lock) um Thread-Listen-Mutation in do_clone.
 
-### cwd ist global statt per-Process
-Alle Prozesse teilen ein cwd.
+### ~~cwd ist global statt per-Process~~
+Erledigt: cwd in process_t verschoben. fork kopiert, vfs_getcwd/vfs_chdir
+nutzen proc_current()->cwd.
 
-### execve ignoriert argv/envp
-Shell kann keine Parameter an Programme weitergeben.
+### ~~execve ignoriert argv/envp~~
+Erledigt: argv/envp werden vor free_address_space kopiert, Stack wird
+nach elf_load mit echten Strings/Pointern (Linux ABI) aufgebaut.
 
-### Signal-Delivery an Userspace fehlt
-sigaction registriert Handler, Delivery nicht implementiert.
+### ~~Signal-Delivery an Userspace fehlt~~
+Erledigt (minimal): check_pending_signals() in INT 0x80 und sched_preempt.
+SIG_DFL: fatale Signale (KILL/SEGV/PIPE/TERM/ABRT) terminieren Prozess.
+SIG_IGN: ignoriert. User-Handler: TODO (braucht Signal-Frame + sigreturn).
 
-### IPC blocking/waking nicht verbunden
-ipc_recv returnt -2 statt zu blockieren.
+### ~~IPC blocking/waking nicht verbunden~~
+Erledigt: ipc_recv spinnt kurz, returnt -EAGAIN. ipc_send/ipc_notify
+wecken blockierte Threads via blocked_tid + sched_add.
 
 ---
 
@@ -142,3 +148,10 @@ Shell → configure → make → GCC → Ruby → Homebrew.
 - [x] map_user_page mit Protection-Flags (NX-Bit, W^X, EFER.NXE)
 - [x] copy_path_from_user (String-Boundary-Check statt user_ok(path,1))
 - [x] do_clock_getres + do_wait4 user_ok Fixes
+- [x] TLB Shootdown (IPI vector 0xFE, munmap/mprotect/free_address_space)
+- [x] fork FD refcount (vfs_file.refcount)
+- [x] do_clone Thread-Liste unter proc->lock
+- [x] cwd per-Process (process_t.cwd)
+- [x] execve argv/envp (kopieren + Stack-Rebuild)
+- [x] Signal-Delivery minimal (SIG_DFL/SIG_IGN in INT 0x80 + preempt)
+- [x] IPC blocking/waking (spin-yield + blocked_tid wake)

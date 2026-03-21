@@ -21,4 +21,13 @@ extern volatile int irq_event_pending;
 /* Timer ticks since boot */
 uint64_t irq_get_ticks(void);
 
+/* Send EOI to local APIC */
+void lapic_eoi(void);
+
+/* Route I/O APIC IRQ to vector */
+void ioapic_route_irq(uint8_t irq, uint8_t vector);
+
+/* TLB shootdown: flush TLB on all other cores sharing this PML4 */
+void tlb_shootdown(uint64_t pml4_phys);
+
 #endif

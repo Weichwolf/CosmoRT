@@ -72,6 +72,7 @@ struct vfs_node {
 struct vfs_file {
     int type;               /* VFS_FILE, VFS_DIR, VFS_PIPE */
     int flags;              /* O_RDONLY, O_WRONLY, O_RDWR */
+    int refcount;           /* reference count (fork shares vfs_file) */
     uint64_t offset;        /* current read/write position */
     struct vfs_node *node;
 };
@@ -100,5 +101,11 @@ int vfs_chdir(const char *path);
 
 /* Populate ramfs with a file (for init binary, etc.) */
 int vfs_add_file(const char *path, const void *data, size_t len);
+
+/* Increment refcount on a vfs_file (for fork fd duplication) */
+void vfs_file_incref(struct vfs_file *f);
+
+/* Free a vfs_file object by external pointer (used by proc_cleanup) */
+void vfs_file_free_obj(void *obj);
 
 #endif

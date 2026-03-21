@@ -40,6 +40,9 @@ typedef struct process {
     uint64_t    sig_blocked;        /* bitmask of blocked signals (sigprocmask) */
     void       *sig_handlers[32];   /* SIG_DFL=0, SIG_IGN=1, or handler address */
 
+    /* Working directory */
+    char        cwd[256];
+
     /* File descriptors */
     fd_table_t  fds;
 
