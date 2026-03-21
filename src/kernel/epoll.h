@@ -94,6 +94,18 @@ void inotify_destroy(void *obj);
 long eventfd_read(void *obj, void *buf, long count);
 long eventfd_write(void *obj, const void *buf, long count);
 long timerfd_read(void *obj, void *buf, long count);
+long inotify_read(void *obj, void *buf, long count);
+int  inotify_has_events(void *obj);
+
+/* Queue inotify event (called from VFS operations) */
+void inotify_event(const char *path, uint32_t mask);
+
+/* inotify event masks */
+#define IN_MODIFY      0x00000002
+#define IN_MOVED_FROM  0x00000040
+#define IN_MOVED_TO    0x00000080
+#define IN_CREATE      0x00000100
+#define IN_DELETE       0x00000200
 
 /* FD readiness check — implemented in syscall.c (has access to all FD types) */
 uint32_t fd_poll_readiness(int fd, uint32_t interest);

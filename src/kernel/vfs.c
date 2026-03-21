@@ -11,6 +11,7 @@
 #include "memops.h"
 #include "syscall.h"
 #include "procfs.h"
+#include "epoll.h"
 
 /* ── Slab pools ──────────────────────────────────── */
 
@@ -164,6 +165,40 @@ void vfs_file_free_obj(void *obj) {
     struct vfs_file *f = (struct vfs_file *)obj;
     if (--f->refcount <= 0)
         file_free(f);
+}
+
+/* ── Inotify path helper ─────────────────────────── */
+
+/* Build full path from a ramfs node (for inotify events).
+ * Returns 1 on success, 0 on failure. */
+static int vfs_node_path(struct vfs_node *node, char *buf, int bufsize) {
+    if (!node || bufsize < 2) return 0;
+    /* Stack of ancestors */
+    struct vfs_node *stack[32];
+    int depth = 0;
+    struct vfs_node *n = node;
+    while (n && n != root_node && depth < 32) {
+        stack[depth++] = n;
+        n = n->parent;
+    }
+    int pos = 0;
+    buf[pos++] = '/';
+    for (int i = depth - 1; i >= 0; i--) {
+        int nlen = kstrlen(stack[i]->name);
+        if (pos + nlen + 1 >= bufsize) return 0;
+        for (int j = 0; j < nlen; j++) buf[pos++] = stack[i]->name[j];
+        if (i > 0) buf[pos++] = '/';
+    }
+    buf[pos] = 0;
+    return 1;
+}
+
+/* Fire IN_MODIFY for a ramfs file node */
+static void vfs_notify_modify(struct vfs_node *node) {
+    if (!node) return;
+    char path[256];
+    if (vfs_node_path(node, path, 256))
+        inotify_event(path, IN_MODIFY);
 }
 
 /* ── Init ────────────────────────────────────────── */
@@ -367,6 +402,7 @@ int vfs_open(const char *path, int flags, int mode) {
             /* Add to parent directory */
             cosmofs_dir_create(parent_ino, basename, new_ino);
             ino = new_ino;
+            inotify_event(path, IN_CREATE);
         }
 
         if (ino == 0) return -ENOENT;
@@ -407,6 +443,7 @@ int vfs_open(const char *path, int flags, int mode) {
     if (!node && (flags & O_CREAT)) {
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
+        if (node) inotify_event(path, IN_CREATE);
     }
     if (!node) return -ENOENT;
 
@@ -586,6 +623,7 @@ long vfs_write(int fd, const void *buf, size_t count) {
     f->offset = end;
     if (end > node->size) node->size = end;
 
+    vfs_notify_modify(node);
     return (long)count;
 }
 
@@ -859,6 +897,7 @@ int vfs_unlink(const char *path) {
         if (rc == 0) {
             /* TODO: free file data blocks */
             cosmofs_inode_free(child_ino);
+            inotify_event(path, IN_DELETE);
         }
         return rc;
     }
@@ -873,6 +912,7 @@ int vfs_unlink(const char *path) {
         if (npages > 0) pages_free(node->data, npages);
     }
     slab_free(&node_slab, node);
+    inotify_event(path, IN_DELETE);
     return 0;
 }
 
@@ -886,7 +926,12 @@ int vfs_rename(const char *oldpath, const char *newpath) {
         uint64_t new_parent = cosmofs_walk_parent(newpath, &new_base);
         if (new_parent == 0) return -ENOENT;
 
-        return cosmofs_dir_rename(old_parent, old_base, new_parent, new_base);
+        int rc = cosmofs_dir_rename(old_parent, old_base, new_parent, new_base);
+        if (rc == 0) {
+            inotify_event(oldpath, IN_MOVED_FROM);
+            inotify_event(newpath, IN_MOVED_TO);
+        }
+        return rc;
     }
 
     /* ramfs path */
@@ -915,6 +960,9 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     node->parent = new_parent;
     node->next = new_parent->children;
     new_parent->children = node;
+
+    inotify_event(oldpath, IN_MOVED_FROM);
+    inotify_event(newpath, IN_MOVED_TO);
     return 0;
 }
 

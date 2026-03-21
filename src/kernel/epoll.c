@@ -62,12 +62,33 @@ static slab_t    eventfd_slab;
 static timerfd_t timerfd_pool[TIMERFD_POOL_MAX];
 static slab_t    timerfd_slab;
 
-/* ── Inotify internals (stub) ────────────────────── */
+/* ── Inotify internals ───────────────────────────── */
 
-#define INOTIFY_POOL_MAX 8
+#define INOTIFY_POOL_MAX   8
+#define INOTIFY_WATCH_MAX  8
+#define INOTIFY_EVENT_MAX  32
 
 typedef struct {
-    int dummy;
+    int      wd;
+    uint32_t mask;
+    char     name[256];
+} inotify_queued_event_t;
+
+typedef struct {
+    int      wd;
+    uint32_t mask;
+    char     path[256];    /* watched directory path */
+    int      active;
+} inotify_watch_t;
+
+typedef struct {
+    inotify_watch_t        watches[INOTIFY_WATCH_MAX];
+    int                    watch_count;
+    int                    next_wd;
+    inotify_queued_event_t events[INOTIFY_EVENT_MAX];
+    int                    event_head;
+    int                    event_tail;
+    spinlock_t             lock;
 } inotify_t;
 
 static inotify_t inotify_pool[INOTIFY_POOL_MAX];
@@ -448,7 +469,138 @@ long do_signalfd4(int fd, const uint64_t *mask, int flags) {
     return -ENOSYS;
 }
 
-/* ── SYS_INOTIFY — stub (fd created, watches accepted, no events) ── */
+/* ── Inotify string helpers ──────────────────────── */
+
+static int ino_strlen(const char *s) {
+    int n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static void ino_strncpy(char *dst, const char *src, int max) {
+    int i = 0;
+    while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
+    dst[i] = 0;
+}
+
+static int ino_streq(const char *a, const char *b) {
+    while (*a && *b) { if (*a++ != *b++) return 0; }
+    return *a == *b;
+}
+
+/* Extract parent directory path and basename from a full path.
+ * Returns 1 on success, 0 on failure. */
+static int ino_split_path(const char *path, char *dir, int dir_max,
+                           const char **basename) {
+    int len = ino_strlen(path);
+    if (len == 0) return 0;
+    int last_slash = -1;
+    for (int i = len - 1; i >= 0; i--) {
+        if (path[i] == '/') { last_slash = i; break; }
+    }
+    if (last_slash < 0) return 0;
+    *basename = path + last_slash + 1;
+    if (!**basename) return 0;
+    if (last_slash == 0) {
+        dir[0] = '/'; dir[1] = 0;
+    } else {
+        int cplen = last_slash < dir_max - 1 ? last_slash : dir_max - 1;
+        for (int i = 0; i < cplen; i++) dir[i] = path[i];
+        dir[cplen] = 0;
+    }
+    return 1;
+}
+
+/* Queue an inotify event on all matching instances+watches.
+ * Called from VFS operations. IRQ-safe (uses spin_lock_irq). */
+void inotify_event(const char *path, uint32_t mask) {
+    char dir[256];
+    const char *basename;
+    if (!ino_split_path(path, dir, 256, &basename)) return;
+
+    for (int i = 0; i < INOTIFY_POOL_MAX; i++) {
+        inotify_t *ino = &inotify_pool[i];
+        /* Quick check: skip unallocated (watch_count == 0 and next_wd == 0) */
+        uint64_t flags;
+        spin_lock_irq(&ino->lock, &flags);
+        for (int w = 0; w < ino->watch_count; w++) {
+            if (!ino->watches[w].active) continue;
+            if (!(ino->watches[w].mask & mask)) continue;
+            if (!ino_streq(ino->watches[w].path, dir)) continue;
+
+            /* Queue event */
+            int next_tail = (ino->event_tail + 1) % INOTIFY_EVENT_MAX;
+            if (next_tail == ino->event_head) {
+                /* Overflow: drop oldest */
+                ino->event_head = (ino->event_head + 1) % INOTIFY_EVENT_MAX;
+            }
+            inotify_queued_event_t *ev = &ino->events[ino->event_tail];
+            ev->wd = ino->watches[w].wd;
+            ev->mask = mask;
+            ino_strncpy(ev->name, basename, 256);
+            ino->event_tail = next_tail;
+        }
+        spin_unlock_irq(&ino->lock, flags);
+    }
+}
+
+/* Check if inotify instance has pending events */
+int inotify_has_events(void *obj) {
+    inotify_t *ino = (inotify_t *)obj;
+    if (!ino) return 0;
+    return ino->event_head != ino->event_tail;
+}
+
+/* Read inotify events into user buffer. Returns bytes read or -EAGAIN. */
+long inotify_read(void *obj, void *buf, long count) {
+    inotify_t *ino = (inotify_t *)obj;
+    if (!ino) return -EBADF;
+
+    uint64_t flags;
+    spin_lock_irq(&ino->lock, &flags);
+
+    if (ino->event_head == ino->event_tail) {
+        spin_unlock_irq(&ino->lock, flags);
+        return -EAGAIN;
+    }
+
+    /* Linux inotify_event layout:
+     * int wd (4), uint32_t mask (4), uint32_t cookie (4),
+     * uint32_t len (4), char name[len] (padded to 4-byte boundary) */
+    uint8_t *dst = (uint8_t *)buf;
+    long written = 0;
+
+    while (ino->event_head != ino->event_tail) {
+        inotify_queued_event_t *ev = &ino->events[ino->event_head];
+        int namelen = ino_strlen(ev->name) + 1; /* include NUL */
+        int padded = (namelen + 3) & ~3;        /* align to 4 bytes */
+        int total = 16 + padded;                /* header + name */
+
+        if (written + total > count) break;     /* won't fit */
+
+        /* Write header: wd, mask, cookie, len */
+        uint32_t hdr[4];
+        hdr[0] = (uint32_t)ev->wd;
+        hdr[1] = ev->mask;
+        hdr[2] = 0;                /* cookie (0 for now) */
+        hdr[3] = (uint32_t)padded;
+        kmemcpy(dst + written, hdr, 16);
+        written += 16;
+
+        /* Write name (zero-padded) */
+        kmemset(dst + written, 0, (size_t)padded);
+        kmemcpy(dst + written, ev->name, (size_t)(namelen - 1));
+        /* NUL already set by kmemset */
+        written += padded;
+
+        ino->event_head = (ino->event_head + 1) % INOTIFY_EVENT_MAX;
+    }
+
+    spin_unlock_irq(&ino->lock, flags);
+    return written > 0 ? written : -EAGAIN;
+}
+
+/* ── SYS_INOTIFY ────────────────────────────────── */
 
 long do_inotify_init1(int flags) {
     (void)flags;
@@ -458,7 +610,13 @@ long do_inotify_init1(int flags) {
     inotify_t *ino = (inotify_t *)slab_alloc(&inotify_slab);
     if (!ino) return -ENOMEM;
 
-    ino->dummy = 0;
+    ino->watch_count = 0;
+    ino->next_wd = 1;
+    ino->event_head = 0;
+    ino->event_tail = 0;
+    ino->lock = (spinlock_t)SPINLOCK_INIT;
+    for (int i = 0; i < INOTIFY_WATCH_MAX; i++)
+        ino->watches[i].active = 0;
 
     int fd = fd_alloc(&p->fds, FD_INOTIFY, ino, O_RDONLY);
     if (fd < 0) {
@@ -469,22 +627,76 @@ long do_inotify_init1(int flags) {
 }
 
 long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
-    (void)path; (void)mask;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde || fde->type != FD_INOTIFY) return -EBADF;
-    static int next_wd = 1;
-    return next_wd++;
+    inotify_t *ino = (inotify_t *)fde->obj;
+    if (!ino) return -EBADF;
+
+    /* Copy path from user */
+    char kpath[256];
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    ino_strncpy(kpath, path, 256);
+
+    uint64_t flags;
+    spin_lock_irq(&ino->lock, &flags);
+
+    /* Check for existing watch on same path — update mask */
+    for (int i = 0; i < ino->watch_count; i++) {
+        if (ino->watches[i].active && ino_streq(ino->watches[i].path, kpath)) {
+            ino->watches[i].mask = mask;
+            int wd = ino->watches[i].wd;
+            spin_unlock_irq(&ino->lock, flags);
+            return wd;
+        }
+    }
+
+    /* Find free slot */
+    if (ino->watch_count >= INOTIFY_WATCH_MAX) {
+        spin_unlock_irq(&ino->lock, flags);
+        return -ENOMEM;
+    }
+    int slot = -1;
+    for (int i = 0; i < INOTIFY_WATCH_MAX; i++) {
+        if (!ino->watches[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
+        spin_unlock_irq(&ino->lock, flags);
+        return -ENOMEM;
+    }
+
+    ino->watches[slot].wd = ino->next_wd++;
+    ino->watches[slot].mask = mask;
+    ino_strncpy(ino->watches[slot].path, kpath, 256);
+    ino->watches[slot].active = 1;
+    ino->watch_count++;
+    int wd = ino->watches[slot].wd;
+
+    spin_unlock_irq(&ino->lock, flags);
+    return wd;
 }
 
 long do_inotify_rm_watch(int fd, int wd) {
-    (void)wd;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde || fde->type != FD_INOTIFY) return -EBADF;
-    return 0;
+    inotify_t *ino = (inotify_t *)fde->obj;
+    if (!ino) return -EBADF;
+
+    uint64_t flags;
+    spin_lock_irq(&ino->lock, &flags);
+    for (int i = 0; i < INOTIFY_WATCH_MAX; i++) {
+        if (ino->watches[i].active && ino->watches[i].wd == wd) {
+            ino->watches[i].active = 0;
+            ino->watch_count--;
+            spin_unlock_irq(&ino->lock, flags);
+            return 0;
+        }
+    }
+    spin_unlock_irq(&ino->lock, flags);
+    return -EINVAL;
 }
 
 void inotify_destroy(void *obj) {

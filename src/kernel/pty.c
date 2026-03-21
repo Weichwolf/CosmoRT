@@ -6,6 +6,8 @@
 #include "process.h"
 #include "thread.h"
 
+extern void sched_add(thread_t *t);
+
 /* Signal constants */
 #define SIGINT  2
 #define SIGQUIT 3
@@ -68,6 +70,7 @@ int pty_alloc(void) {
             pty_pool[i].output_head = pty_pool[i].output_tail = 0;
             pty_pool[i].line_pos = 0;
             pty_pool[i].slave_pid = 0;
+            pty_pool[i].blocked_reader = 0;
             pty_pool[i].echo = 1;
             pty_pool[i].canon = 1;
             spin_unlock_irq(&pty_pool[i].lock, flags);
@@ -169,6 +172,13 @@ int pty_master_write(int id, const char *buf, int len) {
                 ring_put(p->input_buf, &p->input_tail, c);
             if (p->echo) pty_output_char(p, c);
         }
+    }
+
+    /* Wake blocked reader if data available in input buffer */
+    if (p->blocked_reader && ring_count(p->input_head, p->input_tail) > 0) {
+        thread_t *reader = p->blocked_reader;
+        p->blocked_reader = 0;
+        sched_add(reader);
     }
 
     spin_unlock_irq(&p->lock, flags);

@@ -33,6 +33,9 @@ typedef struct {
     int      slave_pid;
     int      in_use;
 
+    /* Blocked reader (thread waiting for input data) */
+    struct thread *blocked_reader;
+
     spinlock_t lock;
 } pty_t;
 

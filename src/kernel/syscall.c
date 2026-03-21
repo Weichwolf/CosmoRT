@@ -202,16 +202,56 @@ static long do_read(int fd, void *buf, size_t count) {
         return eventfd_read(fde->obj, buf, (long)count);
     if (fde->type == FD_TIMERFD)
         return timerfd_read(fde->obj, buf, (long)count);
+    if (fde->type == FD_INOTIFY)
+        return inotify_read(fde->obj, buf, (long)count);
     if (fde->type == FD_PTY_SLAVE) {
         int pty_id = (int)(long)fde->obj;
         uint8_t kbuf[256];
         size_t want = count > 256 ? 256 : count;
         int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
-        if (got > 0) kmemcpy(buf, kbuf, (size_t)got);
-        /* Flush VT after read — renders echo from line discipline */
-        extern void vt_flush(int vt_id);
-        vt_flush(pty_id);
-        return got > 0 ? (long)got : (long)-EAGAIN;
+        if (got > 0) {
+            kmemcpy(buf, kbuf, (size_t)got);
+            /* Flush VT after read — renders echo from line discipline */
+            extern void vt_flush(int vt_id);
+            vt_flush(pty_id);
+            return (long)got;
+        }
+        /* No data — block until pty_master_write wakes us.
+         * Thread resumes at userspace with rax=-EAGAIN; the read loop
+         * in vt_shell (or libc) retries the syscall. */
+        {
+            extern uint64_t pml4[];
+            thread_t *t = thread_current();
+            pty_t *pty = pty_get(pty_id);
+            if (t && pty) {
+                uint64_t irqf;
+                spin_lock_irq(&pty->lock, &irqf);
+                /* Re-check under lock — data may have arrived between
+                 * the unlocked pty_slave_read and acquiring the lock */
+                int avail = (pty->input_tail - pty->input_head
+                             + PTY_BUF_SIZE) % PTY_BUF_SIZE;
+                if (avail > 0) {
+                    int n = avail > (int)want ? (int)want : avail;
+                    for (int i = 0; i < n; i++) {
+                        kbuf[i] = (uint8_t)pty->input_buf[pty->input_head];
+                        pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
+                    }
+                    spin_unlock_irq(&pty->lock, irqf);
+                    kmemcpy(buf, kbuf, (size_t)n);
+                    extern void vt_flush(int vt_id);
+                    vt_flush(pty_id);
+                    return (long)n;
+                }
+                pty->blocked_reader = t;
+                spin_unlock_irq(&pty->lock, irqf);
+
+                save_user_state_for_block(t, -EAGAIN);
+                t->state = THREAD_BLOCKED;
+                __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+                thread_return_to_kernel(t);
+            }
+        }
+        return -EAGAIN;
     }
     return -EBADF;
 }
@@ -1690,6 +1730,11 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     case FD_FILE:
         if (interest & EPOLLIN)  ready |= EPOLLIN;
         if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        break;
+
+    case FD_INOTIFY:
+        if ((interest & EPOLLIN) && inotify_has_events(fde->obj))
+            ready |= EPOLLIN;
         break;
 
     default:

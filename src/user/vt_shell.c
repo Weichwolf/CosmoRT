@@ -1,5 +1,5 @@
 /* CosmoRT VT Shell — minimal interactive echo on PTY
- * Used as init for qemu-gui. Runs 61 tests first, then interactive prompt.
+ * Used as init for qemu-gui. Blocking read loop on stdin.
  */
 
 typedef unsigned long size_t;
@@ -28,6 +28,11 @@ static void puts(const char *s) {
 
 void _start(void) {
     puts("CosmoRT\n\ncosmo> ");
-    /* Halt — wait for interrupts (keyboard will echo via PTY) */
-    for (;;) __asm__ volatile("pause");
+    for (;;) {
+        char c;
+        long n = sc3(SYS_read, 0, (long)&c, 1);
+        if (n <= 0) continue;
+        sc3(SYS_write, 1, (long)&c, 1);
+        if (c == '\n') puts("cosmo> ");
+    }
 }
