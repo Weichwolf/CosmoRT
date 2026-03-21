@@ -123,6 +123,10 @@ int vfs_add_file(const char *path, const void *data, size_t len);
 /* Mount CosmoFS as root filesystem (called from main after bcache_init) */
 void vfs_mount_cosmofs(void);
 
+/* Read from an open file at a specific offset without changing file position.
+ * Returns bytes read or negative errno. */
+long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
+
 /* Increment refcount on a vfs_file (for fork fd duplication) */
 void vfs_file_incref(struct vfs_file *f);
 

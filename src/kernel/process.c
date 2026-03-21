@@ -674,6 +674,122 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
 #define EXECVE_MAX_ENVS  16
 #define EXECVE_MAX_STRLEN 256
 
+/* Build user stack with argv, envp, auxv. Allocates stack pages.
+ * Returns RSP value on success, 0 on error. */
+static uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
+                                 char kargv[][EXECVE_MAX_STRLEN], int argc,
+                                 char kenvp[][EXECVE_MAX_STRLEN], int envc,
+                                 const elf_info_t *elf_info) {
+    /* Map 4 stack pages (16KB) */
+    for (int i = 0; i < 4; i++) {
+        uint64_t va = stack_top - (uint64_t)(i + 1) * 4096;
+        uint64_t *pg = alloc_page();
+        if (!pg) return 0;
+        if (map_user_page(user_pml4, va, virt_to_phys(pg), PROT_READ | PROT_WRITE) < 0)
+            return 0;
+    }
+
+    /* Allocate the stack-top page we can write to (overwrites previous mapping) */
+    uint64_t stk_page_va = stack_top - 4096;
+    uint64_t *frame_page = alloc_page();
+    if (!frame_page) return 0;
+    map_user_page(user_pml4, stk_page_va, virt_to_phys(frame_page), PROT_READ | PROT_WRITE);
+    uint8_t *page = (uint8_t *)frame_page;
+
+    /* Write strings at the top of the page */
+    uint64_t str_off = 4096;
+    uint64_t argv_addrs[EXECVE_MAX_ARGS];
+    uint64_t envp_addrs[EXECVE_MAX_ENVS];
+
+    /* 16 random bytes for AT_RANDOM */
+    str_off -= 16;
+    str_off &= ~7ULL;
+    uint64_t at_random_addr = stk_page_va + str_off;
+    extern int random_get(void *buf, size_t len);
+    if (random_get(page + str_off, 16) != 0) {
+        /* Fallback: zero-fill (better than nothing) */
+        kmemset(page + str_off, 0x42, 16);
+    }
+
+    /* Environment strings */
+    for (int i = envc - 1; i >= 0; i--) {
+        int sl = 0; while (kenvp[i][sl]) sl++;
+        str_off -= (uint64_t)(sl + 1);
+        kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
+        envp_addrs[i] = stk_page_va + str_off;
+    }
+    /* Argument strings */
+    for (int i = argc - 1; i >= 0; i--) {
+        int sl = 0; while (kargv[i][sl]) sl++;
+        str_off -= (uint64_t)(sl + 1);
+        kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
+        argv_addrs[i] = stk_page_va + str_off;
+    }
+
+    str_off &= ~7ULL;
+    uint64_t *stk = (uint64_t *)(page + str_off);
+
+    /* auxv (pushed in reverse order, AT_NULL last on stack = first read) */
+    *(--stk) = 0;                    /* AT_NULL value */
+    *(--stk) = AT_NULL;
+    *(--stk) = at_random_addr;       /* AT_RANDOM value */
+    *(--stk) = AT_RANDOM;
+    *(--stk) = 4096;                 /* AT_PAGESZ value */
+    *(--stk) = AT_PAGESZ;
+    *(--stk) = elf_info->prog_entry; /* AT_ENTRY value */
+    *(--stk) = AT_ENTRY;
+    *(--stk) = elf_info->interp_base; /* AT_BASE value */
+    *(--stk) = AT_BASE;
+    *(--stk) = (uint64_t)elf_info->prog_phnum;
+    *(--stk) = AT_PHNUM;
+    *(--stk) = (uint64_t)elf_info->prog_phent;
+    *(--stk) = AT_PHENT;
+    *(--stk) = elf_info->prog_phdr;  /* AT_PHDR value */
+    *(--stk) = AT_PHDR;
+
+    /* envp[] */
+    *(--stk) = 0;
+    for (int i = envc - 1; i >= 0; i--)
+        *(--stk) = envp_addrs[i];
+    /* argv[] */
+    *(--stk) = 0;
+    for (int i = argc - 1; i >= 0; i--)
+        *(--stk) = argv_addrs[i];
+    /* argc */
+    *(--stk) = (uint64_t)argc;
+
+    uint64_t sp = stk_page_va + (uint64_t)((uint8_t *)stk - page);
+    sp = (sp & ~0xFULL) - 8; /* 16n+8 alignment for _start */
+    return sp;
+}
+
+/* Create VMAs for mapped ELF segments (using elf_info_t metadata).
+ * base is the load base used (0 for ET_EXEC). */
+static void create_elf_vmas(vma_t **vma_root, const void *elf_data,
+                            size_t elf_len, uint64_t base) {
+    if (elf_len < 64) return;
+    const uint8_t *data = (const uint8_t *)elf_data;
+    uint64_t phoff = *(const uint64_t *)(data + 32);
+    uint16_t phentsize = *(const uint16_t *)(data + 54);
+    uint16_t phnum = *(const uint16_t *)(data + 56);
+    for (int i = 0; i < phnum; i++) {
+        const uint8_t *ph = data + phoff + (uint64_t)i * phentsize;
+        uint32_t p_type = *(const uint32_t *)ph;
+        if (p_type != 1) continue; /* PT_LOAD */
+        uint64_t p_vaddr = *(const uint64_t *)(ph + 16) + base;
+        uint64_t p_memsz = *(const uint64_t *)(ph + 40);
+        uint32_t p_flags = *(const uint32_t *)(ph + 4);
+        if (p_memsz == 0) continue;
+        uint64_t seg_start = p_vaddr & ~0xFFFULL;
+        uint64_t seg_end = (p_vaddr + p_memsz + 0xFFF) & ~0xFFFULL;
+        int prot = 0;
+        if (p_flags & 4) prot |= PROT_READ;
+        if (p_flags & 2) prot |= PROT_WRITE;
+        if (p_flags & 1) prot |= PROT_EXEC;
+        vma_insert(vma_root, seg_start, seg_end, prot, MAP_PRIVATE);
+    }
+}
+
 long do_execve(const char *path, char *const argv[], char *const envp[]) {
     thread_t *cur = thread_current();
     if (!cur || !cur->proc) return -EFAULT;
@@ -699,7 +815,6 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             argc++;
         }
     }
-    /* If no argv provided, use path as argv[0] */
     if (argc == 0) {
         int ci = 0;
         while (ci < EXECVE_MAX_STRLEN - 1 && kpath[ci]) { kargv[0][ci] = kpath[ci]; ci++; }
@@ -728,12 +843,57 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (node->type != VFS_FILE) return -EACCES;
     if (!node->data || node->size == 0) return -ENOEXEC;
 
-    /* Copy ELF data to a kernel buffer (we're about to destroy the address space) */
+    /* Copy ELF data to kernel buffer (address space will be destroyed) */
     size_t elf_len = node->size;
     int elf_pages = (int)((elf_len + 4095) / 4096);
     uint8_t *elf_buf = (uint8_t *)pages_alloc(elf_pages);
     if (!elf_buf) return -ENOMEM;
     kmemcpy(elf_buf, node->data, elf_len);
+
+    /* Also copy interpreter binary if needed (peek at PT_INTERP before destroying AS) */
+    uint8_t *interp_buf = 0;
+    size_t interp_len = 0;
+    int interp_pages = 0;
+
+    /* Peek at ELF type to decide which loader to use */
+    const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)elf_buf;
+    int is_dynamic = (peek_eh->e_type == ET_DYN ||
+                      (peek_eh->e_type == ET_EXEC && elf_len >= sizeof(Elf64_Ehdr)));
+
+    /* For ET_EXEC without PT_INTERP, use the fast path (original elf_load).
+     * For ET_DYN or files with PT_INTERP, use elf_load_ex. */
+    int has_interp = 0;
+    if (is_dynamic && elf_len >= sizeof(Elf64_Ehdr)) {
+        /* Scan for PT_INTERP */
+        for (int i = 0; i < peek_eh->e_phnum; i++) {
+            uint64_t off = peek_eh->e_phoff + (uint64_t)i * peek_eh->e_phentsize;
+            if (off + sizeof(Elf64_Phdr) > elf_len) break;
+            const Elf64_Phdr *ph = (const Elf64_Phdr *)(elf_buf + off);
+            if (ph->p_type == PT_INTERP) {
+                has_interp = 1;
+                /* Read interpreter path and look it up */
+                char ipath[256];
+                size_t iplen = ph->p_filesz;
+                if (iplen >= sizeof(ipath)) iplen = sizeof(ipath) - 1;
+                if (ph->p_offset + iplen <= elf_len) {
+                    kmemcpy(ipath, elf_buf + ph->p_offset, iplen);
+                    ipath[iplen] = '\0';
+                    /* Strip trailing NUL included in filesz */
+                    while (iplen > 0 && ipath[iplen - 1] == '\0') iplen--;
+
+                    struct vfs_node *inode = vfs_lookup(ipath);
+                    if (inode && inode->type == VFS_FILE && inode->data && inode->size > 0) {
+                        interp_len = inode->size;
+                        interp_pages = (int)((interp_len + 4095) / 4096);
+                        interp_buf = (uint8_t *)pages_alloc(interp_pages);
+                        if (interp_buf)
+                            kmemcpy(interp_buf, inode->data, interp_len);
+                    }
+                }
+                break;
+            }
+        }
+    }
 
     /* Free current address space */
     free_address_space(p->pml4);
@@ -744,12 +904,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
         pages_free(elf_buf, elf_pages);
-        /* Process is now dead — no address space */
+        if (interp_buf) pages_free(interp_buf, interp_pages);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
         thread_return_to_kernel(cur);
-        return -ENOMEM; /* unreachable */
+        return -ENOMEM;
     }
 
     /* ASLR */
@@ -758,88 +918,145 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
 
-    /* Load ELF */
-    uint64_t entry, stack_ptr, brk_end;
-    if (elf_load(elf_buf, elf_len, p->pml4, stack_top,
-                 &entry, &stack_ptr, &brk_end) < 0) {
-        pages_free(elf_buf, elf_pages);
-        p->state = PROC_ZOMBIE;
-        cur->state = THREAD_DEAD;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-        thread_return_to_kernel(cur);
-        return -ENOEXEC; /* unreachable */
-    }
-    pages_free(elf_buf, elf_pages);
+    uint64_t entry, stack_ptr;
+    int use_ex = (peek_eh->e_type == ET_DYN || has_interp);
 
-    p->brk_base = brk_end;
-    p->brk_current = brk_end;
-
-    /* Stack VMA */
-    uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-    vma_insert(&p->vma_root, stack_bottom, stack_top,
-               PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-    if (brk_end > 0)
-        vma_insert(&p->vma_root, brk_end, brk_end,
-                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-
-    /* Rebuild stack with real argv/envp.
-     * elf_load set up a minimal stack; we overwrite the stack-top page. */
-    {
-        uint64_t stk_page_va = stack_top - 4096;
-        uint64_t pte = read_pte(p->pml4, stk_page_va);
-        if (pte & PTE_PRESENT) {
-            uint8_t *page = (uint8_t *)phys_to_virt(pte & ~0xFFFULL);
-            /* Zero the page, rebuild from scratch */
-            kmemset(page, 0, 4096);
-
-            /* Write strings at the top of the page */
-            uint64_t str_off = 4096; /* offset within page, grows downward */
-            uint64_t argv_addrs[EXECVE_MAX_ARGS];
-            uint64_t envp_addrs[EXECVE_MAX_ENVS];
-
-            /* Environment strings */
-            for (int i = envc - 1; i >= 0; i--) {
-                int sl = 0; while (kenvp[i][sl]) sl++;
-                str_off -= (uint64_t)(sl + 1);
-                kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
-                envp_addrs[i] = stk_page_va + str_off;
-            }
-            /* Argument strings */
-            for (int i = argc - 1; i >= 0; i--) {
-                int sl = 0; while (kargv[i][sl]) sl++;
-                str_off -= (uint64_t)(sl + 1);
-                kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
-                argv_addrs[i] = stk_page_va + str_off;
-            }
-
-            /* Align str_off down to 8 bytes */
-            str_off &= ~7ULL;
-
-            /* Build pointer/value area below the strings */
-            uint64_t *stk = (uint64_t *)(page + str_off);
-
-            /* auxv (AT_NULL) */
-            *(--stk) = 0;         /* AT_NULL value */
-            *(--stk) = AT_NULL;
-            *(--stk) = 4096;     /* AT_PAGESZ value */
-            *(--stk) = AT_PAGESZ;
-            *(--stk) = entry;    /* AT_ENTRY value */
-            *(--stk) = AT_ENTRY;
-            /* envp[] */
-            *(--stk) = 0;         /* envp terminator */
-            for (int i = envc - 1; i >= 0; i--)
-                *(--stk) = envp_addrs[i];
-            /* argv[] */
-            *(--stk) = 0;         /* argv terminator */
-            for (int i = argc - 1; i >= 0; i--)
-                *(--stk) = argv_addrs[i];
-            /* argc */
-            *(--stk) = (uint64_t)argc;
-
-            stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
-            stack_ptr = (stack_ptr & ~0xFULL) - 8;
+    if (use_ex) {
+        /* Extended path: ET_DYN and/or PT_INTERP */
+        elf_info_t info;
+        if (elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info) < 0) {
+            pages_free(elf_buf, elf_pages);
+            if (interp_buf) pages_free(interp_buf, interp_pages);
+            p->state = PROC_ZOMBIE;
+            cur->state = THREAD_DEAD;
+            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            thread_return_to_kernel(cur);
+            return -ENOEXEC;
         }
+
+        /* Create VMAs for the main program */
+        create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
+
+        /* Load interpreter if present */
+        if (has_interp && interp_buf) {
+            /* Load interpreter at a high address away from the program.
+             * Pick a base above the program's brk, page-aligned. */
+            uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
+            elf_info_t interp_info;
+            if (elf_load_ex(interp_buf, interp_len, p->pml4,
+                            interp_base_hint, &interp_info) < 0) {
+                serial_puts("execve: failed to load interpreter\n");
+                /* Fall back to program entry without interpreter */
+            } else {
+                info.interp_base = interp_info.load_base;
+                info.entry = interp_info.prog_entry; /* jump to interpreter */
+                /* Create VMAs for interpreter segments */
+                create_elf_vmas(&p->vma_root, interp_buf, interp_len,
+                                interp_info.load_base);
+            }
+        }
+
+        p->brk_base = info.brk;
+        p->brk_current = info.brk;
+        entry = info.entry;
+
+        /* Build stack with full auxv */
+        uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+        vma_insert(&p->vma_root, stack_bottom, stack_top,
+                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        if (info.brk > 0)
+            vma_insert(&p->vma_root, info.brk, info.brk,
+                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+
+        stack_ptr = build_user_stack(p->pml4, stack_top,
+                                     kargv, argc, kenvp, envc, &info);
+        if (!stack_ptr) {
+            pages_free(elf_buf, elf_pages);
+            if (interp_buf) pages_free(interp_buf, interp_pages);
+            p->state = PROC_ZOMBIE;
+            cur->state = THREAD_DEAD;
+            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            thread_return_to_kernel(cur);
+            return -ENOMEM;
+        }
+    } else {
+        /* Fast path: plain ET_EXEC, no interpreter */
+        uint64_t brk_end;
+        if (elf_load(elf_buf, elf_len, p->pml4, stack_top,
+                     &entry, &stack_ptr, &brk_end) < 0) {
+            pages_free(elf_buf, elf_pages);
+            if (interp_buf) pages_free(interp_buf, interp_pages);
+            p->state = PROC_ZOMBIE;
+            cur->state = THREAD_DEAD;
+            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            thread_return_to_kernel(cur);
+            return -ENOEXEC;
+        }
+
+        p->brk_base = brk_end;
+        p->brk_current = brk_end;
+
+        /* Stack VMA */
+        uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+        vma_insert(&p->vma_root, stack_bottom, stack_top,
+                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        if (brk_end > 0)
+            vma_insert(&p->vma_root, brk_end, brk_end,
+                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+
+        /* Rebuild stack with real argv/envp (elf_load already set up minimal stack) */
+        {
+            uint64_t stk_page_va = stack_top - 4096;
+            uint64_t pte = read_pte(p->pml4, stk_page_va);
+            if (pte & PTE_PRESENT) {
+                uint8_t *page = (uint8_t *)phys_to_virt(pte & ~0xFFFULL);
+                kmemset(page, 0, 4096);
+
+                uint64_t str_off = 4096;
+                uint64_t argv_addrs[EXECVE_MAX_ARGS];
+                uint64_t envp_addrs[EXECVE_MAX_ENVS];
+
+                for (int i = envc - 1; i >= 0; i--) {
+                    int sl = 0; while (kenvp[i][sl]) sl++;
+                    str_off -= (uint64_t)(sl + 1);
+                    kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
+                    envp_addrs[i] = stk_page_va + str_off;
+                }
+                for (int i = argc - 1; i >= 0; i--) {
+                    int sl = 0; while (kargv[i][sl]) sl++;
+                    str_off -= (uint64_t)(sl + 1);
+                    kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
+                    argv_addrs[i] = stk_page_va + str_off;
+                }
+
+                str_off &= ~7ULL;
+                uint64_t *stk = (uint64_t *)(page + str_off);
+
+                *(--stk) = 0;         /* AT_NULL value */
+                *(--stk) = AT_NULL;
+                *(--stk) = 4096;
+                *(--stk) = AT_PAGESZ;
+                *(--stk) = entry;
+                *(--stk) = AT_ENTRY;
+                *(--stk) = 0;
+                for (int i = envc - 1; i >= 0; i--)
+                    *(--stk) = envp_addrs[i];
+                *(--stk) = 0;
+                for (int i = argc - 1; i >= 0; i--)
+                    *(--stk) = argv_addrs[i];
+                *(--stk) = (uint64_t)argc;
+
+                stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
+                stack_ptr = (stack_ptr & ~0xFULL) - 8;
+            }
+        }
+
+        /* Create VMAs for ELF segments */
+        create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
     }
+
+    pages_free(elf_buf, elf_pages);
+    if (interp_buf) pages_free(interp_buf, interp_pages);
 
     /* Close O_CLOEXEC fds */
     for (int i = 0; i < FD_MAX; i++) {

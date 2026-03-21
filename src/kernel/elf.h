@@ -1,4 +1,4 @@
-/* CosmoRT ELF Loader — static ELF64 binaries */
+/* CosmoRT ELF Loader — static + dynamic ELF64 binaries */
 #ifndef ELF_H
 #define ELF_H
 
@@ -65,14 +65,34 @@ typedef struct {
 /* e_machine */
 #define EM_X86_64 62
 
+/* Segment permission flags */
+#define PF_X 1
+#define PF_W 2
+#define PF_R 4
+
 /* Auxiliary vector types */
-#define AT_NULL   0
-#define AT_PHDR   3
-#define AT_PHENT  4
-#define AT_PHNUM  5
-#define AT_PAGESZ 6
-#define AT_ENTRY  9
-#define AT_RANDOM 25
+#define AT_NULL    0
+#define AT_PHDR    3
+#define AT_PHENT   4
+#define AT_PHNUM   5
+#define AT_PAGESZ  6
+#define AT_BASE    7
+#define AT_ENTRY   9
+#define AT_RANDOM  25
+
+/* Extended ELF load result — carries info needed for PT_INTERP / auxv */
+typedef struct {
+    uint64_t entry;        /* entry point to jump to (interpreter's if PT_INTERP) */
+    uint64_t prog_entry;   /* program's original e_entry (relocated for ET_DYN) */
+    uint64_t prog_phdr;    /* program headers mapped address */
+    uint16_t prog_phent;   /* sizeof(Elf64_Phdr) */
+    uint16_t prog_phnum;   /* number of program headers */
+    uint64_t interp_base;  /* interpreter load base (0 if no interpreter) */
+    uint64_t brk;          /* page-aligned end of loaded segments */
+    uint64_t stack_ptr;    /* initial RSP */
+    uint64_t load_base;    /* base address used for ET_DYN (0 for ET_EXEC) */
+    char     interp[256];  /* interpreter path from PT_INTERP ("" if none) */
+} elf_info_t;
 
 /* Load a static ELF64 binary into a user address space.
  * Sets up page tables, stack, argc/argv/envp/auxv.
@@ -81,5 +101,12 @@ typedef struct {
 int elf_load(const void *data, size_t len, uint64_t *pml4,
              uint64_t stack_top,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
+
+/* Extended ELF load: maps segments + returns metadata for dynamic linking.
+ * Does NOT set up the stack (caller does that with auxv info).
+ * Supports ET_EXEC and ET_DYN (PIE, with ASLR base).
+ * Returns 0 on success, -1 on error. */
+int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
+                uint64_t base_hint, elf_info_t *info);
 
 #endif

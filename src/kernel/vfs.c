@@ -483,6 +483,32 @@ long vfs_read(int fd, void *buf, size_t count) {
     return (long)count;
 }
 
+long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
+    if (!f) return -EBADF;
+
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        if (f->type != VFS_FILE) return -EISDIR;
+        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
+        int rc = cosmofs_read(f->cosmofs_ino, buf, (size_t)offset, count);
+        return (long)rc;
+    }
+
+    /* ramfs */
+    if (!f->node) return -EBADF;
+    struct vfs_node *node = f->node;
+    if (node->type != VFS_FILE) return -EISDIR;
+
+    if (offset >= node->size) return 0;
+
+    size_t avail = node->size - (size_t)offset;
+    if (count > avail) count = avail;
+
+    if (node->data)
+        kmemcpy(buf, node->data + offset, count);
+
+    return (long)count;
+}
+
 long vfs_write(int fd, const void *buf, size_t count) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

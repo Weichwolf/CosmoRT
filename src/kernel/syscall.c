@@ -280,10 +280,19 @@ static long do_munlock(unsigned long addr, size_t len) {
 
 static long do_mmap(unsigned long addr, size_t length, int prot,
                     int flags, int fd, long offset) {
-    (void)offset;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    if (fd != -1 && !(flags & MAP_ANONYMOUS)) return -ENOSYS;
+
+    /* Validate file-backed mmap parameters */
+    int is_file = (fd >= 0 && !(flags & MAP_ANONYMOUS));
+    struct vfs_file *vf = 0;
+    if (is_file) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (!fde || fde->type != FD_FILE) return -EBADF;
+        vf = (struct vfs_file *)fde->obj;
+        if (!vf) return -EBADF;
+        if (offset < 0) return -EINVAL;
+    }
 
     length = (length + 0xFFF) & ~0xFFFULL;
     if (length == 0) return -EINVAL;
@@ -296,9 +305,7 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
         for (;;) {
             vma_t *ov = vma_find(p->vma_root, vaddr);
             if (!ov) {
-                /* Also check for VMAs that start within our range */
                 int found = 0;
-                /* Scan: try midpoints */
                 for (uint64_t probe = vaddr; probe < vaddr + length; probe += 4096) {
                     ov = vma_find(p->vma_root, probe);
                     if (ov) { found = 1; break; }
@@ -306,9 +313,7 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
                 if (!found) break;
             }
             if (ov->start >= vaddr + length) break;
-            /* Split/remove overlap */
             if (ov->start < vaddr && ov->end > vaddr + length) {
-                /* VMA straddles both sides — split into two */
                 uint64_t orig_end = ov->end;
                 ov->end = vaddr;
                 vma_insert(&p->vma_root, vaddr + length, orig_end,
@@ -320,7 +325,6 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
             } else {
                 vma_remove(&p->vma_root, ov);
             }
-            /* Check for more overlaps */
             ov = vma_find(p->vma_root, vaddr);
             if (!ov) break;
             if (ov->start >= vaddr + length) break;
@@ -331,13 +335,32 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
         p->mmap_next = vaddr;
     }
 
-    /* Create VMA — pages allocated on demand (page fault) unless locked */
+    /* Create VMA */
     int vma_flags = flags;
     if (p->mlockall_flags & MCL_FUTURE) vma_flags |= VMA_LOCKED;
     vma_t *v = vma_insert(&p->vma_root, vaddr, vaddr + length, prot, vma_flags);
     if (!v) return -ENOMEM;
 
-    /* If locked, pre-fault all pages now (no demand paging latency) */
+    /* File-backed mmap: allocate pages and read file content */
+    if (is_file) {
+        extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t off);
+        uint64_t file_off = (uint64_t)offset;
+        for (uint64_t va = vaddr; va < vaddr + length; va += 4096) {
+            uint64_t *pg = alloc_page(); /* zeroed */
+            if (!pg) return -ENOMEM;
+            /* Read up to 4096 bytes from file at current offset */
+            long nread = vfs_pread(vf, pg, 4096, file_off);
+            (void)nread; /* short read is fine — rest is zero */
+            if (map_user_page(p->pml4, va, virt_to_phys(pg), prot) < 0) {
+                page_free(pg);
+                return -ENOMEM;
+            }
+            file_off += 4096;
+        }
+        return (long)vaddr;
+    }
+
+    /* Anonymous: pre-fault if locked */
     if (vma_flags & VMA_LOCKED)
         prefault_range(p->pml4, vaddr, vaddr + length, prot);
 
