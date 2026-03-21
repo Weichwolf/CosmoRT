@@ -747,15 +747,6 @@ void vt_init(struct boot_info *info) {
 
     active_vt = 0;
 
-    /* Render "CosmoRT" on VT0 if FB available */
-    if (fb_available()) {
-        const char *banner = "CosmoRT v0.1";
-        for (int i = 0; banner[i]; i++)
-            vt_process_byte(0, (uint8_t)banner[i]);
-        vt_process_byte(0, '\n');
-        vt_render_dirty(0);
-    }
-
     serial_puts("vt: ");
     serial_putchar('0' + VT_MAX);
     serial_puts(" terminals, ");

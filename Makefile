@@ -384,18 +384,11 @@ $(BUILD)/user/vt_shell: $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $<
 
 qemu-gui: $(BUILD)/user/vt_shell
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('static const unsigned char init_bin[] = {'); \
-	lines = [', '.join('0x%%02x'%%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long init_bin_size = %%d;' %% len(data))" > $(SRC)/kernel/init_bin.h.gui
 	@cp $(SRC)/kernel/init_bin.h $(SRC)/kernel/init_bin.h.bak 2>/dev/null; true
-	@cp $(SRC)/kernel/init_bin.h.gui $(SRC)/kernel/init_bin.h
+	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(SRC)/kernel/init_bin.h
+	@rm -f $(BUILD)/kernel/main.o
 	$(MAKE) all
 	@mv $(SRC)/kernel/init_bin.h.bak $(SRC)/kernel/init_bin.h 2>/dev/null; true
-	@rm -f $(SRC)/kernel/init_bin.h.gui
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
 qemu-disk: $(ESP_IMG) disk.img

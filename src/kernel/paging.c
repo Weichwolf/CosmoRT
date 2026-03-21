@@ -46,6 +46,24 @@ void paging_map_2mb(uint64_t phys_addr) {
 
     if (global_pdpt >= MAX_PDPT_ENTRIES) return;
 
+    /* Ensure PML4 and PDPT entries exist for this address */
+    uint32_t pml4_idx = global_pdpt / 512;  /* which PML4 entry (0..3) */
+    uint32_t pdpt_idx = global_pdpt % 512;  /* index within PDPT */
+    if (pml4_idx >= 4) return;
+
+    /* Wire PML4 entry if not present (identity + direct map) */
+    if (!(pml4[pml4_idx] & PTE_PRESENT)) {
+        uint64_t pdpt_phys = virt_to_phys(&all_pdpt[pml4_idx][0]);
+        pml4[pml4_idx] = pdpt_phys | PTE_PRESENT | PTE_WRITE;
+        pml4[256 + pml4_idx] = pdpt_phys | PTE_PRESENT | PTE_WRITE;
+    }
+
+    /* Wire PDPT entry if not present */
+    if (!(all_pdpt[pml4_idx][pdpt_idx] & PTE_PRESENT)) {
+        uint64_t pd_phys = virt_to_phys(&all_pd[global_pdpt][0]);
+        all_pdpt[pml4_idx][pdpt_idx] = pd_phys | PTE_PRESENT | PTE_WRITE;
+    }
+
     all_pd[global_pdpt][pd_idx] = aligned | PAGE_MMIO;
 
     __asm__ volatile("invlpg (%0)" : : "r"(aligned) : "memory");

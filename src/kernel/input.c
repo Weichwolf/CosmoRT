@@ -20,10 +20,8 @@ static int num_drivers;
 static void (*vt_cb)(uint16_t scancode, int pressed);
 
 void input_init(void) {
-    num_drivers = 0;
-    vt_cb = 0;
-
-    /* Wire up VT keyboard handler */
+    /* Wire up VT keyboard handler.
+     * Don't reset num_drivers — drivers registered before input_init. */
     extern void vt_keyboard_event(uint16_t scancode, int pressed);
     vt_cb = vt_keyboard_event;
 }

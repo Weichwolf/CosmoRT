@@ -1,6 +1,7 @@
 /* CosmoRT virtio-input driver — keyboard + mouse
  *
- * virtio-input PCI: vendor 0x1AF4, device 0x1052.
+ * virtio-input PCI: vendor 0x1AF4, device 0x1052 (modern).
+ * Also matches legacy 0x1000-0x103F with subsys 18.
  * VQ 0: eventq (input events from device), VQ 1: statusq (LED control).
  *
  * IRQ-driven: events buffered in ring, read via virtio_input_read().
@@ -150,84 +151,46 @@ static const input_driver_t virtio_input_driver = {
 int virtio_input_init(void) {
     num_devs = 0;
 
-    /* Scan for all virtio-input devices (subsys 18 = input) */
-    /* virtio-input has device ID 0x1052 (modern). Also check legacy with subsys 18. */
-    for (int i = 0; i < MAX_INPUT_DEVS; i++) {
-        struct input_dev *d = &devs[num_devs];
-        /* Each call to virtio_pci_find scans from the start.
-         * To find multiple devices, we need to skip already-found ones.
-         * Simple approach: scan PCI directly. */
-        int found = 0;
-        for (int bus = 0; bus < 256 && !found; bus++) {
-            for (int dev = 0; dev < 32 && !found; dev++) {
-                uint32_t id;
-                if (cosmo_pci_config_read(bus, dev, 0, 0, &id) < 0) continue;
-                if (id == 0xFFFFFFFF) continue;
+    /* Scan PCI for all virtio-input devices */
+    for (int bus = 0; bus < 256 && num_devs < MAX_INPUT_DEVS; bus++) {
+        for (int slot = 0; slot < 32 && num_devs < MAX_INPUT_DEVS; slot++) {
+            uint32_t id;
+            if (cosmo_pci_config_read(bus, slot, 0, 0, &id) < 0) continue;
+            if (id == 0xFFFFFFFF) continue;
 
-                uint16_t vendor = id & 0xFFFF;
-                uint16_t pci_dev = (id >> 16) & 0xFFFF;
-                if (vendor != 0x1AF4) continue;
+            uint16_t vendor = id & 0xFFFF;
+            uint16_t pci_dev = (id >> 16) & 0xFFFF;
+            if (vendor != 0x1AF4) continue;
 
-                /* virtio-input: device 0x1052 or legacy with subsys 18 */
-                uint32_t subsys;
-                cosmo_pci_config_read(bus, dev, 0, 0x2C, &subsys);
-                uint16_t subsys_dev = (subsys >> 16) & 0xFFFF;
+            /* virtio-input: device 0x1052 (modern) or legacy with subsys 18 */
+            uint32_t subsys;
+            cosmo_pci_config_read(bus, slot, 0, 0x2C, &subsys);
+            uint16_t subsys_dev = (subsys >> 16) & 0xFFFF;
 
-                int is_input = (pci_dev == 0x1052) ||
-                               (pci_dev >= 0x1000 && pci_dev <= 0x103F && subsys_dev == 18);
-                if (!is_input) continue;
+            int is_input = (pci_dev == 0x1052) ||
+                           (pci_dev >= 0x1000 && pci_dev <= 0x103F && subsys_dev == 18);
+            if (!is_input) continue;
 
-                /* Check not already claimed */
-                int already = 0;
-                for (int j = 0; j < num_devs; j++) {
-                    if (devs[j].dev.pci_bus == bus && devs[j].dev.pci_dev == dev) {
-                        already = 1;
-                        break;
-                    }
-                }
-                if (already) continue;
+            /* Use shared virtio transport (handles legacy I/O + modern MMIO) */
+            struct input_dev *d = &devs[num_devs];
+            if (virtio_pci_init_at(bus, slot, &d->dev) < 0)
+                continue;
 
-                /* Get BAR0 */
-                uint32_t bar0;
-                cosmo_pci_config_read(bus, dev, 0, 0x10, &bar0);
-                if (!(bar0 & 1)) continue;
-
-                d->dev.io_base   = (uint16_t)(bar0 & 0xFFFC);
-                d->dev.pci_bus   = bus;
-                d->dev.pci_dev   = dev;
-                d->dev.device_id = pci_dev;
-                d->dev.subsys_id = subsys_dev;
-                d->dev.features  = 0;
-
-                uint32_t irq_reg;
-                cosmo_pci_config_read(bus, dev, 0, 0x3C, &irq_reg);
-                d->dev.irq_line = (int)(irq_reg & 0xFF);
-
-                /* Enable bus mastering + I/O */
-                uint32_t cmd;
-                cosmo_pci_config_read(bus, dev, 0, 0x04, &cmd);
-                cmd |= (1 << 2) | (1 << 0);
-                cosmo_pci_config_write(bus, dev, 0, 0x04, cmd);
-
-                found = 1;
+            if (init_one(d) == 0) {
+                serial_puts("input: registered virtio-input dev ");
+                serial_putchar('0' + num_devs);
+                serial_puts(d->dev.modern ? " (modern)" : " (legacy)");
+                serial_puts(" PCI ");
+                { char t[4]; t[0]='0'+d->dev.pci_bus/10; t[1]='0'+d->dev.pci_bus%10; t[2]=':'; t[3]=0; serial_puts(t); }
+                { char t[3]; t[0]='0'+d->dev.pci_dev/10; t[1]='0'+d->dev.pci_dev%10; t[2]=0; serial_puts(t); }
+                serial_puts(" IRQ ");
+                { char t[4]; int j=0; int v=d->dev.irq_line;
+                  if (v < 0) { serial_putchar('-'); } else {
+                  do{t[j++]='0'+(v%10);v/=10;}while(v);
+                  while(j--) serial_putchar(t[j]); } }
+                serial_putchar('\n');
+                num_devs++;
             }
-        }
-
-        if (!found) break;
-
-        if (init_one(d) == 0) {
-            serial_puts("virtio-input: device ");
-            serial_putchar('0' + num_devs);
-            serial_puts(" on PCI ");
-            { char t[4]; t[0]='0'+d->dev.pci_bus/10; t[1]='0'+d->dev.pci_bus%10; t[2]=':'; t[3]=0; serial_puts(t); }
-            { char t[3]; t[0]='0'+d->dev.pci_dev/10; t[1]='0'+d->dev.pci_dev%10; t[2]=0; serial_puts(t); }
-            serial_puts(" IRQ ");
-            { char t[4]; int j=0; int v=d->dev.irq_line;
-              if (v < 0) { serial_putchar('-'); } else {
-              do{t[j++]='0'+(v%10);v/=10;}while(v);
-              while(j--) serial_putchar(t[j]); } }
-            serial_putchar('\n');
-            num_devs++;
         }
     }
 

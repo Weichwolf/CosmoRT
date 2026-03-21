@@ -22,6 +22,7 @@
 #include "hw.h"
 #include "random.h"
 #include "vt.h"
+#include "fb.h"
 #include "input.h"
 
 #include "init_bin.h"
@@ -275,6 +276,36 @@ void kernel_main(struct boot_info *info) {
         }
     } else {
         serial_puts("net: no NIC (ok for basic boot)\n");
+    }
+
+    /* Welcome message on VT0 (through normal rendering pipeline) */
+    if (fb_available()) {
+        /* Helper: write string to VT0 via vt_process_byte */
+        #define VT_PUTS(s) do { const char *_p = (s); while (*_p) vt_process_byte(0, (uint8_t)*_p++); } while(0)
+        /* Helper: write decimal int to VT0 */
+        #define VT_INT(v) do { \
+            int _v = (v); char _t[12]; int _j = 0; \
+            if (_v == 0) { vt_process_byte(0, '0'); } else { \
+            while (_v > 0) { _t[_j++] = (char)('0' + _v % 10); _v /= 10; } \
+            while (_j--) vt_process_byte(0, (uint8_t)_t[_j]); } \
+        } while(0)
+
+        VT_PUTS("\033[1;36mCosmoRT\033[0m v0.1\n\n");
+        VT_PUTS("  Cores: "); VT_INT(smp_num_cores()); VT_PUTS("\n");
+        VT_PUTS("  RAM:   "); VT_INT(page_alloc_total() * 4 / 1024); VT_PUTS(" MB\n");
+        if (net_my_ip[0]) {
+            VT_PUTS("  Net:   ");
+            for (int i = 0; i < 4; i++) {
+                VT_INT(net_my_ip[i]);
+                if (i < 3) vt_process_byte(0, '.');
+            }
+            VT_PUTS("\n");
+        }
+        VT_PUTS("\n");
+        vt_render_dirty(0);
+
+        #undef VT_PUTS
+        #undef VT_INT
     }
 
     serial_puts("\n--- Loading init ---\n");
