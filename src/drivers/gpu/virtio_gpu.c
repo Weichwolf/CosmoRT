@@ -14,7 +14,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "timer.h"
 #include "memops.h"
 #include "spinlock.h"
 
@@ -149,9 +148,9 @@ static int gpu_cmd(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len) {
     virtqueue_kick(&gpu_dev, 0);
 
     /* Poll for completion */
-    uint64_t deadline = timer_ms() + 2000;
+    uint64_t deadline = hw_ms() + 2000;
     while (virtqueue_get_used(&ctrlq, 0) < 0) {
-        if (timer_ms() > deadline) {
+        if (hw_ms() > deadline) {
             virtqueue_free_chain(&ctrlq, (uint16_t)head);
             return -1;
         }

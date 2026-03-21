@@ -24,6 +24,7 @@
 #define PTE_USER    (1ULL << 2)
 #define PTE_PS      (1ULL << 7)
 #define PTE_NX      (1ULL << 63)
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 /* Convert PROT_* flags to x86 PTE flags (leaf entry only) */
 static uint64_t prot_to_pte(int prot) {
@@ -102,7 +103,7 @@ static uint64_t *create_user_pml4(void) {
  * PTE entries store physical addresses; we convert via phys_to_virt/virt_to_phys. */
 static uint64_t *get_or_alloc_level(uint64_t *table, int idx) {
     if (table[idx] & PTE_PRESENT)
-        return (uint64_t *)phys_to_virt(table[idx] & ~0xFFFULL);
+        return (uint64_t *)phys_to_virt(table[idx] & PTE_ADDR_MASK);
 
     uint64_t *new_tbl = alloc_page();
     if (!new_tbl) return 0;
@@ -371,13 +372,13 @@ process_t *proc_find(uint32_t pid) {
 static uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
     int pml4i = (va >> 39) & 0x1FF;
     if (!(user_pml4[pml4i] & PTE_PRESENT)) return 0;
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & ~0xFFFULL);
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
     int pdpti = (va >> 30) & 0x1FF;
     if (!(pdpt[pdpti] & PTE_PRESENT)) return 0;
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & ~0xFFFULL);
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
     int pdi = (va >> 21) & 0x1FF;
     if (!(pd[pdi] & PTE_PRESENT)) return 0;
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & ~0xFFFULL);
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
     int pti = (va >> 12) & 0x1FF;
     return pt[pti];
 }
@@ -448,19 +449,19 @@ void free_address_space(uint64_t *user_pml4) {
     /* Walk lower half only (PML4[0..255] = user space) */
     for (int i = 0; i < 256; i++) {
         if (!(user_pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[i] & ~0xFFFULL);
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[i] & PTE_ADDR_MASK);
 
         for (int j = 0; j < 512; j++) {
             if (!(pdpt[j] & PTE_PRESENT)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & ~0xFFFULL);
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
 
             for (int k = 0; k < 512; k++) {
                 if (!(pd[k] & PTE_PRESENT)) continue;
-                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & ~0xFFFULL);
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
 
                 for (int l = 0; l < 512; l++) {
                     if (pt[l] & PTE_PRESENT) {
-                        page_free(phys_to_virt(pt[l] & 0x000FFFFFFFFFF000ULL));
+                        page_free(phys_to_virt(pt[l] & PTE_ADDR_MASK));
                     }
                 }
                 page_free(pt); /* free PT page */
@@ -1011,7 +1012,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             uint64_t stk_page_va = stack_top - 4096;
             uint64_t pte = read_pte(p->pml4, stk_page_va);
             if (pte & PTE_PRESENT) {
-                uint8_t *page = (uint8_t *)phys_to_virt(pte & 0x000FFFFFFFFFF000ULL);
+                uint8_t *page = (uint8_t *)phys_to_virt(pte & PTE_ADDR_MASK);
                 kmemset(page, 0, 4096);
 
                 uint64_t str_off = 4096;

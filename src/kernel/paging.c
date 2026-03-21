@@ -29,9 +29,8 @@ extern uint64_t pd[];
 /* 2MB page flags for MMIO (uncacheable) */
 #define PAGE_MMIO (PTE_PRESENT | PTE_WRITE | PTE_PS | PTE_PCD | PTE_PWT)
 
-/* Max supported: 8 PDPT entries × 512 PD entries = 4096 × 2MB = 8TB
- * But we only have 8 PD pages in entry.asm (8 × 512 = 4096 entries = 8GB) */
-#define MAX_PD_ENTRIES 4096
+/* Max supported: 64 PDPT entries × 512 PD entries = 32768 × 2MB = 64GB */
+#define MAX_PD_ENTRIES 32768
 
 static void map_page(uint64_t phys, uint64_t flags) {
     uint32_t pd_idx = (uint32_t)(phys >> 21); /* 2MB page index */

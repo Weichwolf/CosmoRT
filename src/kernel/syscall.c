@@ -76,6 +76,7 @@ typedef struct {
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
 #define PTE_NX      (1ULL << 63)
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 /* ── SYS_write (1) ───────────────────────────────── */
 
@@ -199,13 +200,13 @@ static void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, in
         int pml4i = (va >> 39) & 0x1FF;
         int mapped = 0;
         if (user_pml4[pml4i] & PTE_PRESENT) {
-            uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & ~0xFFFULL);
+            uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
             int pdpti = (va >> 30) & 0x1FF;
             if (pdpt[pdpti] & PTE_PRESENT) {
-                uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & ~0xFFFULL);
+                uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
                 int pdi = (va >> 21) & 0x1FF;
                 if (pd[pdi] & PTE_PRESENT) {
-                    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & ~0xFFFULL);
+                    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
                     int pti = (va >> 12) & 0x1FF;
                     if (pt[pti] & PTE_PRESENT) mapped = 1;
                 }
@@ -542,7 +543,8 @@ static long do_arch_prctl(int code, unsigned long addr) {
         if (!user_ok(addr, 8)) return -EFAULT;
         uint32_t lo, hi;
         __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
-        *(unsigned long *)addr = ((uint64_t)hi << 32) | lo;
+        uint64_t val = ((uint64_t)hi << 32) | lo;
+        kmemcpy((void *)addr, &val, 8);
         return 0;
     }
     return -EINVAL;
@@ -710,12 +712,14 @@ static void kstrcpy(char *dst, const char *src, int max) {
 
 static long do_uname(struct utsname *buf) {
     if (!user_ok((uint64_t)buf, sizeof(struct utsname))) return -EFAULT;
-    kstrcpy(buf->sysname, "CosmoRT", 65);
-    kstrcpy(buf->nodename, "cosmo", 65);
-    kstrcpy(buf->release, "0.1.0", 65);
-    kstrcpy(buf->version, "CosmoRT 0.1", 65);
-    kstrcpy(buf->machine, "x86_64", 65);
-    kstrcpy(buf->domainname, "", 65);
+    struct utsname kbuf;
+    kstrcpy(kbuf.sysname, "CosmoRT", 65);
+    kstrcpy(kbuf.nodename, "cosmo", 65);
+    kstrcpy(kbuf.release, "0.1.0", 65);
+    kstrcpy(kbuf.version, "CosmoRT 0.1", 65);
+    kstrcpy(kbuf.machine, "x86_64", 65);
+    kstrcpy(kbuf.domainname, "", 65);
+    kmemcpy(buf, &kbuf, sizeof(struct utsname));
     return 0;
 }
 
@@ -724,8 +728,11 @@ static long do_uname(struct utsname *buf) {
 static long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
     (void)flags;
     if (!user_ok((uint64_t)buf, buflen)) return -EFAULT;
+    if (buflen > 256) buflen = 256; /* cap kernel stack usage */
+    uint8_t kbuf[256];
     extern int random_get(void *buf, size_t len);
-    if (random_get(buf, buflen) < 0) return -EIO;
+    if (random_get(kbuf, buflen) < 0) return -EIO;
+    kmemcpy(buf, kbuf, buflen);
     return (long)buflen;
 }
 
@@ -737,26 +744,36 @@ struct k_timeval  { long tv_sec; long tv_usec; };
 static long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     (void)clk_id; /* CLOCK_REALTIME and CLOCK_MONOTONIC both use uptime */
     if (!tp || !user_ok((uint64_t)tp, 16)) return -EFAULT;
+    struct k_timespec kts;
     uint64_t ms = timer_ms();
-    tp->tv_sec = (long)(ms / 1000);
-    tp->tv_nsec = (long)((ms % 1000) * 1000000);
+    kts.tv_sec = (long)(ms / 1000);
+    kts.tv_nsec = (long)((ms % 1000) * 1000000);
+    kmemcpy(tp, &kts, sizeof(kts));
     return 0;
 }
 
 static long do_clock_getres(int clk_id, struct k_timespec *tp) {
     (void)clk_id;
     if (tp && !user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
-    if (tp) { tp->tv_sec = 0; tp->tv_nsec = 1000000; } /* 1ms resolution */
+    if (tp) {
+        struct k_timespec kts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1ms */
+        kmemcpy(tp, &kts, sizeof(kts));
+    }
     return 0;
 }
 
 static long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
     if (!req || !user_ok((uint64_t)req, 16)) return -EFAULT;
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
-    uint64_t ms = (uint64_t)req->tv_sec * 1000 + (uint64_t)(req->tv_nsec / 1000000);
+    struct k_timespec kreq;
+    kmemcpy(&kreq, req, sizeof(kreq));
+    uint64_t ms = (uint64_t)kreq.tv_sec * 1000 + (uint64_t)(kreq.tv_nsec / 1000000);
     if (ms == 0) ms = 1;
     timer_sleep_ms((uint32_t)ms);
-    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    if (rem) {
+        struct k_timespec krem = { .tv_sec = 0, .tv_nsec = 0 };
+        kmemcpy(rem, &krem, sizeof(krem));
+    }
     return 0;
 }
 
@@ -767,8 +784,10 @@ static long do_clock_nanosleep(int clk_id, int flags,
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
         if (!req) return -EFAULT;
-        uint64_t target_ms = (uint64_t)req->tv_sec * 1000
-                           + (uint64_t)(req->tv_nsec / 1000000);
+        struct k_timespec kreq;
+        kmemcpy(&kreq, req, sizeof(kreq));
+        uint64_t target_ms = (uint64_t)kreq.tv_sec * 1000
+                           + (uint64_t)(kreq.tv_nsec / 1000000);
         uint64_t now = timer_ms();
         if (target_ms > now) timer_sleep_ms((uint32_t)(target_ms - now));
         return 0;
@@ -780,9 +799,11 @@ static long do_gettimeofday(struct k_timeval *tv, void *tz) {
     (void)tz;
     if (tv && !user_ok((uint64_t)tv, 16)) return -EFAULT;
     if (tv) {
+        struct k_timeval ktv;
         uint64_t ms = timer_ms();
-        tv->tv_sec = (long)(ms / 1000);
-        tv->tv_usec = (long)((ms % 1000) * 1000);
+        ktv.tv_sec = (long)(ms / 1000);
+        ktv.tv_usec = (long)((ms % 1000) * 1000);
+        kmemcpy(tv, &ktv, sizeof(ktv));
     }
     return 0;
 }
@@ -810,10 +831,12 @@ static long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
     if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
+    uint64_t kmask;
     if (t->cpu_affinity >= 0)
-        *mask = 1ULL << t->cpu_affinity;
+        kmask = 1ULL << t->cpu_affinity;
     else
-        *mask = ~0ULL;  /* all 64 cores */
+        kmask = ~0ULL;  /* all 64 cores */
+    kmemcpy(mask, &kmask, 8);
     return (long)sizeof(uint64_t);
 }
 
@@ -844,16 +867,16 @@ static long do_sched_yield(void) {
 static void *resolve_user_addr(uint64_t *user_pml4, uint64_t uaddr) {
     int pml4i = (uaddr >> 39) & 0x1FF;
     if (!(user_pml4[pml4i] & PTE_PRESENT)) return 0;
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & ~0xFFFULL);
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
     int pdpti = (uaddr >> 30) & 0x1FF;
     if (!(pdpt[pdpti] & PTE_PRESENT)) return 0;
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & ~0xFFFULL);
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
     int pdi = (uaddr >> 21) & 0x1FF;
     if (!(pd[pdi] & PTE_PRESENT)) return 0;
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & ~0xFFFULL);
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
     int pti = (uaddr >> 12) & 0x1FF;
     if (!(pt[pti] & PTE_PRESENT)) return 0;
-    uint64_t phys_page = pt[pti] & ~0xFFFULL;
+    uint64_t phys_page = pt[pti] & PTE_ADDR_MASK;
     return (void *)((uint64_t)phys_to_virt(phys_page) + (uaddr & 0xFFF));
 }
 
@@ -1307,7 +1330,9 @@ static long do_sched_getparam(int pid, struct sched_param_k *param) {
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
     if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
-    param->sched_priority = t->priority;
+    struct sched_param_k kparam;
+    kparam.sched_priority = t->priority;
+    kmemcpy(param, &kparam, sizeof(kparam));
     return 0;
 }
 
@@ -1403,8 +1428,10 @@ static long do_pipe2(int *fds, int flags) {
     /* Mark write-end fd: we encode read/write via pointer offset.
      * Read end: obj == pp. Write end: obj == pp+1 (non-aligned marker). */
 
-    fds[0] = rfd;
-    fds[1] = wfd;
+    {
+        int kfds[2] = { rfd, wfd };
+        kmemcpy(fds, kfds, sizeof(kfds));
+    }
     return 0;
 }
 
@@ -1451,13 +1478,17 @@ static long pipe_close(fd_entry_t *fde) {
 static long do_readv(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
     if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
+    /* Copy iov to kernel to prevent TOCTOU — cap at 64 on stack */
+    if (iovcnt > 64) iovcnt = 64;
+    struct iovec kiov[64];
+    kmemcpy(kiov, iov, (size_t)iovcnt * sizeof(struct iovec));
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
-        if (!user_ok((uint64_t)iov[i].iov_base, iov[i].iov_len)) return -EFAULT;
-        long r = do_read(fd, (void *)iov[i].iov_base, iov[i].iov_len);
+        if (!user_ok((uint64_t)kiov[i].iov_base, kiov[i].iov_len)) return -EFAULT;
+        long r = do_read(fd, (void *)kiov[i].iov_base, kiov[i].iov_len);
         if (r < 0) return total > 0 ? total : r;
         total += r;
-        if ((size_t)r < iov[i].iov_len) break; /* short read */
+        if ((size_t)r < kiov[i].iov_len) break; /* short read */
     }
     return total;
 }

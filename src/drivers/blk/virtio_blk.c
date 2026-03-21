@@ -9,7 +9,6 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
-#include "timer.h"
 #include "spinlock.h"
 #include "memops.h"
 
@@ -145,9 +144,9 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     virtqueue_kick(&blk_dev, 0);
 
     /* Wait for completion via interrupt (no busy-poll) */
-    uint64_t deadline = timer_ms() + 2000;
+    uint64_t deadline = hw_ms() + 2000;
     while (virtqueue_get_used(&blk_vq, 0) < 0) {
-        if (timer_ms() > deadline) {
+        if (hw_ms() > deadline) {
             serial_puts("virtio-blk: I/O timeout\n");
             virtqueue_free_chain(&blk_vq, (uint16_t)head);
             return -1;

@@ -55,6 +55,13 @@ int cosmo_pci_config_write(int bus, int dev, int fn, int reg, uint32_t val);
  * Returns 0 on success, -ENOENT if not found. */
 int cosmo_fw_load(const char *name, void **data, size_t *len);
 
+/* Register a physical address range as a valid MMIO target.
+ * Must be called before cosmo_mmio_map for that range. */
+void hw_allow_mmio(uint64_t phys, size_t len);
+
+/* Monotonic millisecond timestamp for driver timeouts. */
+uint64_t hw_ms(void);
+
 /* Initialize hardware subsystem. Called once at boot. */
 void hw_init(void);
 

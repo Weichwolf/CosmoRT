@@ -16,8 +16,8 @@
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
 #define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB */
 
-/* 8GB direct-map cap (entry.asm maps PML4[256..263]) */
-#define DIRECT_MAP_LIMIT (8ULL * 1024 * 1024 * 1024)
+/* 64GB direct-map cap (entry.asm maps 64 PD pages) */
+#define DIRECT_MAP_LIMIT (64ULL * 1024 * 1024 * 1024)
 
 struct free_block {
     struct free_block *next;
@@ -190,7 +190,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     max_pfn = 0;
     for (uint64_t i = 0; i < count; i++) {
         uint32_t type = *(uint32_t *)(mmap + i * desc_size);
-        if (type != 7) continue; /* EfiConventionalMemory only */
+        if (type != 7 && type != 3 && type != 4) continue; /* Conventional + BootServices */
         uint64_t phys = *(uint64_t *)(mmap + i * desc_size + 8);
         uint64_t pages = *(uint64_t *)(mmap + i * desc_size + 24);
         uint64_t end = phys + pages * PAGE_SIZE;
@@ -217,7 +217,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     uint64_t bitmap_phys = 0;
     for (uint64_t i = 0; i < count; i++) {
         uint32_t type = *(uint32_t *)(mmap + i * desc_size);
-        if (type != 7) continue;
+        if (type != 7 && type != 3 && type != 4) continue;
         uint64_t phys = *(uint64_t *)(mmap + i * desc_size + 8);
         uint64_t pages = *(uint64_t *)(mmap + i * desc_size + 24);
         uint64_t region_size = pages * PAGE_SIZE;
@@ -249,7 +249,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     /* Pass 3: add all usable regions (skip bitmap area) */
     for (uint64_t i = 0; i < count; i++) {
         uint32_t type = *(uint32_t *)(mmap + i * desc_size);
-        if (type != 7) continue; /* EfiConventionalMemory */
+        if (type != 7 && type != 3 && type != 4) continue; /* EfiConventionalMemory */
         uint64_t phys = *(uint64_t *)(mmap + i * desc_size + 8);
         uint64_t pages = *(uint64_t *)(mmap + i * desc_size + 24);
         uint64_t end = phys + pages * PAGE_SIZE;
@@ -290,7 +290,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     serial_puts(" pages\n");
 
     if (truncated)
-        serial_puts("buddy: WARNING — RAM above 8GB truncated (direct-map limit)\n");
+        serial_puts("buddy: WARNING — RAM above 64GB truncated (direct-map limit)\n");
 }
 
 void *page_alloc(void) {

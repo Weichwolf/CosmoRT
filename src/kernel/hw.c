@@ -17,8 +17,34 @@
 
 /* ── MMIO Mapping ────────────────────────────────── */
 
+#define MAX_MMIO_RANGES 32
+
+static struct { uint64_t phys; size_t len; } allowed_mmio[MAX_MMIO_RANGES];
+static int mmio_count;
+
+void hw_allow_mmio(uint64_t phys, size_t len) {
+    if (mmio_count < MAX_MMIO_RANGES) {
+        allowed_mmio[mmio_count].phys = phys;
+        allowed_mmio[mmio_count].len = len;
+        mmio_count++;
+    }
+}
+
 int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
     if (!virt) return -1;
+
+    /* Always allow LAPIC and IOAPIC */
+    if (phys != 0xFEE00000ULL && phys != 0xFEC00000ULL) {
+        int found = 0;
+        for (int i = 0; i < mmio_count; i++) {
+            if (phys >= allowed_mmio[i].phys &&
+                phys + len <= allowed_mmio[i].phys + allowed_mmio[i].len) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return -1;
+    }
 
     /* Round to 2MB boundary for paging_map_2mb */
     uint64_t start = phys & ~0x1FFFFFULL;
@@ -134,6 +160,14 @@ int cosmo_pci_config_read(int bus, int dev, int fn, int reg, uint32_t *val) {
     *val = inl(PCI_CONFIG_DATA);
     spin_unlock_irq(&pci_lock, flags);
 
+    /* Auto-register MMIO BARs (offset 0x10-0x24) as allowed MMIO ranges.
+     * BAR bit 0 = 0 means memory-mapped (not I/O port). */
+    if (reg >= 0x10 && reg <= 0x24 && !(*val & 1)) {
+        uint64_t bar_phys = *val & 0xFFFFFFF0ULL;
+        if (bar_phys)
+            hw_allow_mmio(bar_phys, 0x200000);  /* conservative 2MB */
+    }
+
     return 0;
 }
 
@@ -165,6 +199,14 @@ int cosmo_fw_load(const char *name, void **data, size_t *len) {
     if (data) *data = 0;
     if (len) *len = 0;
     return -2; /* -ENOENT */
+}
+
+/* ── Monotonic Time ──────────────────────────────── */
+
+extern uint64_t timer_ms(void);
+
+uint64_t hw_ms(void) {
+    return timer_ms();
 }
 
 /* ── Init ────────────────────────────────────────── */

@@ -168,7 +168,8 @@ int e1000_init(void) {
         mmio_phys |= ((uint64_t)bar1 << 32);
     }
 
-    /* Map MMIO into kernel address space */
+    /* Register BAR range and map MMIO into kernel address space */
+    hw_allow_mmio(mmio_phys, 0x20000);
     void *mmio_virt;
     if (cosmo_mmio_map(mmio_phys, 0x20000, &mmio_virt) < 0) {
         serial_puts("e1000: MMIO map failed\n");

@@ -212,18 +212,57 @@ static long futex_lock_pi(uint32_t *uaddr) {
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 
-    for (int i = 0; i < 10000; i++) {
+    /* Bounded spin (100 iterations), then block */
+    for (int i = 0; i < 100; i++) {
         old = __sync_val_compare_and_swap(uaddr, 0, tid);
         if (old == 0)
             return 0;
-        /* Also try acquiring if only FUTEX_WAITERS bit is set (owner cleared TID) */
         old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
         if (old == FUTEX_WAITERS)
             return 0;
         __asm__ volatile("pause");
     }
 
-    return -ETIMEDOUT;
+    /* Spin exhausted — block via wait queue */
+    {
+        process_t *p = self->proc;
+        uint32_t pid = p ? p->pid : 0;
+        int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
+        uint64_t flags;
+        spin_lock_irq(&futex_hash[bucket].lock, &flags);
+
+        /* Re-check before blocking — lock may have been released */
+        old = __sync_val_compare_and_swap(uaddr, 0, tid);
+        if (old == 0) {
+            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            return 0;
+        }
+        old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
+        if (old == FUTEX_WAITERS) {
+            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            return 0;
+        }
+
+        futex_waiter_t *w = (futex_waiter_t *)slab_alloc(&waiter_slab);
+        if (!w) {
+            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            return -ENOMEM;
+        }
+        w->thread = self;
+        w->uaddr = (uint64_t)(uintptr_t)uaddr;
+        w->pid = pid;
+        w->next = futex_hash[bucket].head;
+        futex_hash[bucket].head = w;
+
+        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+
+        save_user_state_for_block(self, 0);
+        self->state = THREAD_BLOCKED;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        thread_return_to_kernel(self);
+    }
+
+    return 0;
 }
 
 /* ── FUTEX_UNLOCK_PI ────────────────────────────── */

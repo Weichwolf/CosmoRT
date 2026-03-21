@@ -57,10 +57,11 @@ kernel_entry:
 
     lidt [idt_ptr]
 
-    ; Set up identity-mapped page tables (8GB using 2MB pages)
+    ; Set up identity-mapped page tables (64GB using 2MB pages)
+    ; Zero PML4 + PDPT + 64 PD pages = (512 + 512 + 32768) × 8 = 270336 bytes
     lea rdi, [rel pml4]
     xor eax, eax
-    mov ecx, 4096 * 10 / 4
+    mov ecx, (512 + 512 + 32768) * 2  ; qwords*2 = dwords
     rep stosd
 
     ; PML4[0] → PDPT
@@ -69,11 +70,11 @@ kernel_entry:
     or rax, 0x03
     mov [rdi], rax
 
-    ; PDPT[0..7] → PD pages
+    ; PDPT[0..63] → 64 PD pages (64GB)
     lea rdi, [rel pdpt]
     lea rax, [rel pd]
     or rax, 0x03
-    mov ecx, 8
+    mov ecx, 64
 .fill_pdpt:
     mov [rdi], rax
     add rdi, 8
@@ -81,10 +82,10 @@ kernel_entry:
     dec ecx
     jnz .fill_pdpt
 
-    ; Fill PD: 4096 entries × 2MB = 8GB
+    ; Fill PD: 32768 entries × 2MB = 64GB
     lea rdi, [rel pd]
     xor eax, eax
-    mov ecx, 4096
+    mov ecx, 32768
 .fill_pd:
     mov rdx, rax
     or rdx, 0x83            ; present + writable + PS (2MB)
@@ -94,24 +95,11 @@ kernel_entry:
     dec ecx
     jnz .fill_pd
 
-    ; Mirror identity map to higher half: PML4[256..263] = PML4[0..7]
+    ; Mirror identity map to higher half: PML4[256] = PML4[0]
+    ; Both point to the same PDPT, so all 64 PDPT entries are shared
     lea rdi, [rel pml4]
-    mov rax, [rdi + 0*8]
+    mov rax, [rdi]
     mov [rdi + 256*8], rax
-    mov rax, [rdi + 1*8]
-    mov [rdi + 257*8], rax
-    mov rax, [rdi + 2*8]
-    mov [rdi + 258*8], rax
-    mov rax, [rdi + 3*8]
-    mov [rdi + 259*8], rax
-    mov rax, [rdi + 4*8]
-    mov [rdi + 260*8], rax
-    mov rax, [rdi + 5*8]
-    mov [rdi + 261*8], rax
-    mov rax, [rdi + 6*8]
-    mov [rdi + 262*8], rax
-    mov rax, [rdi + 7*8]
-    mov [rdi + 263*8], rax
 
     lea rax, [rel pml4]
     mov cr3, rax
@@ -241,7 +229,7 @@ align 4096
 global pml4, pdpt, pd
 pml4:   times 512 dq 0
 pdpt:   times 512 dq 0
-pd:     times 4096 dq 0
+pd:     times 32768 dq 0   ; 64 PD pages: 64 × 512 entries = 64GB
 
 ; ── AP support ───────────────────────────────────────
 global ap_go, ap_entry_addr, ap_stack_ptr, ap_cr3

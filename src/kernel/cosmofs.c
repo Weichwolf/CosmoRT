@@ -129,6 +129,11 @@ uint64_t cosmofs_block_alloc(void) {
                     return 0;
                 }
 
+                /* Journal the bitmap block */
+                journal_begin();
+                journal_write(sb.bitmap_start + bi, be->data);
+                journal_commit();
+
                 sb.free_blocks--;
                 bcache_put(be);
                 spin_unlock_irq(&fs_lock, flags);
@@ -167,6 +172,11 @@ void cosmofs_block_free(uint64_t block) {
         uint64_t *bits = (uint64_t *)be->data;
         bits[word_idx] &= ~(1ULL << bit_idx);
         bcache_mark_dirty(be);
+
+        journal_begin();
+        journal_write(sb.bitmap_start + bitmap_idx, be->data);
+        journal_commit();
+
         bcache_put(be);
         sb.free_blocks++;
     }
@@ -235,6 +245,11 @@ uint64_t cosmofs_inode_alloc(void) {
             ip->type = COSMOFS_TYPE_FILE;  /* caller will set actual type */
             ip->ctime = ip->mtime = ip->atime = now_ns();
             bcache_mark_dirty(be);
+
+            journal_begin();
+            journal_write(sb.inode_start + block_idx, be->data);
+            journal_commit();
+
             bcache_put(be);
             spin_unlock_irq(&fs_lock, flags);
             return ino;
@@ -257,6 +272,11 @@ void cosmofs_inode_free(uint64_t ino) {
 
     kmemset(be->data + slot * COSMOFS_INODE_SIZE, 0, COSMOFS_INODE_SIZE);
     bcache_mark_dirty(be);
+
+    journal_begin();
+    journal_write(sb.inode_start + block_idx, be->data);
+    journal_commit();
+
     bcache_put(be);
 }
 
