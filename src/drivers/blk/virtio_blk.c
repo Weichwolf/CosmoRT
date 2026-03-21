@@ -36,6 +36,8 @@ static uint8_t *status_byte;
 
 static spinlock_t blk_lock = SPINLOCK_INIT;
 
+static void blk_irq_handler(void *ctx);
+
 /* ── Init ─────────────────────────────────────────── */
 
 int virtio_blk_init(void) {
@@ -90,7 +92,18 @@ int virtio_blk_init(void) {
       while(i--) serial_putchar(t[i]); }
     serial_putchar('\n');
 
+    /* Register IRQ so hlt wakes on I/O completion */
+    cosmo_irq_register(blk_dev.irq_line, blk_irq_handler, 0);
+
     return 0;
+}
+
+/* IRQ handler — acknowledge interrupt, hlt in blk_io wakes */
+static void blk_irq_handler(void *ctx) {
+    (void)ctx;
+    /* Read ISR status register to acknowledge (legacy: io_base + 19) */
+    if (blk_dev.io_base)
+        __asm__ volatile("inb %w1, %0" : "=a"((uint8_t){0}) : "Nd"((uint16_t)(blk_dev.io_base + 19)));
 }
 
 /* ── Single block I/O ─────────────────────────────── */
@@ -131,7 +144,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     virtqueue_submit(&blk_vq, (uint16_t)head);
     virtqueue_kick(&blk_dev, 0);
 
-    /* Poll for completion */
+    /* Wait for completion via interrupt (no busy-poll) */
     uint64_t deadline = timer_ms() + 2000;
     while (virtqueue_get_used(&blk_vq, 0) < 0) {
         if (timer_ms() > deadline) {
@@ -139,7 +152,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
             virtqueue_free_chain(&blk_vq, (uint16_t)head);
             return -1;
         }
-        __asm__ volatile("pause");
+        __asm__ volatile("sti; hlt"); /* sleep until IRQ (virtio or timer) */
     }
     virtqueue_free_chain(&blk_vq, (uint16_t)head);
 

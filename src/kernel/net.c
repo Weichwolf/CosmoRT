@@ -149,7 +149,8 @@ out:
     __sync_lock_release(&net_poll_active);
 }
 
-static void poll_n(int n) { for (int i = 0; i < n; i++) net_poll(); }
+/* poll_n removed: E1000 is IRQ-driven, net_poll() called from IRQ handler.
+ * Callers use net_idle() (sti;hlt) to sleep until next interrupt. */
 
 /* ── Init ──────────────────────────────────────────── */
 
@@ -364,7 +365,6 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
-        poll_n(1);
         int len = q_pop(&q_arp, reply, sizeof(reply));
         if (len < 42) { net_idle(); continue; }
         if (get16(reply+20) != 2) continue;
@@ -406,7 +406,6 @@ int net_ping(const uint8_t *dst_ip) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
-        poll_n(1);
         int len = q_pop(&q_icmp, reply, sizeof(reply));
         if (len < 42) { net_idle(); continue; }
         if (reply[34] != 0) continue;
@@ -473,7 +472,6 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
-        poll_n(1);
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
         if (get16(reply+36) != c->local_port) continue;
@@ -520,7 +518,6 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
     while (total < bufsize) {
         if (timer_ms() - last_data_ms > timeout_ms) break;
 
-        poll_n(1);
         uint8_t reply[Q_PKT];
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
@@ -574,9 +571,9 @@ void net_tcp_close(net_tcp_t *c) {
         uint8_t reply[Q_PKT];
         uint64_t deadline = timer_ms() + 2000;
         while (timer_ms() < deadline) {
-            poll_n(1);
             int len = q_pop(&q_tcp, reply, sizeof(reply));
             if (len >= 54 && (reply[47] & 0x10)) break;
+            net_idle();
         }
     }
     c->state = 0;
@@ -658,7 +655,6 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
-        poll_n(1);
         int len = q_pop(&q_udp_dns, reply, sizeof(reply));
         if (len < 42 + 12) { net_idle(); continue; }
 

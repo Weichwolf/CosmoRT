@@ -71,7 +71,15 @@ uint64_t timer_ms(void) {
 }
 
 void timer_sleep_ms(uint32_t ms) {
-    uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
-    while (rdtsc() < target)
-        __asm__ volatile("pause");
+    if (ms < 10) {
+        /* Short sleep: RDTSC busy-wait (accurate, needed for hardware timing) */
+        uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
+        while (rdtsc() < target)
+            __asm__ volatile("pause");
+    } else {
+        /* Long sleep: hlt until timer ticks pass (no CPU burn) */
+        uint64_t deadline = timer_ms() + ms;
+        while (timer_ms() < deadline)
+            __asm__ volatile("sti; hlt");
+    }
 }

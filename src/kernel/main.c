@@ -202,7 +202,7 @@ void kernel_main(struct boot_info *info) {
                 net_dhcp_send_discover();
                 last_discover = timer_ms();
             }
-            timer_sleep_ms(10);
+            __asm__ volatile("sti; hlt"); /* sleep until next IRQ */
         }
 
         if (dhcp_ok) {
