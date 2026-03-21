@@ -203,18 +203,146 @@ Schuetzt auch gegen korrupte Builds (Hash stimmt nicht).
 
 ---
 
+## P11 — Virtio Transport + Treiber (QEMU/KVM komplett)
+
+Gemeinsamer virtio-pci Transport-Layer (aus virtio-blk extrahieren),
+dann alle Geraete als duenne Adapter.
+
+### Gemeinsamer Transport (~300 Zeilen, einmal)
+
+```c
+// src/drivers/virtio/virtio.c
+int  virtio_pci_init(virtio_dev_t *dev, uint16_t device_id);
+int  virtqueue_add(virtqueue_t *vq, void *bufs[], int nbufs, int nout);
+void virtqueue_kick(virtqueue_t *vq);
+void *virtqueue_get(virtqueue_t *vq, uint32_t *len);
+void virtio_set_features(virtio_dev_t *dev, uint64_t features);
+```
+
+### Treiber
+
+```
+Haben:
+  [x] virtio-blk     (306 Zeilen)
+
+Fehlen:
+  [ ] virtio-net      (~400 Zeilen) — ersetzt E1000
+  [ ] virtio-gpu      (~600 Zeilen) — 2D Framebuffer
+  [ ] virtio-input    (~300 Zeilen) — Tastatur + Maus
+  [ ] virtio-console  (~200 Zeilen) — Terminal
+  [ ] virtio-snd      (~400 Zeilen) — Audio (RT)
+  [ ] virtio-fs       (~500 Zeilen) — Host-FS Sharing (Dev-Workflow)
+```
+
+---
+
+## P12 — Hyper-V Support (Primaere Entwicklungsplattform)
+
+CosmoRT soll direkt in Hyper-V/WSL2 laufen. Hyper-V nutzt nicht
+virtio sondern VMBus (Ring-Buffer + Hypercalls). Komplett eigenes
+Transport-Protokoll.
+
+### Hyper-V Enlightenments (Kernel-Core)
+
+Im Kernel selbst, nicht in Treibern. Erkennung via CPUID Leaf 0x40000001.
+
+```
+  [ ] Hyper-V Detection     — CPUID 0x40000001 "Microsoft Hv"
+  [ ] Synthetic MSRs        — HV_X64_MSR_GUEST_OS_ID etc.
+  [ ] SynIC                 — Synthetic Interrupt Controller
+                               (ersetzt APIC fuer VM-Interrupts)
+  [ ] Reference TSC Page    — Zeitmessung ohne VMEXIT
+                               (shared page, rdtsc + scale/offset)
+  [ ] Hypercall Page        — HvPostMessage, HvSignalEvent
+  [ ] Crash MSRs            — Crash-Info an Host melden
+  [ ] PV Spinlocks          — HvCallNotifyLongSpinWait
+                               (verhindert Spinlock-Starvation in VM)
+```
+
+~500 Zeilen im Kernel-Core (src/kernel/hyperv.c).
+
+### VMBus Transport-Layer (~800 Zeilen)
+
+```
+src/drivers/hyperv/vmbus.c
+
+Ring-Buffer ueber Shared Memory:
+  Host allociert Speicher
+  → Guest mappt via GPADL (Guest Physical Address Descriptor List)
+  → Ring-Buffer: Upstream (Guest→Host) + Downstream (Host→Guest)
+  → Signalisierung via SynIC (kein PCI, kein MMIO)
+
+Initialisierung:
+  1. Hypercall HvPostMessage → VMBus INITIATE_CONTACT
+  2. Host antwortet mit VERSION_RESPONSE
+  3. Channel Offer (ein Channel pro Geraet)
+  4. Guest oeffnet Channel → Ring-Buffer Setup
+  5. I/O via Ring-Buffer + HvSignalEvent
+```
+
+### Hyper-V Synthetic Treiber
+
+```
+  [ ] storvsc    (~500 Zeilen) — Synthetischer SCSI/Block
+                                  Ersetzt virtio-blk
+  [ ] netvsc     (~500 Zeilen) — Synthetischer Netzwerk-Adapter
+                                  RNDIS-Protokoll ueber VMBus
+  [ ] hyperv_fb  (~400 Zeilen) — Synthetischer Framebuffer
+                                  Synthvid-Protokoll ueber VMBus
+  [ ] hv_kbd     (~200 Zeilen) — Synthetische Tastatur
+  [ ] hv_mouse   (~200 Zeilen) — Synthetische Maus
+  [ ] hv_utils   (~300 Zeilen) — Heartbeat, Time Sync, Shutdown
+                                  Antwort auf Host-Requests
+```
+
+### Reihenfolge (schnellster Weg zu laufendem Hyper-V)
+
+```
+12.1 Hyper-V Detection + Enlightenments (CPUID, MSRs)     ~200 Zeilen
+12.2 SynIC Setup (Synthetic Interrupts)                    ~200 Zeilen
+12.3 Hypercall Page + HvPostMessage                        ~100 Zeilen
+12.4 VMBus Init + Channel Open                             ~500 Zeilen
+12.5 storvsc (Block-Device → CosmoFS)                      ~500 Zeilen
+     → CosmoRT bootet in Hyper-V mit Disk
+12.6 netvsc + RNDIS (Netzwerk)                             ~500 Zeilen
+     → Netzwerk funktioniert
+12.7 hyperv_fb (Display)                                   ~400 Zeilen
+12.8 hv_kbd + hv_mouse (Input)                             ~400 Zeilen
+     → Interaktives CosmoOS in Hyper-V
+12.9 hv_utils (Heartbeat, Shutdown)                        ~300 Zeilen
+     → Sauberes Herunterfahren via Hyper-V Manager
+```
+
+Gesamt: ~3100 Zeilen. Davon sind 12.1-12.5 (~1500 Zeilen) der
+minimale Pfad zum bootfaehigen CosmoRT in Hyper-V.
+
+### Abstraktion
+
+Treiber registrieren sich beim gleichen Kernel-Interface:
+- storvsc → blk_register() (wie virtio-blk)
+- netvsc → net_nic_register() (wie E1000)
+- hyperv_fb → fb_register() (neu)
+
+Kernel-Code aendert sich nicht. Nur der Treiber ist anders.
+Boot-Erkennung: CPUID → Hyper-V? → VMBus-Treiber laden.
+Kein CPUID Match? → PCI Scan → virtio-Treiber laden.
+
+---
+
 ## Naechste Schritte (Prioritaet)
 
 ```
-P6 Signal User-Handler     → Ruby/Node.js auf CosmoRT
-P7 Dynamischer Linker      → Hot-Reload fuer Claude Code
-P8 Userspace-Treiber       → Crash-Isolation, Hot-Reload
-P9 kexec                   → Kernel-Updates ohne Reboot
-P10 Code-Signing           → Vertrauenskette, kein unsignierter Code
+P6  Signal User-Handler     → Ruby/Node.js auf CosmoRT
+P7  Dynamischer Linker      → Hot-Reload fuer Claude Code
+P8  Userspace-Treiber       → Crash-Isolation, Hot-Reload
+P9  kexec                   → Kernel-Updates ohne Reboot
+P10 Code-Signing            → Vertrauenskette
+P11 Virtio-Treiber          → Volle QEMU/KVM-Unterstuetzung
+P12 Hyper-V Support         → Primaere Entwicklungsplattform
 ```
 
-Der kritische Pfad fuer "Claude Code entwickelt CosmoOS":
-P6 (Signale) → Claude Code laeuft → P7 (dyn. Linker) → P10 (Signing) → sichere Live-Entwicklung
+Schnellster Weg zu "CosmoOS in Hyper-V mit Claude Code":
+P6 → P12.1-12.5 (Boot) → P12.6 (Netz) → Node.js → Claude Code
 
 ---
 
