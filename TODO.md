@@ -356,6 +356,63 @@ P6 (Signale) → P13.1-13.5 (Boot) → P13.6 (Netz) → Node.js → Claude Code
 
 ---
 
+## P14 — Virtual Terminals (F1-F4 Desktop-Switching)
+
+4 virtuelle Terminals. F1-F4 switcht welches sichtbar ist.
+Jede VT hat eigene Bash-Instanz. Dem Kernel ist egal ob auf
+einer VT eine Shell oder ein Window-Manager laeuft.
+
+```
+F1: bash --login    (tty1, Shell)
+F2: bash --login    (tty2, Shell)
+F3: cosmo-wm        (tty3, Window-Manager — spaeter)
+F4: bash --login    (tty4, Shell)
+```
+
+### Komponenten
+
+1. **VT-Buffer** (4 × Zeichenbuffer + Attribut)
+   Pro VT: 80×25 (oder dynamisch nach FB-Aufloesung)
+   Buffer enthaelt Zeichen + Farbe/Attribute
+   Aktive VT wird in den Framebuffer gerendert
+
+2. **PTY (Pseudo-Terminal)** (~300 Zeilen)
+   Master/Slave-Paar pro VT
+   Bash schreibt in Slave → Master liest, rendert in VT-Buffer
+   Tastatur-Input → Master schreibt in Slave → Bash liest
+
+3. **VT-Switch** (~100 Zeilen)
+   Keyboard-Handler: F1-F4 → active_vt = n
+   Framebuffer neu zeichnen aus dem Buffer der aktiven VT
+   Hintergrund-VTs laufen weiter (Bash-Prozesse stoppen nicht)
+
+4. **Font-Renderer** (~200 Zeilen)
+   Bitmap-Font (8x16 eingebettet, wie VGA)
+   Glyph → Pixel im Framebuffer
+
+5. **VT-Emulation** (~400 Zeilen)
+   ANSI Escape-Sequenzen: Cursor-Move, Farbe, Clear, Scroll
+   Genug fuer bash prompt, vim, top
+
+### Kein Window-Manager noetig
+
+VTs sind generisch. Ob Text oder Grafik ist dem Kernel egal.
+Ein Window-Manager ist einfach ein Programm das:
+- Den Framebuffer seiner VT per mmap bekommt
+- Maus/Tastatur-Events liest
+- Fenster rendert statt Text-Glyphen
+
+Gleiche VT-Infrastruktur, anderer Client.
+
+### Abhaengigkeiten
+
+Braucht:
+- Framebuffer-Zugriff (virtio-gpu oder hyperv_fb)
+- Keyboard-Input (virtio-input oder hv_kbd)
+- PTY-Syscalls: SYS_OPENAT fuer /dev/ptmx, SYS_IOCTL fuer TIOCGWINSZ
+
+---
+
 ## CosmoPX-Integration Checkliste
 
 Syscalls die CosmoPX libc nutzt aber CosmoRT noch nicht hat:
