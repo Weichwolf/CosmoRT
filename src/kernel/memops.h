@@ -30,5 +30,6 @@ void kmemset(void *dst, int val, size_t len);
 /* Feature flags (set by memops_init) */
 extern int memops_has_erms;   /* Enhanced REP MOVSB/STOSB */
 extern int memops_has_avx2;   /* AVX2 256-bit SIMD */
+extern int memops_has_rdrand; /* RDRAND instruction */
 
 #endif

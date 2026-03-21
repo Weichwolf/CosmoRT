@@ -230,14 +230,23 @@ static void test_time(void) {
 
 static void test_random(void) {
     puts("\n[Random]\n");
-    puts("  SKIP  (disabled)\n");
+    uint8_t buf[16] = {0};
+    long r = sc3(SYS_getrandom, (long)buf, 16, 0);
+    if (r == -5) {
+        /* -EIO: RDRAND not available (e.g., qemu64 without -cpu max) */
+        puts("  SKIP  getrandom (no RDRAND on this CPU)\n");
+        return;
+    }
+    check_val("getrandom returns 16", r, 16);
+    /* Check that at least some bytes are non-zero (probabilistic) */
+    int nonzero = 0;
+    for (int i = 0; i < 16; i++)
+        if (buf[i]) nonzero++;
+    check("getrandom produces data", nonzero > 0);
 }
 
 static void test_vfs(void) {
     puts("\n[VFS]\n");
-    puts("  SKIP  (VFS tests cause #GP — kernel bug)\n");
-    return;
-    /* disabled: */
 
     /* Create and write a file */
     long fd = sc3(SYS_open, (long)"/test.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
@@ -249,11 +258,15 @@ static void test_vfs(void) {
         sc1(SYS_close, fd);
     }
 
-    /* Read it back — TODO: VFS read causes #GP, skip for now */
+    /* Read it back */
     fd = sc3(SYS_open, (long)"/test.txt", O_RDONLY, 0);
     check("open /test.txt for read", fd >= 0);
     if (fd >= 0) {
-        puts("  SKIP  vfs read (known #GP bug)\n");
+        char rbuf[32] = {0};
+        long r = sc3(SYS_read, fd, (long)rbuf, 17);
+        check_val("read 17 bytes", r, 17);
+        check("read data matches",
+              rbuf[0]=='H' && rbuf[1]=='e' && rbuf[2]=='l' && rbuf[3]=='l' && rbuf[4]=='o');
         sc1(SYS_close, fd);
     }
 
@@ -263,7 +276,7 @@ static void test_vfs(void) {
     check("getcwd succeeds", r > 0);
     check("cwd is /", cwd[0] == '/' && (cwd[1] == 0 || cwd[1] == '\n'));
 
-    /* stat */
+    /* fstat on closed fd */
     struct {
         uint64_t dev, ino, nlink;
         uint32_t mode, uid, gid, pad;
@@ -365,8 +378,8 @@ static void test_security(void) {
 
 static void test_yield(void) {
     puts("\n[Scheduler]\n");
-    /* sched_yield with save_user_state causes kernel NULL deref — skip */
-    puts("  SKIP  sched_yield (known kernel bug)\n");
+    long r = sc0(SYS_sched_yield);
+    check_val("sched_yield returns 0", r, 0);
 }
 
 /* ── Main ────────────────────────────────────── */

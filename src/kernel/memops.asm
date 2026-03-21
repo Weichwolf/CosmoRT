@@ -13,9 +13,11 @@ section .data
 
 global memops_has_erms
 global memops_has_avx2
+global memops_has_rdrand
 
 memops_has_erms: dd 0
 memops_has_avx2: dd 0
+memops_has_rdrand: dd 0
 
 section .text
 
@@ -49,6 +51,15 @@ memops_init:
     jne .no_avx2
     mov dword [rel memops_has_avx2], 1
 .no_avx2:
+
+    ; Check RDRAND (CPUID.01H:ECX bit 30)
+    mov eax, 1
+    xor ecx, ecx
+    cpuid
+    test ecx, (1 << 30)
+    jz .no_rdrand
+    mov dword [rel memops_has_rdrand], 1
+.no_rdrand:
 
     pop rbx
     ret

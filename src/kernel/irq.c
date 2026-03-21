@@ -93,6 +93,16 @@ static void idt_set_entry_user(int n, uint64_t handler) {
 
 /* ── Helpers ───────────────────────────────────────── */
 
+typedef struct {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t vector, error;
+    uint64_t rip, cs, rflags, rsp, ss;
+} irq_frame_t;
+
+/* Forward declaration */
+static void default_exception_with_frame(int vector, irq_frame_t *frame);
+
 /* ── Handlers ──────────────────────────────────────── */
 
 #define MAX_HANDLERS 256
@@ -103,13 +113,6 @@ void irq_register(int vector, irq_handler_t handler) {
     if (vector >= 0 && vector < MAX_HANDLERS)
         handlers[vector] = handler;
 }
-
-typedef struct {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t vector, error;
-    uint64_t rip, cs, rflags, rsp, ss;
-} irq_frame_t;
 
 void irq_dispatch(int vector, irq_frame_t *frame) {
     /* INT 0x80: syscall from Ring 3 (legacy path) */
@@ -184,6 +187,12 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         __asm__ volatile("cli; hlt");
     }
 
+    /* Other CPU exceptions (0-31, except 14 handled above): use frame-aware handler */
+    if (vector < 32 && vector != 14) {
+        default_exception_with_frame(vector, frame);
+        return;
+    }
+
     /* Timer (vector 32): RT scheduler preemption */
     if (vector == 32) {
         extern void sched_preempt(void *frame);
@@ -198,13 +207,17 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
 /* Exception handler — kills user thread, halts on kernel fault */
 
-static void default_exception(int vector) {
+static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
 
     serial_puts("\nEXCEPTION ");
     serial_putchar('0' + vector / 10);
     serial_putchar('0' + vector % 10);
+    serial_puts(" rip=");
+    serial_hex64(frame->rip);
+    serial_puts(" err=");
+    serial_hex64(frame->error);
 
     if (vector == 14) {
         uint64_t cr2;
@@ -226,6 +239,16 @@ static void default_exception(int vector) {
         thread_return_to_kernel(t);
     }
 
+    serial_puts(" KERNEL PANIC\n");
+    __asm__ volatile("cli; hlt");
+}
+
+static void default_exception(int vector) {
+    /* Legacy path without frame — shouldn't be called for exceptions
+     * that go through irq_dispatch with frame, but kept as fallback */
+    serial_puts("\nEXCEPTION ");
+    serial_putchar('0' + vector / 10);
+    serial_putchar('0' + vector % 10);
     serial_puts(" KERNEL PANIC\n");
     __asm__ volatile("cli; hlt");
 }

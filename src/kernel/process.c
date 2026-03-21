@@ -517,8 +517,29 @@ long do_fork(void) {
     child->parent_pid = parent->pid;
     child->vma_root = 0;
 
+    /* Stop other parent threads during page copy to prevent stale data.
+     * Use saved_priority as a marker: set to -2 for threads we suspend.
+     * Only suspend RUNNABLE threads (BLOCKED threads aren't modifying memory,
+     * and RUNNING threads on other cores would need IPI — acceptable for now). */
+    for (thread_t *t = parent->threads; t; t = t->proc_next) {
+        if (t != cur && t->state == THREAD_RUNNABLE) {
+            t->state = THREAD_BLOCKED;
+            t->saved_priority = -2; /* mark: we stopped this one */
+        }
+    }
+
     /* Deep-copy address space */
-    if (copy_address_space(child, parent) < 0) {
+    int copy_err = copy_address_space(child, parent);
+
+    /* Resume only threads we stopped (saved_priority == -2) */
+    for (thread_t *t = parent->threads; t; t = t->proc_next) {
+        if (t != cur && t->saved_priority == -2) {
+            t->saved_priority = -1;
+            sched_add(t); /* sets THREAD_RUNNABLE and enqueues */
+        }
+    }
+
+    if (copy_err < 0) {
         slab_free(&proc_slab, child);
         return -ENOMEM;
     }

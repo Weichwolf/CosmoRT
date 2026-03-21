@@ -170,8 +170,9 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
     *(--stk) = 0;             /* argc = 0 */
 
     sp = stack_frame_va + (uint64_t)((uint8_t *)stk - (uint8_t *)frame_page);
-    /* Align to 16 bytes (Linux ABI requires RSP % 16 == 0 before _start) */
-    sp &= ~0xFULL;
+    /* Align to 16 bytes then subtract 8: GCC-compiled _start expects RSP = 16n+8
+     * (as if entered via CALL which pushes an 8-byte return address) */
+    sp = (sp & ~0xFULL) - 8;
 
     *entry = eh->e_entry;
     *stack_ptr = sp;

@@ -2,49 +2,30 @@
 
 Stand: 2026-03-21.
 
-ktest Ergebnis: 27 PASS, 0 FAIL, 3 SKIP (getrandom, VFS read, sched_yield).
+ktest Ergebnis: 36 PASS, 0 FAIL, 1 SKIP (getrandom auf qemu64 ohne RDRAND).
 
 ---
 
 ## P0 — Sofort (Silent Corruption / Crash)
 
-### sched_yield Kernel NULL-Deref
-`syscall.c`: `save_user_state_for_block` liest `percpu->syscall_frame`
-das NULL ist. ktest: KERNEL PANIC bei sched_yield.
+### ~~sched_yield Kernel NULL-Deref~~
+Erledigt: `do_sched_yield` gibt jetzt `return 0` zurueck (hint-only).
+Timer-Preemption uebernimmt das eigentliche Context-Switching.
 
-Root Cause: `syscall_frame` wird in syscall_entry.asm gesetzt, aber
-`save_user_state_for_block` wird aus dem C-Syscall-Handler aufgerufen
-wo der Frame-Pointer gueltig sein sollte. Moeglicherweise wird der
-Compiler-generierte Code zwischen Frame-Save und Handler-Aufruf
-den Stack so umorganisiert dass `percpu->syscall_frame` ueberschrieben
-wird. Oder: INT 0x80 Pfad setzt `syscall_frame` nicht.
+### ~~VFS read #GP~~
+Erledigt: Root Cause war Stack-Misalignment. ELF-Loader setzte RSP
+auf 16n, GCC-kompiliertes `_start` erwartet 16n+8 (wie nach CALL).
+`movaps` auf misaligned Stack → #GP. Fix: `sp = (sp & ~0xF) - 8`.
 
-Fix: Debug mit RIP-Output im Exception-Handler. Pruefen ob INT 0x80
-oder SYSCALL Pfad. Frame-Pointer vor save_user_state_for_block pruefen.
+### ~~getrandom CPUID #GP~~
+Erledigt: RDRAND-Erkennung nach memops_init (NASM) verschoben.
+CPUID in PIC-kompiliertem C war das Problem. `memops_has_rdrand`
+wird in memops.asm gesetzt, syscall.c liest die Variable.
 
-### VFS read #GP
-ktest: `open("/test.txt", O_RDONLY)` → PASS, dann `read(fd, buf, 32)` → #GP.
-VFS write funktioniert, VFS read crasht.
-
-Moegliche Ursache: `vfs_read` dereferenziert einen Pointer der in den
-Kernel-Adressraum zeigt (EFI-relocated Symbol als Daten-Pointer).
-Oder: FD_FILE Dispatch in do_read hat einen Bug.
-
-Fix: Serial-Debug in vfs_read. RIP im Exception-Handler ausgeben.
-
-### getrandom CPUID #GP
-`check_rdrand()` mit CPUID.01H verursacht #GP trotz PIC-safe
-xchg-Trick. Auch `-cpu max` hilft nicht.
-
-Workaround: getrandom hardcoded -EIO. Funktioniert fuer Boot.
-Langfristiger Fix: CPUID in memops_init (NASM, kein PIC-Problem)
-ausfuehren, Ergebnis in globaler Variable speichern.
-
-### fork Race bei Page-Copy
-`copy_address_space` kopiert Parent-Pages waehrend Parent weiterlaeuft.
-SMP: stale Data im Child, VMA-Baum-Korruption moeglich.
-
-Fix: Copy-on-Write oder Parent-Threads stoppen waehrend fork.
+### ~~fork Race bei Page-Copy~~
+Erledigt (Short-Term): Parent-Threads werden vor copy_address_space
+gestoppt (RUNNABLE → BLOCKED mit saved_priority=-2 als Marker) und
+danach wieder aufgeweckt. Langfristig: COW.
 
 ### ~~pages_alloc/pages_free ohne Lock~~
 Erledigt: pages_alloc/pages_free haben seit Refactor Spinlocks.
@@ -152,4 +133,8 @@ Shell → configure → make → GCC → Ruby → Homebrew.
 - [x] VMA AVL-Baum + Demand Paging + ASLR
 - [x] SSE2/AVX2 memops (MOVNTDQ, ERMS)
 - [x] Kernel Benchmark (make bench)
-- [x] Hardware Test (make test-hw — 27 PASS)
+- [x] Hardware Test (make test-hw — 36 PASS)
+- [x] sched_yield: hint-only return 0 (Timer-Preemption reicht)
+- [x] VFS read #GP: ELF-Loader Stack-Alignment (16n+8 statt 16n)
+- [x] getrandom: RDRAND-Erkennung in memops_init (NASM)
+- [x] fork Race: Parent-Threads stoppen waehrend copy_address_space
