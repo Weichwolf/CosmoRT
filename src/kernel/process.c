@@ -208,6 +208,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
 
     p->brk_base = brk_end;
     p->brk_current = brk_end;
+    p->is_driver = (p->pid == 1) ? 1 : 0;
     p->cwd[0] = '/'; p->cwd[1] = '\0';
     fd_table_init(&p->fds);
 
@@ -564,6 +565,7 @@ long do_fork(void) {
     child->brk_current = parent->brk_current;
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
+    child->is_driver = parent->is_driver;
     for (int ci = 0; ci < 256; ci++) {
         child->cwd[ci] = parent->cwd[ci];
         if (!parent->cwd[ci]) break;

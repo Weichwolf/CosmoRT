@@ -48,6 +48,9 @@ typedef struct process {
     /* mlockall flags (MCL_CURRENT | MCL_FUTURE) */
     int         mlockall_flags;
 
+    /* Driver capability: 1 = allowed to use HW primitive syscalls (512-520) */
+    int         is_driver;
+
     /* Signals */
     uint64_t    sig_pending;        /* bitmask of pending signals */
     uint64_t    sig_blocked;        /* bitmask of blocked signals (sigprocmask) */

@@ -40,32 +40,7 @@
 
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
-uint64_t g_heap_size;
 struct boot_info *g_boot_info;
-
-static void find_heap(struct boot_info *info, uint8_t **base, uint64_t *size) {
-    uint8_t *mmap = (uint8_t *)phys_to_virt(info->mmap_addr);
-    uint64_t desc_size = info->mmap_desc_size;
-    uint64_t count = info->mmap_size / desc_size;
-    *base = 0; *size = 0;
-    for (uint64_t i = 0; i < count; i++) {
-        uint32_t type = *(uint32_t *)(mmap + i * desc_size);
-        uint64_t phys = *(uint64_t *)(mmap + i * desc_size + 8);
-        uint64_t pages = *(uint64_t *)(mmap + i * desc_size + 24);
-        uint64_t region_size = pages * 4096;
-        if (type == 7 && region_size > *size && phys >= 0x100000) {
-            *base = (uint8_t *)phys_to_virt(phys);
-            *size = region_size;
-        }
-    }
-    if (*size > 128 * 1024 * 1024) *size = 128 * 1024 * 1024;
-}
-
-static void serial_uint(uint64_t v) {
-    char t[20]; int i = 0;
-    do { t[i++] = '0' + v % 10; v /= 10; } while (v);
-    while (i--) serial_putchar(t[i]);
-}
 
 void kernel_main(struct boot_info *info) {
     g_boot_info = info;
@@ -76,11 +51,12 @@ void kernel_main(struct boot_info *info) {
     /* CPU feature detection (ERMS, AVX2) for memops */
     memops_init();
 
-    /* Page allocator */
-    uint8_t *heap_base;
-    find_heap(info, &heap_base, &g_heap_size);
-    page_alloc_init(heap_base, (size_t)g_heap_size);
-    serial_puts("Heap: "); serial_uint(g_heap_size / (1024*1024)); serial_puts(" MB\n");
+    /* Page allocator — register ALL UEFI memory regions */
+    page_alloc_init(0, 0);
+    page_alloc_add_uefi_regions(
+        phys_to_virt(info->mmap_addr),
+        info->mmap_size,
+        info->mmap_desc_size);
 
     /* Page tables */
     paging_init(info);

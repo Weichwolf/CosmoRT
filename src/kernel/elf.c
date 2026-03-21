@@ -112,6 +112,11 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
         return -1;
     }
     if (eh->e_machine != EM_X86_64) { serial_puts("elf_ex: not x86_64\n"); return -1; }
+    if (eh->e_phentsize < sizeof(Elf64_Phdr)) { serial_puts("elf_ex: invalid phentsize\n"); return -1; }
+    if (eh->e_phnum > 64) { serial_puts("elf_ex: too many phdrs\n"); return -1; }
+    if (eh->e_phoff + (uint64_t)eh->e_phnum * eh->e_phentsize > len) {
+        serial_puts("elf_ex: phdr overflow\n"); return -1;
+    }
 
     /* Choose load base */
     uint64_t base = 0;
@@ -193,6 +198,11 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
     if (eh->e_ident[4] != 2) { serial_puts("elf: not 64-bit\n"); return -1; }
     if (eh->e_type != ET_EXEC) { serial_puts("elf: not ET_EXEC\n"); return -1; }
     if (eh->e_machine != EM_X86_64) { serial_puts("elf: not x86_64\n"); return -1; }
+    if (eh->e_phentsize < sizeof(Elf64_Phdr)) { serial_puts("elf: invalid phentsize\n"); return -1; }
+    if (eh->e_phnum > 64) { serial_puts("elf: too many phdrs\n"); return -1; }
+    if (eh->e_phoff + (uint64_t)eh->e_phnum * eh->e_phentsize > len) {
+        serial_puts("elf: phdr overflow\n"); return -1;
+    }
 
     serial_puts("elf: entry="); serial_hex64(eh->e_entry);
     serial_puts(" phnum="); serial_putchar('0' + eh->e_phnum / 10);

@@ -27,6 +27,12 @@
 #include "syscall.h"
 #include "thread.h"
 
+static inline int user_ok(uint64_t addr, size_t len) {
+    return addr < 0x800000000000ULL &&
+           addr + len <= 0x800000000000ULL &&
+           addr + len >= addr;
+}
+
 /* Trampoline binary (assembled from kexec_tramp.asm → flat binary → C header) */
 #include "kexec_tramp_bin.h"
 
@@ -217,6 +223,10 @@ load_and_jump(const void *kbuf, size_t len __attribute__((unused))) {
 /* ── Public API ──────────────────────────────────── */
 
 int do_kexec(const void *image, size_t len) {
+    /* Sanity: reject unreasonable sizes (max 64MB) */
+    if (len == 0 || len > 64 * 1024 * 1024) return -EINVAL;
+    if (!user_ok((uint64_t)image, len)) return -EFAULT;
+
     serial_puts("kexec: loading new kernel (");
     serial_hex64(len);
     serial_puts(" bytes)\n");

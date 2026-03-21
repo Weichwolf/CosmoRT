@@ -110,15 +110,18 @@ static long do_write(int fd, const void *buf, size_t count) {
 struct iovec { const void *iov_base; size_t iov_len; };
 
 static long do_writev(int fd, const struct iovec *iov, int iovcnt) {
-    if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
+    if (iovcnt < 0 || iovcnt > 16) return -EINVAL;
     if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
+    /* Copy iov array to kernel stack to prevent TOCTOU */
+    struct iovec k_iov[16];
+    kmemcpy(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec));
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
-        if (!user_ok((uint64_t)iov[i].iov_base, iov[i].iov_len)) return -EFAULT;
-        long r = do_write(fd, (void *)iov[i].iov_base, iov[i].iov_len);
+        if (!user_ok((uint64_t)k_iov[i].iov_base, k_iov[i].iov_len)) return -EFAULT;
+        long r = do_write(fd, (void *)k_iov[i].iov_base, k_iov[i].iov_len);
         if (r < 0) return total > 0 ? total : r;
         total += r;
-        if ((size_t)r < iov[i].iov_len) break;
+        if ((size_t)r < k_iov[i].iov_len) break;
     }
     return total;
 }
@@ -789,9 +792,10 @@ static long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mas
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
     if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
-    uint64_t m = *mask;
-    if (m == 0) return -EINVAL;
-    int core = __builtin_ctzll(m);
+    uint64_t k_mask;
+    kmemcpy(&k_mask, mask, 8);
+    if (k_mask == 0) return -EINVAL;
+    int core = __builtin_ctzll(k_mask);
     if (core >= SMP_MAX_CORES) return -EINVAL;
     t->cpu_affinity = core;
     return 0;
@@ -926,6 +930,14 @@ static void deliver_signal(thread_t *t, int signo) {
     if (has_restorer)
         frame_size -= sizeof(sig_trampoline);
     uint64_t new_rsp = (t->rsp - frame_size) & ~0xFULL; /* 16-byte align */
+
+    /* Verify target stack area is in a writable VMA */
+    vma_t *vma = vma_find(p->vma_root, new_rsp);
+    if (!vma || new_rsp < vma->start || (new_rsp + frame_size) > vma->end
+        || !(vma->prot & PROT_WRITE)) {
+        do_exit(128 + signo);
+        return;
+    }
 
     /* Ensure all pages in the frame are mapped */
     for (uint64_t addr = new_rsp & ~0xFFFULL; addr < new_rsp + frame_size; addr += 4096) {
@@ -1128,7 +1140,9 @@ static long do_rt_sigaction(int sig, const struct k_sigaction *act,
 
     if (act) {
         if (!user_ok((uint64_t)act, sizeof(struct k_sigaction))) return -EFAULT;
-        p->sig_actions[sig] = *act;
+        struct k_sigaction k_act;
+        kmemcpy(&k_act, act, sizeof(k_act));
+        p->sig_actions[sig] = k_act;
     }
 
     return 0;
@@ -1147,7 +1161,9 @@ static long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
 
     if (set) {
         if (!user_ok((uint64_t)set, 8)) return -EFAULT;
-        uint64_t mask = *set;
+        uint64_t k_set;
+        kmemcpy(&k_set, set, 8);
+        uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
         case 0: p->sig_blocked |= mask; break;  /* SIG_BLOCK */
@@ -1760,7 +1776,14 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_ACCESS: return 0; /* pretend everything is accessible */
 
     /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
+    /* Capability check: only processes with is_driver may use these */
+#define HW_CAP_CHECK() do { \
+    process_t *_p = proc_current(); \
+    if (!_p || !_p->is_driver) return -EPERM; \
+} while (0)
+
     case SYS_COSMO_MMIO_MAP: {
+        HW_CAP_CHECK();
         if (!user_ok(a3, 8)) return -EFAULT;
         void *virt;
         int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
@@ -1768,6 +1791,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return r;
     }
     case SYS_COSMO_DMA_ALLOC: {
+        HW_CAP_CHECK();
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         void *virt; uint64_t phys;
         int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
@@ -1775,21 +1799,27 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return r;
     }
     case SYS_COSMO_DMA_FREE:
+        HW_CAP_CHECK();
         cosmo_dma_free((void *)a1, (size_t)a2);
         return 0;
     case SYS_COSMO_IRQ_REGISTER:
+        HW_CAP_CHECK();
         return cosmo_irq_register((int)a1, (void (*)(void *))a2, (void *)a3);
     case SYS_COSMO_PCI_READ: {
+        HW_CAP_CHECK();
         if (!user_ok(a4, 4)) return -EFAULT;
         return cosmo_pci_config_read((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t *)a5);
     }
     case SYS_COSMO_PCI_WRITE:
+        HW_CAP_CHECK();
         return cosmo_pci_config_write((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t)a5);
     case SYS_COSMO_FW_LOAD: {
+        HW_CAP_CHECK();
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         return cosmo_fw_load((const char *)a1, (void **)a2, (size_t *)a3);
     }
     case SYS_COSMO_NIC_ATTACH: {
+        HW_CAP_CHECK();
         /* a1 = ptr to { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } */
         if (!user_ok(a1, 22)) return -EFAULT;
         struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } *args =
@@ -1798,10 +1828,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
 
     case SYS_COSMO_KEXEC: {
+        HW_CAP_CHECK();
         if (!user_ok(a1, (size_t)a2)) return -EFAULT;
         extern int do_kexec(const void *, size_t);
         return do_kexec((const void *)a1, (size_t)a2);
     }
+#undef HW_CAP_CHECK
 
     default:
         serial_puts("syscall: unhandled #");

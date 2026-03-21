@@ -1,23 +1,30 @@
-/* CosmoRT Page Allocator — bitmap-based, O(1) free, no arena */
+/* CosmoRT Page Allocator — buddy system, O(1) single-page alloc */
 #ifndef PAGE_ALLOC_H
 #define PAGE_ALLOC_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-/* Initialize from UEFI memory map heap region */
+/* Compat stub (real init via page_alloc_add_uefi_regions) */
 void page_alloc_init(uint8_t *base, size_t size);
 
-/* Allocate one zeroed 4KB page. Returns kernel-virtual (identity-mapped). */
+/* Register all UEFI EfiConventionalMemory regions with the buddy allocator.
+ * mmap_virt: virtual address of UEFI memory map
+ * mmap_size: total size in bytes
+ * desc_size: size of one EFI_MEMORY_DESCRIPTOR */
+void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
+                                  uint64_t desc_size);
+
+/* Allocate one zeroed 4KB page. Returns kernel-virtual (direct-mapped). */
 void *page_alloc(void);
 
 /* Free a single page */
 void page_free(void *page);
 
-/* Allocate N contiguous zeroed pages (for kernel stacks, etc.) */
+/* Allocate N contiguous zeroed pages (rounded up to power of 2) */
 void *pages_alloc(int n);
 
-/* Free N contiguous pages */
+/* Free N contiguous pages (must match the n passed to pages_alloc) */
 void pages_free(void *base, int n);
 
 /* Stats */

@@ -7,6 +7,7 @@
 #include "timer.h"
 #include "syscall.h"
 #include "spinlock.h"
+#include "memops.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -75,8 +76,10 @@ long do_connect(int fd, const void *addr, int addrlen) {
     if (!s) return -EBADF;
     if (s->state == SOCK_CONNECTED) return -EINVAL;
 
-    const struct k_sockaddr_in *sa = (const struct k_sockaddr_in *)addr;
-    uint32_t ip_be = sa->sin_addr;
+    /* Copy sockaddr to kernel to prevent TOCTOU */
+    struct k_sockaddr_in k_addr;
+    kmemcpy(&k_addr, addr, sizeof(k_addr));
+    uint32_t ip_be = k_addr.sin_addr;
     uint8_t dst_ip[4] = {
         (uint8_t)(ip_be & 0xFF),
         (uint8_t)((ip_be >> 8) & 0xFF),
@@ -84,7 +87,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
         (uint8_t)((ip_be >> 24) & 0xFF)
     };
     /* sin_port is big-endian, net_tcp_connect expects host uint16_t */
-    uint16_t port = (uint16_t)((sa->sin_port >> 8) | (sa->sin_port << 8));
+    uint16_t port = (uint16_t)((k_addr.sin_port >> 8) | (k_addr.sin_port << 8));
 
     /* Zero the tcp struct */
     for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
