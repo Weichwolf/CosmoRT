@@ -373,22 +373,24 @@ static long do_mmap(unsigned long addr, size_t length, int prot,
 /* ── Page table walk helpers for unmap/mprotect ──── */
 
 static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
+    /* PTE physical address mask: bits 12..51 (strips NX, available bits) */
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
     for (uint64_t va = start; va < end; va += 4096) {
         int pml4i = (va >> 39) & 0x1FF;
         if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & ~0xFFFULL);
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
 
         int pdpti = (va >> 30) & 0x1FF;
         if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & ~0xFFFULL);
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
 
         int pdi = (va >> 21) & 0x1FF;
         if (!(pd[pdi] & PTE_PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & ~0xFFFULL);
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
         if (pt[pti] & PTE_PRESENT) {
-            uint64_t phys = pt[pti] & ~0xFFFULL;
+            uint64_t phys = pt[pti] & 0x000FFFFFFFFFF000ULL; /* bits 12..51 */
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
             /* TLB flush for this address */
@@ -405,23 +407,24 @@ static uint64_t prot_to_pte_flags(int prot) {
 }
 
 static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
     uint64_t new_flags = prot_to_pte_flags(prot);
     for (uint64_t va = start; va < end; va += 4096) {
         int pml4i = (va >> 39) & 0x1FF;
         if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & ~0xFFFULL);
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
 
         int pdpti = (va >> 30) & 0x1FF;
         if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & ~0xFFFULL);
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
 
         int pdi = (va >> 21) & 0x1FF;
         if (!(pd[pdi] & PTE_PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & ~0xFFFULL);
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
         if (pt[pti] & PTE_PRESENT) {
-            uint64_t phys = pt[pti] & ~0xFFFULL;
+            uint64_t phys = pt[pti] & PHYS_MASK;
             pt[pti] = phys | new_flags;
             __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
         }

@@ -410,7 +410,7 @@ static void copy_one_vma(vma_t *v, void *arg) {
         if (!new_page) { ctx->err = 1; return; }
 
         /* Copy content from parent page */
-        uint64_t src_phys = pte & ~0xFFFULL;
+        uint64_t src_phys = pte & 0x000FFFFFFFFFF000ULL;
         void *src = phys_to_virt(src_phys);
         kmemcpy(new_page, src, 4096);
 
@@ -460,7 +460,7 @@ void free_address_space(uint64_t *user_pml4) {
 
                 for (int l = 0; l < 512; l++) {
                     if (pt[l] & PTE_PRESENT) {
-                        page_free(phys_to_virt(pt[l] & ~0xFFFULL));
+                        page_free(phys_to_virt(pt[l] & 0x000FFFFFFFFFF000ULL));
                     }
                 }
                 page_free(pt); /* free PT page */
@@ -1011,7 +1011,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             uint64_t stk_page_va = stack_top - 4096;
             uint64_t pte = read_pte(p->pml4, stk_page_va);
             if (pte & PTE_PRESENT) {
-                uint8_t *page = (uint8_t *)phys_to_virt(pte & ~0xFFFULL);
+                uint8_t *page = (uint8_t *)phys_to_virt(pte & 0x000FFFFFFFFFF000ULL);
                 kmemset(page, 0, 4096);
 
                 uint64_t str_off = 4096;

@@ -304,6 +304,18 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     serial_dec(bitmap_pages);
     serial_puts(" pages\n");
 
+    /* Order distribution */
+    serial_puts("buddy: orders");
+    for (int o = 0; o <= MAX_ORDER; o++) {
+        int cnt = 0;
+        for (struct free_block *b = free_lists[o]; b; b = b->next) cnt++;
+        if (cnt > 0) {
+            serial_puts(" ["); serial_dec((uint64_t)o);
+            serial_puts("]="); serial_dec((uint64_t)cnt);
+        }
+    }
+    serial_putchar('\n');
+
     if (truncated)
         serial_puts("buddy: WARNING — RAM above 8GB truncated (direct-map limit)\n");
 }
