@@ -12,6 +12,7 @@
 #include "hw.h"
 #include "config.h"
 #include "serial.h"
+#include "input.h"
 
 /* ── Virtio-input event (from device) ──────────────── */
 
@@ -37,14 +38,6 @@ struct input_dev {
 
 static struct input_dev devs[MAX_INPUT_DEVS];
 static int num_devs;
-
-/* ── Input callback (set by VT subsystem) ───────── */
-
-static void (*input_callback)(uint16_t type, uint16_t code, int32_t value);
-
-void virtio_input_set_callback(void (*cb)(uint16_t, uint16_t, int32_t)) {
-    input_callback = cb;
-}
 
 /* ── Event ring buffer (shared across all devices) ── */
 
@@ -101,9 +94,11 @@ static void input_irq(void *ctx) {
             /* Skip EV_SYN — synchronization markers, not useful for consumers */
             if (ev.type != EV_SYN) {
                 evring_push(&ev);
-                /* Notify VT subsystem immediately for keyboard events */
-                if (input_callback && ev.type == EV_KEY)
-                    input_callback(ev.type, ev.code, ev.value);
+                /* Route to input subsystem (keyboard events → VT) */
+                if (ev.type == EV_KEY) {
+                    input_event_t iev = { ev.type, ev.code, ev.value };
+                    input_submit_event(&iev);
+                }
             }
         }
         virtqueue_free_chain(&d->eventq, (uint16_t)head);
@@ -143,6 +138,12 @@ static int init_one(struct input_dev *d) {
     d->active = 1;
     return 0;
 }
+
+/* ── Input subsystem registration ──────────────────── */
+
+static const input_driver_t virtio_input_driver = {
+    .name = "virtio-input",
+};
 
 /* ── Public API ────────────────────────────────────── */
 
@@ -234,6 +235,8 @@ int virtio_input_init(void) {
         serial_puts("virtio-input: not found\n");
         return -1;
     }
+
+    input_register(&virtio_input_driver);
     return 0;
 }
 

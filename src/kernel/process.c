@@ -138,12 +138,23 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) 
 
 /* ── FD table init ──────────────────────────────── */
 
+/* Default PTY for init's stdio. Set by vt_init(). */
+int fd_default_pty = -1;
+
 void fd_table_init(fd_table_t *fdt) {
     for (int i = 0; i < FD_MAX; i++) fdt->entries[i].type = FD_NONE;
-    /* fd 0 = stdin, fd 1 = stdout, fd 2 = stderr → serial */
-    fdt->entries[0] = (fd_entry_t){FD_SERIAL, 0, O_RDONLY};
-    fdt->entries[1] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
-    fdt->entries[2] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
+    if (fd_default_pty >= 0) {
+        /* VT available: stdin/stdout/stderr → PTY slave (VT0) */
+        void *pty = (void *)(uintptr_t)fd_default_pty;
+        fdt->entries[0] = (fd_entry_t){FD_PTY_SLAVE, pty, O_RDONLY};
+        fdt->entries[1] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
+        fdt->entries[2] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
+    } else {
+        /* No VT (early boot / headless) → serial fallback */
+        fdt->entries[0] = (fd_entry_t){FD_SERIAL, 0, O_RDONLY};
+        fdt->entries[1] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
+        fdt->entries[2] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
+    }
     fdt->max_fd = 3;
 }
 

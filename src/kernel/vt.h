@@ -23,9 +23,6 @@ void vt_switch(int vt_id);
 /* Keyboard event from input driver (USB HID scancode, pressed=1/released=0). */
 void vt_keyboard_event(uint16_t scancode, int pressed);
 
-/* Keyboard event from Hyper-V (AT make_code, key_up flag). */
-void vt_keyboard_event_at(uint16_t make_code, int key_up);
-
 /* Render dirty lines of a VT to the framebuffer. */
 void vt_render_dirty(int vt_id);
 
@@ -38,9 +35,5 @@ int vt_pty_id(int vt_id);
 
 /* Drain PTY output and render (called from timer tick or explicit flush). */
 void vt_flush(int vt_id);
-
-/* Keyboard presence (for deciding whether init gets PTY or serial fds). */
-int vt_has_keyboard(void);
-void vt_set_keyboard(void);
 
 #endif

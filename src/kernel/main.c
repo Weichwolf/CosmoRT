@@ -22,6 +22,7 @@
 #include "hw.h"
 #include "random.h"
 #include "vt.h"
+#include "input.h"
 
 #include "init_bin.h"
 
@@ -190,19 +191,20 @@ void kernel_main(struct boot_info *info) {
         e1000_init();        /* registers with net stack if found */
         virtio_net_init();   /* alternative NIC, registers if found */
         virtio_gpu_init();   /* 2D framebuffer if found */
-        virtio_input_init(); /* keyboard/mouse if found */
+        virtio_input_init();
     }
 
     /* Virtual Terminal — framebuffer + PTY + keyboard */
     vt_init(info);
 
-    /* Hook virtio-input keyboard events to VT */
+    /* Input subsystem routes keyboard events to VT */
+    input_init();
+    /* Drivers already registered themselves during probe phase above.
+     * PTY stdio when both FB and keyboard present. */
     {
-        extern void virtio_input_set_callback(void (*)(uint16_t, uint16_t, int32_t));
-        extern void vt_input_cb(uint16_t type, uint16_t code, int32_t value);
-        extern void vt_set_keyboard(void);
-        virtio_input_set_callback(vt_input_cb);
-        vt_set_keyboard();
+        extern int fd_default_pty;
+        if (info->fb_addr && input_has_keyboard())
+            fd_default_pty = vt_pty_id(0);
     }
 
     /* Network — uses whatever NIC driver registered */

@@ -108,38 +108,6 @@ static const uint8_t keymap_shifted[256] = {
     [0x36] = '<', [0x37] = '>', [0x38] = '?',
 };
 
-/* AT (set 1) scancode → USB HID scancode mapping for Hyper-V keyboard */
-static const uint8_t at_to_hid[128] = {
-    [0x1E] = 0x04, /* a */ [0x30] = 0x05, /* b */ [0x2E] = 0x06, /* c */
-    [0x20] = 0x07, /* d */ [0x12] = 0x08, /* e */ [0x21] = 0x09, /* f */
-    [0x22] = 0x0A, /* g */ [0x23] = 0x0B, /* h */ [0x17] = 0x0C, /* i */
-    [0x24] = 0x0D, /* j */ [0x25] = 0x0E, /* k */ [0x26] = 0x0F, /* l */
-    [0x32] = 0x10, /* m */ [0x31] = 0x11, /* n */ [0x18] = 0x12, /* o */
-    [0x19] = 0x13, /* p */ [0x10] = 0x14, /* q */ [0x13] = 0x15, /* r */
-    [0x1F] = 0x16, /* s */ [0x14] = 0x17, /* t */ [0x16] = 0x18, /* u */
-    [0x2F] = 0x19, /* v */ [0x11] = 0x1A, /* w */ [0x2D] = 0x1B, /* x */
-    [0x15] = 0x1C, /* y */ [0x2C] = 0x1D, /* z */
-    [0x02] = 0x1E, /* 1 */ [0x03] = 0x1F, /* 2 */ [0x04] = 0x20, /* 3 */
-    [0x05] = 0x21, /* 4 */ [0x06] = 0x22, /* 5 */ [0x07] = 0x23, /* 6 */
-    [0x08] = 0x24, /* 7 */ [0x09] = 0x25, /* 8 */ [0x0A] = 0x26, /* 9 */
-    [0x0B] = 0x27, /* 0 */
-    [0x1C] = 0x28, /* Enter */  [0x01] = 0x29, /* Escape */
-    [0x0E] = 0x2A, /* Backspace */ [0x0F] = 0x2B, /* Tab */
-    [0x39] = 0x2C, /* Space */
-    [0x0C] = 0x2D, /* - */  [0x0D] = 0x2E, /* = */
-    [0x1A] = 0x2F, /* [ */  [0x1B] = 0x30, /* ] */
-    [0x2B] = 0x31, /* \ */  [0x27] = 0x33, /* ; */
-    [0x28] = 0x34, /* ' */  [0x29] = 0x35, /* ` */
-    [0x33] = 0x36, /* , */  [0x34] = 0x37, /* . */
-    [0x35] = 0x38, /* / */
-    /* Modifier scancodes (AT set 1) */
-    [0x2A] = 0xE1, /* LShift */ [0x36] = 0xE5, /* RShift */
-    [0x1D] = 0xE0, /* LCtrl */  [0x38] = 0xE2, /* LAlt */
-    /* F1-F4 for VT switching */
-    [0x3B] = 0x3A, /* F1 */ [0x3C] = 0x3B, /* F2 */
-    [0x3D] = 0x3C, /* F3 */ [0x3E] = 0x3D, /* F4 */
-};
-
 /* ── Codepoint → glyph index (binary search on font_map) ── */
 
 static int cp_to_glyph(uint32_t cp) {
@@ -677,21 +645,6 @@ void vt_keyboard_event(uint16_t scancode, int pressed) {
     vt_flush(active_vt);
 }
 
-/* Hyper-V AT scancode → HID → process */
-void vt_keyboard_event_at(uint16_t make_code, int key_up) {
-    if (make_code >= 128) return;
-    uint8_t hid = at_to_hid[make_code];
-    if (hid == 0) return;
-    vt_keyboard_event(hid, !key_up);
-}
-
-/* ── Callback for virtio-input (called from IRQ context) ── */
-
-void vt_input_cb(uint16_t type, uint16_t code, int32_t value) {
-    (void)type; /* always EV_KEY */
-    vt_keyboard_event(code, value != 0);
-}
-
 /* ── VT switch ─────────────────────────────────────── */
 
 void vt_switch(int vt_id) {
@@ -727,10 +680,6 @@ int vt_pty_id(int vt_id) {
     if (vt_id < 0 || vt_id >= VT_MAX) return -1;
     return vts[vt_id].pty_id;
 }
-
-static int kbd_present = 0;
-int vt_has_keyboard(void) { return kbd_present; }
-void vt_set_keyboard(void) { kbd_present = 1; }
 
 /* ── Helper to print number to serial ──────────────── */
 
