@@ -1797,6 +1797,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return net_port_attach(args->shm_phys, (size_t)args->shm_size, args->mac);
     }
 
+    case SYS_COSMO_KEXEC: {
+        if (!user_ok(a1, (size_t)a2)) return -EFAULT;
+        extern int do_kexec(const void *, size_t);
+        return do_kexec((const void *)a1, (size_t)a2);
+    }
+
     default:
         serial_puts("syscall: unhandled #");
         serial_hex64((uint64_t)num);

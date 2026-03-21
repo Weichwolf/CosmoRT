@@ -66,6 +66,7 @@ KERN_OBJ = $(BUILD)/kernel/entry.o \
            $(BUILD)/kernel/btree.o \
            $(BUILD)/kernel/journal.o \
            $(BUILD)/kernel/cosmofs.o \
+           $(BUILD)/kernel/kexec.o \
            $(BUILD)/kernel/socket.o
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
@@ -95,6 +96,25 @@ $(SRC)/kernel/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
 
 # smp.o depends on trampoline header
 $(BUILD)/kernel/smp.o: $(SRC)/kernel/smp.c $(SRC)/kernel/ap_trampoline_bin.h | $(BUILD)/kernel
+	$(CC) $(KCFLAGS) -o $@ $<
+
+# ── kexec trampoline (64-bit, flat binary → C header) ──
+$(BUILD)/kernel/kexec_tramp.bin: $(SRC)/kernel/kexec_tramp.asm | $(BUILD)/kernel
+	$(NASM) -f bin -o $@ $<
+
+$(SRC)/kernel/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated kexec trampoline (%d bytes) */' % len(data)); \
+	print('static const unsigned char kexec_tramp_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long kexec_tramp_bin_size = %d;' % len(data))" > $@
+	@echo "kexec_tramp_bin.h: $$(wc -c < $<) bytes"
+
+# kexec.o depends on trampoline header
+$(BUILD)/kernel/kexec.o: $(SRC)/kernel/kexec.c $(SRC)/kernel/kexec_tramp_bin.h | $(BUILD)/kernel
 	$(CC) $(KCFLAGS) -o $@ $<
 
 # ── Init binary (embedded in kernel) ─────────────
@@ -365,5 +385,5 @@ test-boot-disk: $(ESP_IMG) disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h
+	rm -f $(SRC)/kernel/init_bin.h $(SRC)/kernel/ap_trampoline_bin.h $(SRC)/kernel/kbench_bin.h $(SRC)/kernel/ktest_bin.h $(SRC)/kernel/ld_cosmo_bin.h $(SRC)/kernel/e1000d_bin.h $(SRC)/kernel/svcmgr_bin.h $(SRC)/kernel/kexec_tramp_bin.h
 	rm -f tools/mkfs disk.img

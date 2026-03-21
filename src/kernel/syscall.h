@@ -109,6 +109,7 @@
 #define SYS_COSMO_PCI_WRITE      517
 #define SYS_COSMO_FW_LOAD        518
 #define SYS_COSMO_NIC_ATTACH     519
+#define SYS_COSMO_KEXEC          520
 
 /* mmap flags */
 #define MAP_FIXED     0x10
