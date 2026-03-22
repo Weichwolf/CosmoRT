@@ -37,12 +37,6 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     p->state = PROC_ZOMBIE;
     p->exit_code = status;
 
-    serial_puts("exit: pid=");
-    serial_putchar('0' + (p->pid % 10));
-    serial_puts(" status=");
-    serial_putchar('0' + (status & 0xF));
-    serial_putchar('\n');
-
     /* Close all FDs immediately so pipe writers/readers see EOF */
     for (int i = 0; i < FD_MAX; i++) {
         int ftype = p->fds.entries[i].type;
@@ -93,9 +87,7 @@ void do_exit(int status) {
             int zero = 0;
             kmemcpy(t->clear_child_tid, &zero, 4);
             long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
-            serial_puts("futex_wake=");
-            serial_hex64((uint64_t)wr);
-            serial_putchar('\n');
+            (void)wr;
         }
         t->clear_child_tid = 0;
     }

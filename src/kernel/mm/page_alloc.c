@@ -14,7 +14,7 @@
 
 #define PAGE_SHIFT  12
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
-#define MAX_ORDER   15  /* 2^15 = 32768 pages = 128MB */
+#define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB (x86 huge page boundary) */
 
 /* 2048 PDPT entries × 1GB = 2TB (4 PML4 entries). */
 #define DIRECT_MAP_MAX (2048ULL * 1024 * 1024 * 1024)

@@ -298,12 +298,6 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->threads = t;
     p->thread_count = 1;
 
-    serial_puts("proc: pid=");
-    serial_putchar('0' + (p->pid % 10));
-    serial_puts(" tid=");
-    serial_putchar('0' + (t->tid % 10));
-    serial_putchar('\n');
-
     /* Add to scheduler */
     extern void sched_add(thread_t *t);
     sched_add(t);
@@ -904,11 +898,6 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     uint64_t cosmofs_ino = vfs_cosmofs_lookup(kpath);
     int from_cosmofs = (cosmofs_ino != 0);
 
-    if (from_cosmofs) {
-        serial_puts("execve: "); serial_puts(kpath);
-        serial_puts(" (cosmofs)\n");
-    }
-
     /* For ramfs files, load into buffer (small embedded binaries) */
     uint8_t *elf_buf = 0;
     size_t elf_len = 0;
@@ -1248,12 +1237,6 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     cur->r11 = 0; cur->r12 = 0; cur->r13 = 0;
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
-
-    serial_puts("execve: entering ring3 entry=");
-    serial_hex64(entry);
-    serial_puts(" sp=");
-    serial_hex64(stack_ptr);
-    serial_putchar('\n');
 
     /* Load new page tables and jump to userspace */
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");

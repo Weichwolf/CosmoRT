@@ -44,11 +44,6 @@ static uint64_t elf_map_segments(const void *data, size_t len,
 
         uint64_t vaddr = ph->p_vaddr + base;
 
-        serial_puts("  LOAD: vaddr="); serial_hex64(vaddr);
-        serial_puts(" filesz="); serial_hex64(ph->p_filesz);
-        serial_puts(" memsz="); serial_hex64(ph->p_memsz);
-        serial_putchar('\n');
-
         int seg_prot = 0;
         if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
         if (ph->p_flags & PF_W) seg_prot |= PROT_WRITE;
@@ -107,11 +102,6 @@ static uint64_t elf_map_segments_inode(uint64_t ino, uint64_t file_size,
         if (ph->p_memsz == 0) continue;
 
         uint64_t vaddr = ph->p_vaddr + base;
-
-        serial_puts("  LOAD: vaddr="); serial_hex64(vaddr);
-        serial_puts(" filesz="); serial_hex64(ph->p_filesz);
-        serial_puts(" memsz="); serial_hex64(ph->p_memsz);
-        serial_putchar('\n');
 
         int seg_prot = 0;
         if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
@@ -251,13 +241,7 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
             /* ASLR: pick a random base in [0x400000, 0x400000 + 512MB) page-aligned */
             base = 0x400000 + (elf_aslr_rand() & 0x1FFFF000ULL);
         }
-        serial_puts("elf_ex: ET_DYN base="); serial_hex64(base); serial_putchar('\n');
-    } else {
-        serial_puts("elf_ex: ET_EXEC entry="); serial_hex64(eh->e_entry); serial_putchar('\n');
     }
-
-    serial_puts("elf_ex: phnum="); serial_putchar('0' + eh->e_phnum / 10);
-    serial_putchar('0' + eh->e_phnum % 10); serial_putchar('\n');
 
     /* Scan for PT_INTERP before mapping */
     info->interp[0] = '\0';
@@ -273,9 +257,6 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
             if (ph->p_offset + plen <= len) {
                 kmemcpy(info->interp, (const uint8_t *)data + ph->p_offset, plen);
                 info->interp[plen] = '\0';
-                serial_puts("elf_ex: interp=");
-                serial_puts(info->interp);
-                serial_putchar('\n');
             }
             break;
         }
@@ -328,10 +309,6 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
         serial_puts("elf: phdr overflow\n"); return -1;
     }
 
-    serial_puts("elf: entry="); serial_hex64(eh->e_entry);
-    serial_puts(" phnum="); serial_putchar('0' + eh->e_phnum / 10);
-    serial_putchar('0' + eh->e_phnum % 10); serial_putchar('\n');
-
     uint64_t brk_end = elf_map_segments(data, len, eh, user_pml4, 0);
     if (brk_end == 0) return -1;
 
@@ -379,7 +356,6 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
     *stack_ptr = sp;
     *brk_out = (brk_end + 0xFFF) & ~0xFFFULL;
 
-    serial_puts("elf: loaded, sp="); serial_hex64(sp); serial_putchar('\n');
     return 0;
 }
 
@@ -425,10 +401,6 @@ int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
         phdr_buf = phdr_alloc;
     }
 
-    serial_puts("elf_cfs: entry="); serial_hex64(eh->e_entry);
-    serial_puts(" phnum="); serial_putchar('0' + eh->e_phnum / 10);
-    serial_putchar('0' + eh->e_phnum % 10); serial_putchar('\n');
-
     uint64_t brk_end = 0;
 
     /* Map PT_LOAD segments, reading page-by-page from CosmoFS */
@@ -440,11 +412,6 @@ int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
         if (ph->p_memsz == 0) continue;
 
         uint64_t vaddr = ph->p_vaddr;
-
-        serial_puts("  LOAD: vaddr="); serial_hex64(vaddr);
-        serial_puts(" filesz="); serial_hex64(ph->p_filesz);
-        serial_puts(" memsz="); serial_hex64(ph->p_memsz);
-        serial_putchar('\n');
 
         int seg_prot = 0;
         if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
@@ -528,6 +495,5 @@ int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
 
     if (phdr_alloc) page_free(phdr_alloc);
 
-    serial_puts("elf_cfs: loaded, sp="); serial_hex64(sp); serial_putchar('\n');
     return 0;
 }
