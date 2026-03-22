@@ -87,6 +87,62 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_GETEUID: return 0;
     case SYS_GETEGID: return 0;
 
+    /* Process groups / sessions */
+    case SYS_SETPGID: {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        /* Simplified: any setpgid succeeds, set pgid = pid if a2 == 0 */
+        (void)a1; (void)a2;
+        return 0;
+    }
+    case SYS_GETPGRP: {
+        process_t *p = proc_current();
+        return p ? (long)p->pid : 1; /* pgrp = pid (single process group) */
+    }
+    case SYS_GETPGID: {
+        /* getpgid(0) = own pgid, getpgid(pid) = pid's pgid */
+        process_t *p = proc_current();
+        return p ? (long)p->pid : 1;
+    }
+    case SYS_SETSID: {
+        process_t *p = proc_current();
+        return p ? (long)p->pid : 1; /* session id = pid */
+    }
+    case SYS_GETSID: {
+        process_t *p = proc_current();
+        return p ? (long)p->pid : 1;
+    }
+    case SYS_PRCTL:       return -ENOSYS;
+    case SYS_SIGALTSTACK: return 0; /* accept but ignore */
+    case SYS_RT_SIGSUSPEND: return -EINTR; /* immediate return */
+    case SYS_TGKILL:      return do_kill((int)a2, (int)a3); /* route to kill */
+    case SYS_GETRLIMIT:   return do_prlimit64(0, (int)a1, 0, (void *)a2);
+    case SYS_DUP: {
+        /* dup(oldfd): find lowest free fd */
+        process_t *dp = proc_current();
+        if (!dp) return -EFAULT;
+        fd_entry_t *dold = fd_get(&dp->fds, (int)a1);
+        if (!dold) return -EBADF;
+        for (int di = 0; di < FD_MAX; di++) {
+            if (dp->fds.entries[di].type == FD_NONE) {
+                dp->fds.entries[di] = *dold;
+                if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
+                return di;
+            }
+        }
+        return -EMFILE;
+    }
+    case SYS_VFORK:       return do_fork(); /* vfork = fork (no COW optimization) */
+    case SYS_MOUNT:       return 0; /* pretend mount succeeds */
+    case SYS_SETHOSTNAME: return 0;
+    case SYS_STATFS:      return -ENOSYS;
+    case SYS_FSTATFS:     return -ENOSYS;
+    case SYS_ACCEPT4:     return do_accept((int)a1, (void *)a2, (int *)a3);
+    case SYS_MREMAP:      return -ENOSYS;
+    case SYS_MADVISE:     return 0; /* accept but ignore */
+    case SYS_FACCESSAT:   return 0; /* pretend accessible */
+    case SYS_READLINKAT:  return do_readlink((const char *)a2, (char *)a3, (size_t)a4);
+
     /* System info */
     case SYS_UNAME:     return do_uname((void *)a1);
     case SYS_GETRANDOM: return do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3);

@@ -115,6 +115,29 @@
 #define AT_SYMLINK_NOFOLLOW   0x100
 #define AT_REMOVEDIR          0x200
 
+/* Process group / session */
+#define SYS_SETPGID           109
+#define SYS_GETPGRP           111
+#define SYS_SETSID            112
+#define SYS_GETPGID           121
+#define SYS_GETSID            124
+#define SYS_PRCTL             157
+#define SYS_SIGALTSTACK       131
+#define SYS_RT_SIGSUSPEND     130
+#define SYS_TGKILL            234
+#define SYS_GETRLIMIT         97
+#define SYS_MOUNT             165
+#define SYS_SETHOSTNAME       170
+#define SYS_STATFS            137
+#define SYS_FSTATFS           138
+#define SYS_ACCEPT4           288
+#define SYS_DUP               32
+#define SYS_VFORK             58
+#define SYS_MREMAP            25
+#define SYS_MADVISE           28
+#define SYS_FACCESSAT         269
+#define SYS_READLINKAT        267
+
 /* Misc */
 #define SYS_GETRUSAGE         98
 #define SYS_SYSINFO           99
@@ -180,6 +203,7 @@
 #define EBADF     9
 #define ECHILD    10
 #define EAGAIN    11
+#define EINTR     4
 #define ENOMEM    12
 #define EACCES    13
 #define EFAULT    14

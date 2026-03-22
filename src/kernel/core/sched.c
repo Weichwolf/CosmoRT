@@ -62,7 +62,14 @@ static int count_rt_threads(void) {
         if (t && (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR))
             count++;
         uint32_t rt_bits = core_rq[c].bitmap >> PRIO_RT_MIN;
-        count += __builtin_popcount(rt_bits);
+        /* Manual popcount — no libgcc in freestanding */
+        {
+            uint32_t v = rt_bits;
+            v = v - ((v >> 1) & 0x55555555U);
+            v = (v & 0x33333333U) + ((v >> 2) & 0x33333333U);
+            v = (v + (v >> 4)) & 0x0F0F0F0FU;
+            count += (int)((v * 0x01010101U) >> 24);
+        }
     }
     return count;
 }

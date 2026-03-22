@@ -2,6 +2,43 @@
 
 #include "internal.h"
 
+/* Resolve a relative path against CWD, handling "." and ".." components.
+ * Result written to out (max outsize bytes). Returns 0 on success. */
+static int resolve_path(const char *path, char *out, int outsize) {
+    if (!path || !out || outsize < 2) return -EINVAL;
+
+    /* Start from CWD for relative paths */
+    int oi = 0;
+    if (path[0] != '/') {
+        process_t *p = proc_current();
+        const char *cwd = p ? p->cwd : "/";
+        while (*cwd && oi < outsize - 1) out[oi++] = *cwd++;
+        if (oi > 1 && out[oi - 1] != '/' && oi < outsize - 1) out[oi++] = '/';
+    }
+    /* Append path */
+    while (*path && oi < outsize - 1) out[oi++] = *path++;
+    out[oi] = '\0';
+
+    /* Normalize: resolve "." and ".." in-place */
+    char *w = out, *r = out;
+    if (*r == '/') *w++ = *r++;
+    while (*r) {
+        if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
+            r += 2; /* skip "/." */
+        } else if (r[0] == '/' && r[1] == '.' && r[2] == '.' && (r[3] == '/' || r[3] == '\0')) {
+            r += 3; /* skip "/.." */
+            if (w > out + 1) { w--; while (w > out + 1 && w[-1] != '/') w--; }
+        } else {
+            *w++ = *r++;
+        }
+    }
+    if (w == out) *w++ = '/'; /* root */
+    /* Remove trailing slash (unless root) */
+    if (w > out + 1 && w[-1] == '/') w--;
+    *w = '\0';
+    return 0;
+}
+
 long do_write(int fd, const void *buf, size_t count) {
     if (!user_ok((uint64_t)buf, count)) return -EFAULT;
     process_t *p = proc_current();
@@ -262,11 +299,12 @@ long do_fstat(int fd, struct k_stat *buf) {
 }
 
 long do_stat(const char *path, struct k_stat *buf) {
-    char kpath[PATH_MAX];
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
     if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    return vfs_stat(kpath, buf);
+    resolve_path(kpath, rpath, PATH_MAX);
+    return vfs_stat(rpath, buf);
 }
 
 /* ── SYS_dup2 (33) / SYS_dup3 (292) ────────────── */

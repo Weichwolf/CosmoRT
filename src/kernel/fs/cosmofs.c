@@ -64,8 +64,14 @@ int cosmofs_mount(void) {
             struct bcache_entry *bbe = bcache_get(sb.bitmap_start + bi);
             if (!bbe) continue;
             uint64_t *bits = (uint64_t *)bbe->data;
-            for (int w = 0; w < 512; w++)
-                used += (uint64_t)__builtin_popcountll(bits[w]);
+            for (int w = 0; w < 512; w++) {
+                /* Manual popcount — no libgcc in freestanding */
+                uint64_t v = bits[w];
+                v = v - ((v >> 1) & 0x5555555555555555ULL);
+                v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+                v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+                used += (v * 0x0101010101010101ULL) >> 56;
+            }
             bcache_put(bbe);
         }
         sb.free_blocks = data_blocks > used ? data_blocks - used : 0;

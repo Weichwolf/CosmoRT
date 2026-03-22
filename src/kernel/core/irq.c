@@ -227,6 +227,10 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
     kill_process:
         serial_puts("\nSEGFAULT CR2=");
         serial_hex64(cr2);
+        serial_puts(" RIP=");
+        serial_hex64(frame->rip);
+        serial_puts(" err=");
+        serial_hex64(error);
         if (t && t->proc) {
             serial_puts(" pid=");
             serial_putchar('0' + (t->proc->pid % 10));

@@ -102,6 +102,18 @@ static uint64_t cosmofs_walk(const char *path) {
     return cur;
 }
 
+/* Public accessor for execve — walk CosmoFS path to inode */
+uint64_t cosmofs_walk_path(const char *path) {
+    return cosmofs_walk(path);
+}
+
+/* Public accessor for execve — get file size from CosmoFS inode */
+uint64_t cosmofs_file_size(uint64_t ino) {
+    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+    if (!ip || ip->type != COSMOFS_TYPE_FILE) return 0;
+    return ip->size;
+}
+
 /* Walk to parent directory, extract basename. Returns parent inode or 0. */
 static uint64_t cosmofs_walk_parent(const char *path, const char **basename_out) {
     if (!path || path[0] != '/') return 0;

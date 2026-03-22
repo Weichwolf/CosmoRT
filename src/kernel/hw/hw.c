@@ -79,22 +79,26 @@ void cosmo_dma_free(void *virt, size_t len) {
     pages_free(virt, npages);
 }
 
-/* ── IRQ Registration ────────────────────────────── */
+/* ── IRQ Registration (shared IRQ support) ───────── */
 
 #define HW_MAX_IRQ 24
+#define HW_MAX_HANDLERS_PER_IRQ 4
 
 static struct {
     void (*handler)(void *);
     void *ctx;
-} irq_table[HW_MAX_IRQ];
+} irq_table[HW_MAX_IRQ][HW_MAX_HANDLERS_PER_IRQ];
 
 static spinlock_t irq_table_lock = SPINLOCK_INIT;
 
-/* Internal IRQ dispatcher — called from irq.c generic handler */
+/* Internal IRQ dispatcher — calls ALL registered handlers for this IRQ */
 static void hw_irq_dispatch(int vector) {
     int irq = vector - 32;  /* APIC vectors start at 32 */
-    if (irq >= 0 && irq < HW_MAX_IRQ && irq_table[irq].handler)
-        irq_table[irq].handler(irq_table[irq].ctx);
+    if (irq < 0 || irq >= HW_MAX_IRQ) return;
+    for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
+        if (irq_table[irq][i].handler)
+            irq_table[irq][i].handler(irq_table[irq][i].ctx);
+    }
 }
 
 int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
@@ -103,8 +107,19 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
     uint64_t flags;
     spin_lock_irq(&irq_table_lock, &flags);
 
-    irq_table[irq].handler = handler;
-    irq_table[irq].ctx = ctx;
+    /* Find free slot for this IRQ */
+    int slot = -1;
+    for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
+        if (!irq_table[irq][i].handler) { slot = i; break; }
+    }
+    if (slot < 0) {
+        spin_unlock_irq(&irq_table_lock, flags);
+        serial_puts("hw: IRQ table full for IRQ\n");
+        return -1;
+    }
+
+    irq_table[irq][slot].handler = handler;
+    irq_table[irq][slot].ctx = ctx;
 
     /* Route I/O APIC IRQ to vector 32+irq */
     int vector = 32 + irq;
@@ -213,10 +228,11 @@ uint64_t hw_ms(void) {
 /* ── Init ────────────────────────────────────────── */
 
 void hw_init(void) {
-    for (int i = 0; i < HW_MAX_IRQ; i++) {
-        irq_table[i].handler = 0;
-        irq_table[i].ctx = 0;
-    }
+    for (int i = 0; i < HW_MAX_IRQ; i++)
+        for (int j = 0; j < HW_MAX_HANDLERS_PER_IRQ; j++) {
+            irq_table[i][j].handler = 0;
+            irq_table[i][j].ctx = 0;
+        }
     serial_puts("hw: 5 primitives ready\n");
 }
 

@@ -903,18 +903,65 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Look up the file in VFS */
-    struct vfs_node *node = vfs_lookup(kpath);
-    if (!node) return -ENOENT;
-    if (node->type != VFS_FILE) return -EACCES;
-    if (!node->data || node->size == 0) return -ENOEXEC;
+    /* Look up the file — try ramfs first, then CosmoFS */
+    uint8_t *elf_buf = 0;
+    size_t elf_len = 0;
+    int elf_pages = 0;
 
-    /* Copy ELF data to kernel buffer (address space will be destroyed) */
-    size_t elf_len = node->size;
-    int elf_pages = (int)((elf_len + 4095) / 4096);
-    uint8_t *elf_buf = (uint8_t *)pages_alloc(elf_pages);
-    if (!elf_buf) return -ENOMEM;
-    kmemcpy(elf_buf, node->data, elf_len);
+    struct vfs_node *node = vfs_lookup(kpath);
+    if (node && node->type == VFS_FILE && node->data && node->size > 0) {
+        /* ramfs file — copy from memory */
+        elf_len = node->size;
+        elf_pages = (int)((elf_len + 4095) / 4096);
+        elf_buf = (uint8_t *)pages_alloc(elf_pages);
+        if (!elf_buf) return -ENOMEM;
+        kmemcpy(elf_buf, node->data, elf_len);
+    } else {
+        /* Try CosmoFS — read entire file into contiguous kernel buffer */
+        extern int cosmofs_mounted(void);
+        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
+        extern uint64_t cosmofs_walk_path(const char *path);
+        extern uint64_t cosmofs_file_size(uint64_t ino);
+
+        if (!cosmofs_mounted()) return -ENOENT;
+
+        uint64_t cosmofs_ino = cosmofs_walk_path(kpath);
+        if (cosmofs_ino == 0) return -ENOENT;
+
+        elf_len = (size_t)cosmofs_file_size(cosmofs_ino);
+        if (elf_len == 0) return -ENOEXEC;
+
+        serial_puts("execve: ");
+        serial_puts(kpath);
+        serial_puts(" (");
+        { char t[20]; int i=0; uint64_t v=elf_len;
+          do{t[i++]='0'+(char)(v%10);v/=10;}while(v);
+          while(i--) serial_putchar(t[i]); }
+        serial_puts(" bytes) loading...");
+
+        elf_pages = (int)((elf_len + 4095) / 4096);
+        elf_buf = (uint8_t *)pages_alloc(elf_pages);
+        if (!elf_buf) {
+            serial_puts("OOM\n");
+            return -ENOMEM;
+        }
+
+        /* Read file in 4KB chunks from CosmoFS */
+        size_t pos = 0;
+        while (pos < elf_len) {
+            size_t chunk = elf_len - pos;
+            if (chunk > 4096) chunk = 4096;
+            int rd = cosmofs_read(cosmofs_ino, elf_buf + pos, pos, chunk);
+            if (rd < 0) {
+                serial_puts("read error\n");
+                pages_free(elf_buf, elf_pages);
+                return -EIO;
+            }
+            pos += (size_t)rd;
+        }
+
+        serial_puts("ok\n");
+    }
 
     /* Also copy interpreter binary if needed (peek at PT_INTERP before destroying AS) */
     uint8_t *interp_buf = 0;
@@ -961,6 +1008,10 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
+    /* Switch to kernel page tables before freeing user address space.
+     * Without this, free_address_space frees the PML4 page that CR3
+     * still points to → buddy may reuse it → page_zero → triple fault. */
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
     /* Free current address space */
     free_address_space(p->pml4);
     vma_free_tree(p->vma_root);
@@ -1115,7 +1166,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                 *(--stk) = (uint64_t)argc;
 
                 stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
-                stack_ptr = (stack_ptr & ~0xFULL) - 8;
+                stack_ptr &= ~0xFULL; /* 16-byte align (no -8: _start reads argc at RSP) */
             }
         }
 
