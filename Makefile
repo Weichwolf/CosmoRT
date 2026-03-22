@@ -291,11 +291,17 @@ bench: $(SRC)/kernel/gen/kbench_bin.h
 	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 
 # ── Hardware test binary ─────────────────────────
-$(BUILD)/user/ktest.o: $(SRC)/user/ktest.c | $(BUILD)/user
-	$(CC) $(UCFLAGS) -c -o $@ $<
+KTEST_SRC = $(wildcard test/*.c)
+KTEST_OBJ = $(patsubst test/%.c,$(BUILD)/test/%.o,$(KTEST_SRC))
 
-$(BUILD)/user/ktest: $(BUILD)/user/ktest.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/test:
+	@mkdir -p $@
+
+$(BUILD)/test/%.o: test/%.c test/ktest.h | $(BUILD)/test
+	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+
+$(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_OBJ)
 
 $(SRC)/kernel/gen/ktest_bin.h: $(BUILD)/user/ktest
 	@python3 -c "\
@@ -311,9 +317,10 @@ $(SRC)/kernel/gen/ktest_bin.h: $(BUILD)/user/ktest
 # Build + boot with hardware test
 test-hw: $(SRC)/kernel/gen/ktest_bin.h
 	@cp $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/init_bin.h.bak 2>/dev/null; true
+	$(MAKE) all
 	@sed 's/ktest_bin/init_bin/g; s/ktest_bin_size/init_bin_size/g' \
 	  $(SRC)/kernel/gen/ktest_bin.h > $(SRC)/kernel/gen/init_bin.h
-	@rm -f $(BUILD)/kernel/main.o
+	@rm -f $(BUILD)/kernel/core/main.o
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
 	timeout 30 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
@@ -444,7 +451,7 @@ $(BUILD)/user/vt_shell: $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
 qemu-gui: $(BUILD)/user/vt_shell
 	@cp $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/init_bin.h.bak 2>/dev/null; true
 	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(SRC)/kernel/gen/init_bin.h
-	@rm -f $(BUILD)/kernel/main.o
+	@rm -f $(BUILD)/kernel/core/main.o
 	$(MAKE) all
 	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
