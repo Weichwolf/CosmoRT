@@ -78,6 +78,9 @@ typedef struct thread {
 
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
+
+    /* ── Fault info for signal delivery ── */
+    uint64_t fault_addr;   /* CR2 for SIGSEGV/SIGBUS delivery */
 } thread_t;
 
 #define THREAD_MAX 64

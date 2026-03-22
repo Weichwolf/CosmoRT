@@ -212,7 +212,9 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
                     return result;
                 }
             }
-            gap_end = cur->start;
+            /* Advance gap_end downward — never above base */
+            if (cur->start < gap_end)
+                gap_end = cur->start;
             cur = cur->left;
         }
     }

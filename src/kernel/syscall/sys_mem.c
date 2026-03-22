@@ -190,8 +190,8 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 vaddr = vma_find_free(p->vma_root, USER_MMAP_BASE, length);
                 if (!vaddr) return -ENOMEM;
             }
+            p->mmap_next = vaddr;
         }
-        p->mmap_next = vaddr;
     }
 
     /* Create VMA */

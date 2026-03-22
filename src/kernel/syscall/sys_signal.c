@@ -134,7 +134,14 @@ void deliver_signal(thread_t *t, int signo) {
     sig_siginfo_t si;
     kmemset(&si, 0, sizeof(si));
     si.si_signo = (int32_t)signo;
-    si.si_code = 0; /* SI_USER */
+    if (signo == 11 || signo == 7) { /* SIGSEGV / SIGBUS */
+        si.si_code = 1; /* SEGV_MAPERR */
+        /* si_addr at offset 16 in siginfo_t (after signo, errno, code, pad) */
+        uint64_t fault = t->fault_addr;
+        kmemcpy(&si._pad[0], &fault, 8);
+    } else {
+        si.si_code = 0; /* SI_USER */
+    }
 
     /* Write return address */
     uint64_t restorer_addr;

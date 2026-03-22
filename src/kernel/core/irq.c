@@ -251,6 +251,45 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         }
 
     kill_process:
+        /* Try to deliver SIGSEGV to user handler before killing */
+        if (t && t->proc) {
+            process_t *faultp = t->proc;
+            struct k_sigaction *sa = &faultp->sig_actions[11]; /* SIGSEGV=11 */
+            if ((uint64_t)sa->sa_handler > 1 && !(faultp->sig_blocked & (1ULL << 11))) {
+                /* User SIGSEGV handler registered and not blocked — deliver signal.
+                 * Save IRQ frame into thread_t, deliver, write back. */
+                t->fault_addr = cr2;
+                t->rip = frame->rip;
+                t->rsp = frame->rsp;
+                t->rflags = frame->rflags;
+                t->rax = frame->rax; t->rbx = frame->rbx;
+                t->rcx = frame->rcx; t->rdx = frame->rdx;
+                t->rsi = frame->rsi; t->rdi = frame->rdi;
+                t->rbp = frame->rbp;
+                t->r8  = frame->r8;  t->r9  = frame->r9;
+                t->r10 = frame->r10; t->r11 = frame->r11;
+                t->r12 = frame->r12; t->r13 = frame->r13;
+                t->r14 = frame->r14; t->r15 = frame->r15;
+
+                extern void deliver_signal(thread_t *t, int signo);
+                deliver_signal(t, 11);
+
+                /* Write back modified registers to IRQ frame */
+                frame->rip = t->rip;
+                frame->rsp = t->rsp;
+                frame->rflags = t->rflags;
+                frame->rax = t->rax; frame->rbx = t->rbx;
+                frame->rcx = t->rcx; frame->rdx = t->rdx;
+                frame->rsi = t->rsi; frame->rdi = t->rdi;
+                frame->rbp = t->rbp;
+                frame->r8  = t->r8;  frame->r9  = t->r9;
+                frame->r10 = t->r10; frame->r11 = t->r11;
+                frame->r12 = t->r12; frame->r13 = t->r13;
+                frame->r14 = t->r14; frame->r15 = t->r15;
+                return; /* resume into signal handler */
+            }
+        }
+
         serial_puts("\nSEGFAULT CR2=");
         serial_hex64(cr2);
         serial_puts(" RIP=");
@@ -296,6 +335,56 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
+
+    /* User-mode exception: try to deliver as signal before killing.
+     * Map: GPF(13), Page Fault(14) → SIGSEGV(11);
+     *      INT3(3) → SIGTRAP(5); FPE(0,16,19) → SIGFPE(8) */
+    if (t && t->proc && (frame->cs & 3)) {
+        int signo = 0;
+        if (vector == 13 || vector == 14) signo = 11; /* SIGSEGV */
+        else if (vector == 3) signo = 5;               /* SIGTRAP */
+        else if (vector == 0 || vector == 16 || vector == 19) signo = 8; /* SIGFPE */
+        else if (vector == 6) signo = 4;               /* SIGILL */
+
+        if (signo) {
+            struct k_sigaction *sa = &t->proc->sig_actions[signo];
+            /* Only deliver if handler exists AND signal not already blocked
+             * (blocked = we're already in the handler → avoid infinite loop) */
+            if ((uint64_t)sa->sa_handler > 1 && !(t->proc->sig_blocked & (1ULL << signo))) {
+                /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
+                if (vector == 14) {
+                    __asm__ volatile("mov %%cr2, %0" : "=r"(t->fault_addr));
+                } else {
+                    t->fault_addr = frame->rip;
+                }
+                t->rip = frame->rip; t->rsp = frame->rsp;
+                t->rflags = frame->rflags;
+                t->rax = frame->rax; t->rbx = frame->rbx;
+                t->rcx = frame->rcx; t->rdx = frame->rdx;
+                t->rsi = frame->rsi; t->rdi = frame->rdi;
+                t->rbp = frame->rbp;
+                t->r8  = frame->r8;  t->r9  = frame->r9;
+                t->r10 = frame->r10; t->r11 = frame->r11;
+                t->r12 = frame->r12; t->r13 = frame->r13;
+                t->r14 = frame->r14; t->r15 = frame->r15;
+
+                extern void deliver_signal(thread_t *t, int signo);
+                deliver_signal(t, signo);
+
+                frame->rip = t->rip; frame->rsp = t->rsp;
+                frame->rflags = t->rflags;
+                frame->rax = t->rax; frame->rbx = t->rbx;
+                frame->rcx = t->rcx; frame->rdx = t->rdx;
+                frame->rsi = t->rsi; frame->rdi = t->rdi;
+                frame->rbp = t->rbp;
+                frame->r8  = t->r8;  frame->r9  = t->r9;
+                frame->r10 = t->r10; frame->r11 = t->r11;
+                frame->r12 = t->r12; frame->r13 = t->r13;
+                frame->r14 = t->r14; frame->r15 = t->r15;
+                return; /* resume into signal handler */
+            }
+        }
+    }
 
     serial_puts("\nEXCEPTION ");
     serial_putchar('0' + vector / 10);
