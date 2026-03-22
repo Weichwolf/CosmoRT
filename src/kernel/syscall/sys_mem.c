@@ -328,10 +328,6 @@ long do_munmap(unsigned long addr, size_t length) {
         }
     }
 
-    /* Reclaim freed address space for future mmap */
-    if (end > p->mmap_next)
-        p->mmap_next = end;
-
     return 0;
 }
 
