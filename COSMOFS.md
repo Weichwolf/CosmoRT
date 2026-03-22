@@ -18,11 +18,15 @@ COW schreibt nie in-place. Neuer Baum wird atomar sichtbar durch
 Root-Pointer-Update. Crash-Consistency ohne WAL — der alte Baum
 ist noch da bis der neue vollstaendig geschrieben ist.
 
-### 2. Snapshots in O(1)
+### 2. Snapshots/Checkpoints in O(1)
 
 Ein Snapshot ist ein Pointer auf die aktuelle Root-Node. Alte Bloecke
 bleiben solange ein Snapshot sie referenziert. Kein rsync, kein
 Kopieren. Jeder Checkpoint ist ein Pointer-Swap.
+
+Benannte Checkpoints (manuell oder automatisch vor Updates).
+Bootloader zeigt Checkpoint-Liste, User waehlt beim Start.
+Recovery = aelteren Root-Pointer mounten. Kein fsck.
 
 ### 3. Dedup ist inharent
 
