@@ -158,6 +158,16 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_GETRUSAGE: return do_getrusage((int)a1, (void *)a2);
     case SYS_TIMES:     return do_times((void *)a1);
     case SYS_RSEQ:      return -ENOSYS;
+    case SYS_CAPGET:    return -EPERM;
+    case SYS_CAPSET:    return -EPERM;
+    case SYS_TIME: {
+        /* time(2): return seconds since epoch, optionally write to *a1 */
+        extern uint64_t timer_ms(void);
+        long secs = (long)(timer_ms() / 1000) + 1711000000LL; /* rough epoch offset */
+        if (a1 && user_ok((uint64_t)a1, 8))
+            kmemcpy((void *)a1, &secs, sizeof(secs));
+        return secs;
+    }
 
     /* Timers / clocks */
     case SYS_CLOCK_GETTIME:   return do_clock_gettime((int)a1, (void *)a2);
@@ -269,6 +279,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_INOTIFY_ADD_WATCH: return do_inotify_add_watch((int)a1, (const char *)a2,
                                                              (uint32_t)a3);
     case SYS_INOTIFY_RM_WATCH:  return do_inotify_rm_watch((int)a1, (int)a2);
+    case SYS_EPOLL_PWAIT:       return do_epoll_wait((int)a1, (struct epoll_event *)a2,
+                                                      (int)a3, (int)a4); /* ignore sigmask a5 */
 
     /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
     /* Capability check: only processes with is_driver may use these */

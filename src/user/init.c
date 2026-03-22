@@ -24,6 +24,9 @@ static void puts(const char *s) {
 void _start(void) {
     puts("CosmoOS booted!\n");
 
+    /* Set kernel-internal cwd before exec */
+    syscall1(80 /* chdir */, (long)"/home");
+
     char *envp[] = {
         "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
         "PWD=/home", "SHELL=/usr/bin/bash",

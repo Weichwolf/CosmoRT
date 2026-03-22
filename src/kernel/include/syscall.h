@@ -143,6 +143,12 @@
 #define SYS_SYSINFO           99
 #define SYS_TIMES             100
 
+/* capget / time / epoll_pwait */
+#define SYS_CAPGET            125
+#define SYS_CAPSET            126
+#define SYS_TIME              201
+#define SYS_EPOLL_PWAIT       281
+
 /* epoll / eventfd / timerfd / signalfd / inotify */
 #define SYS_EPOLL_WAIT        232
 #define SYS_EPOLL_CTL         233

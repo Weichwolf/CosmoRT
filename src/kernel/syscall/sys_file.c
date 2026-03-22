@@ -39,12 +39,34 @@ static int resolve_path(const char *path, char *out, int outsize) {
     return 0;
 }
 
+/* Device file IDs (must match vfs.c) */
+#define DEV_NULL    1
+#define DEV_ZERO    2
+#define DEV_URANDOM 3
+#define DEV_TTY     4
+
 long do_write(int fd, const void *buf, size_t count) {
     if (!user_ok((uint64_t)buf, count)) return -EFAULT;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
+    if (fde->type == FD_DEVICE) {
+        int devid = (int)(uintptr_t)fde->obj;
+        if (devid == DEV_NULL) return (long)count; /* swallow */
+        if (devid == DEV_TTY)  { /* write to serial */
+            size_t actual = count > 0x10000 ? 0x10000 : count;
+            uint8_t kbuf[256]; size_t pos = 0;
+            while (pos < actual) {
+                size_t chunk = actual - pos > 256 ? 256 : actual - pos;
+                kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+                for (size_t j = 0; j < chunk; j++) serial_putchar((char)kbuf[j]);
+                pos += chunk;
+            }
+            return (long)actual;
+        }
+        return -EBADF;
+    }
     if (fde->type == FD_SERIAL) {
         size_t actual = count > 0x10000 ? 0x10000 : count;
         uint8_t kbuf[256];
@@ -119,6 +141,23 @@ long do_read(int fd, void *buf, size_t count) {
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
+    if (fde->type == FD_DEVICE) {
+        int devid = (int)(uintptr_t)fde->obj;
+        if (devid == DEV_NULL)    return 0; /* EOF */
+        if (devid == DEV_ZERO) {
+            /* Fill with zeros */
+            size_t actual = count > 0x10000 ? 0x10000 : count;
+            kmemset(buf, 0, actual);
+            return (long)actual;
+        }
+        if (devid == DEV_URANDOM) {
+            /* Fill with random bytes */
+            extern long do_getrandom(void *buf, size_t buflen, unsigned int flags);
+            size_t actual = count > 4096 ? 4096 : count;
+            return do_getrandom(buf, actual, 0);
+        }
+        return -EBADF;
+    }
     if (fde->type == FD_SERIAL) {
         extern char serial_getchar(void);
         uint8_t kbuf[256];

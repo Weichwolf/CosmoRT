@@ -1266,7 +1266,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 /* ── wait4 (2.2) ─────────────────────────────────── */
 
 long do_wait4(int pid, int *wstatus, int options, void *rusage) {
-    (void)options; (void)rusage;
+    (void)rusage;
 
     thread_t *cur = thread_current();
     if (!cur || !cur->proc) return -EFAULT;
@@ -1277,7 +1277,9 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                      (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
         return -EFAULT;
 
-    /* Find matching child */
+    int wnohang = options & 1; /* WNOHANG = 1 */
+
+    /* Scan for matching child */
     for (;;) {
         int found_child = 0;
 
@@ -1286,6 +1288,7 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
             if (child->state == PROC_FREE) continue;
             if (child->parent_pid != parent->pid) continue;
             if (pid > 0 && child->pid != (uint32_t)pid) continue;
+            if (pid == 0 || pid == -1) { /* wait for any child */ }
 
             found_child = 1;
 
@@ -1294,23 +1297,28 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                 int exit_status = child->exit_code;
 
                 if (wstatus) {
-                    /* Bounce via kernel variable to avoid direct user-pointer write */
-                    int kstatus = (exit_status & 0xFF) << 8; /* Linux wait status format */
+                    int kstatus = (exit_status & 0xFF) << 8;
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
 
-                /* Reap: free child resources */
                 proc_cleanup(child);
-
                 return child_pid;
             }
         }
 
         if (!found_child) return -ECHILD;
+        if (wnohang) return 0;
 
-        /* Child exists but hasn't exited — spin-wait.
-         * With SMP >= 2, the child runs on another core. */
-        for (volatile int w = 0; w < 10000; w++)
-            __asm__ volatile("pause");
+        /* Block: child exists but hasn't exited.
+         * Child exit (exit_kill_process) wakes parent threads. */
+        save_user_state_for_block(cur, 0);
+        cur->state = THREAD_BLOCKED;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        thread_return_to_kernel(cur);
+        /* Unreachable — when woken, we re-enter via syscall return path.
+         * The waker calls sched_add(cur) which resumes us; we re-execute
+         * the wait4 syscall from userspace (rax was saved as 0 by
+         * save_user_state_for_block, but userspace will retry). */
+        return 0;
     }
 }

@@ -286,6 +286,21 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
     case FUTEX_WAKE:      return futex_wake(uaddr, val);
     case FUTEX_LOCK_PI:   return futex_lock_pi(uaddr);
     case FUTEX_UNLOCK_PI: return futex_unlock_pi(uaddr);
+    case FUTEX_WAKE_OP: {
+        /* Simplified WAKE_OP: wake val waiters on uaddr, then
+         * apply operation on *uaddr2 and conditionally wake val3
+         * waiters on uaddr2.  We simplify: wake val on uaddr +
+         * wake val3 on uaddr2 (skip the atomic op comparison). */
+        long r1 = futex_wake(uaddr, val);
+        if (uaddr2) {
+            long r2 = futex_wake(uaddr2, val3);
+            if (r2 > 0 && r1 >= 0) r1 += r2;
+        }
+        return r1;
+    }
+    case FUTEX_CMP_REQUEUE:
+        /* Simplified: wake val waiters on uaddr, ignore requeue */
+        return futex_wake(uaddr, val);
     default:
         serial_puts("futex: unknown op ");
         serial_putchar('0' + (cmd % 10));

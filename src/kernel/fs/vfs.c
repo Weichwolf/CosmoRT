@@ -366,8 +366,35 @@ static struct vfs_node *ensure_dirs(const char *path) {
 
 /* ── Open/Close ──────────────────────────────────── */
 
+/* Device file IDs (stored in fd_entry.obj as uintptr_t) */
+#define DEV_NULL    1
+#define DEV_ZERO    2
+#define DEV_URANDOM 3
+#define DEV_TTY     4
+
+static int kstreq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
 int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
+
+    /* Device files */
+    if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||
+        kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random") ||
+        kstreq(path, "/dev/tty")) {
+        int devid = 0;
+        if (kstreq(path, "/dev/null"))    devid = DEV_NULL;
+        if (kstreq(path, "/dev/zero"))    devid = DEV_ZERO;
+        if (kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random"))
+                                           devid = DEV_URANDOM;
+        if (kstreq(path, "/dev/tty"))     devid = DEV_TTY;
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)devid, flags & 3);
+        return fd < 0 ? -EMFILE : fd;
+    }
 
     /* procfs path? */
     const char *pname = procfs_name(path);
@@ -770,6 +797,22 @@ static void fill_cosmofs_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_s
 }
 
 int vfs_stat(const char *path, struct k_stat *buf) {
+    /* Device files */
+    if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||
+        kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random") ||
+        kstreq(path, "/dev/tty")) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFCHR | 0666;
+        buf->st_blksize = 4096;
+        buf->st_ino = 5;
+        if (kstreq(path, "/dev/null"))    buf->st_rdev = 0x0103;
+        if (kstreq(path, "/dev/zero"))    buf->st_rdev = 0x0105;
+        if (kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random"))
+                                           buf->st_rdev = 0x0109;
+        if (kstreq(path, "/dev/tty"))     buf->st_rdev = 0x0500;
+        return 0;
+    }
+
     const char *pn = procfs_name(path);
     if (pn) {
         int dummy;
@@ -800,6 +843,19 @@ int vfs_fstat(int fd, struct k_stat *buf) {
 
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
+
+    /* Device FDs: /dev/null, /dev/zero, /dev/urandom, /dev/tty */
+    if (fde->type == FD_DEVICE) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
+        int devid = (int)(uintptr_t)fde->obj;
+        if (devid == 1 /*DEV_NULL*/)    { buf->st_rdev = 0x0103; buf->st_ino = 5; }
+        if (devid == 2 /*DEV_ZERO*/)    { buf->st_rdev = 0x0105; buf->st_ino = 6; }
+        if (devid == 3 /*DEV_URANDOM*/) { buf->st_rdev = 0x0109; buf->st_ino = 7; }
+        if (devid == 4 /*DEV_TTY*/)     { buf->st_rdev = 0x0500; buf->st_ino = 8; }
+        buf->st_blksize = 4096;
+        return 0;
+    }
 
     /* Serial FDs get a minimal stat */
     if (fde->type == FD_SERIAL) {

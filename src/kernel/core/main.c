@@ -44,9 +44,67 @@
 
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
+/* ── EFI Relocation Fixup ─────────────────────────────
+ * The EFI PE loader applies R_X86_64_RELATIVE relocations at the physical
+ * load address.  After jumping to the direct map (PHYS_OFFSET + phys),
+ * all absolute pointers in .data/.rodata still hold identity-map addresses.
+ * Syscall handlers run with user CR3 (no identity map) → page fault.
+ *
+ * Fix: walk the .rela section via _DYNAMIC and add PHYS_OFFSET to every
+ * R_X86_64_RELATIVE target whose current value is below PHYS_OFFSET. */
+
+struct elf64_dyn { uint64_t tag; uint64_t val; };
+struct elf64_rela { uint64_t offset; uint64_t info; int64_t addend; };
+#define DT_NULL 0
+#define DT_RELA 7
+#define DT_RELASZ 8
+
+extern struct elf64_dyn _DYNAMIC[];
+extern char ImageBase[];  /* link address 0 → runtime = EFI load base */
+
+static void fixup_efi_relocations(void) {
+    /* Compute EFI load base: runtime address of ImageBase (link addr 0) */
+    uint64_t ldbase = (uint64_t)(uintptr_t)ImageBase;
+
+    uint64_t rela_off = 0, rela_size = 0, rela_ent = 0;
+    for (struct elf64_dyn *d = _DYNAMIC; d->tag != DT_NULL; d++) {
+        if (d->tag == DT_RELA)    rela_off = d->val;
+        if (d->tag == DT_RELASZ)  rela_size = d->val;
+        if (d->tag == 9/*RELAENT*/) rela_ent = d->val;
+    }
+    if (!rela_off || !rela_size) return;
+    if (!rela_ent) rela_ent = sizeof(struct elf64_rela);
+
+    /* rela_off is link-time offset; add ldbase to get runtime phys addr,
+     * then ensure_high to get direct-map kernel address */
+    struct elf64_rela *rela = (struct elf64_rela *)ensure_high(rela_off + ldbase);
+    int count = (int)(rela_size / rela_ent);
+
+    int patched = 0;
+    for (int i = 0; i < count; i++) {
+        uint64_t type = rela[i].info & 0xFFFFFFFF;
+        if (type != 8) continue; /* 8 = R_X86_64_RELATIVE */
+
+        /* Target address = link-time offset + load base → direct map */
+        uint64_t *target = (uint64_t *)ensure_high(rela[i].offset + ldbase);
+        uint64_t val = *target;
+        /* Value was set by _relocate to: addend + ldbase (physical address).
+         * We need: addend + ldbase + PHYS_OFFSET (direct-map address). */
+        if (val && val < PHYS_OFFSET) {
+            *target = val + PHYS_OFFSET;
+            patched++;
+        }
+    }
+    (void)patched; /* relocation fixup complete */
+}
+
 struct boot_info *g_boot_info;
 
 void kernel_main(struct boot_info *info) {
+    /* FIRST: fix all EFI-relocated absolute pointers before any C code
+     * uses global function pointers or data pointers. */
+    fixup_efi_relocations();
+
     g_boot_info = info;
 
     serial_init();
