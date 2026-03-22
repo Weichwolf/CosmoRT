@@ -122,6 +122,23 @@ access_key = ...
 secret_key = ...
 ```
 
+### Sync-Scope
+
+Nur /home wird gesynct. Alles andere ist reproduzierbar.
+
+```
+sync:   /home/**
+skip:   /home/.cache/**
+        /home/.local/share/Trash/**
+        node_modules/, build/, *.o, *.a
+```
+
+Steuerung ueber /home/.cosmosync (wie .gitignore).
+Dedup macht reproduzierbare Daten lokal billig,
+aber 50.000 node_modules-Dateien in die Cloud syncen
+ist Verschwendung — die sind aus package-lock.json
+reproduzierbar.
+
 ### Architektur-Trennung
 
 ```
