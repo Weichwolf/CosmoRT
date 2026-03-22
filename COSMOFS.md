@@ -1,0 +1,101 @@
+# CosmoFS v2 — Content-Addressed COW Filesystem
+
+## Kern-Idee
+
+Jeder Block ist sein eigener Hash. Writes sind Copy-on-Write.
+Daraus fallen alle Features zwingend raus.
+
+```
+write("hello") → sha256 → Block 0x7a3f...
+write("hello") → sha256 → selber Block, Refcount++
+```
+
+## Features (Konsequenzen aus COW + Content-Addressing)
+
+### 1. Kein Journal
+
+COW schreibt nie in-place. Neuer Baum wird atomar sichtbar durch
+Root-Pointer-Update. Crash-Consistency ohne WAL — der alte Baum
+ist noch da bis der neue vollstaendig geschrieben ist.
+
+### 2. Snapshots in O(1)
+
+Ein Snapshot ist ein Pointer auf die aktuelle Root-Node. Alte Bloecke
+bleiben solange ein Snapshot sie referenziert. Kein rsync, kein
+Kopieren. Jeder Checkpoint ist ein Pointer-Swap.
+
+### 3. Dedup ist inharent
+
+Zwei identische Dateien (oder identische Bloecke innerhalb
+verschiedener Dateien) zeigen auf denselben physischen Block.
+node_modules mit 50.000 Dateien ueber 3 Projekte? Einmal gespeichert.
+
+### 4. Cloud-Sync als FS-Primitiv
+
+Content-Addressing macht Sync trivial: "welche Hashes hat die
+Gegenseite nicht?" Kein Diff auf Dateiebene, kein Timestamp-Vergleich.
+Zwei CosmoOS-Rechner synchronisieren sich wie git-Repos.
+
+```
+Datei-Zustaende (im FS, nicht in einer App):
+  ● lokal          Block ist auf SSD
+  ◐ syncing        Upload/Download laeuft
+  ○ remote-only    Nur Hash + Metadaten lokal, Inhalt in der Cloud
+```
+
+open() auf eine remote-only Datei fetcht transparent.
+df zeigt lokalen UND Cloud-Speicher.
+
+### 5. Strukturierte Metadaten
+
+Typisierte Attribute, automatisch indiziert (BFS-Erbe, modern):
+
+```c
+// FS-native Query statt find+grep
+cosmo_query("/home/Pictures", "date > 2025-01 AND width > 1920")
+// → Ergebnis in Mikrosekunden, B+ Tree Index
+```
+
+Jede Datei hat ein Schema-freies Attribut-Set. Import-Tools schreiben
+Metadaten beim Erstellen. Der FS indiziert automatisch.
+
+### 6. SSD-Native
+
+| HDD-Annahme              | SSD-Realitaet              | Konsequenz                    |
+|---------------------------|----------------------------|-------------------------------|
+| Seek ist teuer            | Random Read = Sequential   | Block-Gruppen irrelevant      |
+| Schreiben ist guenstig    | Flash-Zellen verbrauchen   | COW + TRIM statt in-place     |
+| Fragmentierung killt      | Fragmentierung egal        | Keine Defrag noetig           |
+| Journal fuer Crash-Safety | FTL hat eigene Atomaritaet | COW reicht                    |
+
+TRIM-Awareness: Nicht mehr referenzierte COW-Bloecke → sofort TRIM.
+Flash-Zellen werden schneller recycelt.
+
+## Architektur
+
+```
+CosmoFS v2
+├── COW B+ Tree (kein Journal, crash-safe by design)
+├── Content-Addressed Blocks (SHA-256, 4KB Chunks)
+├── Inline Dedup (Refcount pro Block-Hash)
+├── Snapshots (Root-Pointer-Liste, O(1) create/delete)
+├── Typed Attributes + Auto-Index (B+ Tree pro Attribut)
+├── Sync-Primitiv (Hash-Diff gegen Remote, transparenter Fetch)
+└── TRIM-Pipeline (freed Blocks → async TRIM-Queue)
+```
+
+## Aufwand
+
+Das bestehende CosmoFS (B+ Tree, Block-Cache) ist 80% der
+Infrastruktur. COW ist ein neuer Schreibpfad, Content-Hashing
+ist SHA-256 pro Block, Dedup ist eine Hash→Block-Tabelle.
+Cloud-Sync ist Userspace (CosmoPX).
+
+## Bezug zu CosmoFS v1
+
+v1 (aktuell implementiert): B+ Tree Directories, WAL Journal,
+Block-Cache LRU. Funktional, aber keine Alleinstellungsmerkmale
+gegenueber ext4/BFS/XFS.
+
+v2 ersetzt den Schreibpfad (in-place → COW), fuegt Content-Addressing
+hinzu, und streicht das Journal. B+ Tree und Block-Cache bleiben.
