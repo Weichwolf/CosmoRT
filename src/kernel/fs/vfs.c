@@ -874,6 +874,40 @@ int vfs_fstat(int fd, struct k_stat *buf) {
         return 0;
     }
 
+    /* Pipe FDs: anonymous pipe, report as FIFO */
+    if (fde->type == FD_PIPE) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFIFO | S_IRUSR | S_IWUSR;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+
+    /* Socket FDs */
+    if (fde->type == FD_SOCKET) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFSOCK | S_IRUSR | S_IWUSR;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+
+    /* PTY slave/master: character device */
+    if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
+        buf->st_rdev = 0x8800 + (uint64_t)(uintptr_t)fde->obj; /* pts/N */
+        buf->st_blksize = 4096;
+        return 0;
+    }
+
+    /* epoll / eventfd / timerfd / inotify: anonymous FDs */
+    if (fde->type == FD_EPOLL || fde->type == FD_EVENTFD ||
+        fde->type == FD_TIMERFD || fde->type == FD_INOTIFY) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+
     if (fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;

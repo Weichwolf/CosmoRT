@@ -121,10 +121,12 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
     irq_table[irq][slot].handler = handler;
     irq_table[irq][slot].ctx = ctx;
 
-    /* Route I/O APIC IRQ to vector 32+irq */
+    /* Route I/O APIC IRQ to vector 32+irq.
+     * PCI uses level-triggered, active-low interrupts.
+     * Set bit 13 (active-low) + bit 15 (level-triggered). */
     int vector = 32 + irq;
-    extern void ioapic_route_irq(uint8_t irq, uint8_t vector);
-    ioapic_route_irq((uint8_t)irq, (uint8_t)vector);
+    extern void ioapic_route_irq_level(uint8_t irq, uint8_t vector);
+    ioapic_route_irq_level((uint8_t)irq, (uint8_t)vector);
 
     /* Register in kernel IRQ handler table */
     irq_register(vector, hw_irq_dispatch);

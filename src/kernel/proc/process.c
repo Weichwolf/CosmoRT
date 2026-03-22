@@ -405,7 +405,7 @@ thread_t *thread_find_by_tid(int tid) {
 /* ── Address space helpers ───────────────────────── */
 
 /* Read PTE for a user virtual address. Returns 0 if not mapped. */
-static uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
+uint64_t read_pte_pub(uint64_t *user_pml4, uint64_t va) {
     int pml4i = (va >> 39) & 0x1FF;
     if (!(user_pml4[pml4i] & PTE_PRESENT)) return 0;
     uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
@@ -417,6 +417,10 @@ static uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
     int pti = (va >> 12) & 0x1FF;
     return pt[pti];
+}
+
+static uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
+    return read_pte_pub(user_pml4, va);
 }
 
 /* Walk VMA tree, calling fn(vma, ctx) for each node */

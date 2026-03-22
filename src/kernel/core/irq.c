@@ -49,6 +49,13 @@ void ioapic_route_irq(uint8_t irq, uint8_t vector) {
     ioapic_write(0x10 + irq*2 + 1, 0);
 }
 
+/* Level-triggered, active-low — required for PCI INTx shared IRQs */
+void ioapic_route_irq_level(uint8_t irq, uint8_t vector) {
+    /* Bit 13 = active-low, bit 15 = level-triggered */
+    ioapic_write(0x10 + irq*2, (uint32_t)vector | (1 << 13) | (1 << 15));
+    ioapic_write(0x10 + irq*2 + 1, 0);
+}
+
 /* ── IDT ───────────────────────────────────────────── */
 
 struct idt_entry {
@@ -208,6 +215,22 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 if ((error & 1) && (error & 2) && !(vma->prot & PROT_WRITE)) {
                     /* Write to read-only VMA → kill */
                     goto kill_process;
+                }
+                /* NX violation: page present + instruction fetch, but VMA allows exec.
+                 * Re-map the page with correct permissions (PTE stale from mprotect race). */
+                if ((error & 1) && (error & 0x10) && (vma->prot & PROT_EXEC)) {
+                    uint64_t page_addr = cr2 & ~0xFFFULL;
+                    /* Read existing PTE to get physical address */
+                    extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
+                    uint64_t pte = read_pte_pub(p->pml4, page_addr);
+                    if (pte & 1) {
+                        /* Re-map with correct permissions (clears NX) */
+                        uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
+                        if (map_user_page(p->pml4, page_addr, phys, vma->prot) == 0) {
+                            __asm__ volatile("invlpg (%0)" :: "r"(page_addr) : "memory");
+                            return; /* resume execution */
+                        }
+                    }
                 }
                 /* Not-present fault in a valid VMA → allocate page */
                 if (!(error & 1)) {
