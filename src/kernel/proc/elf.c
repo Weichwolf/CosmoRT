@@ -157,90 +157,6 @@ static uint64_t elf_map_segments_inode(uint64_t ino, uint64_t file_size,
     return brk_end ? brk_end : 1;
 }
 
-/* Load a static ELF64 binary from CosmoFS inode.
- * Reads header/phdrs from disk, maps segments page-by-page. */
-int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
-                     uint64_t stack_top,
-                     uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out) {
-    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-    if (!ip || ip->type != COSMOFS_TYPE_FILE || ip->size < sizeof(Elf64_Ehdr))
-        return -1;
-
-    uint64_t file_size = ip->size;
-
-    /* Read ELF header */
-    Elf64_Ehdr eh;
-    if (cosmofs_read(ino, &eh, 0, sizeof(eh)) < (int)sizeof(eh)) return -1;
-
-    if (eh.e_ident[0] != ELFMAG0 || eh.e_ident[1] != ELFMAG1 ||
-        eh.e_ident[2] != ELFMAG2 || eh.e_ident[3] != ELFMAG3)
-        { serial_puts("elf_cos: bad magic\n"); return -1; }
-    if (eh.e_ident[4] != 2) { serial_puts("elf_cos: not 64-bit\n"); return -1; }
-    if (eh.e_type != ET_EXEC && eh.e_type != ET_DYN)
-        { serial_puts("elf_cos: unsupported type\n"); return -1; }
-    if (eh.e_machine != EM_X86_64) { serial_puts("elf_cos: not x86_64\n"); return -1; }
-    if (eh.e_phentsize < sizeof(Elf64_Phdr)) return -1;
-    if (eh.e_phnum > 64) return -1;
-
-    serial_puts("elf_cos: entry="); serial_hex64(eh.e_entry);
-    serial_puts(" phnum="); serial_putchar('0' + eh.e_phnum / 10);
-    serial_putchar('0' + eh.e_phnum % 10);
-    serial_puts(" size="); serial_hex64(file_size);
-    serial_putchar('\n');
-
-    /* Read program headers */
-    Elf64_Phdr phdrs[64];
-    size_t phdr_size = (size_t)eh.e_phnum * eh.e_phentsize;
-    serial_puts("elf_cos: reading phdrs\n");
-    if (cosmofs_read(ino, phdrs, (size_t)eh.e_phoff, phdr_size) < (int)phdr_size)
-        return -1;
-
-    serial_puts("elf_cos: mapping segments\n");
-    /* Map segments page-by-page from CosmoFS */
-    uint64_t brk_end = elf_map_segments_inode(ino, file_size, phdrs, eh.e_phnum,
-                                               user_pml4, 0);
-    serial_puts("elf_cos: mapping done\n");
-    if (brk_end == 0) return -1;
-
-    /* Set up user stack (map 4 pages at top initially, 16KB) */
-    for (int i = 0; i < 4; i++) {
-        uint64_t va = stack_top - (uint64_t)(i + 1) * 4096;
-        uint64_t *page = alloc_page();
-        if (!page) { serial_puts("elf_cos: stack OOM\n"); return -1; }
-        if (map_user_page(user_pml4, va, virt_to_phys(page), PROT_READ | PROT_WRITE) < 0)
-            return -1;
-    }
-
-    /* Build initial stack: argc, argv, envp, auxv */
-    uint64_t stack_frame_va = stack_top - 4096;
-    uint64_t *frame_page = alloc_page();
-    if (!frame_page) return -1;
-    map_user_page(user_pml4, stack_frame_va, virt_to_phys(frame_page), PROT_READ | PROT_WRITE);
-
-    uint64_t *stk = (uint64_t *)((uint8_t *)frame_page + 4096);
-
-    /* auxv */
-    *(--stk) = 0;              /* AT_NULL value */
-    *(--stk) = AT_NULL;        /* AT_NULL type */
-    *(--stk) = 4096;           /* AT_PAGESZ value */
-    *(--stk) = AT_PAGESZ;     /* AT_PAGESZ type */
-    *(--stk) = eh.e_entry;    /* AT_ENTRY value */
-    *(--stk) = AT_ENTRY;      /* AT_ENTRY type */
-    *(--stk) = 0;  /* envp terminator */
-    *(--stk) = 0;  /* argv terminator */
-    *(--stk) = 0;  /* argc = 0 (placeholder — do_execve rebuilds this) */
-
-    uint64_t offset = (uint64_t)((uint8_t *)stk - (uint8_t *)frame_page);
-    *entry = eh.e_entry;
-    *stack_ptr = stack_frame_va + offset;
-    *brk_out = (brk_end + 0xFFF) & ~0xFFFULL;
-
-    serial_puts("elf_cos: loaded, sp="); serial_hex64(*stack_ptr);
-    serial_putchar('\n');
-
-    return 0;
-}
-
 /* Extended ELF load from CosmoFS inode — handles ET_EXEC + ET_DYN.
  * Returns metadata needed for dynamic linking (auxv, interpreter). */
 int elf_load_ex_cosmofs(uint64_t ino, uint64_t *pml4,
@@ -472,11 +388,14 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
 /* Read from CosmoFS inode — imported from cosmofs.c */
 extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
 
-int elf_load_cosmofs(uint64_t ino, size_t file_size, uint64_t *user_pml4,
+int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
                      uint64_t stack_top,
                      uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out) {
 
-    if (file_size < sizeof(Elf64_Ehdr)) return -1;
+    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+    if (!ip || ip->type != COSMOFS_TYPE_FILE || ip->size < sizeof(Elf64_Ehdr))
+        return -1;
+    size_t file_size = ip->size;
 
     /* Read first page: ELF header + program headers */
     uint8_t hdr_buf[4096];
