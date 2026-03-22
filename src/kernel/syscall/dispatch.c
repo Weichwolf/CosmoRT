@@ -146,7 +146,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_FSTATFS:     return -ENOSYS;
     case SYS_ACCEPT4:     return do_accept((int)a1, (void *)a2, (int *)a3);
     case SYS_MREMAP:      return -ENOSYS;
-    case SYS_MADVISE:     return 0; /* accept but ignore */
+    case SYS_MADVISE:     return do_madvise((unsigned long)a1, (size_t)a2, (int)a3);
     case SYS_FACCESSAT:   return 0; /* pretend accessible */
     case SYS_READLINKAT:  return do_readlink((const char *)a2, (char *)a3, (size_t)a4);
 

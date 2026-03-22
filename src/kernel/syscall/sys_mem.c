@@ -394,3 +394,37 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
 
     return 0;
 }
+
+/* ── SYS_madvise (28) ───────────────────────────── */
+
+#define MADV_DONTNEED 4
+
+long do_madvise(unsigned long addr, size_t length, int advice) {
+    if (addr & 0xFFF) return -EINVAL;
+    length = (length + 0xFFF) & ~0xFFFULL;
+
+    if (advice == MADV_DONTNEED) {
+        /* Drop anonymous pages — next access gets fresh zeros.
+         * Only unmap pages in MAP_ANONYMOUS VMAs. File-backed or
+         * ELF-loaded pages must not be zeroed (data loss). */
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        uint64_t start = addr;
+        uint64_t end = addr + length;
+        for (uint64_t va = start; va < end; ) {
+            vma_t *v = vma_find(p->vma_root, va);
+            if (!v) { va += 4096; continue; }
+            if (v->flags & MAP_ANONYMOUS) {
+                uint64_t ustart = va > v->start ? va : v->start;
+                uint64_t uend = end < v->end ? end : v->end;
+                unmap_range(p->pml4, ustart, uend);
+            }
+            va = v->end;
+        }
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        extern void tlb_shootdown(uint64_t pml4_phys);
+        tlb_shootdown(virt_to_phys(p->pml4));
+    }
+    /* All other advice: accept but ignore */
+    return 0;
+}

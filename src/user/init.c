@@ -22,9 +22,7 @@ static void puts(const char *s) {
 }
 
 void _start(void) {
-    puts("CosmoOS booted!\n");
-
-    /* Set kernel-internal cwd before exec */
+    puts("CosmoRT init\n");
     syscall1(80 /* chdir */, (long)"/home");
 
     char *envp[] = {

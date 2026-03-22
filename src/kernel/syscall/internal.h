@@ -117,6 +117,7 @@ long do_mlock(unsigned long addr, size_t len);
 long do_munlock(unsigned long addr, size_t len);
 long do_mlockall(int flags);
 long do_munlockall(void);
+long do_madvise(unsigned long addr, size_t length, int advice);
 
 /* ── Forward declarations: sys_proc.c ── */
 void do_exit(int status);

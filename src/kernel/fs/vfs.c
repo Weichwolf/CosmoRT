@@ -857,10 +857,11 @@ int vfs_fstat(int fd, struct k_stat *buf) {
         return 0;
     }
 
-    /* Serial FDs get a minimal stat */
+    /* Serial FDs: character device (isatty() must return true) */
     if (fde->type == FD_SERIAL) {
         kmemset(buf, 0, sizeof(struct k_stat));
-        buf->st_mode = S_IFREG | S_IRUSR | S_IWUSR;
+        buf->st_mode = S_IFCHR | S_IRUSR | S_IWUSR;
+        buf->st_rdev = 0x0501; /* /dev/console: major 5, minor 1 */
         buf->st_blksize = 4096;
         return 0;
     }
