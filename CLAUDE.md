@@ -82,6 +82,12 @@ Gaming-Console.
 TLB-Shootdown-IPI nur zwischen Compute-Cores. RT-Core
 wird nie gestoert (eigener Adressraum, locked Pages).
 
+Scheduling auf Compute-Cores:
+- Thread-Placement bei clone: Round-Robin ueber Compute-Cores
+- Thread-Migration: erlaubt (trivial wenn TLB-Shootdown funktioniert)
+- Rebalancing: 1x/s, laengste Queue → kuerzeste Queue
+- RT ↔ Compute: nie
+
 | Cores | RT | Compute |
 |-------|-----|---------|
 | 2     | 1   | 1       |
