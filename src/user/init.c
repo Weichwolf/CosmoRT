@@ -1,4 +1,4 @@
-/* CosmoRT init — test node deps */
+/* CosmoRT init — boot into bash with test .bashrc */
 
 static long syscall3(long num, long a1, long a2, long a3) {
     long ret;
@@ -22,18 +22,26 @@ static void puts(const char *s) {
 }
 
 void _start(void) {
-    puts("CosmoOS booted!\n");
+    puts("CosmoRT init\n");
 
     char *envp[] = {
-        "HOME=/home", "PATH=/usr/bin", "TERM=linux",
-        "PWD=/home", (char *)0
+        "HOME=/home/cosmo",
+        "PATH=/usr/bin:/bin",
+        "TERM=linux",
+        "PWD=/home/cosmo",
+        "SHELL=/usr/bin/bash",
+        (char *)0
     };
 
-    /* Run node.js dependency test (musl static binary) */
-    char *argv[] = { "/usr/bin/node", (char *)0 };
-    syscall3(59, (long)"/usr/bin/node", (long)argv, (long)envp);
+    /* Try bash (reads /home/cosmo/.bashrc) */
+    char *bash_argv[] = { "bash", "--login", (char *)0 };
+    syscall3(59, (long)"/usr/bin/bash", (long)bash_argv, (long)envp);
 
-    puts("exec failed\n");
+    /* Fallback: node directly */
+    char *node_argv[] = { "node", "-e", "console.log('hello from CosmoRT')", (char *)0 };
+    syscall3(59, (long)"/usr/bin/node", (long)node_argv, (long)envp);
+
+    puts("init: no shell\n");
     syscall1(231, 1);
     __builtin_unreachable();
 }
