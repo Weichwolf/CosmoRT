@@ -90,6 +90,33 @@ Eine Webseite pro Slot. Wenn du eine fuenfte Webseite oeffnest,
 musst du entscheiden welche der vier weicht. Das ist kein Nachteil.
 Du hast nie 47 Tabs gleichzeitig benutzt.
 
+## Audio: 12-Spur Mixer im Kernel
+
+Jeder Slot hat eine eigene Audio-Spur. Kernel mixt im RT-Callback.
+
+```
+● aktiv    Audio spielt (fokussierter Slot, automatisch)
+○ stumm    kein Audio (Hintergrund-Slots, Default)
+♪ pinned   spielt immer, auch im Hintergrund
+```
+
+```
+cosmo$ audio pin          # dieser Slot spielt immer
+cosmo$ audio unpin        # zurueck zu Default
+```
+
+```
+F1: [Claude Code]  ○ stumm
+F2: [make]         ○ stumm
+F3: [Spotify]      ♪ pinned    ← spielt immer
+F4: [Teams]        ♪ pinned    ← Notifications hoerbar
+F5: [Figma]        ○ stumm
+F6: [Doom]         ● aktiv     ← hat gerade Fokus
+```
+
+Fokus-Wechsel: aktiver Slot wechselt, pinned Slots spielen weiter.
+Mixer ueberspringt stumme Spuren — im Normalfall 1-3 statt 12.
+
 ## Kein Cruft
 
 - Kein Window-Manager
