@@ -55,11 +55,44 @@ src/drivers/ importiert NUR: hw.h, config.h, serial.h, net.h.
 NICHT: process.h, sched.h, syscall.h, vma.h.
 Wenn ein Treiber Kernel-Interna braucht → Architektur-Fehler.
 
+## Core-Modell: RT + Compute (SMP 2+ only, kein SMP 1)
+
+Mindesthardware: 2 Cores. Kein Single-Core-Support.
+
+```
+RT-Core (Core 0):           Compute-Cores (Core 1..N):
+  Alle IRQs                   Keine IRQs
+  HW-Primitives (hw.h)       Syscalls, Scheduling, VMA, VFS
+  Audio-Callback              Userspace-Prozesse
+  VSync / Framebuffer-Flip    Node.js, Bash, Doom, Claude
+  Input-Polling               fork/exec/mmap/mprotect
+  Netzwerk RX/TX              NN-Training, Compiler, ...
+  DMA-Completion
+```
+
+RT-Core = I/O-Prozessor. Deterministisch, <2% Last, mlockall,
+kein Page-Fault, kein POSIX-Scheduling. Kommunikation mit
+Compute nur ueber Lock-free Ringbuffer.
+
+Compute-Cores = reine Rechenleistung. Keine IRQs, kein
+Timer-Interrupt, kein I/O-Polling. Ungestoerter Userspace
+bis der Prozess freiwillig einen Syscall macht. Wie eine
+Gaming-Console.
+
+TLB-Shootdown-IPI nur zwischen Compute-Cores. RT-Core
+wird nie gestoert (eigener Adressraum, locked Pages).
+
+| Cores | RT | Compute |
+|-------|-----|---------|
+| 2     | 1   | 1       |
+| 4     | 1   | 3       |
+| 8+    | 1   | 7+      |
+
 ## Design-Entscheidungen
 
 - Single-User: kein root/sudo, Capabilities statt Permissions
 - Linux Syscall-Nummern (x86_64 ABI)
-- RT/POSIX Koexistenz: 2 Cores → Preemption, 4+ → Core-Isolation
+- SMP 2+: 1 RT-Core (I/O) + N Compute-Cores (Userspace)
 - Treiber im Kernel sind temporaer (QEMU-Entwicklung), Ziel: alles Userspace
 - $HOME=/home, kein /usr, kein /var
 
