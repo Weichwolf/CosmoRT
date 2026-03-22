@@ -4,7 +4,7 @@
 #include "slab.h"
 #include "serial.h"
 
-#define VMA_MAX 8192  /* 8192 * 48B = 384KB — V8 needs hundreds of VMAs via mprotect splits */
+#define VMA_MAX 8192  /* 384KB — mprotect splits multiply VMA count */
 static vma_t vma_pool[VMA_MAX];
 static slab_t vma_slab;
 

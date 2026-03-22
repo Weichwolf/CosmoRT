@@ -1,6 +1,6 @@
 /* CosmoRT epoll/eventfd/timerfd/signalfd/inotify
  *
- * epoll: core event multiplexing (libuv/Node.js)
+ * epoll: event multiplexing (Linux-compatible)
  * eventfd: lightweight inter-thread signalling
  * timerfd: timer as file descriptor
  * signalfd/inotify: stubs (programs fall back to polling)
