@@ -185,7 +185,11 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         }
         if (!vaddr) {
             vaddr = vma_find_free(p->vma_root, p->mmap_next, length);
-            if (!vaddr) return -ENOMEM;
+            if (!vaddr) {
+                /* Retry from top — munmap may have freed space above mmap_next */
+                vaddr = vma_find_free(p->vma_root, USER_MMAP_BASE, length);
+                if (!vaddr) return -ENOMEM;
+            }
         }
         p->mmap_next = vaddr;
     }
@@ -322,6 +326,10 @@ long do_munmap(unsigned long addr, size_t length) {
             v->start = end;
         }
     }
+
+    /* Reclaim freed address space for future mmap */
+    if (end > p->mmap_next)
+        p->mmap_next = end;
 
     return 0;
 }
