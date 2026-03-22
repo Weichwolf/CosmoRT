@@ -447,7 +447,7 @@ static void copy_one_vma(vma_t *v, void *arg) {
         if (!new_page) { ctx->err = 1; return; }
 
         /* Copy content from parent page */
-        uint64_t src_phys = pte & 0x000FFFFFFFFFF000ULL;
+        uint64_t src_phys = pte & PTE_ADDR_MASK;
         void *src = phys_to_virt(src_phys);
         kmemcpy(new_page, src, 4096);
 
@@ -710,12 +710,6 @@ long do_fork(void) {
     /* Add child thread to scheduler */
     sched_add(ct);
 
-    serial_puts("fork: parent=");
-    serial_putchar('0' + (parent->pid % 10));
-    serial_puts(" child=");
-    serial_putchar('0' + (child->pid % 10));
-    serial_putchar('\n');
-
     return (long)child->pid;
 }
 
@@ -794,39 +788,37 @@ static uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     }
 
     str_off &= ~7ULL;
+
+    /* Count qwords: argc(1) + argv(argc+1) + envp(envc+1) + auxv(8*2+2) */
+    int naux = 8; /* PHDR, PHENT, PHNUM, BASE, ENTRY, PAGESZ, RANDOM, NULL */
+    int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
+    str_off -= (uint64_t)nqwords * 8;
+    str_off &= ~0xFULL; /* 16-byte align RSP at process entry */
+
     uint64_t *stk = (uint64_t *)(page + str_off);
+    uint64_t *sp_base = stk;
 
-    /* auxv (pushed in reverse order, AT_NULL last on stack = first read) */
-    *(--stk) = 0;                    /* AT_NULL value */
-    *(--stk) = AT_NULL;
-    *(--stk) = at_random_addr;       /* AT_RANDOM value */
-    *(--stk) = AT_RANDOM;
-    *(--stk) = 4096;                 /* AT_PAGESZ value */
-    *(--stk) = AT_PAGESZ;
-    *(--stk) = elf_info->prog_entry; /* AT_ENTRY value */
-    *(--stk) = AT_ENTRY;
-    *(--stk) = elf_info->interp_base; /* AT_BASE value */
-    *(--stk) = AT_BASE;
-    *(--stk) = (uint64_t)elf_info->prog_phnum;
-    *(--stk) = AT_PHNUM;
-    *(--stk) = (uint64_t)elf_info->prog_phent;
-    *(--stk) = AT_PHENT;
-    *(--stk) = elf_info->prog_phdr;  /* AT_PHDR value */
-    *(--stk) = AT_PHDR;
-
-    /* envp[] */
-    *(--stk) = 0;
-    for (int i = envc - 1; i >= 0; i--)
-        *(--stk) = envp_addrs[i];
-    /* argv[] */
-    *(--stk) = 0;
-    for (int i = argc - 1; i >= 0; i--)
-        *(--stk) = argv_addrs[i];
     /* argc */
-    *(--stk) = (uint64_t)argc;
+    *stk++ = (uint64_t)argc;
+    /* argv pointers */
+    for (int i = 0; i < argc; i++)
+        *stk++ = argv_addrs[i];
+    *stk++ = 0; /* argv terminator */
+    /* envp pointers */
+    for (int i = 0; i < envc; i++)
+        *stk++ = envp_addrs[i];
+    *stk++ = 0; /* envp terminator */
+    /* auxv */
+    *stk++ = AT_PHDR;   *stk++ = elf_info->prog_phdr;
+    *stk++ = AT_PHENT;  *stk++ = (uint64_t)elf_info->prog_phent;
+    *stk++ = AT_PHNUM;  *stk++ = (uint64_t)elf_info->prog_phnum;
+    *stk++ = AT_BASE;   *stk++ = elf_info->interp_base;
+    *stk++ = AT_ENTRY;  *stk++ = elf_info->prog_entry;
+    *stk++ = AT_PAGESZ; *stk++ = 4096;
+    *stk++ = AT_RANDOM; *stk++ = at_random_addr;
+    *stk++ = AT_NULL;   *stk++ = 0;
 
-    uint64_t sp = stk_page_va + (uint64_t)((uint8_t *)stk - page);
-    sp = (sp & ~0xFULL) - 8; /* 16n+8 alignment for _start */
+    uint64_t sp = stk_page_va + (uint64_t)((uint8_t *)sp_base - page);
     return sp;
 }
 
@@ -1148,60 +1140,64 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                 }
 
                 str_off &= ~7ULL;
-                uint64_t *stk = (uint64_t *)(page + str_off);
 
-                *(--stk) = 0;         /* AT_NULL value */
-                *(--stk) = AT_NULL;
-                *(--stk) = at_random_addr;
-                *(--stk) = AT_RANDOM;
-                *(--stk) = 4096;
-                *(--stk) = AT_PAGESZ;
-                *(--stk) = (uint64_t)peek_eh->e_phnum;
-                *(--stk) = AT_PHNUM;
-                *(--stk) = (uint64_t)peek_eh->e_phentsize;
-                *(--stk) = AT_PHENT;
-                /* AT_PHDR: phdrs are at file offset e_phoff within the first
-                 * LOAD segment (which typically starts at file offset 0).
-                 * For ET_EXEC, the segment vaddr is the load address. */
-                {
-                    uint64_t phdr_vaddr = peek_eh->e_phoff;
-                    /* Find first LOAD to get base vaddr */
-                    if (from_cosmofs) {
-                        Elf64_Phdr ph0;
-                        for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
-                            size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
-                            cosmofs_read(cosmofs_ino, &ph0, po, sizeof(ph0));
-                            if (ph0.p_type == PT_LOAD) {
-                                phdr_vaddr = ph0.p_vaddr + (peek_eh->e_phoff - ph0.p_offset);
-                                break;
-                            }
-                        }
-                    } else if (elf_buf && elf_len >= sizeof(Elf64_Ehdr)) {
-                        for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
-                            size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
-                            if (po + sizeof(Elf64_Phdr) > elf_len) break;
-                            const Elf64_Phdr *ph0 = (const Elf64_Phdr *)(elf_buf + po);
-                            if (ph0->p_type == PT_LOAD) {
-                                phdr_vaddr = ph0->p_vaddr + (peek_eh->e_phoff - ph0->p_offset);
-                                break;
-                            }
+                /* Count total qwords needed for the stack frame:
+                 * argc(1) + argv(argc+1) + envp(envc+1) + auxv(2*N+2)
+                 * auxv entries: AT_ENTRY, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_RANDOM, AT_NULL = 7 */
+                int naux = 7;
+                int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
+                /* Align: total frame must land on 16-byte boundary */
+                str_off -= (uint64_t)nqwords * 8;
+                str_off &= ~0xFULL;  /* 16-byte align RSP at entry */
+
+                uint64_t *stk = (uint64_t *)(page + str_off);
+                uint64_t *sp_base = stk;
+
+                /* argc */
+                *stk++ = (uint64_t)argc;
+                /* argv pointers */
+                for (int i = 0; i < argc; i++)
+                    *stk++ = argv_addrs[i];
+                *stk++ = 0;  /* argv terminator */
+                /* envp pointers */
+                for (int i = 0; i < envc; i++)
+                    *stk++ = envp_addrs[i];
+                *stk++ = 0;  /* envp terminator */
+
+                /* Compute AT_PHDR */
+                uint64_t phdr_vaddr = peek_eh->e_phoff;
+                if (from_cosmofs) {
+                    Elf64_Phdr ph0;
+                    for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
+                        size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
+                        cosmofs_read(cosmofs_ino, &ph0, po, sizeof(ph0));
+                        if (ph0.p_type == PT_LOAD) {
+                            phdr_vaddr = ph0.p_vaddr + (peek_eh->e_phoff - ph0.p_offset);
+                            break;
                         }
                     }
-                    *(--stk) = phdr_vaddr;
+                } else if (elf_buf && elf_len >= sizeof(Elf64_Ehdr)) {
+                    for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
+                        size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
+                        if (po + sizeof(Elf64_Phdr) > elf_len) break;
+                        const Elf64_Phdr *ph0 = (const Elf64_Phdr *)(elf_buf + po);
+                        if (ph0->p_type == PT_LOAD) {
+                            phdr_vaddr = ph0->p_vaddr + (peek_eh->e_phoff - ph0->p_offset);
+                            break;
+                        }
+                    }
                 }
-                *(--stk) = AT_PHDR;
-                *(--stk) = entry;
-                *(--stk) = AT_ENTRY;
-                *(--stk) = 0;
-                for (int i = envc - 1; i >= 0; i--)
-                    *(--stk) = envp_addrs[i];
-                *(--stk) = 0;
-                for (int i = argc - 1; i >= 0; i--)
-                    *(--stk) = argv_addrs[i];
-                *(--stk) = (uint64_t)argc;
 
-                stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
-                stack_ptr = (stack_ptr & ~0xFULL) - 8;
+                /* auxv (key, value pairs) */
+                *stk++ = AT_ENTRY;      *stk++ = entry;
+                *stk++ = AT_PHDR;       *stk++ = phdr_vaddr;
+                *stk++ = AT_PHENT;      *stk++ = (uint64_t)peek_eh->e_phentsize;
+                *stk++ = AT_PHNUM;      *stk++ = (uint64_t)peek_eh->e_phnum;
+                *stk++ = AT_PAGESZ;     *stk++ = 4096;
+                *stk++ = AT_RANDOM;     *stk++ = at_random_addr;
+                *stk++ = AT_NULL;       *stk++ = 0;
+
+                stack_ptr = stk_page_va + (uint64_t)((uint8_t *)sp_base - page);
             }
         }
 
@@ -1312,11 +1308,9 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
 
         if (!found_child) return -ECHILD;
 
-        /* Child exists but hasn't exited — block */
-        save_user_state_for_block(cur, 0);
-        cur->state = THREAD_BLOCKED;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-        thread_return_to_kernel(cur);
-        /* When woken, loop again to check for zombie */
+        /* Child exists but hasn't exited — spin-wait.
+         * With SMP >= 2, the child runs on another core. */
+        for (volatile int w = 0; w < 10000; w++)
+            __asm__ volatile("pause");
     }
 }

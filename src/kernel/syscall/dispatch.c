@@ -126,6 +126,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         for (int di = 0; di < FD_MAX; di++) {
             if (dp->fds.entries[di].type == FD_NONE) {
                 dp->fds.entries[di] = *dold;
+                if (dold->type == FD_FILE && dold->obj) {
+                    extern void vfs_file_incref(struct vfs_file *f);
+                    vfs_file_incref((struct vfs_file *)dold->obj);
+                } else if (dold->type == FD_PIPE && dold->obj) {
+                    fd_obj_incref(FD_PIPE, dold->obj);
+                }
                 if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
                 return di;
             }
@@ -323,11 +329,14 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
 #undef HW_CAP_CHECK
 
-    default:
+    default: {
+        process_t *dp = proc_current();
         serial_puts("syscall: unhandled #");
         serial_hex64((uint64_t)num);
+        if (dp) { serial_puts(" pid="); serial_putchar('0' + (dp->pid % 10)); }
         serial_putchar('\n');
         return -ENOSYS;
+    }
     }
 }
 

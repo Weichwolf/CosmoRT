@@ -237,6 +237,20 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             serial_puts(" killed\n");
             t->state = THREAD_DEAD;
             t->proc->state = PROC_ZOMBIE;
+            t->proc->exit_code = 139; /* SIGSEGV default */
+            /* Wake parent if blocked in wait4 */
+            if (t->proc->parent_pid) {
+                extern process_t *proc_find(uint32_t pid);
+                extern void sched_add(thread_t *);
+                process_t *parent = proc_find(t->proc->parent_pid);
+                if (parent) {
+                    thread_t *pt = parent->threads;
+                    while (pt) {
+                        if (pt->state == THREAD_BLOCKED) sched_add(pt);
+                        pt = pt->proc_next;
+                    }
+                }
+            }
             extern uint64_t pml4[];
             __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
             thread_return_to_kernel(t);
@@ -293,6 +307,20 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
 
         t->state = THREAD_DEAD;
         t->proc->state = PROC_ZOMBIE;
+        t->proc->exit_code = 128 + vector;
+        /* Wake parent if blocked in wait4 */
+        if (t->proc->parent_pid) {
+            extern process_t *proc_find(uint32_t pid);
+            extern void sched_add(thread_t *);
+            process_t *parent = proc_find(t->proc->parent_pid);
+            if (parent) {
+                thread_t *pt = parent->threads;
+                while (pt) {
+                    if (pt->state == THREAD_BLOCKED) sched_add(pt);
+                    pt = pt->proc_next;
+                }
+            }
+        }
         extern uint64_t pml4[];
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
         thread_return_to_kernel(t);

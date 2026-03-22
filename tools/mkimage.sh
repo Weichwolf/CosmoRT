@@ -1,36 +1,46 @@
 #!/bin/sh
-# Build CosmoOS disk.img with boot test
+# Build CosmoRT disk.img with boot-test.sh as .bashrc
+# Usage: sh tools/mkimage.sh
+
 set -e
+cd "$(dirname "$0")/.."
 
-RT=$(cd "$(dirname "$0")/.." && pwd)
 PX=~/Git/CosmoPX
-CP=$RT/tools/cosmo_cp
+BREW="$PX/brew/prefix"
+IMG=disk.img
 
-# Build mkfs if needed
-[ -x $RT/tools/mkfs ] || gcc -o $RT/tools/mkfs $RT/tools/mkfs.c -Wall -Wextra
+# Build host tools
+make tools/mkfs tools/cosmo_cp 2>/dev/null || {
+    gcc -Wall -Wextra -O2 -o tools/mkfs tools/mkfs.c
+    gcc -Wall -Wextra -O2 -o tools/cosmo_cp tools/cosmo_cp.c
+}
 
-# Create image
-$RT/tools/mkfs $RT/disk.img 512
+# Create 512MB CosmoFS image
+./tools/mkfs "$IMG" 512
 
 # Directories
-for d in /usr /usr/bin /opt /opt/claude-code /home /home/cosmo /tmp /etc /dev; do
-    $CP $RT/disk.img --mkdir $d
+for d in usr usr/bin home tmp etc opt opt/claude-code dev; do
+    ./tools/cosmo_cp "$IMG" --mkdir "/$d"
 done
 
-# Binaries (all static)
-$CP $RT/disk.img $PX/brew/prefix/bin/node /usr/bin/node
-$CP $RT/disk.img $PX/brew/prefix/bin/bash /usr/bin/bash
-$CP $RT/disk.img $PX/brew/prefix/bin/git /usr/bin/git
+# Shell + coreutils
+for bin in $PX/coreutils/build/*; do
+    ./tools/cosmo_cp "$IMG" "$bin" "/usr/bin/$(basename "$bin")"
+done
+./tools/cosmo_cp "$IMG" "$PX/sh/build/sh" /usr/bin/sh
+./tools/cosmo_cp "$IMG" "$BREW/bin/bash" /usr/bin/bash
 
-# Config
-$CP $RT/disk.img --write-string "nameserver 10.0.2.3" /etc/resolv.conf
-$CP $RT/disk.img --write-string "127.0.0.1 localhost" /etc/hosts
-$CP $RT/disk.img --write-string "root:x:0:0::/home/cosmo:/usr/bin/bash" /etc/passwd
-
-# Boot test as .bashrc
-$CP $RT/disk.img $RT/tools/boot-test.sh /home/cosmo/.bashrc
+# Node.js
+./tools/cosmo_cp "$IMG" "$BREW/bin/node" /usr/bin/node
 
 # Claude Code
-$CP $RT/disk.img --tree $PX/brew/prefix/lib/node_modules/@anthropic-ai/claude-code /opt/claude-code
+./tools/cosmo_cp "$IMG" --tree "$BREW/lib/node_modules/@anthropic-ai/claude-code" /opt/claude-code
 
-echo "=== disk.img ready ==="
+# /etc
+./tools/cosmo_cp "$IMG" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
+./tools/cosmo_cp "$IMG" --write-string "127.0.0.1 localhost" /etc/hosts
+
+# .bashrc = boot-test.sh
+./tools/cosmo_cp "$IMG" tools/boot-test.sh /home/.bashrc
+
+echo "disk.img: $(du -h "$IMG" | cut -f1)"

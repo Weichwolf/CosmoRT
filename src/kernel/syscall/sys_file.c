@@ -65,7 +65,11 @@ long do_write(int fd, const void *buf, size_t count) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
         if (!pp || !is_write) return -EBADF;
-        return pipe_write(pp, buf, count);
+        for (;;) {
+            long r = pipe_write(pp, buf, count);
+            if (r != -EAGAIN) return r;
+            for (volatile int i = 0; i < 1000; i++) __asm__ volatile("pause");
+        }
     }
     if (fde->type == FD_EVENTFD)
         return eventfd_write(fde->obj, buf, (long)count);
@@ -149,7 +153,13 @@ long do_read(int fd, void *buf, size_t count) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
         if (!pp || is_write) return -EBADF;
-        return pipe_read(pp, buf, count);
+        /* Blocking pipe read: spin-wait until data or write end closed */
+        for (int att = 0; att < 5000000; att++) {
+            long r = pipe_read(pp, buf, count);
+            if (r != -EAGAIN) return r;
+            __asm__ volatile("pause");
+        }
+        return 0; /* return EOF on timeout */
     }
     if (fde->type == FD_EVENTFD)
         return eventfd_read(fde->obj, buf, (long)count);
@@ -321,11 +331,20 @@ long do_dup2(int oldfd, int newfd) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
+        else if (cur->type == FD_PIPE) pipe_close(cur);
         else fd_close(&p->fds, newfd);
+        p->fds.entries[newfd].type = FD_NONE;
+        p->fds.entries[newfd].obj = 0;
     }
 
-    /* Copy the fd entry */
+    /* Copy the fd entry and bump refcount */
     p->fds.entries[newfd] = *old;
+    if (old->type == FD_FILE && old->obj) {
+        extern void vfs_file_incref(struct vfs_file *f);
+        vfs_file_incref((struct vfs_file *)old->obj);
+    } else if (old->type == FD_PIPE && old->obj) {
+        fd_obj_incref(FD_PIPE, old->obj);
+    }
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
     return newfd;
 }
@@ -342,11 +361,20 @@ long do_dup3(int oldfd, int newfd, int flags) {
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
+        else if (cur->type == FD_PIPE) pipe_close(cur);
         else fd_close(&p->fds, newfd);
+        p->fds.entries[newfd].type = FD_NONE;
+        p->fds.entries[newfd].obj = 0;
     }
 
-    /* Copy the fd entry */
+    /* Copy the fd entry and bump refcount */
     p->fds.entries[newfd] = *old;
+    if (old->type == FD_FILE && old->obj) {
+        extern void vfs_file_incref(struct vfs_file *f);
+        vfs_file_incref((struct vfs_file *)old->obj);
+    } else if (old->type == FD_PIPE && old->obj) {
+        fd_obj_incref(FD_PIPE, old->obj);
+    }
     if (flags & O_CLOEXEC)
         p->fds.entries[newfd].flags |= O_CLOEXEC;
     if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
@@ -356,6 +384,8 @@ long do_dup3(int oldfd, int newfd, int flags) {
 /* ── SYS_getcwd (79) / SYS_chdir (80) ──────────── */
 
 long do_getcwd(char *buf, size_t size) {
+    if (!buf) return -EFAULT;
+    if (size == 0) return -ERANGE;
     if (!user_ok((uint64_t)buf, size)) return -EFAULT;
     int r = vfs_getcwd(buf, size);
     if (r < 0) return r;

@@ -43,6 +43,19 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     serial_putchar('0' + (status & 0xF));
     serial_putchar('\n');
 
+    /* Close all FDs immediately so pipe writers/readers see EOF */
+    for (int i = 0; i < FD_MAX; i++) {
+        int ftype = p->fds.entries[i].type;
+        if (ftype == FD_FILE) {
+            extern void vfs_file_free_obj(void *obj);
+            vfs_file_free_obj(p->fds.entries[i].obj);
+        } else if (ftype != FD_NONE && ftype != FD_SERIAL) {
+            fd_cleanup_entry(ftype, p->fds.entries[i].obj);
+        }
+        p->fds.entries[i].type = FD_NONE;
+        p->fds.entries[i].obj = 0;
+    }
+
     /* Kill other threads */
     thread_t *scan = p->threads;
     while (scan) {

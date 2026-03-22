@@ -10,7 +10,7 @@
 struct pipe {
     uint8_t buf[PIPE_BUF_SIZE];
     int read_pos, write_pos, count;
-    int read_open, write_open;
+    int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
     spinlock_t lock;
 };
 
@@ -129,9 +129,9 @@ long pipe_close(fd_entry_t *fde) {
 
     uint64_t flags;
     spin_lock_irq(&pp->lock, &flags);
-    if (is_write) pp->write_open = 0;
-    else pp->read_open = 0;
-    int both_closed = !pp->read_open && !pp->write_open;
+    if (is_write) { if (pp->write_open > 0) pp->write_open--; }
+    else          { if (pp->read_open > 0)  pp->read_open--; }
+    int both_closed = (pp->read_open <= 0 && pp->write_open <= 0);
     spin_unlock_irq(&pp->lock, flags);
 
     if (both_closed)
@@ -149,24 +149,8 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             net_tcp_close(&s->tcp);
         s->state = SOCK_UNUSED;
     } else if (fde_type == FD_PIPE) {
-        /* Decode read/write end from pointer (write end = pp + 1 byte) */
-        uintptr_t addr = (uintptr_t)fde_obj;
-        uintptr_t base = (uintptr_t)pipe_pool;
-        uintptr_t end = base + sizeof(pipe_pool);
-        if (addr >= base && addr < end) {
-            uintptr_t off = (addr - base) % sizeof(struct pipe);
-            struct pipe *pp = (off <= 1) ? (struct pipe *)(addr - off) : 0;
-            if (pp) {
-                uint64_t flags;
-                spin_lock_irq(&pp->lock, &flags);
-                if (off == 0) pp->read_open = 0;
-                else          pp->write_open = 0;
-                int both_closed = !pp->read_open && !pp->write_open;
-                spin_unlock_irq(&pp->lock, flags);
-                if (both_closed)
-                    slab_free(&pipe_slab, pp);
-            }
-        }
+        fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
+        pipe_close(&tmp);
     } else if (fde_type == FD_EPOLL) {
         epoll_destroy(fde_obj);
     } else if (fde_type == FD_EVENTFD) {
@@ -176,6 +160,25 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
     } else if (fde_type == FD_INOTIFY) {
         inotify_destroy(fde_obj);
     }
+}
+
+/* ── fd_obj_incref — bump refcount for fork/dup of non-file FDs ── */
+
+void fd_obj_incref(int fde_type, void *fde_obj) {
+    if (!fde_obj) return;
+    if (fde_type == FD_PIPE) {
+        int is_write = 0;
+        fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
+        struct pipe *pp = pipe_from_fd(&tmp, &is_write);
+        if (pp) {
+            uint64_t flags;
+            spin_lock_irq(&pp->lock, &flags);
+            if (is_write) pp->write_open++;
+            else          pp->read_open++;
+            spin_unlock_irq(&pp->lock, flags);
+        }
+    }
+    /* TODO: refcounting for sockets, epoll, eventfd, etc. */
 }
 
 /* ── fd_poll_readiness — check what events are ready on an FD ── */
