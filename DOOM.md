@@ -18,9 +18,13 @@ if (magic == "\x7fELF")  → ELF-Loader
 if (magic == "\0asm")     → exec /usr/lib/cosmo-wasm-rt <datei>
 ```
 
-cosmo-wasm-rt ist die CosmoUI WASM-Runtime als Userspace-Binary.
-Hat Zugriff auf WebGL/Audio/Input. Fuer den User transparent —
-.wasm ist einfach ein ausfuehrbares Programm.
+Der Kernel hat keinen WASM-Loader. Er liest 4 Bytes Magic,
+erkennt `\0asm`, und macht execve auf cosmo-wasm-rt. Dreizeiler
+in elf.c — wie ein Shebang auf Binary-Ebene.
+
+Die gesamte WASM-Maschinerie (Parsing, JIT, Ausfuehrung,
+WebGL/Audio-Binding) sitzt in CosmoUI. Der Kernel weiss nicht
+was WASM ist.
 
 ## Doom als Integrationstest
 
