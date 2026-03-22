@@ -1401,3 +1401,59 @@ void vfs_mount_cosmofs(void) {
     else
         serial_puts("vfs: CosmoFS mount failed, using ramfs\n");
 }
+
+uint64_t vfs_cosmofs_lookup(const char *path) {
+    if (!cosmofs_mounted()) return 0;
+    return cosmofs_walk(path);
+}
+
+int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
+    /* Try ramfs first (for embedded binaries like /lib/ld-cosmo.so) */
+    struct vfs_node *node = vfs_lookup(path);
+    if (node && node->type == VFS_FILE && node->data && node->size > 0) {
+        size_t sz = node->size;
+        int npages = (int)((sz + 4095) / 4096);
+        uint8_t *buf = (uint8_t *)pages_alloc(npages);
+        if (!buf) return -ENOMEM;
+        kmemcpy(buf, node->data, sz);
+        *out_data = buf;
+        *out_size = sz;
+        return 0;
+    }
+
+    /* Try CosmoFS */
+    if (cosmofs_mounted()) {
+        uint64_t ino = cosmofs_walk(path);
+        if (ino == 0) return -ENOENT;
+
+        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+        if (!ip) return -EIO;
+        if (ip->type != COSMOFS_TYPE_FILE) return -EACCES;
+        if (ip->size == 0) return -ENOEXEC;
+
+        size_t sz = ip->size;
+        int npages = (int)((sz + 4095) / 4096);
+        uint8_t *buf = (uint8_t *)pages_alloc(npages);
+        if (!buf) return -ENOMEM;
+
+        /* Read in chunks (cosmofs_read handles indirect blocks) */
+        size_t off = 0;
+        while (off < sz) {
+            size_t chunk = sz - off;
+            if (chunk > 65536) chunk = 65536;
+            int r = cosmofs_read(ino, buf + off, off, chunk);
+            if (r < 0) {
+                pages_free(buf, npages);
+                return r;
+            }
+            off += (size_t)r;
+            if ((size_t)r < chunk) break; /* EOF */
+        }
+
+        *out_data = buf;
+        *out_size = off;
+        return 0;
+    }
+
+    return -ENOENT;
+}

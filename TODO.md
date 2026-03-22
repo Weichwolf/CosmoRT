@@ -24,6 +24,7 @@ Prio 2 — Notebook-tauglich:
   P10 Code-Signing                → Ed25519 Vertrauenskette
 
 Prio 3 — Vollstaendigkeit:
+  In-Kernel Treiber entfernen     → e1000, virtio-* nur noch als Userspace-Treiber
   virtio-console/snd/fs           → Volle QEMU-Unterstuetzung
   IPv6 SLAAC                      → Dual-Stack Networking
   State-Transfer (P8)             → Graceful Driver Restart
@@ -37,6 +38,8 @@ Prio 3 — Vollstaendigkeit:
 ### P8 — Userspace-Treiber
 - [x] e1000d, svcmgr, net_port Ring-IPC, SYS_COSMO_NIC_ATTACH
 - [ ] State-Transfer-Protokoll fuer Graceful Restart
+- [ ] In-Kernel e1000 entfernen (src/drivers/net/e1000.c), nur e1000d nutzen
+- [ ] In-Kernel virtio-net/blk/gpu/input → Userspace-Treiber ueber net_port/hw-Primitives
 
 ### P10 — Code-Signing
 - [ ] Ed25519 Owner-Key, .cosmo_sig ELF-Section, Pruefung bei execve/dlopen/kexec

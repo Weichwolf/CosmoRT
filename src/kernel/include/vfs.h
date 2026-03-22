@@ -154,4 +154,14 @@ void vfs_file_incref(struct vfs_file *f);
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj);
 
+/* Look up a CosmoFS inode by path. Returns inode number, or 0 if not found.
+ * Only searches CosmoFS, not ramfs. */
+uint64_t vfs_cosmofs_lookup(const char *path);
+
+/* Read entire file into a kernel buffer (page-allocated).
+ * Handles both ramfs and CosmoFS. Caller must free with pages_free().
+ * Returns 0 on success, fills *out_data and *out_size.
+ * Returns negative errno on failure. */
+int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size);
+
 #endif

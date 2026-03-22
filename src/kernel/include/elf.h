@@ -109,4 +109,14 @@ int elf_load(const void *data, size_t len, uint64_t *pml4,
 int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
                 uint64_t base_hint, elf_info_t *info);
 
+/* Load a static ELF64 from CosmoFS inode — no contiguous buffer needed.
+ * Reads segments page-by-page from disk. */
+int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
+                     uint64_t stack_top,
+                     uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
+
+/* Extended ELF load from CosmoFS inode — handles ET_EXEC + ET_DYN. */
+int elf_load_ex_cosmofs(uint64_t ino, uint64_t *pml4,
+                        uint64_t base_hint, elf_info_t *info);
+
 #endif

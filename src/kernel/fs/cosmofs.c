@@ -65,7 +65,7 @@ int cosmofs_mount(void) {
             if (!bbe) continue;
             uint64_t *bits = (uint64_t *)bbe->data;
             for (int w = 0; w < 512; w++) {
-                /* Manual popcount — no libgcc in freestanding */
+                /* Software popcnt — no BMI/popcnt insn needed */
                 uint64_t v = bits[w];
                 v = v - ((v >> 1) & 0x5555555555555555ULL);
                 v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
@@ -135,7 +135,15 @@ uint64_t cosmofs_block_alloc(void) {
             if (bits[w] != ~0ULL) {
                 /* Find first zero bit */
                 uint64_t mask = bits[w];
-                int bit = __builtin_ctzll(~mask);
+                /* Software ctz — no BMI insn needed */
+                uint64_t inv = ~mask;
+                int bit = 0;
+                if (!(inv & 0xFFFFFFFF)) { bit += 32; inv >>= 32; }
+                if (!(inv & 0xFFFF)) { bit += 16; inv >>= 16; }
+                if (!(inv & 0xFF)) { bit += 8; inv >>= 8; }
+                if (!(inv & 0xF)) { bit += 4; inv >>= 4; }
+                if (!(inv & 0x3)) { bit += 2; inv >>= 2; }
+                if (!(inv & 0x1)) { bit += 1; }
                 bits[w] |= (1ULL << bit);
                 bcache_mark_dirty(be);
 

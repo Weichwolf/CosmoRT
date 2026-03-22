@@ -14,6 +14,7 @@
 #include "config.h"
 #include "vma.h"
 #include "vfs.h"
+#include "cosmofs.h"
 #include "memops.h"
 #include "syscall.h"
 #include "irq.h"
@@ -903,115 +904,88 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Look up the file — try ramfs first, then CosmoFS */
+    /* Determine source: ramfs (small, in-memory) vs CosmoFS (potentially large) */
+    uint64_t cosmofs_ino = vfs_cosmofs_lookup(kpath);
+    int from_cosmofs = (cosmofs_ino != 0);
+
+    if (from_cosmofs) {
+        serial_puts("execve: "); serial_puts(kpath);
+        serial_puts(" (cosmofs)\n");
+    }
+
+    /* For ramfs files, load into buffer (small embedded binaries) */
     uint8_t *elf_buf = 0;
     size_t elf_len = 0;
     int elf_pages = 0;
 
-    struct vfs_node *node = vfs_lookup(kpath);
-    if (node && node->type == VFS_FILE && node->data && node->size > 0) {
-        /* ramfs file — copy from memory */
+    if (!from_cosmofs) {
+        struct vfs_node *node = vfs_lookup(kpath);
+        if (!node) return -ENOENT;
+        if (node->type != VFS_FILE) return -EACCES;
+        if (!node->data || node->size == 0) return -ENOEXEC;
+
         elf_len = node->size;
         elf_pages = (int)((elf_len + 4095) / 4096);
         elf_buf = (uint8_t *)pages_alloc(elf_pages);
         if (!elf_buf) return -ENOMEM;
         kmemcpy(elf_buf, node->data, elf_len);
-    } else {
-        /* Try CosmoFS — read entire file into contiguous kernel buffer */
-        extern int cosmofs_mounted(void);
-        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
-        extern uint64_t cosmofs_walk_path(const char *path);
-        extern uint64_t cosmofs_file_size(uint64_t ino);
-
-        if (!cosmofs_mounted()) return -ENOENT;
-
-        uint64_t cosmofs_ino = cosmofs_walk_path(kpath);
-        if (cosmofs_ino == 0) return -ENOENT;
-
-        elf_len = (size_t)cosmofs_file_size(cosmofs_ino);
-        if (elf_len == 0) return -ENOEXEC;
-
-        serial_puts("execve: ");
-        serial_puts(kpath);
-        serial_puts(" (");
-        { char t[20]; int i=0; uint64_t v=elf_len;
-          do{t[i++]='0'+(char)(v%10);v/=10;}while(v);
-          while(i--) serial_putchar(t[i]); }
-        serial_puts(" bytes) loading...");
-
-        elf_pages = (int)((elf_len + 4095) / 4096);
-        elf_buf = (uint8_t *)pages_alloc(elf_pages);
-        if (!elf_buf) {
-            serial_puts("OOM\n");
-            return -ENOMEM;
-        }
-
-        /* Read file in 4KB chunks from CosmoFS */
-        size_t pos = 0;
-        while (pos < elf_len) {
-            size_t chunk = elf_len - pos;
-            if (chunk > 4096) chunk = 4096;
-            int rd = cosmofs_read(cosmofs_ino, elf_buf + pos, pos, chunk);
-            if (rd < 0) {
-                serial_puts("read error\n");
-                pages_free(elf_buf, elf_pages);
-                return -EIO;
-            }
-            pos += (size_t)rd;
-        }
-
-        serial_puts("ok\n");
     }
 
-    /* Also copy interpreter binary if needed (peek at PT_INTERP before destroying AS) */
+    /* Read ELF header to determine type (small read for CosmoFS) */
+    Elf64_Ehdr peek_eh_buf;
+    const Elf64_Ehdr *peek_eh;
+    if (from_cosmofs) {
+        int hdr_rc = cosmofs_read(cosmofs_ino, &peek_eh_buf, 0, sizeof(peek_eh_buf));
+        if (hdr_rc < (int)sizeof(peek_eh_buf))
+            return -ENOEXEC;
+        peek_eh = &peek_eh_buf;
+    } else {
+        peek_eh = (const Elf64_Ehdr *)elf_buf;
+    }
+
+    /* Determine if dynamic and check for PT_INTERP */
+    int has_interp = 0;
     uint8_t *interp_buf = 0;
     size_t interp_len = 0;
     int interp_pages = 0;
 
-    /* Peek at ELF type to decide which loader to use */
-    const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)elf_buf;
-    int is_dynamic = (peek_eh->e_type == ET_DYN ||
-                      (peek_eh->e_type == ET_EXEC && elf_len >= sizeof(Elf64_Ehdr)));
-
-    /* For ET_EXEC without PT_INTERP, use the fast path (original elf_load).
-     * For ET_DYN or files with PT_INTERP, use elf_load_ex. */
-    int has_interp = 0;
-    if (is_dynamic && elf_len >= sizeof(Elf64_Ehdr)) {
-        /* Scan for PT_INTERP */
-        for (int i = 0; i < peek_eh->e_phnum; i++) {
-            uint64_t off = peek_eh->e_phoff + (uint64_t)i * peek_eh->e_phentsize;
-            if (off + sizeof(Elf64_Phdr) > elf_len) break;
-            const Elf64_Phdr *ph = (const Elf64_Phdr *)(elf_buf + off);
-            if (ph->p_type == PT_INTERP) {
+    if (peek_eh->e_type == ET_DYN || peek_eh->e_type == ET_EXEC) {
+        /* Scan phdrs for PT_INTERP */
+        for (int i = 0; i < peek_eh->e_phnum && i < 64; i++) {
+            Elf64_Phdr ph;
+            size_t phoff = (size_t)(peek_eh->e_phoff + (uint64_t)i * peek_eh->e_phentsize);
+            if (from_cosmofs) {
+                if (cosmofs_read(cosmofs_ino, &ph, phoff, sizeof(ph)) < (int)sizeof(ph))
+                    break;
+            } else {
+                if (phoff + sizeof(ph) > elf_len) break;
+                kmemcpy(&ph, elf_buf + phoff, sizeof(ph));
+            }
+            if (ph.p_type == PT_INTERP) {
                 has_interp = 1;
-                /* Read interpreter path and look it up */
                 char ipath[256];
-                size_t iplen = ph->p_filesz;
+                size_t iplen = ph.p_filesz;
                 if (iplen >= sizeof(ipath)) iplen = sizeof(ipath) - 1;
-                if (ph->p_offset + iplen <= elf_len) {
-                    kmemcpy(ipath, elf_buf + ph->p_offset, iplen);
-                    ipath[iplen] = '\0';
-                    /* Strip trailing NUL included in filesz */
-                    while (iplen > 0 && ipath[iplen - 1] == '\0') iplen--;
-
-                    struct vfs_node *inode = vfs_lookup(ipath);
-                    if (inode && inode->type == VFS_FILE && inode->data && inode->size > 0) {
-                        interp_len = inode->size;
-                        interp_pages = (int)((interp_len + 4095) / 4096);
-                        interp_buf = (uint8_t *)pages_alloc(interp_pages);
-                        if (interp_buf)
-                            kmemcpy(interp_buf, inode->data, interp_len);
-                    }
+                if (from_cosmofs) {
+                    cosmofs_read(cosmofs_ino, ipath, (size_t)ph.p_offset, iplen);
+                } else if (ph.p_offset + iplen <= elf_len) {
+                    kmemcpy(ipath, elf_buf + ph.p_offset, iplen);
                 }
+                ipath[iplen] = '\0';
+                while (iplen > 0 && ipath[iplen - 1] == '\0') iplen--;
+
+                int irc = vfs_read_file(ipath, &interp_buf, &interp_len);
+                if (irc == 0)
+                    interp_pages = (int)((interp_len + 4095) / 4096);
                 break;
             }
         }
     }
 
-    /* Switch to kernel page tables before freeing user address space.
-     * Without this, free_address_space frees the PML4 page that CR3
-     * still points to → buddy may reuse it → page_zero → triple fault. */
+    /* Switch to kernel PML4 before freeing current address space
+     * (we're currently running with p->pml4 in CR3) */
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+
     /* Free current address space */
     free_address_space(p->pml4);
     vma_free_tree(p->vma_root);
@@ -1020,7 +994,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     /* Create new PML4 */
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
-        pages_free(elf_buf, elf_pages);
+        if (elf_buf) pages_free(elf_buf, elf_pages);
         if (interp_buf) pages_free(interp_buf, interp_pages);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
@@ -1041,8 +1015,14 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (use_ex) {
         /* Extended path: ET_DYN and/or PT_INTERP */
         elf_info_t info;
-        if (elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info) < 0) {
-            pages_free(elf_buf, elf_pages);
+        int load_rc;
+        if (from_cosmofs)
+            load_rc = elf_load_ex_cosmofs(cosmofs_ino, p->pml4, 0, &info);
+        else
+            load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
+
+        if (load_rc < 0) {
+            if (elf_buf) pages_free(elf_buf, elf_pages);
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
@@ -1051,23 +1031,20 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             return -ENOEXEC;
         }
 
-        /* Create VMAs for the main program */
-        create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
+        /* Create VMAs (skip for CosmoFS — segments already mapped) */
+        if (!from_cosmofs)
+            create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
 
         /* Load interpreter if present */
         if (has_interp && interp_buf) {
-            /* Load interpreter at a high address away from the program.
-             * Pick a base above the program's brk, page-aligned. */
             uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
             elf_info_t interp_info;
             if (elf_load_ex(interp_buf, interp_len, p->pml4,
                             interp_base_hint, &interp_info) < 0) {
                 serial_puts("execve: failed to load interpreter\n");
-                /* Fall back to program entry without interpreter */
             } else {
                 info.interp_base = interp_info.load_base;
-                info.entry = interp_info.prog_entry; /* jump to interpreter */
-                /* Create VMAs for interpreter segments */
+                info.entry = interp_info.prog_entry;
                 create_elf_vmas(&p->vma_root, interp_buf, interp_len,
                                 interp_info.load_base);
             }
@@ -1077,7 +1054,6 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         p->brk_current = info.brk;
         entry = info.entry;
 
-        /* Build stack with full auxv */
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
@@ -1088,7 +1064,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         stack_ptr = build_user_stack(p->pml4, stack_top,
                                      kargv, argc, kenvp, envc, &info);
         if (!stack_ptr) {
-            pages_free(elf_buf, elf_pages);
+            if (elf_buf) pages_free(elf_buf, elf_pages);
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
@@ -1099,9 +1075,16 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     } else {
         /* Fast path: plain ET_EXEC, no interpreter */
         uint64_t brk_end;
-        if (elf_load(elf_buf, elf_len, p->pml4, stack_top,
-                     &entry, &stack_ptr, &brk_end) < 0) {
-            pages_free(elf_buf, elf_pages);
+        int load_rc;
+        if (from_cosmofs)
+            load_rc = elf_load_cosmofs(cosmofs_ino, p->pml4, stack_top,
+                                       &entry, &stack_ptr, &brk_end);
+        else
+            load_rc = elf_load(elf_buf, elf_len, p->pml4, stack_top,
+                               &entry, &stack_ptr, &brk_end);
+
+        if (load_rc < 0) {
+            if (elf_buf) pages_free(elf_buf, elf_pages);
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
@@ -1135,17 +1118,33 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
                 for (int i = envc - 1; i >= 0; i--) {
                     int sl = 0; while (kenvp[i][sl]) sl++;
-                    if (str_off < (uint64_t)(sl + 1) + 256) break; /* bounds check */
+                    if (str_off < (uint64_t)(sl + 1) + 256) break;
                     str_off -= (uint64_t)(sl + 1);
                     kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
                     envp_addrs[i] = stk_page_va + str_off;
                 }
                 for (int i = argc - 1; i >= 0; i--) {
                     int sl = 0; while (kargv[i][sl]) sl++;
-                    if (str_off < (uint64_t)(sl + 1) + 256) break; /* bounds check */
+                    if (str_off < (uint64_t)(sl + 1) + 256) break;
                     str_off -= (uint64_t)(sl + 1);
                     kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
                     argv_addrs[i] = stk_page_va + str_off;
+                }
+
+                /* Place 16 bytes of random data on stack for AT_RANDOM */
+                str_off -= 16;
+                str_off &= ~7ULL;
+                uint64_t at_random_addr = stk_page_va + str_off;
+                {
+                    extern int random_get(void *buf, size_t len);
+                    uint8_t rand_buf[16];
+                    if (random_get(rand_buf, 16) != 0) {
+                        /* Fallback: use RDTSC */
+                        uint64_t t; __asm__ volatile("rdtsc" : "=A"(t));
+                        kmemcpy(rand_buf, &t, 8);
+                        kmemcpy(rand_buf + 8, &t, 8);
+                    }
+                    kmemcpy(page + str_off, rand_buf, 16);
                 }
 
                 str_off &= ~7ULL;
@@ -1153,8 +1152,44 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
                 *(--stk) = 0;         /* AT_NULL value */
                 *(--stk) = AT_NULL;
+                *(--stk) = at_random_addr;
+                *(--stk) = AT_RANDOM;
                 *(--stk) = 4096;
                 *(--stk) = AT_PAGESZ;
+                *(--stk) = (uint64_t)peek_eh->e_phnum;
+                *(--stk) = AT_PHNUM;
+                *(--stk) = (uint64_t)peek_eh->e_phentsize;
+                *(--stk) = AT_PHENT;
+                /* AT_PHDR: phdrs are at file offset e_phoff within the first
+                 * LOAD segment (which typically starts at file offset 0).
+                 * For ET_EXEC, the segment vaddr is the load address. */
+                {
+                    uint64_t phdr_vaddr = peek_eh->e_phoff;
+                    /* Find first LOAD to get base vaddr */
+                    if (from_cosmofs) {
+                        Elf64_Phdr ph0;
+                        for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
+                            size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
+                            cosmofs_read(cosmofs_ino, &ph0, po, sizeof(ph0));
+                            if (ph0.p_type == PT_LOAD) {
+                                phdr_vaddr = ph0.p_vaddr + (peek_eh->e_phoff - ph0.p_offset);
+                                break;
+                            }
+                        }
+                    } else if (elf_buf && elf_len >= sizeof(Elf64_Ehdr)) {
+                        for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
+                            size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
+                            if (po + sizeof(Elf64_Phdr) > elf_len) break;
+                            const Elf64_Phdr *ph0 = (const Elf64_Phdr *)(elf_buf + po);
+                            if (ph0->p_type == PT_LOAD) {
+                                phdr_vaddr = ph0->p_vaddr + (peek_eh->e_phoff - ph0->p_offset);
+                                break;
+                            }
+                        }
+                    }
+                    *(--stk) = phdr_vaddr;
+                }
+                *(--stk) = AT_PHDR;
                 *(--stk) = entry;
                 *(--stk) = AT_ENTRY;
                 *(--stk) = 0;
@@ -1166,15 +1201,32 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                 *(--stk) = (uint64_t)argc;
 
                 stack_ptr = stk_page_va + (uint64_t)((uint8_t *)stk - page);
-                stack_ptr &= ~0xFULL; /* 16-byte align (no -8: _start reads argc at RSP) */
+                stack_ptr = (stack_ptr & ~0xFULL) - 8;
             }
         }
 
         /* Create VMAs for ELF segments */
-        create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
+        if (!from_cosmofs) {
+            create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
+        } else {
+            /* Create VMAs from CosmoFS ELF phdrs */
+            Elf64_Phdr cos_phdrs[64];
+            size_t cos_phdr_size = (size_t)peek_eh->e_phnum * peek_eh->e_phentsize;
+            cosmofs_read(cosmofs_ino, cos_phdrs, (size_t)peek_eh->e_phoff, cos_phdr_size);
+            for (int i = 0; i < peek_eh->e_phnum && i < 64; i++) {
+                if (cos_phdrs[i].p_type != PT_LOAD || cos_phdrs[i].p_memsz == 0) continue;
+                uint64_t seg_start = cos_phdrs[i].p_vaddr & ~0xFFFULL;
+                uint64_t seg_end = (cos_phdrs[i].p_vaddr + cos_phdrs[i].p_memsz + 0xFFF) & ~0xFFFULL;
+                int seg_prot = 0;
+                if (cos_phdrs[i].p_flags & PF_R) seg_prot |= PROT_READ;
+                if (cos_phdrs[i].p_flags & PF_W) seg_prot |= PROT_WRITE;
+                if (cos_phdrs[i].p_flags & PF_X) seg_prot |= PROT_EXEC;
+                vma_insert(&p->vma_root, seg_start, seg_end, seg_prot, MAP_PRIVATE);
+            }
+        }
     }
 
-    pages_free(elf_buf, elf_pages);
+    if (elf_buf) pages_free(elf_buf, elf_pages);
     if (interp_buf) pages_free(interp_buf, interp_pages);
 
     /* Close O_CLOEXEC fds */
@@ -1196,6 +1248,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     cur->r11 = 0; cur->r12 = 0; cur->r13 = 0;
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
+
+    serial_puts("execve: entering ring3 entry=");
+    serial_hex64(entry);
+    serial_puts(" sp=");
+    serial_hex64(stack_ptr);
+    serial_putchar('\n');
 
     /* Load new page tables and jump to userspace */
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");

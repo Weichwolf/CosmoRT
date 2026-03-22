@@ -141,7 +141,7 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     virtqueue_submit(&blk_vq, (uint16_t)head);
     virtqueue_kick(&blk_dev, 0);
 
-    /* Wait for completion — busy-poll with pause (safe under spinlock) */
+    /* Wait for completion — busy-poll with pause for low latency */
     uint64_t deadline = hw_ms() + 2000;
     while (virtqueue_get_used(&blk_vq, 0) < 0) {
         if (hw_ms() > deadline) {

@@ -15,6 +15,23 @@ section .text
 ; Stack on entry: [SS, RSP, RFLAGS, CS, RIP, error_code, vector_num]
 ; We save ALL general-purpose registers for context switching.
 isr_common:
+    ; SWAPGS if coming from user mode (CS on stack has RPL=3)
+    ; Stack: [error_code, vector_num] already pushed by stub
+    ; CPU pushed: [SS, RSP, RFLAGS, CS, RIP] before error_code
+    ; CS is at offset +24 from current RSP (after 2 pushes: error_code+vector)
+    ; Actually: RSP points after vector push. Stack layout from RSP:
+    ;   [RSP+0]  = vector_num (pushed by stub)
+    ;   [RSP+8]  = error_code (pushed by stub or CPU)
+    ;   [RSP+16] = RIP (pushed by CPU)
+    ;   [RSP+24] = CS  (pushed by CPU)
+    ;   [RSP+32] = RFLAGS
+    ;   [RSP+40] = RSP (user)
+    ;   [RSP+48] = SS  (user)
+    test qword [rsp + 24], 3   ; check RPL bits of CS
+    jz .no_swapgs_entry
+    swapgs
+.no_swapgs_entry:
+
     ; Save all GPRs (15 registers)
     push rax
     push rbx
@@ -61,6 +78,11 @@ isr_common:
     pop rbx
     pop rax
 
+    ; SWAPGS if returning to user mode
+    test qword [rsp + 24], 3   ; check RPL bits of CS (same offset: +16 for RIP, +24 for CS after vector+error)
+    jz .no_swapgs_exit
+    swapgs
+.no_swapgs_exit:
     add rsp, 16           ; pop vector_num + error_code
     iretq
 
