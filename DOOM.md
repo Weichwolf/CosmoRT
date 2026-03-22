@@ -26,6 +26,25 @@ Die gesamte WASM-Maschinerie (Parsing, JIT, Ausfuehrung,
 WebGL/Audio-Binding) sitzt in CosmoUI. Der Kernel weiss nicht
 was WASM ist.
 
+## Zwei WASM-Welten
+
+| Typ | Imports | Runtime | Beispiel |
+|-----|---------|---------|----------|
+| WASI | `wasi_snapshot_preview1` (fd_read, fd_write, ...) | Thin Layer → POSIX Syscalls | sqlite, ffmpeg, CLI-Tools |
+| Emscripten | `env` (emscripten_*, SDL, WebGL) | CosmoUI JS-Engine + Glue | Doom, Spiele, GUI-Apps |
+
+Erkennung beim Laden: WASI importiert aus `wasi_snapshot_preview1`,
+Emscripten importiert aus `env` mit Emscripten-spezifischen Namen.
+cosmo-wasm-rt waehlt den Pfad automatisch.
+
+WASI ist trivial — Imports mappen fast 1:1 auf CosmoRT-Syscalls.
+Emscripten braucht die volle JS-Engine + WebGL/Audio-Bindings.
+
+```
+cosmo$ sqlite.wasm mydb.db          ← WASI, kein JS, fast native
+cosmo$ doom.wasm                     ← Emscripten, CosmoUI JS-Engine
+```
+
 ## Doom als Integrationstest
 
 Doom als WASM (Emscripten-kompiliert, existiert). Kein Portierungsaufwand —
