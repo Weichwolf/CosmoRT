@@ -290,18 +290,20 @@ long do_kill(int pid, int sig) {
         /* SIGCHLD default = ignore */
         if (sig == 17) return 0; /* SIGCHLD */
 
-        /* Fatal signals: kill the process */
-        target->state = PROC_ZOMBIE;
-        target->exit_code = sig;
-        target->sig_pending |= (1ULL << sig);
-
-        /* If target has blocked threads, wake them to die */
-        thread_t *t = target->threads;
-        while (t) {
-            if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING) {
-                t->state = THREAD_DEAD;
+        /* Fatal signals: terminate immediately */
+        if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
+            if (target == proc_current()) {
+                do_exit(128 + sig); /* doesn't return */
             }
-            t = t->proc_next;
+            /* Remote kill: mark zombie + kill threads */
+            target->state = PROC_ZOMBIE;
+            target->exit_code = 128 + sig;
+            thread_t *t = target->threads;
+            while (t) {
+                if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING)
+                    t->state = THREAD_DEAD;
+                t = t->proc_next;
+            }
         }
         return 0;
     }
