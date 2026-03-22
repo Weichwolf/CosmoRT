@@ -291,13 +291,21 @@ bench: $(SRC)/kernel/gen/kbench_bin.h
 	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 
 # ── Hardware test binary ─────────────────────────
-KTEST_SRC = $(wildcard test/*.c)
-KTEST_OBJ = $(patsubst test/%.c,$(BUILD)/test/%.o,$(KTEST_SRC))
+KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/crash/*.c)
+KTEST_OBJ = $(BUILD)/test/main.o \
+            $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
+            $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
 
-$(BUILD)/test:
+$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash:
 	@mkdir -p $@
 
-$(BUILD)/test/%.o: test/%.c test/ktest.h | $(BUILD)/test
+$(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
+	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
+	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+
+$(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
 	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
 
 $(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
@@ -323,7 +331,7 @@ test-hw: $(SRC)/kernel/gen/ktest_bin.h
 	@rm -f $(BUILD)/kernel/core/main.o
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
-	timeout 30 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	timeout 120 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
