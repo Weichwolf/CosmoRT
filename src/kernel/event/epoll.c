@@ -214,6 +214,69 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     return 0;
 }
 
+/* ── Epoll sleeper list ──────────────────────────── */
+
+#define EPOLL_SLEEPER_MAX 32
+
+static struct {
+    thread_t  *threads[EPOLL_SLEEPER_MAX];
+    int        count;
+    spinlock_t lock;
+} epoll_sleepers = { .lock = SPINLOCK_INIT };
+
+static void epoll_sleeper_add(thread_t *t) {
+    /* Caller holds no lock; we take sleeper lock with IRQs off. */
+    uint64_t irqf;
+    spin_lock_irq(&epoll_sleepers.lock, &irqf);
+    if (epoll_sleepers.count < EPOLL_SLEEPER_MAX)
+        epoll_sleepers.threads[epoll_sleepers.count++] = t;
+    spin_unlock_irq(&epoll_sleepers.lock, irqf);
+}
+
+/* External entry point for do_poll in socket.c */
+void epoll_sleeper_add_ext(thread_t *t) { epoll_sleeper_add(t); }
+
+/* Wake all blocked epoll/poll sleepers. IRQ-safe. */
+void epoll_wake_all(void) {
+    uint64_t irqf;
+    spin_lock_irq(&epoll_sleepers.lock, &irqf);
+    int n = epoll_sleepers.count;
+    thread_t *wake[EPOLL_SLEEPER_MAX];
+    for (int i = 0; i < n; i++) {
+        wake[i] = epoll_sleepers.threads[i];
+        epoll_sleepers.threads[i] = 0;
+    }
+    epoll_sleepers.count = 0;
+    spin_unlock_irq(&epoll_sleepers.lock, irqf);
+
+    extern void sched_add(thread_t *ts);
+    for (int i = 0; i < n; i++)
+        sched_add(wake[i]);
+}
+
+/* Check timed-out sleepers. Called from timer IRQ (sched_preempt). */
+void epoll_check_timeouts(void) {
+    uint64_t now = timer_ms();
+    uint64_t irqf;
+    spin_lock_irq(&epoll_sleepers.lock, &irqf);
+
+    extern void sched_add(thread_t *ts);
+    for (int i = 0; i < epoll_sleepers.count; ) {
+        thread_t *t = epoll_sleepers.threads[i];
+        if (t->wake_at && now >= t->wake_at) {
+            /* Remove from list (swap with last) */
+            epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
+            spin_unlock_irq(&epoll_sleepers.lock, irqf);
+            sched_add(t);
+            spin_lock_irq(&epoll_sleepers.lock, &irqf);
+            /* Don't increment i — swapped element needs checking */
+        } else {
+            i++;
+        }
+    }
+    spin_unlock_irq(&epoll_sleepers.lock, irqf);
+}
+
 /* ── SYS_EPOLL_WAIT (232) ───────────────────────── */
 
 long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
@@ -233,63 +296,57 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
                       : (timeout == 0) ? 0
                       : (timer_ms() + (uint64_t)timeout);
 
-    for (;;) {
-        net_poll();
+    net_poll();
 
-        /* Snapshot entries under lock, then scan without lock held.
-         * Avoids IRQs-off during fd_poll_readiness (RT-latency). */
-        epoll_entry_t snap[EPOLL_MAX_FDS];
-        int snap_count;
+    /* Snapshot entries under lock, then scan without lock held. */
+    epoll_entry_t snap[EPOLL_MAX_FDS];
+    int snap_count;
 
-        uint64_t irqf;
-        spin_lock_irq(&ep->lock, &irqf);
-        snap_count = ep->count;
-        for (int i = 0; i < snap_count; i++)
-            snap[i] = ep->entries[i];
-        spin_unlock_irq(&ep->lock, irqf);
+    uint64_t irqf;
+    spin_lock_irq(&ep->lock, &irqf);
+    snap_count = ep->count;
+    for (int i = 0; i < snap_count; i++)
+        snap[i] = ep->entries[i];
+    spin_unlock_irq(&ep->lock, irqf);
 
-        int nready = 0;
-        for (int i = 0; i < snap_count && nready < maxevents; i++) {
-            uint32_t r = fd_poll_readiness(snap[i].fd, snap[i].events);
-            if (r) {
-                struct epoll_event ev;
-                ev.events = r & snap[i].events;
-                /* Always report HUP/ERR even if not requested */
-                ev.events |= r & (EPOLLHUP | EPOLLERR);
-                if (ev.events) {
-                    ev.data = snap[i].data;
-                    kmemcpy(&events[nready], &ev, sizeof(ev));
-                    nready++;
-                }
+    int nready = 0;
+    for (int i = 0; i < snap_count && nready < maxevents; i++) {
+        uint32_t r = fd_poll_readiness(snap[i].fd, snap[i].events);
+        if (r) {
+            struct epoll_event ev;
+            ev.events = r & snap[i].events;
+            ev.events |= r & (EPOLLHUP | EPOLLERR);
+            if (ev.events) {
+                ev.data = snap[i].data;
+                kmemcpy(&events[nready], &ev, sizeof(ev));
+                nready++;
             }
         }
-
-        if (nready > 0) return nready;
-        if (timeout == 0) return 0;
-        if (timer_ms() >= deadline) return 0;
-
-        /* Yield to scheduler and retry the epoll_wait syscall.
-         * This allows other threads to run while we wait for events. */
-        {
-            extern uint64_t pml4[];
-            extern void save_user_state_for_block(thread_t *t, long return_value);
-            extern void thread_return_to_kernel(thread_t *t);
-
-            thread_t *t = thread_current();
-            if (!t) return -EFAULT;
-
-            save_user_state_for_block(t, 0);
-            t->rip -= 2;              /* back to `syscall` instruction */
-            t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
-
-            /* Don't fully block — just yield and re-enqueue immediately.
-             * This gives other threads a chance to run. */
-            extern void sched_add(thread_t *ts);
-            t->state = THREAD_RUNNABLE;
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-            thread_return_to_kernel(t);
-        }
     }
+
+    if (nready > 0) return nready;
+    if (timeout == 0) return 0;
+    if (timer_ms() >= deadline) return 0;
+
+    /* No events ready — block until woken by epoll_wake_all or timeout. */
+    {
+        extern uint64_t pml4[];
+
+        thread_t *t = thread_current();
+        if (!t) return -EFAULT;
+
+        save_user_state_for_block(t, 0);
+        t->rip -= 2;              /* back to `syscall` instruction */
+        t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
+        t->wake_at = deadline;
+
+        /* Register as sleeper, then block. */
+        epoll_sleeper_add(t);
+        t->state = THREAD_BLOCKED;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        thread_return_to_kernel(t);
+    }
+    return 0; /* unreachable */
 }
 
 void epoll_destroy(void *obj) {
@@ -354,6 +411,7 @@ long eventfd_write(void *obj, const void *buf, long count) {
     efd->counter += val;
     spin_unlock_irq(&efd->lock, irqf);
 
+    epoll_wake_all();
     return (long)sizeof(val);
 }
 

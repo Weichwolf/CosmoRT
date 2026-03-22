@@ -246,10 +246,8 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     vma_insert(&p->vma_root, stack_bottom, stack_top,
                PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
 
-    /* Create VMA for brk region (initially zero-sized, grows on brk calls) */
-    if (brk_end > 0)
-        vma_insert(&p->vma_root, brk_end, brk_end,
-                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    /* brk VMA is created on first brk() call that grows beyond brk_base.
+     * Don't insert a zero-length VMA here — it corrupts the AVL tree. */
 
     /* Create VMAs for ELF segments by scanning the ELF headers */
     if (elf_len >= 64) {
@@ -1044,9 +1042,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        if (info.brk > 0)
-            vma_insert(&p->vma_root, info.brk, info.brk,
-                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
 
         stack_ptr = build_user_stack(p->pml4, stack_top,
                                      kargv, argc, kenvp, envc, &info);
@@ -1087,9 +1083,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        if (brk_end > 0)
-            vma_insert(&p->vma_root, brk_end, brk_end,
-                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
 
         /* Rebuild stack with real argv/envp (elf_load already set up minimal stack) */
         {

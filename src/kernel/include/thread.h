@@ -81,6 +81,9 @@ typedef struct thread {
 
     /* ── Fault info for signal delivery ── */
     uint64_t fault_addr;   /* CR2 for SIGSEGV/SIGBUS delivery */
+
+    /* ── Timed wakeup (epoll_wait / poll timeout) ── */
+    uint64_t wake_at;      /* timer_ms() deadline; 0 = no timeout */
 } thread_t;
 
 #define THREAD_MAX 64

@@ -297,10 +297,10 @@ long do_kill(int pid, int sig) {
         /* SIGCHLD default = ignore */
         if (sig == 17) return 0; /* SIGCHLD */
 
-        /* Fatal signals: terminate immediately */
+        /* Fatal signals: terminate entire process group */
         if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
             if (target == proc_current()) {
-                do_exit(128 + sig); /* doesn't return */
+                do_exit_group(128 + sig); /* doesn't return */
             }
             /* Remote kill: mark zombie + kill threads */
             target->state = PROC_ZOMBIE;

@@ -304,6 +304,12 @@ void sched_preempt(void *frame_ptr) {
         sched_rebalance();
     }
 
+    /* Check timed-out epoll/poll sleepers (every tick, BSP only) */
+    if (percpu_self()->core_id == 0) {
+        extern void epoll_check_timeouts(void);
+        epoll_check_timeouts();
+    }
+
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
     if (!cur || cur->state != THREAD_RUNNING) return;

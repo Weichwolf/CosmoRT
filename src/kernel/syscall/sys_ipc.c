@@ -51,6 +51,9 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
         extern void sched_add(thread_t *t);
         sched_add(writer);
     }
+    /* Wake epoll/poll sleepers — pipe now writable */
+    extern void epoll_wake_all(void);
+    epoll_wake_all();
     return (long)n;
 }
 
@@ -81,6 +84,9 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
         extern void sched_add(thread_t *t);
         sched_add(reader);
     }
+    /* Wake epoll/poll sleepers — pipe now readable */
+    extern void epoll_wake_all(void);
+    epoll_wake_all();
     return (long)n;
 }
 
@@ -264,6 +270,9 @@ long pipe_close(fd_entry_t *fde) {
     }
     if (both_closed)
         slab_free(&pipe_slab, pp);
+    /* Wake epoll/poll sleepers — pipe state changed (HUP/ERR) */
+    extern void epoll_wake_all(void);
+    epoll_wake_all();
     return 0;
 }
 

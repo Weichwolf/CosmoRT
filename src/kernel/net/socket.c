@@ -212,53 +212,53 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
 
     uint64_t deadline = timer_ms() + (uint64_t)(timeout >= 0 ? timeout : 30000);
+
+    net_poll();
     int ready = 0;
-
-    while (timer_ms() < deadline) {
-        net_poll();
-        ready = 0;
-        for (int i = 0; i < nfds; i++) {
-            kfds[i].revents = 0;
-            socket_t *s = sock_from_fd(kfds[i].fd);
-            if (!s) {
-                /* Non-socket FD: pretend writable */
-                if (kfds[i].events & POLLOUT) kfds[i].revents |= POLLOUT;
-                if (kfds[i].revents) ready++;
-                continue;
-            }
-            if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
-                /* Check if TCP has buffered data or queue has packets */
-                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
-                    kfds[i].revents |= POLLIN;
-            }
-            if (kfds[i].events & POLLOUT) {
-                if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
-            }
+    for (int i = 0; i < nfds; i++) {
+        kfds[i].revents = 0;
+        socket_t *s = sock_from_fd(kfds[i].fd);
+        if (!s) {
+            if (kfds[i].events & POLLOUT) kfds[i].revents |= POLLOUT;
             if (kfds[i].revents) ready++;
+            continue;
         }
-        if (ready > 0) {
-            /* Write back revents to user */
-            kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
-            return ready;
+        if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
+            if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
+                kfds[i].revents |= POLLIN;
         }
-        if (timeout == 0) return 0;
-        /* Yield to scheduler and retry poll syscall */
-        {
-            extern uint64_t pml4[];
-            extern void save_user_state_for_block(thread_t *t, long return_value);
-            extern void thread_return_to_kernel(thread_t *t);
-            extern void sched_add(thread_t *ts);
-
-            thread_t *t = thread_current();
-            if (t) {
-                save_user_state_for_block(t, 0);
-                t->rip -= 2;
-                t->rax = SYS_POLL;
-                t->state = THREAD_RUNNABLE;
-                __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-                thread_return_to_kernel(t);
-            }
+        if (kfds[i].events & POLLOUT) {
+            if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
         }
+        if (kfds[i].revents) ready++;
     }
-    return 0;
+    if (ready > 0) {
+        kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+        return ready;
+    }
+    if (timeout == 0) return 0;
+
+    /* No events ready — block until woken by epoll_wake_all or timeout. */
+    {
+        extern uint64_t pml4[];
+        extern void save_user_state_for_block(thread_t *t, long return_value);
+        extern void thread_return_to_kernel(thread_t *t);
+        extern void epoll_wake_all(void);
+
+        thread_t *t = thread_current();
+        if (!t) return -EFAULT;
+
+        save_user_state_for_block(t, 0);
+        t->rip -= 2;
+        t->rax = SYS_POLL;
+        t->wake_at = deadline;
+
+        /* Register as sleeper (shares epoll sleeper list), then block. */
+        extern void epoll_sleeper_add_ext(thread_t *t);
+        epoll_sleeper_add_ext(t);
+        t->state = THREAD_BLOCKED;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        thread_return_to_kernel(t);
+    }
+    return 0; /* unreachable */
 }

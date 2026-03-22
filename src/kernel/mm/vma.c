@@ -14,7 +14,9 @@ void vma_init(void) {
 }
 
 vma_t *vma_alloc_raw(void) {
-    return (vma_t *)slab_alloc(&vma_slab);
+    vma_t *v = (vma_t *)slab_alloc(&vma_slab);
+    if (!v) serial_puts("vma: EXHAUSTED!\n");
+    return v;
 }
 
 void vma_free(vma_t *v) {

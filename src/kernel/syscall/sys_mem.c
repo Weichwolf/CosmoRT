@@ -4,6 +4,8 @@
 
 /* ── SYS_brk (12) ───────────────────────────────── */
 
+/* brk collision detection */
+
 long do_brk(unsigned long addr) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -13,8 +15,20 @@ long do_brk(unsigned long addr) {
     uint64_t old_end = (p->brk_current + 0xFFF) & ~0xFFFULL;
     uint64_t new_end = (addr + 0xFFF) & ~0xFFFULL;
 
+    /* Check for overlap with existing VMAs when growing */
     if (new_end > old_end) {
-        /* Growing: pages allocated on demand (page fault handler) */
+        vma_t *overlap = vma_find_overlap(p->vma_root, old_end, new_end);
+        if (overlap && !(overlap->start == p->brk_base)) {
+            /* brk would collide with an mmap'd region — refuse */
+            serial_puts("brk: ENOMEM collision 0x");
+            serial_hex64(addr);
+            serial_puts(" vs VMA [0x");
+            serial_hex64(overlap->start);
+            serial_puts(",0x");
+            serial_hex64(overlap->end);
+            serial_puts(")\n");
+            return (long)p->brk_current;
+        }
     } else if (new_end < old_end) {
         /* Shrinking: unmap pages */
         for (uint64_t va = new_end; va < old_end; va += 4096) {
@@ -188,7 +202,14 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             if (!vaddr) {
                 /* Retry from top — munmap may have freed space above mmap_next */
                 vaddr = vma_find_free(p->vma_root, USER_MMAP_BASE, length);
-                if (!vaddr) return -ENOMEM;
+                if (!vaddr) {
+                    serial_puts("mmap: ENOMEM len=0x");
+                    serial_hex64(length);
+                    serial_puts(" hint=0x");
+                    serial_hex64(addr);
+                    serial_putchar('\n');
+                    return -ENOMEM;
+                }
             }
             p->mmap_next = vaddr;
         }
