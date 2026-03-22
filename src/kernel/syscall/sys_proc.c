@@ -30,45 +30,90 @@ long do_arch_prctl(int code, unsigned long addr) {
     return -EINVAL;
 }
 
-/* ── SYS_exit / SYS_exit_group ───────────────────── */
+/* ── SYS_exit (thread) / SYS_exit_group (process) ── */
+
+static void exit_kill_process(thread_t *t, process_t *p, int status) {
+    net_port_check_driver((int)p->pid);
+    p->state = PROC_ZOMBIE;
+    p->exit_code = status;
+
+    serial_puts("exit: pid=");
+    serial_putchar('0' + (p->pid % 10));
+    serial_puts(" status=");
+    serial_putchar('0' + (status & 0xF));
+    serial_putchar('\n');
+
+    /* Kill other threads */
+    thread_t *scan = p->threads;
+    while (scan) {
+        if (scan != t) scan->state = THREAD_DEAD;
+        scan = scan->proc_next;
+    }
+
+    /* Wake parent if blocked in wait4 */
+    if (p->parent_pid) {
+        process_t *parent = proc_find(p->parent_pid);
+        if (parent) {
+            thread_t *pt = parent->threads;
+            while (pt) {
+                if (pt->state == THREAD_BLOCKED) {
+                    extern void sched_add(thread_t *t);
+                    sched_add(pt);
+                }
+                pt = pt->proc_next;
+            }
+        }
+    }
+}
 
 void do_exit(int status) {
     thread_t *t = thread_current();
-    if (t) {
-        process_t *p = t->proc;
-        t->state = THREAD_DEAD;
-        if (p) {
-            net_port_check_driver((int)p->pid);
-            p->state = PROC_ZOMBIE;
-            p->exit_code = status;
+    if (!t) { __asm__ volatile("cli; hlt"); return; }
+    process_t *p = t->proc;
+    t->state = THREAD_DEAD;
 
-            serial_puts("exit: pid=");
-            serial_putchar('0' + (p->pid % 10));
-            serial_puts(" status=");
-            serial_putchar('0' + (status & 0xF));
+    /* CLONE_CHILD_CLEARTID: clear tid + futex_wake for pthread_join */
+    if (t->clear_child_tid && p) {
+        /* Ensure user page tables for user memory access */
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");
+        if (user_ok((uint64_t)t->clear_child_tid, 4)) {
+            int zero = 0;
+            kmemcpy(t->clear_child_tid, &zero, 4);
+            long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
+            serial_puts("futex_wake=");
+            serial_hex64((uint64_t)wr);
             serial_putchar('\n');
-
-            /* Wake parent if blocked in wait4 */
-            if (p->parent_pid) {
-                process_t *parent = proc_find(p->parent_pid);
-                if (parent) {
-                    /* Find and wake blocked threads in parent */
-                    thread_t *pt = parent->threads;
-                    while (pt) {
-                        if (pt->state == THREAD_BLOCKED) {
-                            extern void sched_add(thread_t *t);
-                            sched_add(pt);
-                        }
-                        pt = pt->proc_next;
-                    }
-                }
-            }
         }
-
-        extern uint64_t pml4[];
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-        thread_return_to_kernel(t);
+        t->clear_child_tid = 0;
     }
+
+    if (p) {
+        /* Check if last thread */
+        int remaining = 0;
+        thread_t *scan = p->threads;
+        while (scan) {
+            if (scan != t && scan->state != THREAD_DEAD) remaining++;
+            scan = scan->proc_next;
+        }
+        if (remaining == 0) exit_kill_process(t, p, status);
+    }
+
+    extern uint64_t pml4[];
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+    __asm__ volatile("cli; hlt");
+}
+
+void do_exit_group(int status) {
+    thread_t *t = thread_current();
+    if (!t) { __asm__ volatile("cli; hlt"); return; }
+    process_t *p = t->proc;
+    t->state = THREAD_DEAD;
+    if (p) exit_kill_process(t, p, status);
+
+    extern uint64_t pml4[];
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
     __asm__ volatile("cli; hlt");
 }
 
@@ -140,6 +185,11 @@ long do_clone(unsigned long flags, void *child_stack,
         if (!user_ok((uint64_t)child_tid, 4)) { thread_free(t); return -EFAULT; }
         *child_tid = t->tid;
     }
+
+    /* CLONE_CHILD_CLEARTID: on thread exit, clear *child_tid to 0 and futex_wake */
+    t->clear_child_tid = 0;
+    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
+        t->clear_child_tid = child_tid;
 
     /* Add to process thread list (under lock for concurrent clone safety) */
     {

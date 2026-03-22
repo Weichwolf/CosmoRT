@@ -53,15 +53,23 @@ static socket_t *sock_from_fd(int fd) {
 /* ── SYS_SOCKET (41) ─────────────────────────────── */
 
 long do_socket(int domain, int type, int protocol) {
-    (void)domain; (void)type; (void)protocol;
-    /* Only AF_INET + SOCK_STREAM supported */
+    (void)protocol;
+    int base_type = type & 0xF; /* strip SOCK_CLOEXEC, SOCK_NONBLOCK */
+    /* Only AF_INET (2) + SOCK_STREAM (1) / SOCK_DGRAM (2) supported */
+    if (domain != 2 /* AF_INET */) return -EAFNOSUPPORT;
+    if (base_type != 1 && base_type != 2) return -EPROTONOSUPPORT;
+
     socket_t *s = sock_alloc();
     if (!s) return -EMFILE;
 
     process_t *p = proc_current();
     if (!p) { s->state = SOCK_UNUSED; return -EFAULT; }
 
-    int fd = fd_alloc(&p->fds, FD_SOCKET, s, O_RDWR);
+    int flags = 0x02; /* O_RDWR */
+    if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC → O_CLOEXEC */
+    if (type & 0x800) flags |= 0x800;          /* SOCK_NONBLOCK → O_NONBLOCK */
+
+    int fd = fd_alloc(&p->fds, FD_SOCKET, s, flags);
     if (fd < 0) { s->state = SOCK_UNUSED; return -EMFILE; }
     return fd;
 }
@@ -172,10 +180,17 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
     (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; return 0;
 }
 long do_getsockname(int fd, void *addr, int *addrlen) {
-    (void)fd; (void)addr; (void)addrlen; return 0;
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -ENOTSOCK;
+    (void)addr; (void)addrlen;
+    return 0;
 }
 long do_getpeername(int fd, void *addr, int *addrlen) {
-    (void)fd; (void)addr; (void)addrlen; return 0;
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -ENOTSOCK;
+    if (s->state != SOCK_CONNECTED) return -ENOTCONN;
+    (void)addr; (void)addrlen;
+    return 0;
 }
 
 /* ── SYS_POLL (7) ────────────────────────────────── */

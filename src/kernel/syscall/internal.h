@@ -120,6 +120,7 @@ long do_munlockall(void);
 
 /* ── Forward declarations: sys_proc.c ── */
 void do_exit(int status);
+void do_exit_group(int status);
 long do_clone(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_uname(void *buf);

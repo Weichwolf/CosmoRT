@@ -75,6 +75,9 @@ typedef struct thread {
 
     /* ── Kernel context (setjmp buffer) ── */
     uint64_t jmpbuf[8];
+
+    /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
+    int *clear_child_tid;
 } thread_t;
 
 #define THREAD_MAX 64

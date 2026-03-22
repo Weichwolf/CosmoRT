@@ -53,7 +53,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
 
     /* Process lifecycle */
     case SYS_EXIT:          do_exit((int)a1); return 0;
-    case SYS_EXIT_GROUP:    do_exit((int)a1); return 0;
+    case SYS_EXIT_GROUP:    do_exit_group((int)a1); return 0;
     case SYS_CLONE:         return do_clone((unsigned long)a1, (void *)a2,
                                             (int *)a3, (int *)a4, (unsigned long)a5);
     case SYS_FORK:          return do_fork();

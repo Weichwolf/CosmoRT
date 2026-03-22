@@ -253,6 +253,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
     /* Timer (vector 32): RT scheduler preemption */
     if (vector == 32) {
+        /* (tick debug removed) */
         extern void sched_preempt(void *frame);
         sched_preempt(frame);
     }

@@ -290,9 +290,8 @@ long do_munmap(unsigned long addr, size_t length) {
 
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
-    /* TLB flush: local + cross-core IPI shootdown */
+    /* TLB flush: local only (single-process for now) */
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
-    tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
@@ -335,8 +334,8 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
 
     /* Update PTE permissions */
     update_pte_prot(p->pml4, start, end, prot);
-    /* TLB shootdown for other cores sharing this address space */
-    tlb_shootdown(virt_to_phys(p->pml4));
+    /* TLB flush: local only (single-process for now) */
+    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
 
     /* Update VMA prot flags, splitting if needed */
     for (uint64_t probe = start; probe < end; ) {

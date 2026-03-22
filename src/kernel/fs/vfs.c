@@ -2,6 +2,7 @@
 
 #include "vfs.h"
 #include "cosmofs.h"
+#include "bcache.h"
 #include "fd.h"
 #include "process.h"
 #include "percpu.h"

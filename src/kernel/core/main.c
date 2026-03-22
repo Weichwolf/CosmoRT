@@ -66,6 +66,19 @@ void kernel_main(struct boot_info *info) {
         info->mmap_size,
         info->mmap_desc_size);
 
+    /* Enable SSE/SSE2 on BSP (user code uses SSE for string ops) */
+    {
+        uint64_t cr0;
+        __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+        cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
+        cr0 |=  (1ULL << 1);  /* set CR0.MP (monitor coprocessor) */
+        __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+        uint64_t cr4;
+        __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+        cr4 |= (1 << 9) | (1 << 10); /* CR4.OSFXSR + CR4.OSXMMEXCPT */
+        __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+    }
+
     /* Interrupts + Timer */
     irq_init();
     timer_init();
