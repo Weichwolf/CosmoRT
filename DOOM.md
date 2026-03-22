@@ -1,6 +1,30 @@
-# Doom auf CosmoOS
+# WASM auf CosmoOS
 
-Doom als WASM im CosmoUI-Browser. Kein Portierungsaufwand —
+WASM ist ein natives Binary-Format. Ausfuehrbar wie ELF.
+
+```
+cosmo$ doom.wasm
+cosmo$ ffmpeg.wasm input.mp4 output.webm
+cosmo$ sqlite.wasm mydb.db "SELECT * FROM t"
+```
+
+## WASM als First-Class Binary
+
+Kernel erkennt WASM am Magic (`\0asm`) und laedt die Runtime:
+
+```c
+// ELF-Loader in elf.c
+if (magic == "\x7fELF")  → ELF-Loader
+if (magic == "\0asm")     → exec /usr/lib/cosmo-wasm-rt <datei>
+```
+
+cosmo-wasm-rt ist die CosmoUI WASM-Runtime als Userspace-Binary.
+Hat Zugriff auf WebGL/Audio/Input. Fuer den User transparent —
+.wasm ist einfach ein ausfuehrbares Programm.
+
+## Doom als Integrationstest
+
+Doom als WASM (Emscripten-kompiliert, existiert). Kein Portierungsaufwand —
 die WASM-Binary existiert, die Web-APIs sind spezifiziert.
 
 ## Warum
