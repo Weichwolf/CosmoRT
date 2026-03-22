@@ -163,9 +163,11 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             if (ov->start >= vaddr + length) break;
             if (ov->start < vaddr && ov->end > vaddr + length) {
                 uint64_t orig_end = ov->end;
+                int saved_prot = ov->prot;
+                int saved_flags = ov->flags;
                 ov->end = vaddr;
                 vma_insert(&p->vma_root, vaddr + length, orig_end,
-                           ov->prot, ov->flags);
+                           saved_prot, saved_flags);
             } else if (ov->start < vaddr) {
                 ov->end = vaddr;
             } else if (ov->end > vaddr + length) {

@@ -57,6 +57,12 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         scan = scan->proc_next;
     }
 
+    /* Free address space and VMAs — zombie doesn't need them */
+    free_address_space(p->pml4);
+    p->pml4 = 0;
+    vma_free_tree(p->vma_root);
+    p->vma_root = 0;
+
     /* Wake parent if blocked in wait4 */
     if (p->parent_pid) {
         process_t *parent = proc_find(p->parent_pid);

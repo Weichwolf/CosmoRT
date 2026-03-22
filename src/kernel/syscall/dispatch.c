@@ -295,7 +295,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (!user_ok(a3, 8)) return -EFAULT;
         void *virt;
         int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
-        if (r == 0) *(void **)a3 = virt;
+        if (r == 0) kmemcpy((void *)a3, &virt, sizeof(virt));
         return r;
     }
     case SYS_COSMO_DMA_ALLOC: {
@@ -303,19 +303,22 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         void *virt; uint64_t phys;
         int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
-        if (r == 0) { *(void **)a2 = virt; *(uint64_t *)a3 = phys; }
+        if (r == 0) { kmemcpy((void *)a2, &virt, sizeof(virt)); kmemcpy((void *)a3, &phys, sizeof(phys)); }
         return r;
     }
     case SYS_COSMO_DMA_FREE:
         HW_CAP_CHECK();
         cosmo_dma_free((void *)a1, (size_t)a2);
         return 0;
-    case SYS_COSMO_IRQ_REGISTER:
+    case SYS_COSMO_IRQ_REGISTER: {
         HW_CAP_CHECK();
+        /* Validate handler address: must be in user-space range */
+        if ((uint64_t)a2 >= 0x800000000000ULL || a2 == 0) return -EFAULT;
         return cosmo_irq_register((int)a1, (void (*)(void *))a2, (void *)a3);
+    }
     case SYS_COSMO_PCI_READ: {
         HW_CAP_CHECK();
-        if (!user_ok(a4, 4)) return -EFAULT;
+        if (!user_ok(a5, 4)) return -EFAULT;
         return cosmo_pci_config_read((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t *)a5);
     }
     case SYS_COSMO_PCI_WRITE:

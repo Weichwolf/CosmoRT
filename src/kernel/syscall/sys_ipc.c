@@ -273,9 +273,11 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
     if (!fde_obj) return;
     if (fde_type == FD_SOCKET) {
         socket_t *s = (socket_t *)fde_obj;
-        if (s->state == SOCK_CONNECTED)
-            net_tcp_close(&s->tcp);
-        s->state = SOCK_UNUSED;
+        if (__sync_sub_and_fetch(&s->refcount, 1) <= 0) {
+            if (s->state == SOCK_CONNECTED)
+                net_tcp_close(&s->tcp);
+            s->state = SOCK_UNUSED;
+        }
     } else if (fde_type == FD_PIPE) {
         fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
         pipe_close(&tmp);
@@ -306,7 +308,11 @@ void fd_obj_incref(int fde_type, void *fde_obj) {
             spin_unlock_irq(&pp->lock, flags);
         }
     }
-    /* TODO: refcounting for sockets, epoll, eventfd, etc. */
+    if (fde_type == FD_SOCKET) {
+        socket_t *s = (socket_t *)fde_obj;
+        __sync_add_and_fetch(&s->refcount, 1);
+    }
+    /* TODO: refcounting for epoll, eventfd, etc. */
 }
 
 /* ── fd_poll_readiness — check what events are ready on an FD ── */

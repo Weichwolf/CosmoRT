@@ -55,6 +55,9 @@ vma_t *vma_find_overlap(vma_t *root, uint64_t start, uint64_t end);
 /* Free a VMA back to slab (without removing from tree — for internal use). */
 void vma_free(vma_t *v);
 
+/* Free all VMAs in a tree recursively. */
+void vma_free_tree(vma_t *node);
+
 /* Allocate a raw VMA from slab (for splitting). */
 vma_t *vma_alloc_raw(void);
 

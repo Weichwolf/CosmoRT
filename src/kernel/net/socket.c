@@ -63,6 +63,7 @@ long do_socket(int domain, int type, int protocol) {
 
     socket_t *s = sock_alloc();
     if (!s) return -EMFILE;
+    s->refcount = 1;
 
     process_t *p = proc_current();
     if (!p) { s->state = SOCK_UNUSED; return -EFAULT; }

@@ -525,7 +525,7 @@ int vfs_close(int fd) {
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (f) {
-        if (--f->refcount <= 0)
+        if (__sync_sub_and_fetch(&f->refcount, 1) <= 0)
             file_free(f);
     }
 

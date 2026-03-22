@@ -14,6 +14,7 @@
 typedef struct {
     net_tcp_t tcp;
     int       state;
+    int       refcount;   /* number of FDs referencing this socket */
 } socket_t;
 
 /* Syscall implementations */

@@ -210,7 +210,7 @@ static uint64_t aslr_rand(void) {
 }
 
 /* Forward declarations */
-static void vma_free_tree(vma_t *node);
+void vma_free_tree(vma_t *node);
 void free_address_space(uint64_t *user_pml4);
 
 int proc_create_elf(const void *elf_data, size_t elf_len) {
@@ -508,7 +508,7 @@ void free_address_space(uint64_t *user_pml4) {
 }
 
 /* Free all VMAs in a tree */
-static void vma_free_tree(vma_t *node) {
+void vma_free_tree(vma_t *node) {
     if (!node) return;
     vma_free_tree(node->left);
     vma_free_tree(node->right);
