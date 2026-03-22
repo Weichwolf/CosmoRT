@@ -215,14 +215,16 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
 ## Naechste Schritte (Prioritaet)
 
 ```
-Prio 1 — Restrukturierung src/kernel/:
-  syscall.c zerlegen             → 9 Dateien nach Subsystem (~300 Zeilen/Datei)
-  process.c zerlegen             → fork.c, exec.c, thread.c, signal.c
-  epoll.c zerlegen               → epoll.c, eventfd.c, timerfd.c, signalfd.c, inotify.c
-  net.c zerlegen                 → tcp.c, udp.c, arp.c, icmp.c
-  vfs.c zerlegen                 → vfs.c, ramfs.c
-  *_bin.h nach gen/              → Generierte Dateien aus Arbeitsverzeichnis raus
-  Subdirectories                 → core/ mm/ proc/ syscall/ ipc/ fs/ net/ event/ vt/ hw/
+Prio 0 — Aufraemen:
+  MAX_ORDER zurueck auf 9         → Streaming ELF braucht keine grossen Bloecke
+  V8-Hack in do_mmap entfernen    → Zeile 214-229 (4GB-Boundary-Suche)
+  ELF verify Code entfernen       → Debug-Code in elf.c (read_pte_pub, ref-Check)
+  Serial-Tracing entfernen        → mmap/brk/munmap/mprotect Tracing raus
+  mmap korrekt statt V8-spezifisch → Hints, MAP_FIXED_NOREPLACE, munmap Split
+
+Prio 1 — Audit 3 Fixes:
+  SEC-CRIT (3)                    → HW-Primitive arbitrary write, IRQ-Handler
+  CORR-HIGH (5)                   → do_exit Cleanup, fork Refcount, vfs_close Race
 
 Prio 2 — Notebook-tauglich:
   P16 /dev/msr + /dev/port       → Device-Nodes
