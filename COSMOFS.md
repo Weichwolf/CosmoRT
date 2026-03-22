@@ -84,6 +84,58 @@ CosmoFS v2
 └── TRIM-Pipeline (freed Blocks → async TRIM-Queue)
 ```
 
+## Cloud-Backend: S3-kompatibel
+
+Ein Protokoll, alle Backends. Content-Addressed Blocks ueber HTTP:
+
+```
+PUT /bucket/sha256hex    → Block hochladen
+GET /bucket/sha256hex    → Block runterladen
+HEAD /bucket/sha256hex   → Existiert der Block?
+```
+
+Key = Hash. Kein Konflikt, kein Ueberschreiben, idempotent.
+
+### Kompatible Backends
+
+| Backend       | Typ           | Anmerkung                          |
+|---------------|---------------|-------------------------------------|
+| MinIO         | Self-Hosted   | Open Source, S3-API, Homelab        |
+| Garage        | Self-Hosted   | Rust, S3-API, verteiltes Homelab    |
+| AWS S3        | Cloud         | Original                            |
+| Cloudflare R2 | Cloud         | S3-kompatibel, kein Egress-Kosten   |
+| Backblaze B2  | Cloud         | S3-kompatibel, guenstigster Storage |
+| Azure Blob    | Cloud         | S3-Kompatibilitaetslayer            |
+| GCS           | Cloud         | S3-Kompatibilitaetslayer            |
+
+### Konfiguration
+
+```
+# ~/.config/cosmofs/sync.conf
+endpoint = https://minio.local:9000
+bucket = cosmo-blocks
+access_key = ...
+secret_key = ...
+```
+
+### Architektur-Trennung
+
+```
+Kernel (CosmoRT)          Userspace (CosmoPX)
+  Inode-Zustand:            Sync-Daemon:
+  ● lokal                   S3 PUT/GET/HEAD ueber HTTPS
+  ◐ syncing                 Hash-Diff gegen Remote
+  ○ remote-only             Transparenter Fetch bei open()
+                            Background-Upload bei write()
+```
+
+Der Kernel kennt nur den Zustand im Inode (2 Bits). Der Sync-Daemon
+in CosmoPX spricht S3 ueber HTTPS. Kein Cloud-Protokoll im Kernel.
+
+Bei open() auf remote-only: Kernel blockiert, signalisiert Daemon
+ueber eventfd, Daemon fetcht Block via S3 GET, schreibt in Block-Cache,
+Kernel resumt den Prozess.
+
 ## Aufwand
 
 Das bestehende CosmoFS (B+ Tree, Block-Cache) ist 80% der
