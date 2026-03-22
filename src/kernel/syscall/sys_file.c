@@ -689,7 +689,10 @@ long do_getdents64(int fd, void *buf, size_t count) {
 
 /* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
 
+#define TCGETS     0x5401
 #define TIOCGWINSZ 0x5413
+#define TIOCGPTN   0x80045430
+#define TIOCSPTLCK 0x40045431
 #define F_DUPFD    0
 #define F_GETFD    1
 #define F_SETFD    2
@@ -704,6 +707,16 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
 
+    if (request == TCGETS) {
+        /* Minimal termios: tell isatty() this is a terminal */
+        if (fde->type == FD_SERIAL || fde->type == FD_PTY_SLAVE ||
+            fde->type == FD_PTY_MASTER) {
+            if (!user_ok(arg, 60)) return -EFAULT;
+            kmemset((void *)arg, 0, 60); /* zero-filled termios */
+            return 0;
+        }
+        return -ENOTTY;
+    }
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
         struct winsize *ws = (struct winsize *)arg;
