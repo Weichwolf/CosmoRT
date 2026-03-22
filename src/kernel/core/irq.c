@@ -258,25 +258,12 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             serial_puts(" pid=");
             serial_putchar('0' + (t->proc->pid % 10));
             serial_puts(" killed\n");
-            t->state = THREAD_DEAD;
-            t->proc->state = PROC_ZOMBIE;
-            t->proc->exit_code = 139; /* SIGSEGV default */
-            /* Wake parent if blocked in wait4 */
-            if (t->proc->parent_pid) {
-                extern process_t *proc_find(uint32_t pid);
-                extern void sched_add(thread_t *);
-                process_t *parent = proc_find(t->proc->parent_pid);
-                if (parent) {
-                    thread_t *pt = parent->threads;
-                    while (pt) {
-                        if (pt->state == THREAD_BLOCKED) sched_add(pt);
-                        pt = pt->proc_next;
-                    }
-                }
-            }
-            extern uint64_t pml4[];
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-            thread_return_to_kernel(t);
+            /* Use do_exit_group to properly close FDs, wake parent, etc. */
+            extern void do_exit_group(int status);
+            /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
+            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+            do_exit_group(139); /* SIGSEGV */
+            /* do_exit_group calls thread_return_to_kernel internally */
         }
         serial_puts(" KERNEL PANIC\n");
         __asm__ volatile("cli; hlt");
@@ -327,26 +314,10 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         serial_puts(" tid=");
         serial_putchar('0' + (t->tid % 10));
         serial_puts(" killed\n");
-
-        t->state = THREAD_DEAD;
-        t->proc->state = PROC_ZOMBIE;
-        t->proc->exit_code = 128 + vector;
-        /* Wake parent if blocked in wait4 */
-        if (t->proc->parent_pid) {
-            extern process_t *proc_find(uint32_t pid);
-            extern void sched_add(thread_t *);
-            process_t *parent = proc_find(t->proc->parent_pid);
-            if (parent) {
-                thread_t *pt = parent->threads;
-                while (pt) {
-                    if (pt->state == THREAD_BLOCKED) sched_add(pt);
-                    pt = pt->proc_next;
-                }
-            }
-        }
-        extern uint64_t pml4[];
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
-        thread_return_to_kernel(t);
+        /* Use do_exit_group to properly close FDs, wake parent, etc. */
+        extern void do_exit_group(int status);
+        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+        do_exit_group(128 + vector);
     }
 
     serial_puts(" KERNEL PANIC\n");

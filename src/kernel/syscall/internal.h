@@ -133,6 +133,7 @@ long do_sched_getscheduler(int pid);
 long do_sched_setparam(int pid, const void *param);
 long do_sched_getparam(int pid, void *param);
 long do_arch_prctl(int code, unsigned long addr);
+long do_clone3(void *uargs, size_t size);
 long do_sysinfo(void *info);
 long do_getrusage(int who, void *usage);
 long do_prlimit64(int pid, int resource, const void *new_rlim, void *old_rlim);
@@ -161,6 +162,8 @@ struct pipe;
 struct pipe *pipe_from_fd(fd_entry_t *fde, int *is_write);
 long pipe_read(struct pipe *pp, void *buf, size_t count);
 long pipe_write(struct pipe *pp, const void *buf, size_t count);
+long pipe_read_blocking(struct pipe *pp, void *buf, size_t count);
+long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count);
 long pipe_close(fd_entry_t *fde);
 long do_pipe2(int *fds, int flags);
 

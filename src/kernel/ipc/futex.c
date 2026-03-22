@@ -279,7 +279,7 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
     (void)uaddr2;
     (void)val3;
 
-    int cmd = op & ~FUTEX_PRIVATE_FLAG; /* strip PRIVATE flag — single address space */
+    int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100); /* strip PRIVATE + CLOCK_REALTIME */
 
     switch (cmd) {
     case FUTEX_WAIT:      return futex_wait(uaddr, val);
@@ -301,9 +301,13 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
     case FUTEX_CMP_REQUEUE:
         /* Simplified: wake val waiters on uaddr, ignore requeue */
         return futex_wake(uaddr, val);
+    case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
+        return futex_wait(uaddr, val);
+    case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
+        return futex_wake(uaddr, val);
     default:
         serial_puts("futex: unknown op ");
-        serial_putchar('0' + (cmd % 10));
+        serial_hex64((uint64_t)(unsigned)cmd);
         serial_putchar('\n');
         return -ENOSYS;
     }

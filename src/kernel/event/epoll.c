@@ -17,6 +17,7 @@
 #include "spinlock.h"
 #include "timer.h"
 #include "fd.h"
+#include "config.h"
 #include "memops.h"
 #include "net.h"
 
@@ -267,8 +268,27 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         if (timeout == 0) return 0;
         if (timer_ms() >= deadline) return 0;
 
-        /* Block: enable interrupts and halt until next IRQ */
-        __asm__ volatile("sti; hlt");
+        /* Yield to scheduler and retry the epoll_wait syscall.
+         * This allows other threads to run while we wait for events. */
+        {
+            extern uint64_t pml4[];
+            extern void save_user_state_for_block(thread_t *t, long return_value);
+            extern void thread_return_to_kernel(thread_t *t);
+
+            thread_t *t = thread_current();
+            if (!t) return -EFAULT;
+
+            save_user_state_for_block(t, 0);
+            t->rip -= 2;              /* back to `syscall` instruction */
+            t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
+
+            /* Don't fully block — just yield and re-enqueue immediately.
+             * This gives other threads a chance to run. */
+            extern void sched_add(thread_t *ts);
+            t->state = THREAD_RUNNABLE;
+            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            thread_return_to_kernel(t);
+        }
     }
 }
 

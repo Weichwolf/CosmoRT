@@ -87,11 +87,11 @@ long do_write(int fd, const void *buf, size_t count) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
         if (!pp || !is_write) return -EBADF;
-        for (;;) {
-            long r = pipe_write(pp, buf, count);
-            if (r != -EAGAIN) return r;
-            for (volatile int i = 0; i < 1000; i++) __asm__ volatile("pause");
-        }
+        long r = pipe_write(pp, buf, count);
+        if (r != -EAGAIN) return r;
+        /* Pipe full — block until reader drains */
+        if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        return pipe_write_blocking(pp, buf, count);
     }
     if (fde->type == FD_EVENTFD)
         return eventfd_write(fde->obj, buf, (long)count);
@@ -192,13 +192,13 @@ long do_read(int fd, void *buf, size_t count) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
         if (!pp || is_write) return -EBADF;
-        /* Blocking pipe read: spin-wait until data or write end closed */
-        for (int att = 0; att < 5000000; att++) {
-            long r = pipe_read(pp, buf, count);
-            if (r != -EAGAIN) return r;
-            __asm__ volatile("pause");
-        }
-        return 0; /* return EOF on timeout */
+        /* Try non-blocking read first */
+        long r = pipe_read(pp, buf, count);
+        if (r != -EAGAIN) return r;
+        /* No data available — check O_NONBLOCK */
+        if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        /* Block until data arrives or write end closes */
+        return pipe_read_blocking(pp, buf, count);
     }
     if (fde->type == FD_EVENTFD)
         return eventfd_read(fde->obj, buf, (long)count);

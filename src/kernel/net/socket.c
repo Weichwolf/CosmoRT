@@ -8,6 +8,8 @@
 #include "syscall.h"
 #include "spinlock.h"
 #include "memops.h"
+#include "config.h"
+#include "percpu.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -239,7 +241,23 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             return ready;
         }
         if (timeout == 0) return 0;
-        __asm__ volatile("sti; hlt");
+        /* Yield to scheduler and retry poll syscall */
+        {
+            extern uint64_t pml4[];
+            extern void save_user_state_for_block(thread_t *t, long return_value);
+            extern void thread_return_to_kernel(thread_t *t);
+            extern void sched_add(thread_t *ts);
+
+            thread_t *t = thread_current();
+            if (t) {
+                save_user_state_for_block(t, 0);
+                t->rip -= 2;
+                t->rax = SYS_POLL;
+                t->state = THREAD_RUNNABLE;
+                __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+                thread_return_to_kernel(t);
+            }
+        }
     }
     return 0;
 }

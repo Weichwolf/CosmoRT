@@ -11,6 +11,8 @@ struct pipe {
     uint8_t buf[PIPE_BUF_SIZE];
     int read_pos, write_pos, count;
     int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
+    thread_t *blocked_reader;   /* thread blocked in pipe read */
+    thread_t *blocked_writer;   /* thread blocked in pipe write */
     spinlock_t lock;
 };
 
@@ -41,7 +43,14 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
         pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
     }
     pp->count -= (int)n;
+    /* Wake blocked writer if space freed */
+    thread_t *writer = pp->blocked_writer;
+    pp->blocked_writer = 0;
     spin_unlock_irq(&pp->lock, flags);
+    if (writer) {
+        extern void sched_add(thread_t *t);
+        sched_add(writer);
+    }
     return (long)n;
 }
 
@@ -64,8 +73,105 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
         pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
     }
     pp->count += (int)n;
+    /* Wake blocked reader */
+    thread_t *reader = pp->blocked_reader;
+    pp->blocked_reader = 0;
     spin_unlock_irq(&pp->lock, flags);
+    if (reader) {
+        extern void sched_add(thread_t *t);
+        sched_add(reader);
+    }
     return (long)n;
+}
+
+/* Blocking pipe read: called when pipe_read returned -EAGAIN.
+ * Re-checks under lock, blocks if still empty, restarts syscall on wake. */
+long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
+    extern uint64_t pml4[];
+    thread_t *t = thread_current();
+    if (!t) return -EAGAIN;
+
+    uint64_t irqf;
+    spin_lock_irq(&pp->lock, &irqf);
+    /* Re-check under lock — data may have arrived */
+    if (pp->count > 0) {
+        size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
+        uint8_t *dst = (uint8_t *)buf;
+        for (size_t i = 0; i < n; i++) {
+            dst[i] = pp->buf[pp->read_pos];
+            pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+        }
+        pp->count -= (int)n;
+        /* Wake blocked writer */
+        thread_t *writer = pp->blocked_writer;
+        pp->blocked_writer = 0;
+        spin_unlock_irq(&pp->lock, irqf);
+        if (writer) {
+            extern void sched_add(thread_t *t);
+            sched_add(writer);
+        }
+        return (long)n;
+    }
+    if (!pp->write_open) {
+        spin_unlock_irq(&pp->lock, irqf);
+        return 0; /* EOF */
+    }
+    pp->blocked_reader = t;
+    spin_unlock_irq(&pp->lock, irqf);
+    /* Block: save user state for syscall restart.
+     * When woken (by pipe_write or pipe_close), re-execute
+     * the read syscall from userspace (rip-=2 → syscall insn). */
+    save_user_state_for_block(t, 0);
+    t->rip -= 2;       /* back to `syscall` instruction (0F 05) */
+    t->rax = SYS_READ; /* syscall number for read */
+    t->state = THREAD_BLOCKED;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+    return -EAGAIN; /* unreachable */
+}
+
+/* Blocking pipe write: called when pipe_write returned -EAGAIN (full).
+ * Re-checks under lock, blocks if still full, restarts syscall on wake. */
+long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
+    extern uint64_t pml4[];
+    thread_t *t = thread_current();
+    if (!t) return -EAGAIN;
+
+    uint64_t irqf;
+    spin_lock_irq(&pp->lock, &irqf);
+    /* Re-check under lock */
+    if (pp->count < PIPE_BUF_SIZE) {
+        size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
+        size_t n = count > space ? space : count;
+        const uint8_t *src = (const uint8_t *)buf;
+        for (size_t i = 0; i < n; i++) {
+            pp->buf[pp->write_pos] = src[i];
+            pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+        }
+        pp->count += (int)n;
+        /* Wake blocked reader */
+        thread_t *reader = pp->blocked_reader;
+        pp->blocked_reader = 0;
+        spin_unlock_irq(&pp->lock, irqf);
+        if (reader) {
+            extern void sched_add(thread_t *t);
+            sched_add(reader);
+        }
+        return (long)n;
+    }
+    if (!pp->read_open) {
+        spin_unlock_irq(&pp->lock, irqf);
+        return -EPIPE;
+    }
+    pp->blocked_writer = t;
+    spin_unlock_irq(&pp->lock, irqf);
+    save_user_state_for_block(t, 0);
+    t->rip -= 2;
+    t->rax = SYS_WRITE;
+    t->state = THREAD_BLOCKED;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+    return -EAGAIN; /* unreachable */
 }
 
 long do_pipe2(int *fds, int flags) {
@@ -78,6 +184,8 @@ long do_pipe2(int *fds, int flags) {
 
     pp->read_pos = pp->write_pos = pp->count = 0;
     pp->read_open = pp->write_open = 1;
+    pp->blocked_reader = 0;
+    pp->blocked_writer = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
 
     process_t *p = proc_current();
@@ -132,8 +240,28 @@ long pipe_close(fd_entry_t *fde) {
     if (is_write) { if (pp->write_open > 0) pp->write_open--; }
     else          { if (pp->read_open > 0)  pp->read_open--; }
     int both_closed = (pp->read_open <= 0 && pp->write_open <= 0);
+    /* Wake blocked reader if write end closed (EOF) */
+    thread_t *reader = 0;
+    if (is_write && pp->write_open <= 0 && pp->blocked_reader) {
+        reader = pp->blocked_reader;
+        pp->blocked_reader = 0;
+    }
+    /* Wake blocked writer if read end closed (EPIPE) */
+    thread_t *writer = 0;
+    if (!is_write && pp->read_open <= 0 && pp->blocked_writer) {
+        writer = pp->blocked_writer;
+        pp->blocked_writer = 0;
+    }
     spin_unlock_irq(&pp->lock, flags);
 
+    if (reader) {
+        extern void sched_add(thread_t *t);
+        sched_add(reader);
+    }
+    if (writer) {
+        extern void sched_add(thread_t *t);
+        sched_add(writer);
+    }
     if (both_closed)
         slab_free(&pipe_slab, pp);
     return 0;

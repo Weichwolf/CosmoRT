@@ -168,6 +168,9 @@
 #define SYS_CLOCK_GETRES      229
 #define SYS_CLOCK_NANOSLEEP   230
 
+/* clone3 */
+#define SYS_CLONE3            435
+
 /* CosmoRT hardware primitives (non-POSIX, for userspace drivers) */
 #define SYS_COSMO_MMIO_MAP       512
 #define SYS_COSMO_DMA_ALLOC      513

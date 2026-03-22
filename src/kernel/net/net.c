@@ -320,9 +320,14 @@ int net_dhcp(void) {
     net_dhcp_send_discover();
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
-        net_poll();
-        if (net_dhcp_check()) return 0;
-        net_idle();
+        /* Active polling: don't rely solely on IRQs (shared IRQ may not fire) */
+        for (int i = 0; i < 100; i++) {
+            net_poll();
+            if (net_dhcp_check()) return 0;
+            for (volatile int j = 0; j < 10000; j++) __asm__ volatile("pause");
+        }
+        /* Re-send discover every ~500ms in case first was lost */
+        net_dhcp_send_discover();
     }
     return -1;
 }

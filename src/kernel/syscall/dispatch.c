@@ -139,6 +139,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return -EMFILE;
     }
     case SYS_VFORK:       return do_fork(); /* vfork = fork (no COW optimization) */
+    case SYS_CLONE3:      return do_clone3((void *)a1, (size_t)a2);
     case SYS_MOUNT:       return 0; /* pretend mount succeeds */
     case SYS_SETHOSTNAME: return 0;
     case SYS_STATFS:      return -ENOSYS;

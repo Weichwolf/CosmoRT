@@ -221,6 +221,39 @@ long do_clone(unsigned long flags, void *child_stack,
     return (long)t->tid;
 }
 
+/* ── SYS_clone3 (435) — struct-based clone ────────── */
+
+struct clone_args {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+    uint64_t set_tid;
+    uint64_t set_tid_size;
+    uint64_t cgroup;
+};
+
+long do_clone3(void *uargs, size_t size) {
+    if (!user_ok((uint64_t)uargs, size)) return -EFAULT;
+    struct clone_args kargs;
+    kmemset(&kargs, 0, sizeof(kargs));
+    size_t copy = size > sizeof(kargs) ? sizeof(kargs) : size;
+    kmemcpy(&kargs, uargs, copy);
+
+    /* Map clone3 flags to clone flags */
+    unsigned long flags = (unsigned long)kargs.flags;
+    void *child_stack = kargs.stack ? (void *)(kargs.stack + kargs.stack_size) : 0;
+    int *parent_tid = (int *)(uintptr_t)kargs.parent_tid;
+    int *child_tid = (int *)(uintptr_t)kargs.child_tid;
+    unsigned long tls = (unsigned long)kargs.tls;
+
+    return do_clone(flags, child_stack, parent_tid, child_tid, tls);
+}
+
 /* ── SYS_uname (63) ─────────────────────────────── */
 
 struct utsname {
