@@ -11,9 +11,9 @@ VT interaktiv (Bernstein-Palette, Hack Font, Tippen funktioniert).
 Scope: Alle .c/.h in src/kernel/ (alle Subdirectories) und src/drivers/.
 Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Streaming ELF, Shared IRQ).
 
-### SEC-CRIT (3)
+### SEC-CRIT (3/3 fixed)
 
-- [ ] SYS_COSMO_MMIO_MAP: Kernel schreibt direkt in User-Pointer ohne Bounce
+- [x] SYS_COSMO_MMIO_MAP: Kernel schreibt direkt in User-Pointer ohne Bounce
       src/kernel/syscall/dispatch.c:279. `*(void **)a3 = virt;` — a3 ist User-Pointer,
       user_ok prueft nur 8 Bytes, aber der Kernel schreibt direkt dorthin statt ueber
       kmemcpy. SMAP ist nicht aktiv, aber wenn a3 auf eine Kernel-Adresse zeigt die
@@ -21,7 +21,7 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
       Gleiches Problem bei SYS_COSMO_DMA_ALLOC (Zeile 287): `*(void **)a2 = virt;`.
       Fix: Bounce ueber lokale Variable + kmemcpy.
 
-- [ ] SYS_COSMO_PCI_READ: user_ok prueft a4 statt a5
+- [x] SYS_COSMO_PCI_READ: user_ok prueft a4 statt a5
       src/kernel/syscall/dispatch.c:299. `user_ok(a4, 4)` prueft das vierte Argument
       (reg), aber das Ergebnis wird nach `(uint32_t *)a5` geschrieben (Zeile 300).
       a5 ist der User-Pointer fuer den Output, wird nie validiert. Userspace kann
@@ -29,7 +29,7 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
       PCI-Config-Werts.
       Fix: `user_ok(a5, 4)` statt `user_ok(a4, 4)`.
 
-- [ ] SYS_COSMO_IRQ_REGISTER: Userspace registriert beliebige Kernel-Funktion als IRQ-Handler
+- [x] SYS_COSMO_IRQ_REGISTER: Userspace registriert beliebige Kernel-Funktion als IRQ-Handler
       src/kernel/syscall/dispatch.c:296. `cosmo_irq_register((int)a1, (void (*)(void *))a2, (void *)a3)`
       — a2 ist ein User-Pointer der als Funktionspointer interpretiert wird. IRQ-Handler
       laufen in Ring 0 im IRQ-Kontext. Ein Userspace-Treiber kann beliebige Kernel-Adressen
@@ -101,9 +101,9 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
       aufrufen und die Free-List korrumpieren.
       Fix: Atomic compare-and-swap oder unter globaler Lock initialisieren.
 
-### CORR-HIGH (5)
+### CORR-HIGH (5/5 fixed)
 
-- [ ] do_mmap MAP_FIXED: VMA-Splitting fehlerhaft bei innerem Split
+- [x] do_mmap MAP_FIXED: VMA-Splitting fehlerhaft bei innerem Split
       src/kernel/syscall/sys_mem.c:164-167. Wenn ein VMA den gesamten Bereich ueberlappt
       (ov->start < vaddr && ov->end > vaddr + length), wird ov->end auf vaddr gesetzt
       und ein neues VMA ab vaddr+length eingefuegt. Das neue VMA bekommt ov->prot/ov->flags
@@ -113,7 +113,7 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
       Korrekt, aber fragil.
       Fix: Prot/Flags vor der Mutation lesen.
 
-- [ ] do_fork: fd_obj_incref fuer Pipes/Sockets erhoet keinen Refcount
+- [x] do_fork: fd_obj_incref fuer Pipes/Sockets erhoet keinen Refcount
       src/kernel/proc/process.c:642. `fd_obj_incref(ftype, parent->fds.entries[i].obj)`
       wird aufgerufen, aber die Funktion muesste tatsaechlich die Lebensdauer verlaengern.
       Fuer Pipes: die pipe_pool-basierte Implementierung hat keinen Refcount.
@@ -122,20 +122,20 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
       doppelt geschlossen → Use-after-close.
       Fix: Refcounting fuer Pipe und Socket einfuehren.
 
-- [ ] do_exit: Prozess-Cleanup fehlt komplett
+- [x] do_exit: Prozess-Cleanup fehlt komplett
       src/kernel/syscall/sys_proc.c:35-73. do_exit setzt PROC_ZOMBIE und THREAD_DEAD,
       aber ruft NICHT proc_cleanup auf. FDs werden nie geschlossen, Sockets nie geschlossen,
       Pages nie freigegeben, VMAs nie freigegeben, Threads nie freigegeben. Jeder Prozess
       der exit() aufruft leakt seinen gesamten Adressraum.
       Fix: proc_cleanup(p) in do_exit aufrufen (nach Wake-Parent aber vor thread_return_to_kernel).
 
-- [ ] do_wait4: fehlende Implementierung oder Race
+- [x] do_wait4: fehlende Implementierung oder Race
       Wenn do_wait4 existiert (process.c), muss es proc_cleanup aufrufen fuer ZOMBIE-Kinder.
       Wenn do_exit kein cleanup macht und do_wait4 es auch nicht macht, leaken alle
       Prozess-Ressourcen permanent.
       Fix: In do_wait4 proc_cleanup(child) nach Statusabfrage aufrufen.
 
-- [ ] vfs_close: Nicht-atomares Refcount-Decrement
+- [x] vfs_close: Nicht-atomares Refcount-Decrement
       src/kernel/fs/vfs.c:500. `if (--f->refcount <= 0) file_free(f);` — pre-decrement
       ist nicht atomar. Zwei Threads die denselben FD (via dup) gleichzeitig schliessen,
       koennten beide refcount von 1 auf 0 dekrementieren und file_free doppelt aufrufen.
@@ -215,16 +215,8 @@ Post-Restrukturierung, Post-Audit-2-Fixes, neue Subsysteme (CosmoFS execve, Stre
 ## Naechste Schritte (Prioritaet)
 
 ```
-Prio 0 — Aufraemen:
-  MAX_ORDER zurueck auf 9         → Streaming ELF braucht keine grossen Bloecke
-  V8-Hack in do_mmap entfernen    → Zeile 214-229 (4GB-Boundary-Suche)
-  ELF verify Code entfernen       → Debug-Code in elf.c (read_pte_pub, ref-Check)
-  Serial-Tracing entfernen        → mmap/brk/munmap/mprotect Tracing raus
-  mmap korrekt statt V8-spezifisch → Hints, MAP_FIXED_NOREPLACE, munmap Split
-
-Prio 1 — Audit 3 Fixes:
-  SEC-CRIT (3)                    → HW-Primitive arbitrary write, IRQ-Handler
-  CORR-HIGH (5)                   → do_exit Cleanup, fork Refcount, vfs_close Race
+Prio 0 — Aufraemen: ERLEDIGT
+Prio 1 — Audit 3 SEC-CRIT + CORR-HIGH: ERLEDIGT (8/8)
 
 Prio 2 — Notebook-tauglich:
   P16 /dev/msr + /dev/port       → Device-Nodes
