@@ -183,9 +183,10 @@
 #define SYS_COSMO_KEXEC          520
 
 /* mmap flags */
-#define MAP_FIXED     0x10
-#define MAP_ANONYMOUS 0x20
-#define MAP_PRIVATE   0x02
+#define MAP_FIXED            0x10
+#define MAP_ANONYMOUS        0x20
+#define MAP_PRIVATE          0x02
+#define MAP_FIXED_NOREPLACE  0x100000
 
 /* arch_prctl codes */
 #define ARCH_SET_GS   0x1001

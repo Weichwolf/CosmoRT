@@ -13,9 +13,10 @@
 
 /* Map flags (Linux-compatible) — also in syscall.h */
 #ifndef MAP_FIXED
-#define MAP_FIXED     0x10
-#define MAP_ANONYMOUS 0x20
-#define MAP_PRIVATE   0x02
+#define MAP_FIXED            0x10
+#define MAP_ANONYMOUS        0x20
+#define MAP_PRIVATE          0x02
+#define MAP_FIXED_NOREPLACE  0x100000
 #endif
 
 /* VMA flags (internal, stored in vma_t.flags upper bits) */

@@ -146,21 +146,18 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     if (length == 0) return -EINVAL;
     if (addr + length < addr) return -EINVAL; /* overflow */
 
-    uint64_t vaddr;
-    if (addr && (flags & MAP_FIXED)) {
+    uint64_t vaddr = 0;
+    if (addr && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE))) {
         vaddr = addr & ~0xFFFULL;
+        /* MAP_FIXED_NOREPLACE: fail if any overlap exists */
+        if (flags & MAP_FIXED_NOREPLACE) {
+            if (vma_find_overlap(p->vma_root, vaddr, vaddr + length))
+                return -EEXIST;
+        }
         /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
         for (;;) {
-            vma_t *ov = vma_find(p->vma_root, vaddr);
-            if (!ov) {
-                int found = 0;
-                for (uint64_t probe = vaddr; probe < vaddr + length; probe += 4096) {
-                    ov = vma_find(p->vma_root, probe);
-                    if (ov) { found = 1; break; }
-                }
-                if (!found) break;
-            }
-            if (ov->start >= vaddr + length) break;
+            vma_t *ov = vma_find_overlap(p->vma_root, vaddr, vaddr + length);
+            if (!ov) break;
             if (ov->start < vaddr && ov->end > vaddr + length) {
                 uint64_t orig_end = ov->end;
                 int saved_prot = ov->prot;
@@ -180,8 +177,16 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             if (ov->start >= vaddr + length) break;
         }
     } else {
-        vaddr = vma_find_free(p->vma_root, p->mmap_next, length);
-        if (!vaddr) return -ENOMEM;
+        /* Try hint address first if provided */
+        if (addr) {
+            uint64_t hint = addr & ~0xFFFULL;
+            if (!vma_find_overlap(p->vma_root, hint, hint + length))
+                vaddr = hint;
+        }
+        if (!vaddr) {
+            vaddr = vma_find_free(p->vma_root, p->mmap_next, length);
+            if (!vaddr) return -ENOMEM;
+        }
         p->mmap_next = vaddr;
     }
 
@@ -297,14 +302,8 @@ long do_munmap(unsigned long addr, size_t length) {
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
-        vma_t *v = 0;
-        /* Find any VMA overlapping [start, end) */
-        for (uint64_t probe = start; probe < end; probe += 4096) {
-            v = vma_find(p->vma_root, probe);
-            if (v) break;
-        }
+        vma_t *v = vma_find_overlap(p->vma_root, start, end);
         if (!v) break;
-        if (v->start >= end || v->end <= start) break;
 
         if (v->start >= start && v->end <= end) {
             /* Entirely within unmap range */
