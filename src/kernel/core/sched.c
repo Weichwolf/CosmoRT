@@ -228,15 +228,26 @@ void sched_add(thread_t *t) {
     if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
 
     int cpu = t->cpu_affinity;
+    int ncores = smp_num_cores();
+
     if (cpu < 0 || cpu >= SMP_MAX_CORES) {
-        /* Round-robin across cores */
-        static volatile int next_cpu = 0;
-        cpu = __sync_fetch_and_add(&next_cpu, 1) % smp_num_cores();
+        if (ncores == 2) {
+            /* 2-core: Core 0 = RT (IRQ handler), Core 1 = Compute.
+             * RT threads → Core 0, SCHED_OTHER → Core 1. */
+            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
+                cpu = 0;
+            else
+                cpu = 1;
+        } else {
+            /* Round-robin across cores */
+            static volatile int next_cpu = 0;
+            cpu = __sync_fetch_and_add(&next_cpu, 1) % ncores;
+        }
     }
 
-    /* Isolated core: only RT threads (SCHED_FIFO/SCHED_RR) may run */
+    /* Isolated core (4+ cores): only RT threads may run */
     if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER)
-        cpu = 0; /* redirect to BSP */
+        cpu = (ncores == 2) ? 1 : 0;
 
     t->state = THREAD_RUNNABLE;
     t->rq_next = 0;
@@ -351,49 +362,30 @@ void sched_preempt(void *frame_ptr) {
         cur->fs_base = ((uint64_t)fs_hi << 32) | fs_lo;
     }
 
-    /* Put current back in run queue */
-    sched_add(cur);
-
-    /* Pick next thread */
-    thread_t *next = sched_pick();
-    if (!next || next == cur) {
-        /* No other thread: keep running current */
-        if (next) next->state = THREAD_RUNNING;
-        return;
-    }
-
-    /* Switch to next thread */
-    next->state = THREAD_RUNNING;
-    cpu->current_thread = next;
-
-    /* Load page tables */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(next->proc->pml4)) : "memory");
-
-    /* Set kernel stack */
-    extern void tss_set_rsp0(uint64_t rsp0);
-    tss_set_rsp0(next->kstack_top);
-    cpu->kernel_rsp = next->kstack_top;
-
-    /* Load next thread's FS base (TLS) */
+    /* Preemption: longjmp back to sched_loop (via thread_run's setjmp).
+     * sched_loop re-enqueues this thread and picks the next one via
+     * thread_run, giving every thread a proper jmpbuf.
+     *
+     * ISR entry did swapgs (Ring 3 → kernel). We skip the ISR exit path
+     * (which would swapgs back), so fix up KERNEL_GS_BASE manually:
+     * set it back to percpu so the next ISR/SYSCALL entry swapgs works. */
+    cur->state = THREAD_RUNNABLE;
+    /* Send LAPIC EOI before longjmp — we're skipping the ISR exit path */
+    extern void lapic_eoi(void);
+    lapic_eoi();
     {
-        uint64_t fs = next->fs_base;
-        __asm__ volatile("wrmsr" :: "c"(0xC0000100),
-                         "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+        /* Restore: GS_BASE = percpu (already is), KERNEL_GS_BASE = percpu.
+         * After proc_enter_ring3 IRET, user gets percpu in GS_BASE (harmless).
+         * Next ISR swapgs: GS_BASE←KERNEL_GS_BASE(percpu), correct. */
+        uint64_t percpu_addr = (uint64_t)(uintptr_t)cpu;
+        __asm__ volatile("wrmsr" :: "c"(0xC0000102),  /* IA32_KERNEL_GS_BASE */
+                         "a"((uint32_t)percpu_addr),
+                         "d"((uint32_t)(percpu_addr >> 32)));
     }
-
-    /* Check for pending signals before returning to userspace.
-     * deliver_signal modifies next->rip/rsp/rdi/rsi/rdx, so check
-     * BEFORE writing thread state into the interrupt frame. */
-    extern void check_pending_signals(void);
-    check_pending_signals();
-
-    /* Restore next thread context into interrupt frame */
-    f[0] = next->r15; f[1] = next->r14; f[2] = next->r13; f[3] = next->r12;
-    f[4] = next->r11; f[5] = next->r10; f[6] = next->r9;  f[7] = next->r8;
-    f[8] = next->rbp; f[9] = next->rdi; f[10] = next->rsi; f[11] = next->rdx;
-    f[12] = next->rcx; f[13] = next->rbx; f[14] = next->rax;
-    f[17] = next->rip; f[18] = 0x2B; /* CS user code 64 */
-    f[19] = next->rflags; f[20] = next->rsp; f[21] = 0x23; /* SS user data */
+    extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+    extern uint64_t pml4[];
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    kernel_longjmp(cur->jmpbuf, 1);
 }
 
 /* Scheduler init */
@@ -423,6 +415,7 @@ static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 void sched_loop(void) {
     int core = percpu_self()->core_id;
     extern void tss_set_rsp0(uint64_t rsp0);
+    (void)core;
 
     for (;;) {
         thread_t *next = sched_pick();

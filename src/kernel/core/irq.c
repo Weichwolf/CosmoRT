@@ -9,6 +9,8 @@
 #include "config.h"
 #include "vma.h"
 #include "page_alloc.h"
+#include "smp.h"
+#include "spinlock.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 
@@ -338,24 +340,50 @@ static void default_exception(int vector) {
 /* ── TLB Shootdown IPI ─────────────────────────────── */
 
 static volatile uint64_t shootdown_pml4 = 0;
+static volatile int shootdown_ack = 0;
+static spinlock_t shootdown_lock = SPINLOCK_INIT;
 
 static void tlb_shootdown_handler(int vector) {
     (void)vector;
-    percpu_t *cpu = percpu_self();
-    thread_t *t = cpu->current_thread;
-    if (t && t->proc && virt_to_phys(t->proc->pml4) == shootdown_pml4) {
+    /* Flush TLB if this core uses the affected address space, or if
+     * pml4==0 (unconditional flush, e.g. from free_address_space). */
+    uint64_t target = shootdown_pml4;
+    if (target == 0) {
         __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    } else {
+        percpu_t *cpu = percpu_self();
+        thread_t *t = cpu->current_thread;
+        if (t && t->proc && virt_to_phys(t->proc->pml4) == target)
+            __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     }
-    lapic_eoi();
+    __sync_fetch_and_add(&shootdown_ack, 1);
+    /* EOI handled by irq_dispatch — do NOT double-EOI */
 }
 
 void tlb_shootdown(uint64_t pml4_phys) {
+    int ncores = smp_num_cores();
+    if (ncores < 2) return; /* single core, local invlpg suffices */
+
+    uint64_t flags;
+    spin_lock_irq(&shootdown_lock, &flags);
+
+    shootdown_ack = 0;
     shootdown_pml4 = pml4_phys;
     __asm__ volatile("mfence" ::: "memory");
+
     /* Send IPI to all other cores: all-excluding-self shorthand, vector 0xFE */
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
-    *icr_lo = 0x000C0000 | 0xFE;  /* dest shorthand=all-excl-self, vector=0xFE */
-    for (volatile int i = 0; i < 1000; i++) __asm__ volatile("pause");
+    *icr_lo = 0x000C0000 | 0xFE;
+
+    /* Wait for all other cores to ACK (with timeout to avoid deadlock) */
+    int expected = ncores - 1;
+    for (int i = 0; i < 10000000; i++) {
+        if (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) >= expected)
+            break;
+        __asm__ volatile("pause");
+    }
+
+    spin_unlock_irq(&shootdown_lock, flags);
 }
 
 /* ── Timer ─────────────────────────────────────────── */

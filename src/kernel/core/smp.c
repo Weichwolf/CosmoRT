@@ -73,6 +73,10 @@ static void ap_main(void) {
     /* Per-CPU data init for this AP */
     percpu_init_ap((int)apic_id);
 
+    /* Per-core TSS (needed for Ring 3 → Ring 0 transitions) */
+    extern void tss_init_ap(void);
+    tss_init_ap();
+
     /* Set up SYSCALL/SYSRET + EFER.NXE on this core */
     extern void syscall_init(void);
     syscall_init();

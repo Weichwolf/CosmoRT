@@ -1299,15 +1299,14 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (wnohang) return 0;
 
         /* Block: child exists but hasn't exited.
-         * Child exit (exit_kill_process) wakes parent threads. */
+         * Child exit (exit_kill_process) wakes parent threads.
+         * Syscall restart: rewind RIP to `syscall` instruction. */
         save_user_state_for_block(cur, 0);
+        cur->rip -= 2;       /* back to `syscall` instruction (0F 05) */
+        cur->rax = 61;       /* SYS_WAIT4 — re-execute on wakeup */
         cur->state = THREAD_BLOCKED;
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
         thread_return_to_kernel(cur);
-        /* Unreachable — when woken, we re-enter via syscall return path.
-         * The waker calls sched_add(cur) which resumes us; we re-execute
-         * the wait4 syscall from userspace (rax was saved as 0 by
-         * save_user_state_for_block, but userspace will retry). */
-        return 0;
+        return 0; /* unreachable */
     }
 }

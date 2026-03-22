@@ -194,11 +194,16 @@ gdt:
     dq 0x00AFFA000000FFFF   ; 0x18: user code 32   (DPL=3, L=1, placeholder)
     dq 0x00CFF2000000FFFF   ; 0x20: user data      (DPL=3)
     dq 0x00AFFA000000FFFF   ; 0x28: user code 64   (DPL=3, L=1)
-; TSS descriptor (16 bytes, filled at runtime by tss_init)
+; Per-core TSS descriptors (16 bytes each, filled at runtime by tss_init)
+; Core 0: selector 0x30, Core 1: 0x40, Core 2: 0x50, ...
 global tss_desc
 tss_desc:
-    dq 0                    ; 0x30: TSS low
-    dq 0                    ; 0x38: TSS high
+%assign ci 0
+%rep 8
+    dq 0                    ; TSS low  (core ci)
+    dq 0                    ; TSS high (core ci)
+%assign ci ci+1
+%endrep
 gdt_end:
 
 gdt_ptr:

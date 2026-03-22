@@ -279,7 +279,7 @@ bench: $(SRC)/kernel/gen/kbench_bin.h
 	  $(SRC)/kernel/gen/kbench_bin.h > $(SRC)/kernel/gen/init_bin.h
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
-	timeout 300 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	timeout 300 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
@@ -335,7 +335,7 @@ test-hw: $(SRC)/kernel/gen/ktest_bin.h
 	@rm -f $(BUILD)/kernel/core/main.o
 	$(MAKE) all
 	@rm -f /tmp/cosmo-serial.log
-	timeout 120 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	timeout 120 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
@@ -441,7 +441,7 @@ $(BUILD):
 
 # ── QEMU ────────────────────────────────────────
 QEMU = qemu-system-x86_64
-QEMU_FLAGS = -cpu qemu64 -smp 1 -m 4096 \
+QEMU_FLAGS = -cpu qemu64 -smp 2 -m 4096 \
              -bios /usr/share/ovmf/OVMF.fd \
              -drive file=$(ESP_IMG),format=raw \
              -serial stdio \
@@ -477,7 +477,7 @@ qemu-net: $(ESP_IMG)
 # Background QEMU with serial log
 run: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	$(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	$(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
@@ -489,7 +489,7 @@ stop:
 # ── Test ────────────────────────────────────────
 test-boot: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	timeout 10 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	timeout 10 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
@@ -503,7 +503,7 @@ test-boot: $(ESP_IMG)
 
 test-boot-disk: $(ESP_IMG) disk.img
 	@rm -f /tmp/cosmo-serial.log
-	timeout 10 $(QEMU) -cpu qemu64 -smp 1 -m 4096 \
+	timeout 10 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -drive file=disk.img,if=virtio,format=raw \
