@@ -30,6 +30,8 @@
 
 /* Convert PROT_* flags to x86 PTE flags (leaf entry only) */
 static uint64_t prot_to_pte(int prot) {
+    /* PROT_NONE → not present (no access at all) */
+    if (!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return 0;
     uint64_t flags = PTE_PRESENT | PTE_USER;
     if (prot & PROT_WRITE) flags |= PTE_WRITE;
     if (!(prot & PROT_EXEC)) flags |= PTE_NX;

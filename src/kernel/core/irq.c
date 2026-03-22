@@ -232,8 +232,9 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         }
                     }
                 }
-                /* Not-present fault in a valid VMA → allocate page */
-                if (!(error & 1)) {
+                /* Not-present fault in a valid VMA → allocate page.
+                 * PROT_NONE VMAs must NOT be demand-paged — access = SIGSEGV. */
+                if (!(error & 1) && (vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) {
                     uint64_t page_addr = cr2 & ~0xFFFULL;
                     uint64_t *page = alloc_page();
                     if (page) {
@@ -386,6 +387,8 @@ void irq_init(void) {
         irq_register(i, default_exception);
 
     idt_set_entry_user(0x80, ensure_high(isr_stub_table[0x80]));
+    /* int3 (breakpoint) must be DPL=3 for userspace abort()/SIGTRAP */
+    idt_set_entry_user(3, ensure_high(isr_stub_table[3]));
 
     /* TLB shootdown IPI vector */
     irq_register(0xFE, tlb_shootdown_handler);

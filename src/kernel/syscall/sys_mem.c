@@ -252,6 +252,8 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
 }
 
 static uint64_t prot_to_pte_flags(int prot) {
+    /* PROT_NONE → not present (no access at all) */
+    if (!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return 0;
     uint64_t flags = PTE_PRESENT | PTE_USER;
     if (prot & PROT_WRITE) flags |= PTE_WRITE;
     if (!(prot & PROT_EXEC)) flags |= PTE_NX;
