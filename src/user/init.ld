@@ -4,6 +4,7 @@ ENTRY(_start)
 SECTIONS {
     . = 0x400000;
     .text : { *(.text*) *(.rodata*) }
+    .ktest : { __start_ktest = .; *(.ktest) __stop_ktest = .; }
     .data : { *(.data*) }
     .bss  : { *(.bss*) }
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }

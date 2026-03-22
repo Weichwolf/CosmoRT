@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_identity(void) {
+static void test_identity(void) {
     puts("\n[Identity]\n");
     long pid = sc0(SYS_getpid);
     check_ge("getpid > 0", pid, 1);
@@ -16,3 +16,5 @@ void test_identity(void) {
     check("uname.machine = x86_64",
           uname.m[0]=='x' && uname.m[1]=='8' && uname.m[2]=='6');
 }
+
+TEST("identity", test_identity);

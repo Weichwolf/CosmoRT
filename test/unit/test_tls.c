@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_tls(void) {
+static void test_tls(void) {
     puts("\n[TLS]\n");
 
     uint64_t test_val = 0xDEADBEEF12345678ULL;
@@ -12,3 +12,5 @@ void test_tls(void) {
     check_val("arch_prctl GET_FS", r, 0);
     check("FS base roundtrip", readback == (uint64_t)(long)&test_val);
 }
+
+TEST("tls", test_tls);

@@ -168,4 +168,22 @@ static inline void check_ge(const char *name, long got, long minimum) {
     }
 }
 
+/* ── Self-registering tests via linker section ── */
+
+typedef struct {
+    const char *name;
+    void (*fn)(void);
+    int crash;  /* 1 = run in fork'd child */
+    int _pad;
+    uint64_t _reserved;
+} ktest_entry_t;
+
+#define TEST(n, fn) \
+    __attribute__((used, section(".ktest"))) \
+    static const ktest_entry_t _reg_##fn = { n, fn, 0 }
+
+#define CRASH_TEST(n, fn) \
+    __attribute__((used, section(".ktest"))) \
+    static const ktest_entry_t _reg_##fn = { n, fn, 1 }
+
 #endif /* KTEST_H */

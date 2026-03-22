@@ -7,7 +7,7 @@ static void worker_fn(void) {
     for (;;) __asm__ volatile("pause");
 }
 
-void test_threads(void) {
+static void test_threads(void) {
     puts("\n[Threads]\n");
 
     worker_done = 0;
@@ -33,3 +33,5 @@ void test_threads(void) {
 
     puts("  worker tid="); put_int(ret); puts("\n");
 }
+
+TEST("threads", test_threads);

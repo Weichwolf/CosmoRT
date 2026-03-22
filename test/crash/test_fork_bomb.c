@@ -4,7 +4,7 @@
 
 #define FORK_CYCLES 100
 
-void test_fork_bomb(void) {
+static void test_fork_bomb(void) {
     puts("\n[Fork Bomb]\n");
 
     /* Snapshot: count open fds before */
@@ -79,3 +79,5 @@ void test_fork_bomb(void) {
     puts("  rapid: spawned="); put_int(spawned);
     puts(" reaped="); put_int(reaped); puts("\n");
 }
+
+CRASH_TEST("crash/fork_bomb", test_fork_bomb);

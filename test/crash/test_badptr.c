@@ -38,7 +38,7 @@ static void check_rejected(const char *name, long result) {
     }
 }
 
-void test_badptr(void) {
+static void test_badptr(void) {
     puts("\n[Bad Pointers]\n");
 
     /* ── read() ── */
@@ -126,3 +126,5 @@ void test_badptr(void) {
     long oat = sc4(SYS_OPENAT, -100 /* AT_FDCWD */, (long)KADDR_HIGH, 0, 0);
     check("openat(-100, kaddr) → EFAULT", oat == -EFAULT);
 }
+
+CRASH_TEST("crash/badptr", test_badptr);

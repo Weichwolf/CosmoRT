@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_random(void) {
+static void test_random(void) {
     puts("\n[Random]\n");
     uint8_t buf[16] = {0};
     long r = sc3(SYS_getrandom, (long)buf, 16, 0);
@@ -10,3 +10,5 @@ void test_random(void) {
         if (buf[i]) nonzero++;
     check("getrandom produces data", nonzero > 0);
 }
+
+TEST("random", test_random);

@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_security(void) {
+static void test_security(void) {
     puts("\n[Security]\n");
 
     /* User pointer validation: kernel address should be rejected */
@@ -14,3 +14,5 @@ void test_security(void) {
     r = sc6(SYS_mmap, 0, (long)-1, PROT_RW, MAP_PRIV_ANON, -1, 0);
     check("mmap(SIZE_MAX) fails", r < 0);
 }
+
+TEST("security", test_security);

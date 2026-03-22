@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_vfs(void) {
+static void test_vfs(void) {
     puts("\n[VFS]\n");
 
     /* Create and write a file */
@@ -44,3 +44,5 @@ void test_vfs(void) {
     /* fd is closed, should fail */
     check("fstat on closed fd fails", r < 0);
 }
+
+TEST("vfs", test_vfs);

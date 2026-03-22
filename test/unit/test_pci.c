@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_pci(void) {
+static void test_pci(void) {
     puts("\n[PCI Scan]\n");
 
     int found = 0;
@@ -36,3 +36,5 @@ void test_pci(void) {
     }
     check_ge("PCI devices found", (long)found, 1);
 }
+
+TEST("pci", test_pci);

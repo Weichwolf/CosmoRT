@@ -294,7 +294,11 @@ bench: $(SRC)/kernel/gen/kbench_bin.h
 KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/crash/*.c)
 KTEST_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
-            $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
+            $(BUILD)/test/crash/test_v8_cage.o \
+            $(BUILD)/test/crash/test_oom.o \
+            $(BUILD)/test/crash/test_fork_bomb.o \
+            $(BUILD)/test/crash/test_stack.o \
+            $(BUILD)/test/crash/test_badptr.o
 
 $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash:
 	@mkdir -p $@

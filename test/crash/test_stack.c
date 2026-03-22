@@ -36,7 +36,7 @@ __attribute__((noinline)) static void deep_recurse(void) {
     deep_recurse();
 }
 
-void test_stack(void) {
+static void test_stack(void) {
     puts("\n[Stack]\n");
 
     /* Test 1: Deep recursion in child process */
@@ -95,3 +95,5 @@ void test_stack(void) {
     check("alloca child terminated", 1); /* parent survived = PASS */
     puts("  alloca child status="); put_int(status); puts("\n");
 }
+
+CRASH_TEST("crash/stack", test_stack);

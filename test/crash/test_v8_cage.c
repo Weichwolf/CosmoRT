@@ -5,7 +5,7 @@
 #define GB (1024ULL * 1024 * 1024)
 #define MB (1024ULL * 1024)
 
-void test_v8_cage(void) {
+static void test_v8_cage(void) {
     puts("\n[V8 Cage]\n");
 
     /* 1. Reserve 4.5GB PROT_NONE */
@@ -75,3 +75,5 @@ void test_v8_cage(void) {
     long mu = sc2(SYS_munmap, (long)aligned, (long)cage_sz);
     check("munmap cage", mu == 0);
 }
+
+CRASH_TEST("crash/v8_cage", test_v8_cage);

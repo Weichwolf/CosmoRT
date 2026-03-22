@@ -30,7 +30,7 @@ __attribute__((used)) static void test_handler_siginfo(int sig, void *info, void
     sig_value = sig;
 }
 
-void test_signals(void) {
+static void test_signals(void) {
     puts("\n[Signals]\n");
 
     /* Test 1: SIG_IGN via rt_sigaction */
@@ -108,3 +108,5 @@ void test_signals(void) {
     check("oldact handler matches", got.handler == (void *)test_handler);
     check("oldact restorer matches", got.restorer == (void *)sig_restorer);
 }
+
+TEST("signals", test_signals);

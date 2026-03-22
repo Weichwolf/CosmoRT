@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_memory(void) {
+static void test_memory(void) {
     puts("\n[Memory]\n");
 
     /* mmap anonymous */
@@ -35,3 +35,5 @@ void test_memory(void) {
     long brk1 = sc1(SYS_brk, brk0 + 4096);
     check_val("brk grow", brk1, brk0 + 4096);
 }
+
+TEST("memory", test_memory);

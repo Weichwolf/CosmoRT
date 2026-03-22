@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_vm_patterns(void) {
+static void test_vm_patterns(void) {
     puts("\n[VM Patterns]\n");
 
     /* 1. Large PROT_NONE reservation + selective mprotect */
@@ -75,3 +75,5 @@ void test_vm_patterns(void) {
     long kr = sc2(SYS_kill, sc0(SYS_getpid), 0); /* sig=0: check only */
     check("kill(self, 0) succeeds", kr == 0);
 }
+
+TEST("vm_patterns", test_vm_patterns);

@@ -4,7 +4,7 @@
 
 #define MB (1024ULL * 1024)
 
-void test_oom(void) {
+static void test_oom(void) {
     puts("\n[OOM]\n");
 
     /* 1. mmap in loop until -ENOMEM */
@@ -75,3 +75,5 @@ void test_oom(void) {
     for (int i = 0; i < vma_count; i++)
         sc2(SYS_munmap, tiny_addrs[i], 4096);
 }
+
+CRASH_TEST("crash/oom", test_oom);

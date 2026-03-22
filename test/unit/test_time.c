@@ -1,6 +1,6 @@
 #include "ktest.h"
 
-void test_time(void) {
+static void test_time(void) {
     puts("\n[Timers]\n");
 
     struct { long sec; long nsec; } ts;
@@ -12,3 +12,5 @@ void test_time(void) {
     puts("  uptime: "); put_int(ts.sec); puts("s ");
     put_int(ts.nsec / 1000000); puts("ms\n");
 }
+
+TEST("time", test_time);

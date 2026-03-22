@@ -8,7 +8,7 @@ static int kstrncmp(const char *a, const char *b, int n) {
     return 0;
 }
 
-void test_procfs(void) {
+static void test_procfs(void) {
     puts("\n[Procfs]\n");
 
     /* /proc/dmesg — should contain boot output */
@@ -56,3 +56,5 @@ void test_procfs(void) {
     fd = sc3(SYS_open, (long)"/proc/nonexistent", O_RDONLY, 0);
     check("open /proc/nonexistent fails", fd < 0);
 }
+
+TEST("procfs", test_procfs);
