@@ -57,25 +57,41 @@ Node.js v22.14.0 + Claude Code 2.1.81 laufen. Interaktive bash via Serial.
 - [ ] GPT-Image Boot (Kernel hat keinen Partitions-Support)
 - [ ] AF_INET6 (IPv6)
 
-## Audit 3 — Verbleibende Findings
+## Audit 3+4 — Verbleibende Findings
 
-### SEC-HIGH (2)
-- [ ] do_recvfrom: TCP-Daten direkt in User-Buffer ohne Bounce
-- [ ] socket_write: kein Bounce-Buffer
+### GEFIXT
+- [x] rt_sigreturn RIP/RSP/RFLAGS Validierung (SEC-CRIT)
+- [x] do_recvfrom/socket_write Bounce-Buffer (SEC-HIGH)
+- [x] do_readv iovcnt EINVAL statt Clamping (CORR-MED)
+- [x] do_kill pid=-1 alle Prozesse (CORR-MED)
+- [x] CSI-Param Overflow-Guard (MED)
+- [x] dmesg_ring spinlock (MED)
+- [x] brk-Shrink: VMA vor unmap (MED)
 
-### SEC-MED (4)
-- [ ] SYS_COSMO_FW_LOAD: Output-Pointer wenn implementiert
+### Audit 4 — In Arbeit (Agents)
+- [ ] #1 mmap file-backed Lock-Release Race
+- [ ] #2 mmap addr+length Ceiling-Check
+- [ ] #3 order_for_pages signed shift UB
+- [ ] #4 TLB-Shootdown Atomizitaet
+- [ ] #5 vma_find_free gap_end-size Wrap
+- [ ] #6 usock_write peer Use-after-free
+- [ ] #7 unix_socket ring ohne Sync
+- [ ] #8 Accept Socket Leak
+- [ ] #9 kill_one nicht-atomarer State-Wechsel
+- [ ] #11 deliver_signal stale RCX/R11
+- [ ] #12 sched_preempt Signal-Path RCX
+- [ ] #13 cosmofs_inode_read statischer Buffer
+- [ ] #14 futex pi_boost ohne Sched-Lock
+- [ ] #15 EPOLLET Extra-Event
+- [ ] #17 rt_sigreturn FS_BASE Validierung
+
+### Verbleibend
+- [ ] SYS_COSMO_FW_LOAD: Output-Pointer
 - [ ] SYS_COSMO_NIC_ATTACH: sizeof(kargs) statt hardcoded 22
-- [ ] PID/TID Wraparound: next_pid/next_tid ohne Wrap-Check
-- [ ] pipe_slab_ensure: Race bei konkurrenter Initialisierung
-
-### CORR-MED (3)
-- [ ] timer_sleep_ms: Busywait < 10ms blockiert Core
-- [ ] do_readv: iovcnt Clamping statt EINVAL
-- [ ] do_kill pid=-1: nur self statt alle
-
-### PERF-MED (1)
-- [ ] inotify_event: Scannt alle Pool-Entries bei jedem VFS-Event
+- [ ] PID/TID Wraparound
+- [ ] pipe_slab_ensure Race
+- [ ] timer_sleep_ms Busywait
+- [ ] inotify_event Pool-Scan
 
 ## Interaktive Shell — Verbleibend
 
