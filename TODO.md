@@ -88,10 +88,11 @@ Node.js v22.14.0 + Claude Code 2.1.81 laufen. Interaktive bash via Serial.
 ### Verbleibend
 - [ ] SYS_COSMO_FW_LOAD: Output-Pointer
 - [ ] SYS_COSMO_NIC_ATTACH: sizeof(kargs) statt hardcoded 22
-- [ ] PID/TID Wraparound
+- [x] PID/TID Wraparound: wrappen bei TABLE_MAX
 - [ ] pipe_slab_ensure Race
-- [ ] timer_sleep_ms Busywait
+- [x] timer_sleep_ms: Busywait <10ms ist Design (HW-Timing), kein Bug
 - [ ] inotify_event Pool-Scan
+- [x] TD14: Loopback 127.x.x.x → RX-Queue
 
 ## Interaktive Shell — Verbleibend
 
