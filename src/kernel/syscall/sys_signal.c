@@ -2,6 +2,10 @@
 
 #include "internal.h"
 
+/* sigaltstack flags */
+#define SS_ONSTACK 1
+#define SS_DISABLE 2
+
 /* ── Signal delivery (full: SIG_DFL + SIG_IGN + user handlers) ──── */
 
 /* Resolve user virtual address to kernel-accessible pointer via page table walk.
@@ -126,13 +130,22 @@ void deliver_signal(thread_t *t, int signo) {
 
     if ((uint64_t)sa->sa_handler <= 1) return; /* SIG_DFL or SIG_IGN — shouldn't be here */
 
-    /* Compute frame location on user stack */
+    /* Compute frame location on user stack (or alternate signal stack) */
     uint64_t frame_size = SIG_FRAME_SIZE;
     /* Add trampoline only if no sa_restorer */
     int has_restorer = (sa->sa_flags & SA_RESTORER) && sa->sa_restorer;
     if (has_restorer)
         frame_size -= sizeof(sig_trampoline);
-    uint64_t new_rsp = (t->rsp - frame_size) & ~0xFULL; /* 16-byte align */
+
+    uint64_t stack_rsp = t->rsp;
+    /* Use alternate signal stack if SA_ONSTACK and altstack is configured */
+    if ((sa->sa_flags & SA_ONSTACK) && t->sigalt_sp &&
+        !(t->sigalt_flags & SS_DISABLE)) {
+        /* Only switch if not already on the altstack */
+        if (t->rsp < t->sigalt_sp || t->rsp >= t->sigalt_sp + t->sigalt_size)
+            stack_rsp = t->sigalt_sp + t->sigalt_size;
+    }
+    uint64_t new_rsp = (stack_rsp - frame_size) & ~0xFULL; /* 16-byte align */
 
     /* Verify target stack area is in a writable VMA */
     vma_t *vma = vma_find(p->vma_root, new_rsp);
@@ -283,6 +296,59 @@ void check_pending_signals(void) {
         deliver_signal(t, sig);
         return; /* deliver one signal at a time */
     }
+}
+
+/* ── SYS_SIGALTSTACK (131) ───────────────────────── */
+
+struct k_stack_t {
+    uint64_t ss_sp;
+    int32_t  ss_flags;
+    int32_t  _pad;
+    uint64_t ss_size;
+};
+
+long do_sigaltstack(const void *ss_, void *oss_) {
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+
+    /* Return old stack first */
+    if (oss_) {
+        if (!user_ok((uint64_t)oss_, sizeof(struct k_stack_t))) return -EFAULT;
+        struct k_stack_t koss;
+        koss.ss_sp    = t->sigalt_sp;
+        koss.ss_size  = t->sigalt_size;
+        koss._pad     = 0;
+        /* SS_ONSTACK if currently executing on the altstack */
+        if (t->sigalt_sp && !(t->sigalt_flags & SS_DISABLE) &&
+            t->rsp >= t->sigalt_sp && t->rsp < t->sigalt_sp + t->sigalt_size)
+            koss.ss_flags = SS_ONSTACK;
+        else if (t->sigalt_flags & SS_DISABLE)
+            koss.ss_flags = SS_DISABLE;
+        else
+            koss.ss_flags = 0;
+        kmemcpy(oss_, &koss, sizeof(koss));
+    }
+
+    if (ss_) {
+        if (!user_ok((uint64_t)ss_, sizeof(struct k_stack_t))) return -EFAULT;
+        struct k_stack_t kss;
+        kmemcpy(&kss, ss_, sizeof(kss));
+
+        if (kss.ss_flags & ~SS_DISABLE) return -EINVAL; /* unknown flags */
+
+        if (kss.ss_flags & SS_DISABLE) {
+            t->sigalt_sp    = 0;
+            t->sigalt_size  = 0;
+            t->sigalt_flags = SS_DISABLE;
+        } else {
+            if (kss.ss_size < 2048) return -ENOMEM; /* MINSIGSTKSZ */
+            t->sigalt_sp    = kss.ss_sp;
+            t->sigalt_size  = kss.ss_size;
+            t->sigalt_flags = 0;
+        }
+    }
+
+    return 0;
 }
 
 /* ── Signals (2.4) ───────────────────────────────── */

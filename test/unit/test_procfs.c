@@ -48,7 +48,7 @@ static void test_procfs(void) {
         char buf[256] = {0};
         long r = sc3(SYS_READ, fd, (long)buf, 255);
         check("read /proc/cpuinfo > 0", r > 0);
-        check("cpuinfo starts with cores", r >= 6 && kstrncmp(buf, "cores:", 6) == 0);
+        check("cpuinfo starts with processor", r >= 9 && kstrncmp(buf, "processor", 9) == 0);
         sc1(SYS_CLOSE, fd);
     }
 

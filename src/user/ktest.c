@@ -558,7 +558,7 @@ static void test_procfs(void) {
         char buf[256] = {0};
         long r = sc3(SYS_read, fd, (long)buf, 255);
         check("read /proc/cpuinfo > 0", r > 0);
-        check("cpuinfo starts with cores", r >= 6 && kstrncmp(buf, "cores:", 6) == 0);
+        check("cpuinfo starts with processor", r >= 9 && kstrncmp(buf, "processor", 9) == 0);
         sc1(SYS_close, fd);
     }
 
@@ -645,6 +645,194 @@ static void test_vm_patterns(void) {
     check("kill(self, 0) succeeds", kr == 0);
 }
 
+/* ── Batch 9 tests ───────────────────────────── */
+
+#define SYS_getrusage     98
+#define SYS_times         100
+#define SYS_sigaltstack   131
+#define SYS_rt_sigaction  13
+#define SYS_poll          7
+#define SYS_epoll_create1 291
+#define SYS_epoll_ctl     233
+#define SYS_epoll_wait    232
+#define SYS_pipe2         293
+#define SYS_eventfd2      290
+
+#define RUSAGE_SELF       0
+#define RUSAGE_CHILDREN   (-1)
+#define SS_DISABLE        2
+#define EPOLLIN           0x001
+#define EPOLLOUT          0x004
+#define EPOLLET           (1U << 31)
+#define EPOLL_CTL_ADD     1
+#define EPOLL_CTL_DEL     2
+
+struct k_rusage {
+    struct { long tv_sec; long tv_usec; } ru_utime;
+    struct { long tv_sec; long tv_usec; } ru_stime;
+    long ru_maxrss;
+    long ru_ixrss, ru_idrss, ru_isrss;
+    long ru_minflt, ru_majflt, ru_nswap;
+    long ru_inblock, ru_oublock;
+    long ru_msgsnd, ru_msgrcv;
+    long ru_nsignals;
+    long ru_nvcsw, ru_nivcsw;
+};
+
+struct k_tms {
+    long tms_utime, tms_stime, tms_cutime, tms_cstime;
+};
+
+struct k_stack_t {
+    uint64_t ss_sp;
+    int32_t  ss_flags;
+    int32_t  _pad;
+    uint64_t ss_size;
+};
+
+struct k_epoll_event {
+    uint32_t events;
+    uint64_t data;
+} __attribute__((packed));
+
+static void test_getrusage(void) {
+    puts("\n[getrusage]\n");
+
+    struct k_rusage ru;
+    long r = sc2(SYS_getrusage, RUSAGE_SELF, (long)&ru);
+    check_val("getrusage returns 0", r, 0);
+    check("ru_maxrss > 0", ru.ru_maxrss > 0);
+    check("ru_utime.tv_sec >= 0", ru.ru_utime.tv_sec >= 0);
+    /* utime should reflect some uptime */
+    check("ru_utime non-zero", ru.ru_utime.tv_sec > 0 || ru.ru_utime.tv_usec > 0);
+
+    /* RUSAGE_CHILDREN: should return 0 values */
+    struct k_rusage ruc;
+    r = sc2(SYS_getrusage, RUSAGE_CHILDREN, (long)&ruc);
+    check_val("getrusage children returns 0", r, 0);
+    check_val("children ru_maxrss = 0", ruc.ru_maxrss, 0);
+}
+
+static void test_times(void) {
+    puts("\n[times]\n");
+
+    struct k_tms tms;
+    long r = sc1(SYS_times, (long)&tms);
+    check("times returns ticks > 0", r > 0);
+    check("tms_utime > 0", tms.tms_utime > 0);
+    check_val("tms_stime = 0", tms.tms_stime, 0);
+    check_val("tms_cutime = 0", tms.tms_cutime, 0);
+    check_val("tms_cstime = 0", tms.tms_cstime, 0);
+    /* tms_utime should roughly equal return value */
+    long diff = r - tms.tms_utime;
+    if (diff < 0) diff = -diff;
+    check("tms_utime ≈ return value", diff < 10);
+}
+
+static void test_sigaltstack(void) {
+    puts("\n[sigaltstack]\n");
+
+    /* Get old stack (should be disabled initially) */
+    struct k_stack_t oss;
+    long r = sc2(SYS_sigaltstack, 0, (long)&oss);
+    check_val("sigaltstack get returns 0", r, 0);
+
+    /* Set alternate stack */
+    long altstack = sc6(SYS_mmap, 0, 16384, PROT_RW, MAP_PRIV_ANON, -1, 0);
+    check("mmap altstack", altstack > 0);
+    if (altstack <= 0) return;
+
+    struct k_stack_t ss;
+    ss.ss_sp = (uint64_t)altstack;
+    ss.ss_flags = 0;
+    ss._pad = 0;
+    ss.ss_size = 16384;
+    r = sc2(SYS_sigaltstack, (long)&ss, (long)&oss);
+    check_val("sigaltstack set returns 0", r, 0);
+
+    /* Verify it was stored */
+    struct k_stack_t oss2;
+    r = sc2(SYS_sigaltstack, 0, (long)&oss2);
+    check_val("sigaltstack verify returns 0", r, 0);
+    check("ss_sp matches", oss2.ss_sp == (uint64_t)altstack);
+    check("ss_size matches", oss2.ss_size == 16384);
+
+    /* Disable */
+    struct k_stack_t dis;
+    dis.ss_sp = 0;
+    dis.ss_flags = SS_DISABLE;
+    dis._pad = 0;
+    dis.ss_size = 0;
+    r = sc2(SYS_sigaltstack, (long)&dis, 0);
+    check_val("sigaltstack disable returns 0", r, 0);
+
+    sc2(SYS_munmap, altstack, 16384);
+}
+
+static void test_poll_infinite(void) {
+    puts("\n[poll timeout=-1]\n");
+
+    /* Create a pipe, write to it, then poll with timeout=-1.
+     * Should return immediately since data is ready. */
+    int pipefd[2];
+    long r = sc2(SYS_pipe2, (long)pipefd, 0);
+    check_val("pipe2 returns 0", r, 0);
+    if (r < 0) return;
+
+    /* Write data to pipe */
+    const char *msg = "hi";
+    sc3(SYS_write, pipefd[1], (long)msg, 2);
+
+    /* Poll read end with timeout=-1 (infinite) */
+    struct { int fd; short events; short revents; } pfd;
+    pfd.fd = pipefd[0];
+    pfd.events = 0x0001; /* POLLIN */
+    pfd.revents = 0;
+    r = sc3(SYS_poll, (long)&pfd, 1, -1);
+    check("poll(-1) returns ready", r >= 1);
+    check("poll POLLIN set", (pfd.revents & 0x0001) != 0);
+
+    sc1(SYS_close, pipefd[0]);
+    sc1(SYS_close, pipefd[1]);
+}
+
+static void test_epollet(void) {
+    puts("\n[EPOLLET]\n");
+
+    /* Create eventfd + epoll. Add eventfd with EPOLLET|EPOLLIN.
+     * Write to eventfd. First epoll_wait should return ready.
+     * Second epoll_wait (timeout=0) should return 0 (edge already consumed). */
+    long efd = sc2(SYS_eventfd2, 0, 0);
+    check("eventfd2", efd >= 0);
+    if (efd < 0) return;
+
+    long epfd = sc1(SYS_epoll_create1, 0);
+    check("epoll_create1", epfd >= 0);
+    if (epfd < 0) { sc1(SYS_close, efd); return; }
+
+    struct k_epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data = 42;
+    long r = sc4(SYS_epoll_ctl, epfd, EPOLL_CTL_ADD, efd, (long)&ev);
+    check_val("epoll_ctl ADD ET", r, 0);
+
+    /* Write to eventfd */
+    uint64_t val = 1;
+    sc3(SYS_write, efd, (long)&val, 8);
+
+    /* First epoll_wait: should see event */
+    struct k_epoll_event out;
+    r = sc4(SYS_epoll_wait, epfd, (long)&out, 1, 0);
+    check_val("epoll_wait ET first", r, 1);
+
+    /* Second epoll_wait: edge already consumed, should return 0 */
+    r = sc4(SYS_epoll_wait, epfd, (long)&out, 1, 0);
+    check_val("epoll_wait ET second = 0", r, 0);
+
+    sc1(SYS_close, epfd);
+    sc1(SYS_close, efd);
+}
+
 /* ── Main ────────────────────────────────────── */
 
 void _start(void) {
@@ -663,6 +851,11 @@ void _start(void) {
     test_yield();
     test_signals();
     test_vm_patterns();
+    test_getrusage();
+    test_times();
+    test_sigaltstack();
+    test_poll_infinite();
+    test_epollet();
 
     puts("\n=== ");
     put_int((long)passes); puts(" passed, ");

@@ -36,8 +36,9 @@ static inline int user_ok(uint64_t addr, size_t len) {
 
 typedef struct {
     int      fd;
-    uint32_t events;
+    uint32_t events;     /* requested events (including EPOLLET flag) */
     uint64_t data;
+    uint32_t et_armed;   /* edge-triggered: 1 = report next ready, 0 = already reported */
 } epoll_entry_t;
 
 typedef struct {
@@ -167,6 +168,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         ep->entries[ep->count].fd     = fd;
         ep->entries[ep->count].events = kev.events;
         ep->entries[ep->count].data   = kev.data;
+        ep->entries[ep->count].et_armed = 1; /* report on first ready */
         ep->count++;
         break;
     }
@@ -182,6 +184,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
             if (ep->entries[i].fd == fd) {
                 ep->entries[i].events = kev.events;
                 ep->entries[i].data   = kev.data;
+                ep->entries[i].et_armed = 1; /* re-arm on MOD */
                 found = 1;
                 break;
             }
@@ -292,41 +295,48 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
-    uint64_t deadline = (timeout < 0)  ? (timer_ms() + 30000)
+    uint64_t deadline = (timeout < 0)  ? 0  /* infinite: no deadline */
                       : (timeout == 0) ? 0
                       : (timer_ms() + (uint64_t)timeout);
+    int infinite = (timeout < 0);
 
     net_poll();
 
-    /* Snapshot entries under lock, then scan without lock held. */
-    epoll_entry_t snap[EPOLL_MAX_FDS];
-    int snap_count;
-
+    /* Scan entries under lock. EPOLLET state must be updated atomically. */
     uint64_t irqf;
     spin_lock_irq(&ep->lock, &irqf);
-    snap_count = ep->count;
-    for (int i = 0; i < snap_count; i++)
-        snap[i] = ep->entries[i];
-    spin_unlock_irq(&ep->lock, irqf);
 
     int nready = 0;
-    for (int i = 0; i < snap_count && nready < maxevents; i++) {
-        uint32_t r = fd_poll_readiness(snap[i].fd, snap[i].events);
+    for (int i = 0; i < ep->count && nready < maxevents; i++) {
+        epoll_entry_t *ent = &ep->entries[i];
+        uint32_t interest = ent->events & ~EPOLLET; /* strip ET flag for readiness check */
+        uint32_t r = fd_poll_readiness(ent->fd, interest);
         if (r) {
             struct epoll_event ev;
-            ev.events = r & snap[i].events;
+            ev.events = r & interest;
             ev.events |= r & (EPOLLHUP | EPOLLERR);
             if (ev.events) {
-                ev.data = snap[i].data;
+                /* Edge-triggered: only report if armed */
+                if (ent->events & EPOLLET) {
+                    if (!ent->et_armed) continue;
+                    ent->et_armed = 0; /* disarm until re-armed by MOD or not-ready->ready */
+                }
+                ev.data = ent->data;
                 kmemcpy(&events[nready], &ev, sizeof(ev));
                 nready++;
             }
+        } else {
+            /* FD not ready — re-arm edge trigger for next transition */
+            if (ent->events & EPOLLET)
+                ent->et_armed = 1;
         }
     }
 
+    spin_unlock_irq(&ep->lock, irqf);
+
     if (nready > 0) return nready;
     if (timeout == 0) return 0;
-    if (timer_ms() >= deadline) return 0;
+    if (!infinite && timer_ms() >= deadline) return 0;
 
     /* No events ready — block until woken by epoll_wake_all or timeout. */
     {
@@ -338,7 +348,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         save_user_state_for_block(t, 0);
         t->rip -= 2;              /* back to `syscall` instruction */
         t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
-        t->wake_at = deadline;
+        t->wake_at = infinite ? 0 : deadline; /* 0 = no timeout */
 
         /* Register as sleeper, then block. */
         epoll_sleeper_add(t);
@@ -546,7 +556,11 @@ void timerfd_destroy(void *obj) {
     if (obj) slab_free(&timerfd_slab, obj);
 }
 
-/* ── SYS_SIGNALFD4 (289) — stub ─────────────────── */
+/* ── SYS_SIGNALFD4 (289) — intentionally unimplemented ─────────────
+ * signalfd requires deep integration with the signal delivery path:
+ * pending signals must be consumed by read() instead of delivered to
+ * handlers. Complexity outweighs benefit — programs fall back to
+ * sigaction/sigwaitinfo. Node.js does not require signalfd. */
 
 long do_signalfd4(int fd, const uint64_t *mask, int flags) {
     (void)fd; (void)mask; (void)flags;

@@ -88,6 +88,11 @@ typedef struct thread {
     /* ── rt_sigsuspend saved mask (restored before signal delivery) ── */
     uint64_t sig_saved_mask;  /* old sig_blocked during sigsuspend; 0 = not in sigsuspend */
     int      in_sigsuspend;   /* 1 while blocked in rt_sigsuspend */
+
+    /* ── sigaltstack ── */
+    uint64_t sigalt_sp;       /* ss_sp: base of alternate signal stack */
+    uint64_t sigalt_size;     /* ss_size: size of alternate signal stack */
+    int      sigalt_flags;    /* ss_flags: SS_DISABLE etc. */
 } thread_t;
 
 #define THREAD_MAX 64

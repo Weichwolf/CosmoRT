@@ -55,8 +55,8 @@ typedef struct {
 #define PTE_NX      (1ULL << 63)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
-/* iovec for readv/writev */
-struct iovec { const void *iov_base; size_t iov_len; };
+/* iovec for readv/writev (POSIX: iov_base is void*, not const void*) */
+struct iovec { void *iov_base; size_t iov_len; };
 
 /* ── Forward declarations: sys_file.c ── */
 long do_read(int fd, void *buf, size_t count);
@@ -149,6 +149,7 @@ long do_rt_sigreturn(void);
 long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
+long do_sigaltstack(const void *ss, void *oss);
 
 /* k_timeval — from linux.h (via syscall.h) */
 

@@ -10,6 +10,7 @@
 #include "memops.h"
 #include "config.h"
 #include "percpu.h"
+#include "epoll.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -503,33 +504,24 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     struct k_pollfd kfds[256];
     kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
 
-    uint64_t deadline = timer_ms() + (uint64_t)(timeout >= 0 ? timeout : 30000);
+    int infinite = (timeout < 0);
+    uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
     int ready = 0;
 
-    while (timer_ms() < deadline) {
+    while (infinite || timer_ms() < deadline) {
         net_poll();
         ready = 0;
         for (int i = 0; i < nfds; i++) {
             kfds[i].revents = 0;
-            socket_t *s = sock_from_fd(kfds[i].fd);
-            if (!s) {
-                /* Non-socket FD: pretend writable */
-                if (kfds[i].events & POLLOUT) kfds[i].revents |= POLLOUT;
-                if (kfds[i].revents) ready++;
-                continue;
-            }
-            if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
-                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
-                    kfds[i].revents |= POLLIN;
-            }
-            /* Listening sockets: POLLIN when accept queue non-empty */
-            if ((kfds[i].events & POLLIN) && s->state == SOCK_LISTENING) {
-                if (s->accept_count > 0)
-                    kfds[i].revents |= POLLIN;
-            }
-            if (kfds[i].events & POLLOUT) {
-                if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
-            }
+            /* Map POLLIN/POLLOUT to EPOLLIN/EPOLLOUT for fd_poll_readiness */
+            uint32_t interest = 0;
+            if (kfds[i].events & POLLIN)  interest |= 0x001; /* EPOLLIN */
+            if (kfds[i].events & POLLOUT) interest |= 0x004; /* EPOLLOUT */
+            uint32_t r_ev = fd_poll_readiness(kfds[i].fd, interest);
+            if (r_ev & 0x001) kfds[i].revents |= POLLIN;
+            if (r_ev & 0x004) kfds[i].revents |= POLLOUT;
+            if (r_ev & 0x010) kfds[i].revents |= 0x0010; /* POLLHUP */
+            if (r_ev & 0x008) kfds[i].revents |= 0x0008; /* POLLERR */
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
@@ -558,7 +550,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         save_user_state_for_block(t, 0);
         t->rip -= 2;
         t->rax = SYS_POLL;
-        t->wake_at = deadline;
+        t->wake_at = infinite ? 0 : deadline; /* 0 = no timeout */
 
         /* Register as sleeper (shares epoll sleeper list), then block. */
         extern void epoll_sleeper_add_ext(thread_t *t);

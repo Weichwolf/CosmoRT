@@ -108,6 +108,15 @@ static int append_int(char *buf, int pos, int max, long v) {
     return pos;
 }
 
+/* Right-align an integer field to at least `width` chars */
+static int append_int_rpad(char *buf, int pos, int max, long v, int width) {
+    char tmp[20];
+    int n = itoa_buf(tmp, 20, v);
+    for (int i = 0; i < width - n && pos < max; i++) buf[pos++] = ' ';
+    for (int i = 0; i < n && pos < max; i++) buf[pos++] = tmp[i];
+    return pos;
+}
+
 /* ── Built-in entries ────────────────────────────── */
 
 static int procfs_dmesg(char *buf, int size, int offset, void *ctx) {
@@ -118,19 +127,24 @@ static int procfs_dmesg(char *buf, int size, int offset, void *ctx) {
 static int procfs_meminfo(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     int total = page_alloc_total();
-    int free = page_alloc_free();
-    int used = total - free;
+    int free_pg = page_alloc_free();
+    long total_kb = (long)total * 4;
+    long free_kb  = (long)free_pg * 4;
 
-    /* Generate full content, then apply offset */
-    char tmp[256];
+    /* Linux-compatible format: right-aligned values with spaces */
+    char tmp[512];
     int pos = 0;
-    pos = append_str(tmp, pos, 256, "MemTotal: ");
-    pos = append_int(tmp, pos, 256, (long)total * 4);
-    pos = append_str(tmp, pos, 256, " kB\nMemFree:  ");
-    pos = append_int(tmp, pos, 256, (long)free * 4);
-    pos = append_str(tmp, pos, 256, " kB\nMemUsed:  ");
-    pos = append_int(tmp, pos, 256, (long)used * 4);
-    pos = append_str(tmp, pos, 256, " kB\n");
+    pos = append_str(tmp, pos, 512, "MemTotal:");
+    pos = append_int_rpad(tmp, pos, 512, total_kb, 16);
+    pos = append_str(tmp, pos, 512, " kB\nMemFree:");
+    pos = append_int_rpad(tmp, pos, 512, free_kb, 17);
+    pos = append_str(tmp, pos, 512, " kB\nMemAvailable:");
+    pos = append_int_rpad(tmp, pos, 512, free_kb, 12);
+    pos = append_str(tmp, pos, 512, " kB\nBuffers:");
+    pos = append_int_rpad(tmp, pos, 512, 0, 17);
+    pos = append_str(tmp, pos, 512, " kB\nCached:");
+    pos = append_int_rpad(tmp, pos, 512, 0, 18);
+    pos = append_str(tmp, pos, 512, " kB\n");
 
     if (offset >= pos) return 0;
     int avail = pos - offset;
@@ -143,14 +157,21 @@ static int procfs_cpuinfo(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     int cores = smp_num_cores();
     uint64_t tsc_khz = timer_tsc_per_ms;
+    long mhz = (long)(tsc_khz / 1000);
 
-    char tmp[256];
+    /* Linux-compatible format, one block per core */
+    char tmp[1024];
     int pos = 0;
-    pos = append_str(tmp, pos, 256, "cores:    ");
-    pos = append_int(tmp, pos, 256, (long)cores);
-    pos = append_str(tmp, pos, 256, "\ntsc_khz:  ");
-    pos = append_int(tmp, pos, 256, (long)tsc_khz);
-    pos = append_str(tmp, pos, 256, "\n");
+    for (int i = 0; i < cores && pos < 900; i++) {
+        if (i > 0) pos = append_str(tmp, pos, 1024, "\n");
+        pos = append_str(tmp, pos, 1024, "processor\t: ");
+        pos = append_int(tmp, pos, 1024, (long)i);
+        pos = append_str(tmp, pos, 1024, "\nvendor_id\t: CosmoRT");
+        pos = append_str(tmp, pos, 1024, "\nmodel name\t: CosmoRT vCPU");
+        pos = append_str(tmp, pos, 1024, "\ncpu MHz\t\t: ");
+        pos = append_int(tmp, pos, 1024, mhz);
+        pos = append_str(tmp, pos, 1024, "\n");
+    }
 
     if (offset >= pos) return 0;
     int avail = pos - offset;

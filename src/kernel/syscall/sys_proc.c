@@ -560,6 +560,16 @@ long do_getrusage(int who, void *usage_) {
     if (!user_ok((uint64_t)usage, sizeof(struct k_rusage))) return -EFAULT;
     struct k_rusage kru;
     kmemset(&kru, 0, sizeof(kru));
+    if (who == RUSAGE_SELF) {
+        /* ru_maxrss: peak RSS in kB. Approximate as (total - free) * 4. */
+        long used_pages = (long)(page_alloc_total() - page_alloc_free());
+        kru.ru_maxrss = used_pages * 4;
+        /* ru_utime: approximate as total uptime (no per-process accounting yet) */
+        uint64_t ms = timer_ms();
+        kru.ru_utime.tv_sec = (long)(ms / 1000);
+        kru.ru_utime.tv_usec = (long)((ms % 1000) * 1000);
+        /* ru_stime: 0 (kernel time not tracked separately) */
+    }
     kmemcpy(usage, &kru, sizeof(kru));
     return 0;
 }
@@ -620,8 +630,12 @@ long do_times(void *buf_) {
     struct k_tms *buf = (struct k_tms *)buf_;
     if (!user_ok((uint64_t)buf, sizeof(struct k_tms))) return -EFAULT;
     struct k_tms ktms;
-    kmemset(&ktms, 0, sizeof(ktms));
+    /* CLK_TCK = 100 Hz on Linux x86_64 */
+    uint64_t ticks = timer_ms() / 10;
+    ktms.tms_utime  = (long)ticks; /* approximate: all time as utime */
+    ktms.tms_stime  = 0;
+    ktms.tms_cutime = 0;           /* children time not tracked */
+    ktms.tms_cstime = 0;
     kmemcpy(buf, &ktms, sizeof(ktms));
-    /* Return clock ticks since boot (assume 100 Hz CLK_TCK) */
-    return (long)(timer_ms() / 10);
+    return (long)ticks;
 }
