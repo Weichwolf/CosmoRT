@@ -303,6 +303,19 @@ typedef long               ssize_t;
 #define AT_FDCWD              (-100)
 #define AT_SYMLINK_NOFOLLOW   0x100
 #define AT_REMOVEDIR          0x200
+#define AT_SYMLINK_FOLLOW     0x400
+#define AT_EMPTY_PATH         0x1000
+
+/* access() mode bits */
+#define F_OK    0
+#define R_OK    4
+#define W_OK    2
+#define X_OK    1
+
+/* renameat2 flags */
+#define RENAME_NOREPLACE      (1 << 0)
+#define RENAME_EXCHANGE       (1 << 1)
+#define RENAME_WHITEOUT       (1 << 2)
 
 /* ══════════════════════════════════════════════════════════════════
  * arch_prctl codes

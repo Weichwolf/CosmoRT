@@ -39,6 +39,16 @@ static int resolve_path(const char *path, char *out, int outsize) {
     return 0;
 }
 
+/* Resolve dirfd + relative path.
+ * Absolute paths and AT_FDCWD are handled directly.
+ * Real dirfd with relative path → -EBADF (no path stored per FD yet). */
+static int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
+    int len = copy_path_from_user(kpath, upath, (size_t)max);
+    if (len < 0) return len;
+    if (kpath[0] == '/' || dirfd == AT_FDCWD) return len;
+    return -EBADF;
+}
+
 /* Device file IDs (must match vfs.c) */
 #define DEV_NULL    1
 #define DEV_ZERO    2
@@ -340,11 +350,8 @@ long do_open(const char *path, int flags, int mode) {
 
 long do_openat(int dirfd, const char *path, int flags, int mode) {
     char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    /* Absolute paths ignore dirfd; relative paths require AT_FDCWD.
-     * TODO: real dirfd support (resolve path relative to open directory fd) */
-    if (kpath[0] != '/' && dirfd != AT_FDCWD) return -EBADF;
     return vfs_open(kpath, flags, mode);
 }
 
@@ -417,11 +424,9 @@ long do_chdir(const char *path) {
 
 long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
     if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     resolve_path(kpath, rpath, PATH_MAX);
     if (flags & AT_SYMLINK_NOFOLLOW)
         return vfs_lstat(rpath, buf);
@@ -435,10 +440,8 @@ long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
 long do_mkdirat(int dirfd, const char *path, int mode) {
     (void)mode;
     char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_mkdir(kpath);
 }
 
@@ -446,10 +449,8 @@ long do_mkdirat(int dirfd, const char *path, int mode) {
 
 long do_unlinkat(int dirfd, const char *path, int flags) {
     char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     if (flags & AT_REMOVEDIR)
         return vfs_rmdir(kpath);
     return vfs_unlink(kpath);
@@ -459,15 +460,23 @@ long do_unlinkat(int dirfd, const char *path, int flags) {
 
 long do_renameat2(int olddirfd, const char *oldpath,
                           int newdirfd, const char *newpath, int flags) {
-    (void)flags; /* TODO: RENAME_NOREPLACE etc. */
+    /* Reject unsupported flag combinations */
+    if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE)) return -EINVAL;
+    if ((flags & RENAME_NOREPLACE) && (flags & RENAME_EXCHANGE)) return -EINVAL;
+    if (flags & RENAME_EXCHANGE) return -EINVAL; /* not implemented */
+
     char kold[PATH_MAX], knew[PATH_MAX];
-    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    int r = resolve_at_path(olddirfd, oldpath, kold, PATH_MAX);
     if (r < 0) return r;
-    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    r = resolve_at_path(newdirfd, newpath, knew, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (olddirfd != AT_FDCWD && kold[0] != '/') return -EBADF;
-    if (newdirfd != AT_FDCWD && knew[0] != '/') return -EBADF;
+
+    if (flags & RENAME_NOREPLACE) {
+        /* Target must not exist */
+        extern uint64_t cosmofs_walk_path(const char *);
+        if (vfs_lookup(knew) || cosmofs_walk_path(knew))
+            return -EEXIST;
+    }
     return vfs_rename(kold, knew);
 }
 
@@ -489,15 +498,17 @@ long do_fchown(int fd, uint32_t uid, uint32_t gid) {
 
 long do_linkat(int olddirfd, const char *oldpath,
                int newdirfd, const char *newpath, int flags) {
-    (void)flags; /* TODO: AT_EMPTY_PATH, AT_SYMLINK_FOLLOW */
+    if (flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) return -EINVAL;
+    if (flags & AT_EMPTY_PATH) return -ENOSYS; /* requires /proc/self/fd */
+
     char kold[PATH_MAX], knew[PATH_MAX];
-    int r = copy_path_from_user(kold, oldpath, PATH_MAX);
+    int r = resolve_at_path(olddirfd, oldpath, kold, PATH_MAX);
     if (r < 0) return r;
-    r = copy_path_from_user(knew, newpath, PATH_MAX);
+    r = resolve_at_path(newdirfd, newpath, knew, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (olddirfd != AT_FDCWD && kold[0] != '/') return -EBADF;
-    if (newdirfd != AT_FDCWD && knew[0] != '/') return -EBADF;
+    /* AT_SYMLINK_FOLLOW: resolve symlinks on source (default: don't follow).
+     * vfs_link already operates on the resolved node, so the flag is a no-op
+     * for our current symlink implementation (ramfs resolves on lookup). */
     return vfs_link(kold, knew);
 }
 
@@ -509,10 +520,8 @@ long do_symlinkat(const char *target, int newdirfd, const char *linkpath) {
     char ktarget[PATH_MAX], klink[PATH_MAX];
     int r = copy_path_from_user(ktarget, target, PATH_MAX);
     if (r < 0) return r;
-    r = copy_path_from_user(klink, linkpath, PATH_MAX);
+    r = resolve_at_path(newdirfd, linkpath, klink, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (newdirfd != AT_FDCWD && klink[0] != '/') return -EBADF;
     return vfs_symlink(ktarget, klink);
 }
 
@@ -522,11 +531,9 @@ long do_symlinkat(const char *target, int newdirfd, const char *linkpath) {
 
 long do_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
     char kpath[PATH_MAX];
-    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
     if (!user_ok((uint64_t)buf, bufsiz)) return -EFAULT;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_readlink(kpath, buf, bufsiz);
 }
 
@@ -548,10 +555,8 @@ long do_ftruncate(int fd, int64_t length) {
 long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
     (void)flags;
     char kpath[PATH_MAX];
-    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_chmod(kpath, mode);
 }
 
@@ -561,10 +566,8 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
     if (!path) return 0; /* futimens with NULL path = no-op for now */
 
     char kpath[PATH_MAX];
-    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
 
     int64_t ktimes[4];
     if (utimes) {
@@ -599,10 +602,8 @@ long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
         return -EPERM;
 
     char kpath[PATH_MAX];
-    int r = copy_path_from_user(kpath, path, PATH_MAX);
+    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
 
     /* Create as regular file via open+close */
     int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
@@ -760,21 +761,27 @@ long do_getdents64(int fd, void *buf, size_t count) {
 /* ── SYS_faccessat (269) — primary; access delegates here via dispatch ── */
 
 long do_faccessat(int dirfd, const char *path, int mode, int flags) {
-    (void)mode; (void)flags; /* TODO: real mode/flags checking */
+    (void)flags; /* AT_EACCESS / AT_SYMLINK_NOFOLLOW — irrelevant for single-user */
+    if (mode & ~(F_OK | R_OK | W_OK | X_OK)) return -EINVAL;
+
     char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
-    /* Check ramfs first */
-    if (vfs_lookup(kpath)) return 0;
-    /* Check procfs entries (/proc/NAME) */
-    const char *pname = 0;
-    if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
-        kpath[4]=='c' && kpath[5]=='/')
-        pname = kpath + 6;
-    if (pname && procfs_open(pname)) return 0;
-    /* Check device special files and virtual dirs */
+
+    /* Check existence across all filesystems */
+    int exists = 0;
+
+    /* ramfs */
+    if (vfs_lookup(kpath)) { exists = 1; goto found; }
+    /* procfs entries (/proc/NAME) */
+    {
+        const char *pname = 0;
+        if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
+            kpath[4]=='c' && kpath[5]=='/')
+            pname = kpath + 6;
+        if (pname && procfs_open(pname)) { exists = 1; goto found; }
+    }
+    /* Device special files and virtual dirs */
     {
         static const char *devpaths[] = {
             "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
@@ -783,13 +790,20 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
         for (const char **dp = devpaths; *dp; dp++) {
             const char *a = kpath, *b = *dp;
             while (*a && *a == *b) { a++; b++; }
-            if (*a == 0 && *b == 0) return 0;
+            if (*a == 0 && *b == 0) { exists = 1; goto found; }
         }
     }
     /* CosmoFS on disk */
-    extern uint64_t cosmofs_walk_path(const char *);
-    if (cosmofs_walk_path(kpath)) return 0;
-    return -ENOENT;
+    {
+        extern uint64_t cosmofs_walk_path(const char *);
+        if (cosmofs_walk_path(kpath)) { exists = 1; goto found; }
+    }
+
+found:
+    if (!exists) return -ENOENT;
+    /* F_OK: existence only — already confirmed.
+     * R_OK/W_OK/X_OK: single-user system, all permissions granted if file exists. */
+    return 0;
 }
 
 /* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */

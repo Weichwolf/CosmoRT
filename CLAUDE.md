@@ -49,6 +49,16 @@ Power      state/suspend/shutdown/reboot (ACPI)
 USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN = Userspace.
 USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → Block.
 
+## Filesysteme
+
+```
+Kernel:     CosmoFS (Root, Performance-kritisch), ramfs, procfs
+Userspace:  FAT32, ext4, NTFS, NFS, SMB (Latenz-tolerant, ueber Block-I/O)
+```
+
+CosmoFS ist der einzige FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
+werden von Userspace-Daemons gemountet die Block-I/O ueber cosmo_rt.h sprechen.
+
 ## Core-Modell: RT + Compute (SMP 2+)
 
 ```

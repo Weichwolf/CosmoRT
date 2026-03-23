@@ -320,7 +320,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_IOCTL:  return do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3);
     case SYS_FCNTL:  return do_fcntl((int)a1, (int)a2, a3);
 
-    case SYS_ACCESS: return do_faccessat(AT_FDCWD, (const char *)a1, 0, 0);
+    case SYS_ACCESS: return do_faccessat(AT_FDCWD, (const char *)a1, (int)a2, 0);
 
     /* epoll / eventfd / timerfd / signalfd / inotify */
     case SYS_EPOLL_CREATE1:     return do_epoll_create1((int)a1);
