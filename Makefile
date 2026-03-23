@@ -119,7 +119,7 @@ KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
-.PHONY: all clean qemu stop init-bin disk
+.PHONY: all clean qemu stop init-bin disk vhdx
 
 all: $(ESP_IMG)
 
@@ -252,8 +252,8 @@ $(SRC)/kernel/gen/svcmgr_bin.h: $(BUILD)/user/svcmgr
 tools/mkfs: tools/mkfs.c
 	$(HOST_CC) -Wall -Wextra -O2 -o $@ $<
 
-disk.img: tools/mkfs
-	./tools/mkfs $@ 64
+disk.img: tools/mkfs $(EFI_BIN)
+	sh tools/mkimage.sh
 
 disk: disk.img
 
@@ -472,8 +472,17 @@ qemu-gui: $(BUILD)/user/vt_shell
 	@mv $(SRC)/kernel/gen/init_bin.h.bak $(SRC)/kernel/gen/init_bin.h 2>/dev/null; true
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
-qemu-disk: $(ESP_IMG) disk.img
-	$(QEMU) $(QEMU_FLAGS) -drive file=disk.img,if=virtio,format=raw
+qemu-disk: disk.img
+	$(QEMU) -cpu qemu64 -smp 2 -m 4096 \
+	        -bios /usr/share/ovmf/OVMF.fd \
+	        -drive file=disk.img,format=raw \
+	        -serial stdio -display none -no-reboot \
+	        -device e1000,netdev=net0 \
+	        -netdev user,id=net0
+
+vhdx: disk.img
+	qemu-img convert -f raw -O vhdx disk.img disk.vhdx
+	@echo "disk.vhdx: $$(du -h disk.vhdx | cut -f1)"
 
 qemu-net: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS) -device e1000,netdev=net0 -netdev user,id=net0
@@ -505,12 +514,11 @@ test-boot: $(ESP_IMG)
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
 	  echo "=== PASS ===" || echo "=== FAIL ==="
 
-test-boot-disk: $(ESP_IMG) disk.img
+test-boot-disk: disk.img
 	@rm -f /tmp/cosmo-serial.log
 	timeout 10 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
-	        -drive file=$(ESP_IMG),format=raw \
-	        -drive file=disk.img,if=virtio,format=raw \
+	        -drive file=disk.img,format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
@@ -523,4 +531,4 @@ test-boot-disk: $(ESP_IMG) disk.img
 clean:
 	rm -rf $(BUILD)
 	rm -f $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/ap_trampoline_bin.h $(SRC)/kernel/gen/kbench_bin.h $(SRC)/kernel/gen/ktest_bin.h $(SRC)/kernel/gen/ld_cosmo_bin.h $(SRC)/kernel/gen/e1000d_bin.h $(SRC)/kernel/gen/svcmgr_bin.h $(SRC)/kernel/gen/kexec_tramp_bin.h
-	rm -f tools/mkfs disk.img
+	rm -f tools/mkfs disk.img disk.vhdx
