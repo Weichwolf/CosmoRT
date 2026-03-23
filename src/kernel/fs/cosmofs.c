@@ -215,8 +215,10 @@ void cosmofs_block_free(uint64_t block) {
 
 /* ── Inode operations ─────────────────────────────── */
 
-/* Temporary inode buffer (static — single-threaded FS access via fs_lock) */
+/* Temporary inode buffer — protected by inode_tmp_lock against concurrent access.
+ * Callers must consume the returned data before any other cosmofs_inode_read call. */
 static struct cosmofs_inode inode_tmp;
+static spinlock_t inode_tmp_lock = SPINLOCK_INIT;
 
 struct cosmofs_inode *cosmofs_inode_read(uint64_t ino) {
     if (!mounted || ino == 0) return 0;
@@ -227,7 +229,10 @@ struct cosmofs_inode *cosmofs_inode_read(uint64_t ino) {
     struct bcache_entry *be = bcache_get(sb.inode_start + block_idx);
     if (!be) return 0;
 
+    uint64_t irqf;
+    spin_lock_irq(&inode_tmp_lock, &irqf);
     kmemcpy(&inode_tmp, be->data + slot * COSMOFS_INODE_SIZE, COSMOFS_INODE_SIZE);
+    spin_unlock_irq(&inode_tmp_lock, irqf);
     bcache_put(be);
     return &inode_tmp;
 }

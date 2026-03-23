@@ -207,6 +207,7 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
         if (sp > 0) {
             cur = stack[--sp];
             /* Check gap between cur->end and gap_end */
+            if (gap_end < size) { cur = cur->left; continue; }
             if (cur->end <= gap_end && gap_end - cur->end >= size) {
                 uint64_t addr = (gap_end - size) & ~0xFFFULL;
                 if (addr >= cur->end) {

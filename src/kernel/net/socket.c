@@ -325,9 +325,9 @@ long do_accept(int fd, void *addr, int *addrlen) {
         spin_unlock_irq(&sock_lock, flags);
 
         p = proc_current();
-        if (!p) { ns->state = SOCK_UNUSED; return -EFAULT; }
+        if (!p) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EFAULT; }
         int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
-        if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
+        if (newfd < 0) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EMFILE; }
 
         if (addr && addrlen) {
             struct k_sockaddr_in sa;
@@ -382,9 +382,9 @@ long do_accept(int fd, void *addr, int *addrlen) {
 
     /* Allocate FD */
     p = proc_current();
-    if (!p) { ns->state = SOCK_UNUSED; return -EFAULT; }
+    if (!p) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EFAULT; }
     int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
-    if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
+    if (newfd < 0) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EMFILE; }
 
     /* Fill in addr if requested */
     if (addr && addrlen) {

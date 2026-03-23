@@ -323,12 +323,16 @@ long usock_read(int fd, void *buf, long count) {
     if (!s) return -EBADF;
     if (s->state != USOCK_CONNECTED) return -ENOTCONN;
 
+    uint64_t irqf;
+    spin_lock_irq(&usock_lock, &irqf);
     if (s->count == 0) {
-        if (!s->peer) return 0; /* EOF: peer closed */
-        return -EAGAIN;
+        int eof = !s->peer;
+        spin_unlock_irq(&usock_lock, irqf);
+        return eof ? 0 : -EAGAIN;
     }
 
     int n = ring_read(s, (uint8_t *)buf, (int)count);
+    spin_unlock_irq(&usock_lock, irqf);
 
     /* Wake epoll/poll */
     extern void epoll_wake_all(void);
@@ -381,19 +385,23 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
 long usock_write(int fd, const void *buf, long count) {
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state != USOCK_CONNECTED || !s->peer) return -EPIPE;
+    if (s->state != USOCK_CONNECTED) return -EPIPE;
 
-    /* Write into peer's receive buffer */
-    int n = ring_write(s->peer, (const uint8_t *)buf, (int)count);
-    if (n == 0) return -EAGAIN; /* peer buffer full */
+    /* Snapshot peer under lock — peer can be NULLed by concurrent close */
+    uint64_t irqf;
+    spin_lock_irq(&usock_lock, &irqf);
+    unix_socket_t *peer = s->peer;
+    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return -EPIPE; }
+
+    /* Write into peer's receive buffer (under lock — protects ring) */
+    int n = ring_write(peer, (const uint8_t *)buf, (int)count);
+    if (n == 0) { spin_unlock_irq(&usock_lock, irqf); return -EAGAIN; }
 
     /* Wake blocked reader on peer */
     thread_t *reader = 0;
-    uint64_t irqf;
-    spin_lock_irq(&usock_lock, &irqf);
-    if (s->peer->blocked_reader) {
-        reader = (thread_t *)s->peer->blocked_reader;
-        s->peer->blocked_reader = 0;
+    if (peer->blocked_reader) {
+        reader = (thread_t *)peer->blocked_reader;
+        peer->blocked_reader = 0;
     }
     spin_unlock_irq(&usock_lock, irqf);
     if (reader) {
@@ -461,6 +469,13 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     struct iovec k_iov[16];
     { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
+    /* Snapshot peer under lock */
+    uint64_t irqf;
+    spin_lock_irq(&usock_lock, &irqf);
+    unix_socket_t *peer = s->peer;
+    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return -EPIPE; }
+    spin_unlock_irq(&usock_lock, irqf);
+
     long total = 0;
     for (uint64_t i = 0; i < kmsg.msg_iovlen; i++) {
         if (!k_iov[i].iov_len) continue;
@@ -473,7 +488,9 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
         while (remaining > 0) {
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
             copy_from_user(kbuf, src, (size_t)chunk); /* user_ok checked per-iov above */
-            int w = ring_write(s->peer, kbuf, (int)chunk);
+            spin_lock_irq(&usock_lock, &irqf);
+            int w = ring_write(peer, kbuf, (int)chunk);
+            spin_unlock_irq(&usock_lock, irqf);
             if (w <= 0) {
                 if (total > 0) goto done;
                 return -EAGAIN;
@@ -510,9 +527,15 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
     struct iovec k_iov[16];
     { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
-    if (s->count == 0) {
-        if (!s->peer) return 0; /* EOF */
-        return -EAGAIN;
+    {
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
+        if (s->count == 0) {
+            int eof = !s->peer;
+            spin_unlock_irq(&usock_lock, irqf);
+            return eof ? 0 : -EAGAIN;
+        }
+        spin_unlock_irq(&usock_lock, irqf);
     }
 
     long total = 0;
@@ -523,17 +546,23 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
         uint8_t kbuf[1024];
         uint64_t remaining = k_iov[i].iov_len;
         uint8_t *dst = (uint8_t *)k_iov[i].iov_base;
-        while (remaining > 0 && s->count > 0) {
+        while (remaining > 0) {
+            uint64_t irqf;
+            spin_lock_irq(&usock_lock, &irqf);
+            if (s->count == 0) { spin_unlock_irq(&usock_lock, irqf); goto recvdone; }
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
             int r = ring_read(s, kbuf, (int)chunk);
+            int cnt = s->count;
+            spin_unlock_irq(&usock_lock, irqf);
             if (r <= 0) break;
             copy_to_user(dst, kbuf, (size_t)r); /* user_ok checked per-iov above */
             total += r;
             dst += r;
             remaining -= (uint64_t)r;
+            if (cnt == 0) break;
         }
-        if (s->count == 0) break;
     }
+recvdone:
 
     /* Zero out msg_controllen — no ancillary data */
     kmsg.msg_controllen = 0;

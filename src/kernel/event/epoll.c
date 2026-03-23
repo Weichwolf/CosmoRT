@@ -34,6 +34,7 @@ typedef struct {
     uint32_t events;     /* requested events (including EPOLLET flag) */
     uint64_t data;
     uint32_t et_armed;   /* edge-triggered: 1 = report next ready, 0 = already reported */
+    uint32_t et_last;    /* last reported readiness bits (for true edge detection) */
 } epoll_entry_t;
 
 typedef struct {
@@ -167,6 +168,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         ep->entries[ep->count].events = kev.events;
         ep->entries[ep->count].data   = kev.data;
         ep->entries[ep->count].et_armed = 1; /* report on first ready */
+        ep->entries[ep->count].et_last  = 0;
         ep->count++;
         break;
     }
@@ -184,6 +186,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
                 ep->entries[i].events = kev.events;
                 ep->entries[i].data   = kev.data;
                 ep->entries[i].et_armed = 1; /* re-arm on MOD */
+                ep->entries[i].et_last  = 0;
                 found = 1;
                 break;
             }
@@ -315,19 +318,24 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
             ev.events = r & interest;
             ev.events |= r & (EPOLLHUP | EPOLLERR);
             if (ev.events) {
-                /* Edge-triggered: only report if armed */
+                /* Edge-triggered: only report bits that are NEW since last report.
+                 * This is true edge semantics — fires on not-ready→ready transitions,
+                 * not just "is ready". */
                 if (ent->events & EPOLLET) {
-                    if (!ent->et_armed) continue;
-                    ent->et_armed = 0; /* disarm until re-armed by MOD or not-ready->ready */
+                    uint32_t new_bits = ev.events & ~ent->et_last;
+                    if (!new_bits) continue;
+                    ev.events = new_bits;
+                    ent->et_last = ev.events | ent->et_last;
                 }
                 ev.data = ent->data;
                 copy_to_user(&events[nready], &ev, sizeof(ev)); /* user_ok checked at entry */
                 nready++;
             }
         } else {
-            /* FD not ready — re-arm edge trigger for next transition */
-            if (ent->events & EPOLLET)
-                ent->et_armed = 1;
+            /* FD not ready — clear last-reported state for edge re-detection */
+            if (ent->events & EPOLLET) {
+                ent->et_last = 0;
+            }
         }
     }
 

@@ -66,7 +66,9 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
 
 /* ── Helpers ────────────────────────────────────── */
 
-/* Boost owner's priority to at least `prio`. */
+/* Boost owner's priority to at least `prio`.
+ * Must be called with the futex bucket lock held — this serializes
+ * priority modifications against concurrent PI operations. */
 static void pi_boost(thread_t *owner, int prio) {
     if (!owner) return;
     if (owner->priority >= prio) return;
@@ -74,7 +76,9 @@ static void pi_boost(thread_t *owner, int prio) {
     if (owner->saved_priority < 0)
         owner->saved_priority = owner->priority;
 
+    __sync_synchronize();
     owner->priority = prio;
+    __sync_synchronize();
     /* Re-insertion into scheduler at new priority would require removing
      * from the old queue first. For spin-yield semantics the owner is
      * either RUNNING (and will be re-queued at the boosted priority on

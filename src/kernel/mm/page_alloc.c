@@ -128,7 +128,7 @@ static void buddy_free_order(void *ptr, int order) {
 
 static int order_for_pages(int n) {
     int order = 0;
-    while ((1 << order) < n) order++;
+    while ((1U << order) < (unsigned)n) order++;
     return order;
 }
 
@@ -323,7 +323,7 @@ void *pages_alloc(int n) {
     spin_lock_irq(&buddy_lock, &flags);
     void *p = buddy_alloc_order(order);
     spin_unlock_irq(&buddy_lock, flags);
-    if (p) pages_zero(p, 1 << order);
+    if (p) pages_zero(p, 1U << order);
     return p;
 }
 

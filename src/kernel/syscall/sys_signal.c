@@ -252,6 +252,10 @@ void deliver_signal(thread_t *t, int signo) {
         t->rsi = 0;
         t->rdx = 0;
     }
+    /* Clear RCX/R11 — stale kernel values must not leak to handler.
+     * Linux clears these; SYSRET would clobber them anyway. */
+    t->rcx = 0;
+    t->r11 = 0;
     /* Clear direction flag, keep interrupts enabled */
     t->rflags &= ~(1ULL << 10); /* DF=0 */
     t->rflags |= (1ULL << 9);   /* IF=1 */
@@ -479,6 +483,8 @@ static long kill_one(process_t *target, int sig) {
             process_t *parent = proc_find(target->parent_pid);
             if (parent) {
                 extern void sched_add(thread_t *t);
+                uint64_t pflags;
+                spin_lock_irq(&parent->lock, &pflags);
                 thread_t *pt = parent->threads;
                 while (pt) {
                     if (pt->state == THREAD_BLOCKED) {
@@ -487,6 +493,7 @@ static long kill_one(process_t *target, int sig) {
                     }
                     pt = pt->proc_next;
                 }
+                spin_unlock_irq(&parent->lock, pflags);
             }
         }
         return 0;
@@ -496,9 +503,12 @@ static long kill_one(process_t *target, int sig) {
      * Delivery happens on return to userspace via check_pending_signals. */
     target->sig_pending |= (1ULL << sig);
 
-    /* Wake blocked threads that have this signal unblocked. */
+    /* Wake blocked threads that have this signal unblocked.
+     * Lock target to make state=RUNNING + sched_add atomic. */
     {
         extern void sched_add(thread_t *t);
+        uint64_t tflags;
+        spin_lock_irq(&target->lock, &tflags);
         thread_t *t = target->threads;
         while (t) {
             if (t->state == THREAD_BLOCKED && !((1ULL << sig) & t->sig_blocked)) {
@@ -507,6 +517,7 @@ static long kill_one(process_t *target, int sig) {
             }
             t = t->proc_next;
         }
+        spin_unlock_irq(&target->lock, tflags);
     }
     return 0;
 }
@@ -683,9 +694,11 @@ long do_rt_sigreturn(void) {
     frame->rcx = new_rip;
     cpu->user_rsp = new_rsp;
 
-    /* Restore FS_BASE from _reserved[0] (saved in deliver_signal) */
+    /* Restore FS_BASE from _reserved[0] (saved in deliver_signal).
+     * Validate: must be user-space address, kernel addresses rejected. */
     {
         uint64_t fs = uc.uc_mcontext._reserved[0];
+        if (fs >= 0x800000000000ULL) fs = 0;
         if (fs) {
             t->fs_base = fs;
             __asm__ volatile("wrmsr" :: "c"(0xC0000100),
