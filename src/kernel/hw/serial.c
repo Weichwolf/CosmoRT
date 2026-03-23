@@ -51,6 +51,12 @@ void serial_putchar(char c) {
         dmesg_len++;
 }
 
+void serial_putchar_raw(char c) {
+    while (!(port_in8(COM1 + 5) & 0x20))
+        ;
+    port_out8(COM1, c);
+}
+
 void serial_puts(const char *s) {
     while (*s) {
         if (*s == '\n') serial_putchar('\r');

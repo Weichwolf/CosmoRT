@@ -15,4 +15,13 @@ char serial_getchar(void); /* non-blocking, returns 0 if no data */
 int serial_dmesg_read(char *buf, int offset, int size);
 int serial_dmesg_len(void);
 
+/* Raw serial TX — bypasses dmesg ring buffer. For VT bridge output. */
+void serial_putchar_raw(char c);
+
+/* Serial ↔ VT bridge: routes serial RX to PTY input, PTY output to serial TX.
+ * Call serial_bridge_init() after vt_init(). */
+void serial_bridge_init(void);
+void serial_bridge_poll(void);           /* call from timer tick */
+void serial_bridge_tx(int vt_id, const char *buf, int len); /* PTY output → serial */
+
 #endif

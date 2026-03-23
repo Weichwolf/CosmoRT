@@ -526,9 +526,9 @@ static void timer_handler(int vector) {
     __sync_fetch_and_add(&tick_count, 1);
     extern void random_add_interrupt_entropy(void);
     random_add_interrupt_entropy();
-    /* VT flush is event-driven: triggered by PTY writes in syscall context,
-     * not polled from timer. Keyboard echo: IRQ queues to PTY,
-     * next pty_slave_read syscall flushes. */
+    /* Poll serial RX → PTY input (serial console bridge) */
+    extern void serial_bridge_poll(void);
+    serial_bridge_poll();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

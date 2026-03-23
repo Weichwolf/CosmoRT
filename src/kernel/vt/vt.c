@@ -668,6 +668,7 @@ void vt_flush(int vt_id) {
     char buf[256];
     int n;
     while ((n = pty_master_read(vt->pty_id, buf, (int)sizeof(buf))) > 0) {
+        serial_bridge_tx(vt_id, buf, n);
         for (int i = 0; i < n; i++)
             vt_process_byte(vt_id, (uint8_t)buf[i]);
     }

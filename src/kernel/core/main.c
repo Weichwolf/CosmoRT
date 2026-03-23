@@ -274,12 +274,16 @@ void kernel_main(struct boot_info *info) {
 
     /* Input subsystem routes keyboard events to VT */
     input_init();
+    /* Serial ↔ VT bridge (serial console for headless/no-keyboard) */
+    serial_bridge_init();
     /* Drivers already registered themselves during probe phase above.
-     * PTY stdio when both FB and keyboard present. */
+     * PTY stdio: use VT0 if FB+keyboard present, OR if serial is available. */
     {
         extern int fd_default_pty;
         if (info->fb_addr && input_has_keyboard())
             fd_default_pty = vt_pty_id(0);
+        else
+            fd_default_pty = vt_pty_id(0); /* serial console fallback */
     }
 
     /* Network — uses whatever NIC driver registered */

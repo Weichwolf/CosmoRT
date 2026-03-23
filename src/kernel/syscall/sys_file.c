@@ -275,7 +275,9 @@ long do_read(int fd, void *buf, size_t count) {
                 extern void vt_flush(int vt_id);
                 vt_flush(pty_id);
 
-                save_user_state_for_block(t, -EAGAIN);
+                save_user_state_for_block(t, 0);
+                t->rip -= 2;   /* rewind to `syscall` insn (0F 05) */
+                t->rax = 0;    /* SYS_read — re-execute on wakeup */
                 t->state = THREAD_BLOCKED;
                 __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
                 thread_return_to_kernel(t);
