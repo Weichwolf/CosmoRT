@@ -8,6 +8,7 @@
  */
 
 #include "cosmo_rt.h"
+#include "linux.h"
 #include "config.h"
 #include "page_alloc.h"
 #include "paging.h"
@@ -216,7 +217,7 @@ int cosmo_fw_load(const char *name, void **data, size_t *len) {
     (void)name;
     if (data) *data = 0;
     if (len) *len = 0;
-    return -2; /* -ENOENT */
+    return -ENOENT;
 }
 
 /* ── Monotonic Time ──────────────────────────────── */

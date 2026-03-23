@@ -729,7 +729,7 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
         kbuf[i] = upath[i];
         if (kbuf[i] == '\0') return (int)i;
     }
-    return -36; /* ENAMETOOLONG */
+    return -ENAMETOOLONG;
 }
 
 /* Max entries and string length for execve argv/envp */

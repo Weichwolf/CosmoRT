@@ -200,7 +200,7 @@ void deliver_signal(thread_t *t, int signo) {
     sig_siginfo_t si;
     kmemset(&si, 0, sizeof(si));
     si.si_signo = (int32_t)signo;
-    if (signo == 11 || signo == 7) { /* SIGSEGV / SIGBUS */
+    if (signo == SIGSEGV || signo == SIGBUS) {
         si.si_code = 1; /* SEGV_MAPERR */
         /* si_addr at offset 16 in siginfo_t (after signo, errno, code, pad) */
         uint64_t fault = t->fault_addr;
@@ -373,7 +373,7 @@ long do_rt_sigaction(int sig, const void *act_,
     /* musl passes sigsetsize=8 (64 signals). Accept 8 or 16. */
     if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
     if (sig < 1 || sig >= 64) return -EINVAL;
-    if (sig == 9) return -EINVAL; /* SIGKILL cannot be caught */
+    if (sig == SIGKILL) return -EINVAL; /* SIGKILL cannot be caught */
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -437,11 +437,11 @@ static long kill_one(process_t *target, int sig) {
     /* SIG_DFL: kill the process for fatal signals */
     if (handler == SIG_DFL) {
         /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
-        if (sig == 17 || sig == 23 || sig == 28 || sig == 29) return 0;
+        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
         /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
-        if (sig == 20 || sig == 21 || sig == 22) return 0;
+        if (sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) return 0;
         /* Continue: SIGCONT — ignore for now */
-        if (sig == 18) return 0;
+        if (sig == SIGCONT) return 0;
 
         /* Everything else: terminate */
         target->exit_signal = sig;
@@ -554,11 +554,11 @@ long do_tgkill(int tgid, int tid, int sig) {
 
     if (handler == SIG_DFL) {
         /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
-        if (sig == 17 || sig == 23 || sig == 28 || sig == 29) return 0;
+        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
         /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
-        if (sig == 20 || sig == 21 || sig == 22) return 0;
+        if (sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) return 0;
         /* Continue: SIGCONT — ignore for now */
-        if (sig == 18) return 0;
+        if (sig == SIGCONT) return 0;
 
         /* Everything else: terminate */
         p->exit_signal = sig;

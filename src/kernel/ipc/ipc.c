@@ -143,7 +143,7 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
         }
         spin_unlock_irq(ep_lock(ep), flags);
     }
-    return -11; /* -EAGAIN */
+    return -EAGAIN;
 }
 
 int ipc_try_recv(int ep_id, ipc_msg_t *msg) {

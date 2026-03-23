@@ -341,10 +341,10 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
      *      INT3(3) → SIGTRAP(5); FPE(0,16,19) → SIGFPE(8) */
     if (t && t->proc && (frame->cs & 3)) {
         int signo = 0;
-        if (vector == 13 || vector == 14) signo = 11; /* SIGSEGV */
-        else if (vector == 3) signo = 5;               /* SIGTRAP */
-        else if (vector == 0 || vector == 16 || vector == 19) signo = 8; /* SIGFPE */
-        else if (vector == 6) signo = 4;               /* SIGILL */
+        if (vector == 13 || vector == 14) signo = SIGSEGV;
+        else if (vector == 3) signo = SIGTRAP;
+        else if (vector == 0 || vector == 16 || vector == 19) signo = SIGFPE;
+        else if (vector == 6) signo = 4; /* SIGILL — no SIGILL in linux.h */
 
         if (signo) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];

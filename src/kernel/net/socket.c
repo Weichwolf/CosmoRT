@@ -356,13 +356,13 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
     int val;
     kmemcpy(&val, optval, sizeof(int));
 
-    if (level == 1 /* SOL_SOCKET */) {
+    if (level == SOL_SOCKET) {
         switch (optname) {
-        case 2 /* SO_REUSEADDR */:
+        case SO_REUSEADDR:
             if (val) s->sockflags |= SOCKF_REUSEADDR;
             else     s->sockflags &= ~(uint32_t)SOCKF_REUSEADDR;
             return 0;
-        case 9 /* SO_KEEPALIVE */:
+        case SO_KEEPALIVE:
             if (val) s->sockflags |= SOCKF_KEEPALIVE;
             else     s->sockflags &= ~(uint32_t)SOCKF_KEEPALIVE;
             return 0;
@@ -371,9 +371,9 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
         }
     }
 
-    if (level == 6 /* IPPROTO_TCP */) {
+    if (level == IPPROTO_TCP) {
         switch (optname) {
-        case 1 /* TCP_NODELAY */:
+        case TCP_NODELAY:
             if (val) s->sockflags |= SOCKF_NODELAY;
             else     s->sockflags &= ~(uint32_t)SOCKF_NODELAY;
             return 0;
@@ -396,15 +396,15 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
 
     int val = 0;
 
-    if (level == 1 /* SOL_SOCKET */) {
+    if (level == SOL_SOCKET) {
         switch (optname) {
-        case 2 /* SO_REUSEADDR */: val = (s->sockflags & SOCKF_REUSEADDR) ? 1 : 0; break;
-        case 9 /* SO_KEEPALIVE */: val = (s->sockflags & SOCKF_KEEPALIVE) ? 1 : 0; break;
+        case SO_REUSEADDR: val = (s->sockflags & SOCKF_REUSEADDR) ? 1 : 0; break;
+        case SO_KEEPALIVE: val = (s->sockflags & SOCKF_KEEPALIVE) ? 1 : 0; break;
         default: break;
         }
-    } else if (level == 6 /* IPPROTO_TCP */) {
+    } else if (level == IPPROTO_TCP) {
         switch (optname) {
-        case 1 /* TCP_NODELAY */: val = (s->sockflags & SOCKF_NODELAY) ? 1 : 0; break;
+        case TCP_NODELAY: val = (s->sockflags & SOCKF_NODELAY) ? 1 : 0; break;
         default: break;
         }
     }
