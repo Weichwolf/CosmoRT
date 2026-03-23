@@ -7,7 +7,7 @@ cosmo_uapi.h = exakt Linux x86_64 ABI (Structs, Syscalls, Errno).
 cosmo_hw.h = CosmoRT-eigen (5 HW-Primitives, Treiber-API).
 Scheduler, VM, IPC, Treiber-Architektur = CosmoRT-eigen.
 
-musl-static Binaries die auf Linux kompiliert wurden laufen unveraendert.
+Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
 
 ## Stack
 
