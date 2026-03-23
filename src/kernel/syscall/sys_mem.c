@@ -386,8 +386,9 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     uint64_t start = addr;
     uint64_t end = addr + len;
 
-    /* Update PTE permissions */
+    /* Update PTE permissions for already-mapped pages */
     update_pte_prot(p->pml4, start, end, prot);
+
     /* TLB flush: local + remote cores sharing this address space */
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     tlb_shootdown(virt_to_phys(p->pml4));
