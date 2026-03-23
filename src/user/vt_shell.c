@@ -26,8 +26,30 @@ static void puts(const char *s) {
     sc3(SYS_write, 1, (long)s, (long)len);
 }
 
+static long sc4(long n, long a1, long a2, long a3, long a4) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    __asm__ volatile("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10) : "rcx","r11","memory");
+    return ret;
+}
+
 void _start(void) {
-    puts("CosmoRT\n\ncosmo> ");
+    puts("CosmoRT Shell\n");
+    sc1(80 /* chdir */, (long)"/home");
+
+    char *envp[] = {
+        "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
+        "PWD=/home", "SHELL=/usr/bin/bash",
+        "PS1=cosmo:\\w$ ",
+        (char *)0
+    };
+
+    /* Interactive bash */
+    char *argv[] = { "/usr/bin/bash", "--login", "-i", (char *)0 };
+    sc3(59 /* execve */, (long)"/usr/bin/bash", (long)argv, (long)envp);
+
+    /* Fallback: minimal echo shell */
+    puts("bash not found, fallback shell\ncosmo> ");
     for (;;) {
         char c;
         long n = sc3(SYS_read, 0, (long)&c, 1);

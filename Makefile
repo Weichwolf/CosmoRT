@@ -485,6 +485,17 @@ qemu-disk: disk.img
 	$(QEMU) $(QEMU_FLAGS) \
 	        -drive file=build/cosmofs.img,format=raw,if=virtio
 
+# Interactive bash shell on VT (GUI) with CosmoFS disk
+qemu-shell: disk.img $(BUILD)/user/vt_shell
+	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
+	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(BUILD)/gen/init_bin.h
+	@rm -f $(BUILD)/kernel/core/main.o
+	$(MAKE) all
+	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
+	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) \
+	        -drive file=build/cosmofs.img,format=raw,if=virtio \
+	        -device virtio-keyboard-pci
+
 vhdx: disk.img
 	qemu-img convert -f raw -O vhdx disk.img disk.vhdx
 	@echo "disk.vhdx: $$(du -h disk.vhdx | cut -f1)"
