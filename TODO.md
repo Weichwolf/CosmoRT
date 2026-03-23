@@ -44,10 +44,20 @@ Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
 - Fix: sig_blocked von process_t nach thread_t verschieben
 
 ### Naechste Schritte
-- [ ] Tests schreiben die BUG-SIG1/SIG2/SIG3 reproduzieren
-- [ ] Alle drei Bugs fixen
+- [x] Tests schreiben die BUG-SIG1/SIG2/SIG3 reproduzieren (2 FAIL bestaetigt) ✓
+- [ ] Alle drei Bugs fixen (Agent laeuft)
 - [ ] Node.js erneut testen
 - [ ] Wenn Node.js laeuft: Claude Code testen
+
+## Neue Findings aus Testsuite-Planung
+
+### SEC-CRIT
+- [ ] rt_sigreturn: RIP/RSP aus User-ucontext ohne Validierung (Kernel-Exec moeglich)
+
+### CORR-CRIT
+- [ ] Kein FPU/SSE Save/Restore bei Context-Switch (sched_preempt nur GPRs, kein FXSAVE)
+- [ ] FS_BASE nicht in rt_sigreturn restauriert (TLS nach Signal+Preemption falsch)
+- [ ] do_fork() kopiert fs_base nicht ins Child
 
 ## Netzwerk
 
