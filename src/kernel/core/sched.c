@@ -372,6 +372,9 @@ void sched_preempt(void *frame_ptr) {
         cur->fs_base = ((uint64_t)fs_hi << 32) | fs_lo;
     }
 
+    /* Save FPU/SSE state */
+    __asm__ volatile("fxsave %0" : "=m"(cur->fxsave_area));
+
     /* Preemption: longjmp back to sched_loop (via thread_run's setjmp).
      * sched_loop re-enqueues this thread and picks the next one via
      * thread_run, giving every thread a proper jmpbuf.

@@ -297,6 +297,11 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->timeslice = RR_TIMESLICE;
     t->proc = p;
 
+    /* Initialize FPU/SSE state: clean FXSAVE image with default MXCSR.
+     * fxsave_area is zeroed by slab_alloc. Set MXCSR (offset 24) to
+     * 0x1F80 (all exceptions masked) — the x86 reset default. */
+    *(uint32_t *)(t->fxsave_area + 24) = 0x1F80;
+
     /* Kernel stack for this thread */
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!t->kstack) goto fail_thread;
@@ -365,6 +370,9 @@ void thread_run(thread_t *t) {
         __asm__ volatile("wrmsr" :: "c"(0xC0000100),
                          "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
     }
+
+    /* Restore FPU/SSE state */
+    __asm__ volatile("fxrstor %0" : : "m"(t->fxsave_area));
 
     /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
     proc_enter_ring3(t);
@@ -732,6 +740,7 @@ long do_fork(void) {
     ct->r14 = cur->r14;
     ct->r15 = cur->r15;
     ct->fs_base = cur->fs_base;
+    kmemcpy(ct->fxsave_area, cur->fxsave_area, 512);
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
@@ -1299,6 +1308,10 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     cur->r11 = 0; cur->r12 = 0; cur->r13 = 0;
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
+
+    /* Reset FPU/SSE state for new executable */
+    kmemset(cur->fxsave_area, 0, 512);
+    *(uint32_t *)(cur->fxsave_area + 24) = 0x1F80; /* MXCSR: all exceptions masked */
 
     /* Load new page tables and jump to userspace */
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");

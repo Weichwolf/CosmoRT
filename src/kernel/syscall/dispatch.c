@@ -29,6 +29,17 @@ void save_user_state_for_block(thread_t *t, long return_value) {
     t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
     t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
+
+    /* Read current FS_BASE from MSR — may differ from t->fs_base
+     * if arch_prctl(SET_FS) was called since last context switch */
+    {
+        uint32_t lo, hi;
+        __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
+        t->fs_base = ((uint64_t)hi << 32) | lo;
+    }
+
+    /* Save FPU/SSE state so fork/clone get a consistent snapshot */
+    __asm__ volatile("fxsave %0" : "=m"(t->fxsave_area));
 }
 
 /* ── Dispatcher ──────────────────────────────────── */

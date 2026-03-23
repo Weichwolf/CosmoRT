@@ -184,6 +184,9 @@ void deliver_signal(thread_t *t, int signo) {
     uc.uc_mcontext.gregs.rip = t->rip; uc.uc_mcontext.gregs.eflags = t->rflags;
     uc.uc_mcontext.gregs.csgsfs = 0x33 | ((uint64_t)0 << 16) | ((uint64_t)0 << 32);
 
+    /* Save FS_BASE in _reserved[0] for restoration in rt_sigreturn */
+    uc.uc_mcontext._reserved[0] = t->fs_base;
+
     /* fpstate pointer → inline __fpregs_mem (patched below after frame address known) */
     /* uc_mcontext.fpstate will be set to point to __fpregs_mem on user stack */
 
@@ -650,6 +653,16 @@ long do_rt_sigreturn(void) {
     frame->r11 = uc.uc_mcontext.gregs.eflags; /* SYSRET restores RFLAGS from R11 */
     frame->rcx = uc.uc_mcontext.gregs.rip;    /* SYSRET restores RIP from RCX */
     cpu->user_rsp = uc.uc_mcontext.gregs.rsp;
+
+    /* Restore FS_BASE from _reserved[0] (saved in deliver_signal) */
+    {
+        uint64_t fs = uc.uc_mcontext._reserved[0];
+        if (fs) {
+            t->fs_base = fs;
+            __asm__ volatile("wrmsr" :: "c"(0xC0000100),
+                             "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+        }
+    }
 
     /* Restore signal mask (first word of 128-byte sigset) */
     t->sig_blocked = uc.uc_sigmask[0];

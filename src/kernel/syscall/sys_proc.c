@@ -199,8 +199,14 @@ long do_clone(unsigned long flags, void *child_stack,
     if (flags & CLONE_SETTLS) {
         t->fs_base = tls;
     } else {
-        t->fs_base = cur->fs_base;
+        /* Read live FS_BASE from MSR — cur->fs_base may be stale */
+        uint32_t _lo, _hi;
+        __asm__ volatile("rdmsr" : "=a"(_lo), "=d"(_hi) : "c"(0xC0000100));
+        t->fs_base = ((uint64_t)_hi << 32) | _lo;
     }
+
+    /* Copy parent FPU/SSE state to child thread */
+    __asm__ volatile("fxsave %0" : "=m"(t->fxsave_area));
 
     /* Parent TID (CLONE_PARENT_SETTID) */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
