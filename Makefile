@@ -99,6 +99,7 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
 
 KERN_HW   = $(BUILD)/kernel/hw/hw.o \
             $(BUILD)/kernel/hw/serial.o \
+            $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
             $(BUILD)/kernel/hw/hyperv.o
 
@@ -485,13 +486,10 @@ qemu-disk: disk.img
 	$(QEMU) $(QEMU_FLAGS) \
 	        -drive file=build/cosmofs.img,format=raw,if=virtio
 
-# Interactive bash shell on VT (GUI) with CosmoFS disk
-qemu-shell: disk.img $(BUILD)/user/vt_shell
-	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
-	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(BUILD)/gen/init_bin.h
-	@rm -f $(BUILD)/kernel/core/main.o
-	$(MAKE) all
-	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
+# Interactive bash on VT with CosmoFS disk
+# COSMO_INTERACTIVE=1 tells mkimage.sh to skip .boot → init starts bash -i
+qemu-shell: $(ESP_IMG)
+	COSMO_INTERACTIVE=1 sh tools/mkimage.sh
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) \
 	        -drive file=build/cosmofs.img,format=raw,if=virtio \
 	        -device virtio-keyboard-pci

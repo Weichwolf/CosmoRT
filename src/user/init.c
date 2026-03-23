@@ -28,12 +28,22 @@ void _start(void) {
     char *envp[] = {
         "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
         "PWD=/home", "SHELL=/usr/bin/bash",
+        "PS1=cosmo:\\w$ ",
         (char *)0
     };
 
-    /* Run boot-test.sh via bash */
-    char *argv[] = { "/usr/bin/bash", "/home/.bashrc", (char *)0 };
-    syscall3(59, (long)"/usr/bin/bash", (long)argv, (long)envp);
+    /* If /home/.boot exists, run it as boot-test script.
+     * Otherwise start interactive bash. */
+    long fd = syscall3(2 /* open */, (long)"/home/.boot", 0 /* O_RDONLY */, 0);
+    if (fd >= 0) {
+        syscall1(3 /* close */, fd);
+        char *argv[] = { "/usr/bin/bash", "/home/.boot", (char *)0 };
+        syscall3(59, (long)"/usr/bin/bash", (long)argv, (long)envp);
+    }
+
+    /* Interactive bash */
+    char *argv_i[] = { "/usr/bin/bash", "--norc", "--noprofile", "-i", (char *)0 };
+    syscall3(59, (long)"/usr/bin/bash", (long)argv_i, (long)envp);
 
     /* Fallback to sh */
     char *argv2[] = { "/usr/bin/sh", (char *)0 };

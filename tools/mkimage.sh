@@ -55,8 +55,10 @@ fi
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "127.0.0.1 localhost" /etc/hosts
 
-# .bashrc
-[ -f tools/boot-test.sh ] && ./tools/cosmo_cp "$COSMOFS_TMP" tools/boot-test.sh /home/.bashrc
+# Boot-test script (init runs /home/.boot if present, else starts bash -i)
+if [ -z "$COSMO_INTERACTIVE" ] && [ -f tools/boot-test.sh ]; then
+    ./tools/cosmo_cp "$COSMOFS_TMP" tools/boot-test.sh /home/.boot
+fi
 
 # ── Step 2: Build combined GPT image ───────────────
 ESP_START=2048                              # sector 2048 = 1MB (standard GPT alignment)

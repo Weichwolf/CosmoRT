@@ -33,9 +33,30 @@ static long sc4(long n, long a1, long a2, long a3, long a4) {
     return ret;
 }
 
+static long sc2(long n, long a1, long a2) {
+    long ret;
+    __asm__ volatile("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2) : "rcx","r11","memory");
+    return ret;
+}
+
+static void put_int(long v) {
+    char buf[20]; int i = 0;
+    if (v < 0) { sc3(SYS_write, 1, (long)"-", 1); v = -v; }
+    do { buf[i++] = '0' + (char)(v % 10); v /= 10; } while (v);
+    while (i--) sc3(SYS_write, 1, (long)&buf[i], 1);
+}
+
 void _start(void) {
     puts("CosmoRT Shell\n");
     sc1(80 /* chdir */, (long)"/home");
+
+    /* Debug: test PTY read/write */
+    puts("Testing stdin... type a char: ");
+    char c = 0;
+    long n = sc3(SYS_read, 0, (long)&c, 1);
+    puts("read returned "); put_int(n); puts(" char=");
+    if (n > 0) sc3(SYS_write, 1, (long)&c, 1);
+    puts("\n");
 
     char *envp[] = {
         "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
@@ -44,9 +65,17 @@ void _start(void) {
         (char *)0
     };
 
-    /* Interactive bash */
-    char *argv[] = { "/usr/bin/bash", "--login", "-i", (char *)0 };
-    sc3(59 /* execve */, (long)"/usr/bin/bash", (long)argv, (long)envp);
+    /* Try sh first (simpler) */
+    puts("Starting /usr/bin/sh...\n");
+    char *argv_sh[] = { "/usr/bin/sh", (char *)0 };
+    long ret = sc3(59, (long)"/usr/bin/sh", (long)argv_sh, (long)envp);
+    puts("sh execve failed: "); put_int(ret); puts("\n");
+
+    /* Try bash */
+    puts("Starting /usr/bin/bash...\n");
+    char *argv[] = { "/usr/bin/bash", "--norc", "--noprofile", "-i", (char *)0 };
+    ret = sc3(59, (long)"/usr/bin/bash", (long)argv, (long)envp);
+    puts("bash execve failed: "); put_int(ret); puts("\n");
 
     /* Fallback: minimal echo shell */
     puts("bash not found, fallback shell\ncosmo> ");

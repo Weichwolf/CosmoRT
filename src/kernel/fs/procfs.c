@@ -374,6 +374,90 @@ static int procfs_self_cgroup(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/stat — per-CPU times ────────────────────── */
+
+static int procfs_global_stat(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    extern uint64_t timer_ms(void);
+    uint64_t ms = timer_ms();
+    /* Fake: all time as idle. user=0 nice=0 sys=0 idle=uptime irq=0 ... */
+    long jiffies = (long)(ms / 10); /* centiseconds */
+
+    char tmp[512];
+    int pos = 0;
+    pos = append_str(tmp, pos, 512, "cpu  0 0 0 ");
+    pos = append_int(tmp, pos, 512, jiffies);
+    pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0\n");
+    /* Per-core lines */
+    extern int smp_core_count(void);
+    int ncores = smp_core_count();
+    for (int c = 0; c < ncores && pos < 480; c++) {
+        pos = append_str(tmp, pos, 512, "cpu");
+        pos = append_int(tmp, pos, 512, (long)c);
+        pos = append_str(tmp, pos, 512, " 0 0 0 ");
+        pos = append_int(tmp, pos, 512, jiffies / ncores);
+        pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0\n");
+    }
+    pos = append_str(tmp, pos, 512, "ctxt 0\nbtime 0\nprocesses 1\n");
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/uptime ──────────────────────────────────── */
+
+static int procfs_uptime(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    extern uint64_t timer_ms(void);
+    uint64_t ms = timer_ms();
+    long sec = (long)(ms / 1000);
+    long frac = (long)((ms % 1000) / 10);
+
+    char tmp[256];
+    int pos = 0;
+    pos = append_int(tmp, pos, 256, sec);
+    pos = append_str(tmp, pos, 256, ".");
+    if (frac < 10) pos = append_str(tmp, pos, 256, "0");
+    pos = append_int(tmp, pos, 256, frac);
+    pos = append_str(tmp, pos, 256, " ");
+    pos = append_int(tmp, pos, 256, sec);
+    pos = append_str(tmp, pos, 256, ".");
+    if (frac < 10) pos = append_str(tmp, pos, 256, "0");
+    pos = append_int(tmp, pos, 256, frac);
+    pos = append_str(tmp, pos, 256, "\n");
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/loadavg ─────────────────────────────────── */
+
+static int procfs_loadavg(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "0.00 0.00 0.00 1/1 1\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+/* ── /proc/version ─────────────────────────────────── */
+
+static int procfs_version(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "CosmoRT version 0.1.0 (gcc) #1 SMP\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
 /* ── Init ────────────────────────────────────────── */
 
 __attribute__((cold))
@@ -388,5 +472,9 @@ void procfs_init(void) {
     procfs_register("self/statm", procfs_self_statm, 0);
     procfs_register("sys/vm/overcommit_memory", procfs_overcommit, 0);
     procfs_register("self/cgroup", procfs_self_cgroup, 0);
-    serial_puts("procfs: init (9 entries)\n");
+    procfs_register("stat", procfs_global_stat, 0);
+    procfs_register("uptime", procfs_uptime, 0);
+    procfs_register("loadavg", procfs_loadavg, 0);
+    procfs_register("version", procfs_version, 0);
+    serial_puts("procfs: init (13 entries)\n");
 }
