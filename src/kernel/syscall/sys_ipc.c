@@ -22,10 +22,9 @@ static slab_t pipe_slab;
 static int pipe_slab_inited;
 
 static void pipe_slab_ensure(void) {
-    if (!pipe_slab_inited) {
+    if (__sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1)) {
         extern void slab_init(slab_t *, void *, int, int);
         slab_init(&pipe_slab, pipe_pool, (int)sizeof(struct pipe), PIPE_MAX);
-        pipe_slab_inited = 1;
     }
 }
 
