@@ -1169,6 +1169,20 @@ int vfs_symlink(const char *target, const char *linkpath) {
 int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     if (!path || !buf || bufsiz == 0) return -EINVAL;
 
+    /* /proc/self/exe → executable path (stub: return /usr/bin/node) */
+    if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
+        path[4]=='c' && path[5]=='/' && path[6]=='s' && path[7]=='e' &&
+        path[8]=='l' && path[9]=='f' && path[10]=='/' &&
+        path[11]=='e' && path[12]=='x' && path[13]=='e' && path[14]==0) {
+        /* TODO: track actual exe path per process */
+        const char *exe = "/usr/bin/node";
+        int len = 0;
+        while (exe[len]) len++;
+        if ((size_t)len > bufsiz) len = (int)bufsiz;
+        kmemcpy(buf, exe, (size_t)len);
+        return len;
+    }
+
     if (!is_ramfs_path(path)) {
         uint64_t ino = cosmofs_walk(path);
         if (ino == 0) return -ENOENT;
