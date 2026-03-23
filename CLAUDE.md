@@ -1,7 +1,13 @@
 # CosmoRT
 
-Realtime-Microkernel fuer CosmoOS. POSIX-kompatibel, Single-User.
-C11, x86_64 (ARM64 geplant). UEFI Boot, kein libc (Freestanding).
+Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
+C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
+
+cosmo_uapi.h = exakt Linux x86_64 ABI (Structs, Syscalls, Errno).
+cosmo_hw.h = CosmoRT-eigen (5 HW-Primitives, Treiber-API).
+Scheduler, VM, IPC, Treiber-Architektur = CosmoRT-eigen.
+
+musl-static Binaries die auf Linux kompiliert wurden laufen unveraendert.
 
 ## Stack
 
