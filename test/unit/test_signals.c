@@ -107,6 +107,60 @@ static void test_signals(void) {
     sc4(SYS_rt_sigaction, SIGUSR1, 0, (long)&got, 8);
     check("oldact handler matches", got.handler == (void *)test_handler);
     check("oldact restorer matches", got.restorer == (void *)sig_restorer);
+
+    /* ── RT signals (32-63) ── */
+
+    /* Test 6: rt_sigaction on signal 32 (SIGRTMIN) */
+    sig_received = 0;
+    sig_value = 0;
+    sa.handler = (void *)test_handler;
+    sa.flags = SA_RESTORER;
+    sa.restorer = (void *)sig_restorer;
+    sa.mask = 0;
+    r = sc4(SYS_rt_sigaction, 32, (long)&sa, 0, 8);
+    check_val("rt_sigaction sig 32", r, 0);
+
+    /* Send signal 32 to self — handler should run */
+    r = sc2(SYS_kill, sc0(SYS_getpid), 32);
+    check_val("kill(self, 32)", r, 0);
+    check_val("sig 32 handler ran", sig_received, 1);
+    check_val("sig 32 value", sig_value, 32);
+
+    /* Test 7: RT signal 63 (SIGRTMAX) */
+    sig_received = 0;
+    sig_value = 0;
+    sa.handler = (void *)test_handler;
+    sa.flags = SA_RESTORER;
+    sa.restorer = (void *)sig_restorer;
+    sa.mask = 0;
+    sc4(SYS_rt_sigaction, 63, (long)&sa, 0, 8);
+    sc2(SYS_kill, sc0(SYS_getpid), 63);
+    check_val("sig 63 handler ran", sig_received, 1);
+    check_val("sig 63 value", sig_value, 63);
+
+    /* Test 8: tgkill — thread-directed signal */
+    sig_received = 0;
+    sig_value = 0;
+    sa.handler = (void *)test_handler;
+    sa.flags = SA_RESTORER;
+    sa.restorer = (void *)sig_restorer;
+    sa.mask = 0;
+    sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, 0, 8);
+
+    long my_pid = sc0(SYS_getpid);
+    long my_tid = sc0(SYS_gettid);
+    r = sc3(SYS_tgkill, my_pid, my_tid, SIGUSR1);
+    check_val("tgkill(self) returns 0", r, 0);
+    check_val("tgkill handler ran", sig_received, 1);
+    check_val("tgkill handler got SIGUSR1", sig_value, SIGUSR1);
+
+    /* Test 9: tgkill with bad tgid → -EINVAL */
+    r = sc3(SYS_tgkill, -1, my_tid, SIGUSR1);
+    check("tgkill bad tgid → error", r < 0);
+
+    /* Test 10: tgkill sig 0 (permission check only) */
+    r = sc3(SYS_tgkill, my_pid, my_tid, 0);
+    check_val("tgkill sig 0", r, 0);
 }
 
 TEST("signals", test_signals);

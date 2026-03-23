@@ -108,6 +108,25 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 #define SA_RESTORER 0x04000000
 #define SA_SIGINFO  0x00000004
 
+/* fcntl commands */
+#define F_DUPFD         0
+#define F_GETFD         1
+#define F_SETFD         2
+#define F_GETFL         3
+#define F_SETFL         4
+#define F_DUPFD_CLOEXEC 1030
+#define FD_CLOEXEC      1
+#define O_CLOEXEC       0x80000
+
+/* Process group / session syscalls */
+#define SYS_access          21
+#define SYS_fcntl           72
+#define SYS_setpgid         109
+#define SYS_getpgid         121
+#define SYS_setsid          112
+#define SYS_getsid          124
+#define SYS_tgkill          234
+
 /* ── Output ───────────────────────────────────── */
 
 static inline void puts(const char *s) {
