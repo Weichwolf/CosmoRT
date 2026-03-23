@@ -225,7 +225,15 @@ void vfs_init(void) {
 
 /* ── Path lookup ─────────────────────────────────── */
 
-struct vfs_node *vfs_lookup(const char *path) {
+#define SYMLOOP_MAX 8
+
+/* Internal lookup with symlink-follow depth tracking.
+ * follow_last: if 0, don't follow symlink on the final path component
+ *              (needed for readlink/lstat semantics).
+ * err: set to -ELOOP when symlink depth exceeds SYMLOOP_MAX. */
+static struct vfs_node *vfs_lookup_impl(const char *path, int depth,
+                                        int follow_last, int *err) {
+    if (depth > SYMLOOP_MAX) { if (err) *err = -ELOOP; return 0; }
     if (!path || !path[0]) return 0;
     if (path[0] == '/' && path[1] == 0) return root_node;
 
@@ -234,18 +242,20 @@ struct vfs_node *vfs_lookup(const char *path) {
     if (*p == '/') p++;
 
     while (*p) {
-        /* Skip trailing slashes */
         while (*p == '/') p++;
         if (!*p) break;
 
-        /* Extract component */
         const char *start = p;
         while (*p && *p != '/') p++;
         int len = (int)(p - start);
 
+        /* Check if this is the last component */
+        const char *rest = p;
+        while (*rest == '/') rest++;
+        int is_last = (*rest == 0);
+
         if (cur->type != VFS_DIR) return 0;
 
-        /* Search children */
         struct vfs_node *child = cur->children;
         struct vfs_node *found = 0;
         while (child) {
@@ -260,9 +270,40 @@ struct vfs_node *vfs_lookup(const char *path) {
             child = child->next;
         }
         if (!found) return 0;
+
+        /* Follow symlinks transparently (skip last component if !follow_last) */
+        if (found->type == VFS_SYMLINK && (follow_last || !is_last)) {
+            const char *target = found->symlink_target;
+            if (!target[0]) return 0;
+
+            if (target[0] == '/') {
+                char resolved[512];
+                int tlen = kstrlen(target);
+                int rlen = kstrlen(p);
+                if (tlen + 1 + rlen >= 511) return 0;
+                for (int i = 0; i < tlen; i++) resolved[i] = target[i];
+                if (rlen > 0 && resolved[tlen - 1] != '/') resolved[tlen++] = '/';
+                for (int i = 0; i < rlen; i++) resolved[tlen + i] = p[i];
+                resolved[tlen + rlen] = 0;
+                return vfs_lookup_impl(resolved, depth + 1, follow_last, err);
+            }
+            /* Relative symlink target */
+            return vfs_lookup_impl(target, depth + 1, follow_last, err);
+        }
+
         cur = found;
     }
     return cur;
+}
+
+struct vfs_node *vfs_lookup(const char *path) {
+    return vfs_lookup_impl(path, 0, 1, 0);
+}
+
+/* Lookup without following the final symlink (for readlink/lstat).
+ * Sets *err to -ELOOP on circular symlinks. */
+static struct vfs_node *vfs_lookup_nofollow(const char *path, int *err) {
+    return vfs_lookup_impl(path, 0, 0, err);
 }
 
 /* Find parent directory and extract basename */
@@ -1216,9 +1257,11 @@ int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
         return cosmofs_read(ino, buf, 0, len);
     }
 
-    /* ramfs */
-    struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    /* ramfs — use nofollow lookup so final symlink isn't resolved,
+     * but intermediate symlinks are followed with ELOOP detection. */
+    int lookup_err = 0;
+    struct vfs_node *node = vfs_lookup_nofollow(path, &lookup_err);
+    if (!node) return lookup_err ? lookup_err : -ENOENT;
     if (node->type != VFS_SYMLINK) return -EINVAL;
 
     int tlen = kstrlen(node->symlink_target);
@@ -1276,8 +1319,9 @@ int vfs_lstat(const char *path, struct k_stat *buf) {
         return 0;
     }
 
-    struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    int lerr = 0;
+    struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
+    if (!node) return lerr ? lerr : -ENOENT;
     if (node->type == VFS_SYMLINK) {
         fill_symlink_stat(node, buf);
         return 0;

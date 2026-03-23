@@ -548,6 +548,13 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
         if (plen < 0) continue;
         uint32_t tseq = get32(reply+38);
 
+        /* RST from peer → connection reset */
+        if (flags & 0x04) {
+            c->state = 0;
+            c->got_rst = 1;
+            break;
+        }
+
         if (plen > 0) {
             if (tseq != c->ack) { send_tcp(c, 0x10, 0, 0); continue; }
             c->ack = tseq + (uint32_t)plen;

@@ -15,9 +15,19 @@ long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_GS) {
         /* User GS: write to IA32_KERNEL_GS_BASE so next swapgs restores it.
          * No — that would clobber our percpu pointer!
-         * User GS must be stored in thread context and restored on sysret. */
-        /* For now: unsupported */
+         * User GS must be stored in thread context and restored on sysret.
+         * Known limitation: GS not actively used by CosmoRT (TLS uses FS). */
         return -EINVAL;
+    }
+    if (code == ARCH_GET_GS) {
+        /* Known limitation: CosmoRT doesn't manage user GS-base (TLS uses FS).
+         * After SWAPGS in syscall entry, KERNEL_GS_BASE holds user's GS-base,
+         * but we never set it, so it's always 0.  Return 0 to indicate "unset"
+         * rather than -EINVAL, since callers (e.g. glibc) may probe this. */
+        if (!user_ok(addr, 8)) return -EFAULT;
+        uint64_t val = 0;
+        kmemcpy((void *)addr, &val, 8);
+        return 0;
     }
     if (code == ARCH_GET_FS) {
         if (!user_ok(addr, 8)) return -EFAULT;

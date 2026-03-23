@@ -126,6 +126,10 @@ long do_connect(int fd, const void *addr, int addrlen) {
     for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
         ((uint8_t *)&s->tcp)[i] = 0;
 
+    /* No gateway configured → network unreachable */
+    if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
+        return -ENETUNREACH;
     if (net_tcp_connect(&s->tcp, dst_ip, port) < 0) return -ETIMEDOUT;
     s->state = SOCK_CONNECTED;
     s->remote_ip = k_addr.sin_addr;
@@ -160,7 +164,8 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_rd) return 0; /* EOF */
     int r = net_tcp_recv(&s->tcp, buf, (int)len, NET_TCP_TIMEOUT_MS);
-    return r < 0 ? -EIO : r;
+    if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+    return r;
 }
 
 /* ── read/write/close via FD_SOCKET ──────────────── */
@@ -170,7 +175,8 @@ long socket_read(int fd, void *buf, long count) {
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_rd) return 0;
     int r = net_tcp_recv(&s->tcp, buf, (int)count, NET_TCP_TIMEOUT_MS);
-    return r < 0 ? -EIO : r;
+    if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+    return r;
 }
 
 long socket_write(int fd, const void *buf, long count) {
