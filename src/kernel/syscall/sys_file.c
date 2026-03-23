@@ -921,8 +921,14 @@ long do_fcntl(int fd, int cmd, long arg) {
     if (!fde) return -EBADF;
 
     switch (cmd) {
-    case F_GETFL: return fde->flags;
-    case F_SETFL: fde->flags = (int)arg; return 0;
+    case F_GETFL: return fde->flags & ~O_CLOEXEC; /* CLOEXEC is fd-flag, not file-flag */
+    case F_SETFL: {
+        /* Only O_APPEND and O_NONBLOCK are settable via F_SETFL.
+         * Preserve access mode (O_RDONLY/O_WRONLY/O_RDWR) and O_CLOEXEC. */
+        int keep = fde->flags & (O_RDONLY | O_WRONLY | O_RDWR | O_CLOEXEC);
+        fde->flags = keep | ((int)arg & (O_APPEND | O_NONBLOCK));
+        return 0;
+    }
     case F_GETFD: return (fde->flags & O_CLOEXEC) ? 1 : 0;
     case F_SETFD: {
         if (arg & 1) fde->flags |= O_CLOEXEC;

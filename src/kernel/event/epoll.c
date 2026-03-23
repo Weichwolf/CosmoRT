@@ -366,7 +366,6 @@ void epoll_destroy(void *obj) {
 /* ── SYS_EVENTFD2 (290) ─────────────────────────── */
 
 long do_eventfd2(unsigned int initval, int flags) {
-    (void)flags;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
@@ -377,7 +376,12 @@ long do_eventfd2(unsigned int initval, int flags) {
     efd->flags = flags;
     efd->lock = (spinlock_t)SPINLOCK_INIT;
 
-    int fd = fd_alloc(&p->fds, FD_EVENTFD, efd, O_RDWR);
+    /* EFD_CLOEXEC/EFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
+    int fd_flags = O_RDWR;
+    if (flags & EFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
+    if (flags & EFD_NONBLOCK) fd_flags |= O_NONBLOCK;
+
+    int fd = fd_alloc(&p->fds, FD_EVENTFD, efd, fd_flags);
     if (fd < 0) {
         slab_free(&eventfd_slab, efd);
         return -EMFILE;
@@ -432,7 +436,7 @@ void eventfd_destroy(void *obj) {
 /* ── SYS_TIMERFD_CREATE (283) ────────────────────── */
 
 long do_timerfd_create(int clockid, int flags) {
-    (void)clockid; (void)flags;
+    (void)clockid;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
@@ -446,7 +450,12 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->flags = flags;
     tfd->lock = (spinlock_t)SPINLOCK_INIT;
 
-    int fd = fd_alloc(&p->fds, FD_TIMERFD, tfd, O_RDWR);
+    /* TFD_CLOEXEC/TFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
+    int fd_flags = O_RDWR;
+    if (flags & TFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
+    if (flags & TFD_NONBLOCK) fd_flags |= O_NONBLOCK;
+
+    int fd = fd_alloc(&p->fds, FD_TIMERFD, tfd, fd_flags);
     if (fd < 0) {
         slab_free(&timerfd_slab, tfd);
         return -EMFILE;

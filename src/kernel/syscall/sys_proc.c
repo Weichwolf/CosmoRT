@@ -137,6 +137,13 @@ long do_clone(unsigned long flags, void *child_stack,
     thread_t *cur = cpu->current_thread;
     if (!cur || !cur->proc) return -EFAULT;
 
+    /* CLONE_VM required — CosmoRT only supports in-process threads.
+     * CLONE_FS, CLONE_FILES, CLONE_SIGHAND: with CLONE_VM, child shares
+     * the same process_t → CWD, FD table, signal handlers are already
+     * shared implicitly. Accept and document.
+     * CLONE_SYSVSEM: no SysV semaphores in CosmoRT. Accept and ignore. */
+    if (!(flags & CLONE_VM)) return -EINVAL; /* fork not supported */
+
     /* Read parent's saved user registers from the syscall frame */
     syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
 
