@@ -57,6 +57,10 @@ static socket_t *sock_from_fd(int fd) {
 long do_socket(int domain, int type, int protocol) {
     (void)protocol;
     int base_type = type & 0xF; /* strip SOCK_CLOEXEC, SOCK_NONBLOCK */
+
+    /* AF_UNIX (1): delegate to unix socket layer */
+    if (domain == 1 /* AF_UNIX */) return usock_socket(type);
+
     /* Only AF_INET (2) + SOCK_STREAM (1) / SOCK_DGRAM (2) supported */
     if (domain != 2 /* AF_INET */) return -EAFNOSUPPORT;
     if (base_type != 1 && base_type != 2) return -EPROTONOSUPPORT;
@@ -80,6 +84,14 @@ long do_socket(int domain, int type, int protocol) {
 /* ── SYS_CONNECT (42) ────────────────────────────── */
 
 long do_connect(int fd, const void *addr, int addrlen) {
+    /* Check if AF_UNIX */
+    process_t *cp = proc_current();
+    if (cp) {
+        fd_entry_t *fde = fd_get(&cp->fds, fd);
+        if (fde && fde->type == FD_UNIX_SOCK)
+            return usock_connect(fd, (const struct k_sockaddr_un *)addr, addrlen);
+    }
+
     if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
     if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
 
@@ -168,13 +180,33 @@ long socket_close(int fd) {
 /* ── Stubs ───────────────────────────────────────── */
 
 long do_bind(int fd, const void *addr, int addrlen) {
-    (void)fd; (void)addr; (void)addrlen; return 0;
+    /* Check if AF_UNIX */
+    process_t *p = proc_current();
+    if (p) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (fde && fde->type == FD_UNIX_SOCK)
+            return usock_bind(fd, (const struct k_sockaddr_un *)addr, addrlen);
+    }
+    /* AF_INET bind: stub */
+    (void)addr; (void)addrlen; return 0;
 }
 long do_listen(int fd, int backlog) {
-    (void)fd; (void)backlog; return 0;
+    process_t *p = proc_current();
+    if (p) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (fde && fde->type == FD_UNIX_SOCK)
+            return usock_listen(fd, backlog);
+    }
+    (void)backlog; return 0;
 }
 long do_accept(int fd, void *addr, int *addrlen) {
-    (void)fd; (void)addr; (void)addrlen; return -ENOSYS;
+    process_t *p = proc_current();
+    if (p) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (fde && fde->type == FD_UNIX_SOCK)
+            return usock_accept4(fd, addr, addrlen, 0);
+    }
+    (void)addr; (void)addrlen; return -ENOSYS;
 }
 long do_setsockopt(int fd, int level, int optname, const void *optval, int optlen) {
     (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; return 0;

@@ -38,4 +38,7 @@ long socket_read(int fd, void *buf, long count);
 long socket_write(int fd, const void *buf, long count);
 long socket_close(int fd);
 
+/* AF_UNIX sockets */
+#include "unix_socket.h"
+
 #endif

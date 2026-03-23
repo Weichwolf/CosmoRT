@@ -23,6 +23,7 @@
 #define FD_INOTIFY 10
 #define FD_PTY_MASTER 11
 #define FD_PTY_SLAVE  12
+#define FD_UNIX_SOCK  13
 
 /* Open flags (subset of POSIX) */
 #define O_RDONLY   0x0000

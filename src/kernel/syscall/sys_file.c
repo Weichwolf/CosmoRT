@@ -83,6 +83,8 @@ long do_write(int fd, const void *buf, size_t count) {
         return vfs_write(fd, buf, count);
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
+    if (fde->type == FD_UNIX_SOCK)
+        return usock_write(fd, buf, (long)count);
     if (fde->type == FD_PIPE) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
@@ -188,6 +190,13 @@ long do_read(int fd, void *buf, size_t count) {
     }
     if (fde->type == FD_SOCKET)
         return socket_read(fd, buf, (long)count);
+    if (fde->type == FD_UNIX_SOCK) {
+        long r = usock_read(fd, buf, (long)count);
+        if (r != -EAGAIN) return r;
+        if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        /* Blocking: restart syscall when peer writes */
+        return -EAGAIN; /* TODO: proper blocking */
+    }
     if (fde->type == FD_PIPE) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
@@ -302,6 +311,8 @@ long do_close(int fd) {
     }
     if (fde->type == FD_SOCKET)
         return socket_close(fd);
+    if (fde->type == FD_UNIX_SOCK)
+        return usock_close(fd);
     if (fde->type == FD_PIPE) {
         long r = pipe_close(fde);
         fd_close(&p->fds, fd);

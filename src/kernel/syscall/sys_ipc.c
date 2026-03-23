@@ -298,6 +298,8 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
         timerfd_destroy(fde_obj);
     } else if (fde_type == FD_INOTIFY) {
         inotify_destroy(fde_obj);
+    } else if (fde_type == FD_UNIX_SOCK) {
+        usock_decref(fde_obj);
     }
 }
 
@@ -320,6 +322,9 @@ void fd_obj_incref(int fde_type, void *fde_obj) {
     if (fde_type == FD_SOCKET) {
         socket_t *s = (socket_t *)fde_obj;
         __sync_add_and_fetch(&s->refcount, 1);
+    }
+    if (fde_type == FD_UNIX_SOCK) {
+        usock_incref(fde_obj);
     }
     /* TODO: refcounting for epoll, eventfd, etc. */
 }

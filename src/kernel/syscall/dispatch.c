@@ -131,6 +131,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                     vfs_file_incref((struct vfs_file *)dold->obj);
                 } else if (dold->type == FD_PIPE && dold->obj) {
                     fd_obj_incref(FD_PIPE, dold->obj);
+                } else if (dold->type == FD_UNIX_SOCK && dold->obj) {
+                    usock_incref(dold->obj);
                 }
                 if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
                 return di;
@@ -144,7 +146,15 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_SETHOSTNAME: return 0;
     case SYS_STATFS:      return -ENOSYS;
     case SYS_FSTATFS:     return -ENOSYS;
-    case SYS_ACCEPT4:     return do_accept((int)a1, (void *)a2, (int *)a3);
+    case SYS_ACCEPT4: {
+        process_t *a4p = proc_current();
+        if (a4p) {
+            fd_entry_t *a4e = fd_get(&a4p->fds, (int)a1);
+            if (a4e && a4e->type == FD_UNIX_SOCK)
+                return usock_accept4((int)a1, (void *)a2, (int *)a3, (int)a4);
+        }
+        return do_accept((int)a1, (void *)a2, (int *)a3);
+    }
     case SYS_MREMAP:      return -ENOSYS;
     case SYS_MADVISE:     return do_madvise((unsigned long)a1, (size_t)a2, (int)a3);
     case SYS_FACCESSAT:   return 0; /* pretend accessible */
@@ -224,10 +234,13 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                                                (void *)a4, (int *)a5);
     case SYS_GETSOCKNAME: return do_getsockname((int)a1, (void *)a2, (int *)a3);
     case SYS_GETPEERNAME: return do_getpeername((int)a1, (void *)a2, (int *)a3);
-    case SYS_SENDMSG:     return -ENOSYS;
-    case SYS_RECVMSG:     return -ENOSYS;
+    case SYS_SENDMSG:     return usock_sendmsg((int)a1, (const void *)a2, (int)a3);
+    case SYS_RECVMSG:     return usock_recvmsg((int)a1, (void *)a2, (int)a3);
     case SYS_SHUTDOWN:     return 0;
-    case SYS_SOCKETPAIR:  return -ENOSYS;
+    case SYS_SOCKETPAIR: {
+        if ((int)a1 != 1 /* AF_UNIX */) return -EAFNOSUPPORT;
+        return usock_socketpair((int)a2, (int *)a4);
+    }
     case SYS_POLL:        return do_poll((void *)a1, (int)a2, (int)a3);
 
     /* Filesystem mutation */

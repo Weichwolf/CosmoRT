@@ -241,6 +241,7 @@
 #define ENOTSOCK 88
 #define EISCONN 106
 #define ENOTCONN 107
+#define EMSGSIZE 90
 
 /* Clean up a single FD entry (socket, pipe, etc.) during process exit.
  * Does NOT free FD_FILE — caller handles that via vfs.

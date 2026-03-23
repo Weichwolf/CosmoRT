@@ -68,6 +68,14 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 #define SYS_exit_group     231
 #define SYS_getrandom      318
 
+/* Socket syscalls */
+#define SYS_socket         41
+#define SYS_sendto         44
+#define SYS_recvfrom       45
+#define SYS_sendmsg        46
+#define SYS_recvmsg        47
+#define SYS_socketpair     53
+
 /* CosmoRT hardware syscalls */
 #define SYS_COSMO_PCI_READ 516
 
