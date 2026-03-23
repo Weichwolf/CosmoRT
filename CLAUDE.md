@@ -3,11 +3,26 @@
 Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
 C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
 
-cosmo_uapi.h = exakt Linux x86_64 ABI (Structs, Syscalls, Errno).
-cosmo_hw.h = CosmoRT-eigen (5 HW-Primitives, Treiber-API).
+linux.h = exakt Linux x86_64 ABI (Structs, Syscalls, Errno).
+cosmo.h = CosmoRT-eigen (HW-Primitives, Subsystem-APIs).
 Scheduler, VM, IPC, Treiber-Architektur = CosmoRT-eigen.
 
 Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
+
+## Kernel-Subsysteme (cosmo.h)
+
+```
+5 HW-Primitives    mmio_map, dma_alloc, irq_register, pci_config_read, fw_load
+Display            surface_create/present/destroy (VSync, Multi-Monitor)
+Audio              device_open/submit/capture/close (Multi-Channel, Multi-Device)
+Input              device_read (KEY_*, REL_*, ABS_* — RT-Core, <1ms)
+Network            nic_driver_t + net_nic_register (Packet-Queue)
+Power              state/suspend/shutdown/reboot (ACPI)
+```
+
+Alles andere (USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN-Stack)
+ist Userspace. USB-Devices werden durch ihre Klasse an Subsysteme geroutet:
+HID → Input, Audio Class → Audio, Storage → Block. Kein USB-API im Kernel.
 
 ## Stack
 
