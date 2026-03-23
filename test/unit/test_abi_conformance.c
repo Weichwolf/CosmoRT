@@ -23,48 +23,51 @@ __attribute__((naked)) static void sig_restorer_c(void) {
  *  1. syscall-preserves-callee-saved
  * ══════════════════════════════════════════════════════════════════ */
 
+/* Test register preservation in a fork'd child to avoid interfering
+ * with the compiler's register allocation in the test function itself. */
 static void test_syscall_preserves_callee_saved(void) {
     puts("\n[ABI: syscall preserves callee-saved]\n");
 
-    uint64_t rbx_before = 0xAAAAAAAAAAAAAAAAULL;
-    uint64_t rbp_before = 0xBBBBBBBBBBBBBBBBULL;
-    uint64_t r12_before = 0xCCCCCCCCCCCCCCCCULL;
-    uint64_t r13_before = 0xDDDDDDDDDDDDDDDDULL;
-    uint64_t r14_before = 0xEEEEEEEEEEEEEEEEULL;
-    uint64_t r15_before = 0xFFFFFFFFFFFFFFFFULL;
-    uint64_t rbx_after, rbp_after, r12_after, r13_after, r14_after, r15_after;
-
-    __asm__ volatile(
-        "mov %[rbx], %%rbx\n"
-        "mov %[rbp], %%rbp\n"
-        "mov %[r12], %%r12\n"
-        "mov %[r13], %%r13\n"
-        "mov %[r14], %%r14\n"
-        "mov %[r15], %%r15\n"
-        "mov $39, %%rax\n"       /* SYS_GETPID */
-        "syscall\n"
-        "mov %%rbx, %[orbx]\n"
-        "mov %%rbp, %[orbp]\n"
-        "mov %%r12, %[or12]\n"
-        "mov %%r13, %[or13]\n"
-        "mov %%r14, %[or14]\n"
-        "mov %%r15, %[or15]\n"
-        : [orbx] "=r"(rbx_after), [orbp] "=r"(rbp_after),
-          [or12] "=r"(r12_after), [or13] "=r"(r13_after),
-          [or14] "=r"(r14_after), [or15] "=r"(r15_after)
-        : [rbx] "r"(rbx_before), [rbp] "r"(rbp_before),
-          [r12] "r"(r12_before), [r13] "r"(r13_before),
-          [r14] "r"(r14_before), [r15] "r"(r15_before)
-        : "rax", "rcx", "r11", "rdi", "rsi", "rdx", "r10", "r8", "r9",
-          "memory"
-    );
-
-    check("rbx preserved", rbx_after == rbx_before);
-    check("rbp preserved", rbp_after == rbp_before);
-    check("r12 preserved", r12_after == r12_before);
-    check("r13 preserved", r13_after == r13_before);
-    check("r14 preserved", r14_after == r14_before);
-    check("r15 preserved", r15_after == r15_before);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Child: test in isolation. Use a separate stack frame. */
+        uint64_t results[6];
+        __asm__ volatile(
+            "push %%rbx\n push %%rbp\n push %%r12\n"
+            "push %%r13\n push %%r14\n push %%r15\n"
+            "movabs $0xAAAAAAAAAAAAAAAA, %%rbx\n"
+            "movabs $0xBBBBBBBBBBBBBBBB, %%rbp\n"
+            "movabs $0xCCCCCCCCCCCCCCCC, %%r12\n"
+            "movabs $0xDDDDDDDDDDDDDDDD, %%r13\n"
+            "movabs $0xEEEEEEEEEEEEEEEE, %%r14\n"
+            "movabs $0xFFFFFFFFFFFFFFFF, %%r15\n"
+            "mov $39, %%eax\n" "syscall\n"
+            "mov %%rbx, 0(%[r])\n"
+            "mov %%rbp, 8(%[r])\n"
+            "mov %%r12, 16(%[r])\n"
+            "mov %%r13, 24(%[r])\n"
+            "mov %%r14, 32(%[r])\n"
+            "mov %%r15, 40(%[r])\n"
+            "pop %%r15\n pop %%r14\n pop %%r13\n"
+            "pop %%r12\n pop %%rbp\n pop %%rbx\n"
+            : : [r] "r"(results)
+            : "rax","rcx","r11","rdi","rsi","rdx","r10","r8","r9","memory"
+        );
+        int ok = (results[0] == 0xAAAAAAAAAAAAAAAAULL &&
+                  results[1] == 0xBBBBBBBBBBBBBBBBULL &&
+                  results[2] == 0xCCCCCCCCCCCCCCCCULL &&
+                  results[3] == 0xDDDDDDDDDDDDDDDDULL &&
+                  results[4] == 0xEEEEEEEEEEEEEEEEULL &&
+                  results[5] == 0xFFFFFFFFFFFFFFFFULL);
+        sc1(SYS_EXIT_GROUP, ok ? 0 : 1);
+        __builtin_unreachable();
+    }
+    check("fork child for register test", pid > 0);
+    if (pid > 0) {
+        int st = 0;
+        sc4(SYS_WAIT4, pid, (long)&st, 0, 0);
+        check("callee-saved preserved", WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    }
 }
 TEST("syscall-preserves-callee-saved", test_syscall_preserves_callee_saved);
 
