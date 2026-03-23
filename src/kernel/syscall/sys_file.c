@@ -45,12 +45,13 @@ static int resolve_path(const char *path, char *out, int outsize) {
 #define DEV_URANDOM 3
 #define DEV_TTY     4
 
+__attribute__((hot))
 long do_write(int fd, const void *buf, size_t count) {
-    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+    if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    if (__builtin_expect(!p, 0)) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde) return -EBADF;
+    if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL) return (long)count; /* swallow */
@@ -137,12 +138,13 @@ long do_writev(int fd, const struct iovec *iov, int iovcnt) {
 
 /* ── SYS_read (0) ────────────────────────────────── */
 
+__attribute__((hot))
 long do_read(int fd, void *buf, size_t count) {
-    if (!user_ok((uint64_t)buf, count)) return -EFAULT;
+    if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    if (__builtin_expect(!p, 0)) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde) return -EBADF;
+    if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL)    return 0; /* EOF */

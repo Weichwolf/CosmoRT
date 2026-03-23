@@ -9,9 +9,10 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end);
 
 /* brk collision detection */
 
+__attribute__((hot))
 long do_brk(unsigned long addr) {
     process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    if (__builtin_expect(!p, 0)) return -EFAULT;
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
 
@@ -142,10 +143,11 @@ long do_munlock(unsigned long addr, size_t len) {
 
 /* ── SYS_mmap (9) ───────────────────────────────── */
 
+__attribute__((hot))
 long do_mmap(unsigned long addr, size_t length, int prot,
                     int flags, int fd, long offset) {
     process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    if (__builtin_expect(!p, 0)) return -EFAULT;
 
     /* MAP_SHARED accepted but treated as MAP_PRIVATE (no shared-memory semantics yet).
      * TODO: real shared mappings for IPC/cl_ring */
@@ -319,9 +321,10 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
 
 /* ── SYS_munmap (11) / SYS_mprotect (10) ────────── */
 
+__attribute__((hot))
 long do_munmap(unsigned long addr, size_t length) {
     process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    if (__builtin_expect(!p, 0)) return -EFAULT;
     if (addr & 0xFFF) return -EINVAL;
 
     length = (length + 0xFFF) & ~0xFFFULL;

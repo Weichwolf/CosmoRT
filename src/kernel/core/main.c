@@ -62,6 +62,7 @@ struct elf64_rela { uint64_t offset; uint64_t info; int64_t addend; };
 extern struct elf64_dyn _DYNAMIC[];
 extern char ImageBase[];  /* link address 0 → runtime = EFI load base */
 
+__attribute__((cold))
 static void fixup_efi_relocations(void) {
     /* Compute EFI load base: runtime address of ImageBase (link addr 0) */
     uint64_t ldbase = (uint64_t)(uintptr_t)ImageBase;
@@ -100,6 +101,7 @@ static void fixup_efi_relocations(void) {
 
 struct boot_info *g_boot_info;
 
+__attribute__((cold))
 void kernel_main(struct boot_info *info) {
     /* FIRST: fix all EFI-relocated absolute pointers before any C code
      * uses global function pointers or data pointers. */

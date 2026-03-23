@@ -123,6 +123,7 @@ void irq_register(int vector, irq_handler_t handler) {
         handlers[vector] = handler;
 }
 
+__attribute__((hot))
 void irq_dispatch(int vector, irq_frame_t *frame) {
     /* INT 0x80: syscall from Ring 3 (legacy path) */
     if (vector == 0x80) {
@@ -332,6 +333,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
 /* Exception handler — kills user thread, halts on kernel fault */
 
+__attribute__((cold))
 static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
@@ -417,6 +419,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     __asm__ volatile("cli; hlt");
 }
 
+__attribute__((cold))
 static void default_exception(int vector) {
     /* Legacy path without frame — shouldn't be called for exceptions
      * that go through irq_dispatch with frame, but kept as fallback */
@@ -494,6 +497,7 @@ uint64_t irq_get_ticks(void) { return tick_count; }
 
 /* ── Init ──────────────────────────────────────────── */
 
+__attribute__((cold))
 void irq_init(void) {
     __asm__ volatile("cli");
 

@@ -32,7 +32,11 @@
 struct process; /* forward */
 
 typedef struct thread {
-    /* ── Must match context.asm offsets ── */
+    /* ── Cache-line 0 (bytes 0-63): context-switch hot path ──
+     * state, tid, rsp, rip, rflags, rax, rbx, rcx — touched every
+     * syscall entry/exit and context switch.
+     * WARNING: offsets are hardcoded in context.asm proc_enter_ring3.
+     * DO NOT reorder without updating assembly. */
     int      state;     /* 0 */
     int      tid;       /* 4 */
     uint64_t rsp;       /* 8 */
@@ -42,6 +46,7 @@ typedef struct thread {
     uint64_t rbx;       /* 40 */
     uint64_t rcx;       /* 48 */
     uint64_t rdx;       /* 56 */
+    /* ── Cache-line 1 (bytes 64-127): remaining GP registers ── */
     uint64_t rsi;       /* 64 */
     uint64_t rdi;       /* 72 */
     uint64_t rbp;       /* 80 */
@@ -50,6 +55,7 @@ typedef struct thread {
     uint64_t r10;       /* 104 */
     uint64_t r11;       /* 112 */
     uint64_t r12;       /* 120 */
+    /* ── Cache-line 2 (bytes 128-191): registers + kernel stack ── */
     uint64_t r13;       /* 128 */
     uint64_t r14;       /* 136 */
     uint64_t r15;       /* 144 */
@@ -58,7 +64,7 @@ typedef struct thread {
     uint8_t *kstack;
     uint64_t kstack_top;
 
-    /* ── Scheduling ── */
+    /* ── Scheduling (cache-line 3+): per-tick checks ── */
     int      sched_policy;
     int      priority;           /* 0 = normal, 1-31 = RT */
     int      saved_priority;     /* original priority before PI boost, -1 = not boosted */

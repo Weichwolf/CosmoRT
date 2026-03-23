@@ -18,6 +18,9 @@
 #define PROC_ZOMBIE  2
 
 typedef struct process {
+    /* ── Cache-line 0 (bytes 0-63): syscall hot path ──
+     * state, pid, pml4 — checked on every syscall.
+     * parent_pid, pgid, sid — getpid/setpgid/setsid. */
     int         state;
     uint32_t    pid;
     uint32_t    parent_pid;
@@ -29,6 +32,7 @@ typedef struct process {
     /* Address space */
     uint64_t   *pml4;
 
+    /* ── Cache-line 1 (bytes 64+): memory management ── */
     /* Memory */
     uint64_t    brk_base;
     uint64_t    brk_current;

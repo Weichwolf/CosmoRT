@@ -281,6 +281,7 @@ void procfs_fd_free(procfs_fd_t *pf) {
 
 /* ── Init ────────────────────────────────────────── */
 
+__attribute__((cold))
 void procfs_init(void) {
     num_entries = 0;
     procfs_register("dmesg", procfs_dmesg, 0);

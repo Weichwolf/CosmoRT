@@ -34,12 +34,14 @@ static struct {
 } core_rq[SMP_MAX_CORES];
 
 /* Mark a core as isolated (RT-only). SCHED_OTHER threads are redirected to BSP. */
+__attribute__((cold))
 void sched_isolate_core(int core_id) {
     if (core_id >= 0 && core_id < SMP_MAX_CORES)
         core_isolated[core_id] = 1;
 }
 
 /* Un-isolate a core — allow SCHED_OTHER threads again. */
+__attribute__((cold))
 void sched_unisolate_core(int core_id) {
     if (core_id >= 0 && core_id < SMP_MAX_CORES)
         core_isolated[core_id] = 0;
@@ -222,6 +224,7 @@ static void sched_rebalance(void) {
 /* Add thread to appropriate core's queue.
  * cpu_affinity >= 0: that core. Otherwise: current core (cache locality).
  * SCHED_OTHER threads are redirected away from isolated cores. */
+__attribute__((hot))
 void sched_add(thread_t *t) {
     int prio = t->priority;
     if (prio < 0) prio = 0;
@@ -267,6 +270,7 @@ void sched_add(thread_t *t) {
 }
 
 /* Remove and return highest-priority runnable thread from current core */
+__attribute__((hot))
 thread_t *sched_pick(void) {
     int cpu = percpu_self()->core_id;
 
@@ -395,6 +399,7 @@ void sched_preempt(void *frame_ptr) {
 }
 
 /* Scheduler init */
+__attribute__((cold))
 void sched_init(void) {
     for (int c = 0; c < SMP_MAX_CORES; c++) {
         for (int i = 0; i < PRIO_LEVELS; i++) {

@@ -5,7 +5,7 @@
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
 int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
-    if (!user_ok((uint64_t)upath, 1)) return -EFAULT;
+    if (__builtin_expect(!user_ok((uint64_t)upath, 1), 0)) return -EFAULT;
     for (size_t i = 0; i < max; i++) {
         if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
         kbuf[i] = upath[i];
@@ -32,6 +32,7 @@ void save_user_state_for_block(thread_t *t, long return_value) {
 
 /* ── Dispatcher ──────────────────────────────────── */
 
+__attribute__((hot))
 static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     switch (num) {
     /* I/O */
@@ -233,7 +234,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
 
     /* Futex */
     case SYS_FUTEX:
-        if (!user_ok((uint64_t)a1, 4)) return -EFAULT;
+        if (__builtin_expect(!user_ok((uint64_t)a1, 4), 0)) return -EFAULT;
         return do_futex((uint32_t *)a1, (int)a2, (uint32_t)a3,
                                         (const struct timespec *)a4,
                                         (uint32_t *)a5, (uint32_t)a6);
@@ -413,6 +414,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
 }
 
+__attribute__((hot))
 long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     long result = sys_dispatch(num, a1, a2, a3, a4, a5, a6);
     check_signals_syscall_path(&result, num);
