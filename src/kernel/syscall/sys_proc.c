@@ -36,6 +36,7 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     net_port_check_driver((int)p->pid);
     p->state = PROC_ZOMBIE;
     p->exit_code = status;
+    /* exit_signal is set by caller for signal death, 0 for normal exit */
 
     /* Close all FDs immediately so pipe writers/readers see EOF */
     for (int i = 0; i < FD_MAX; i++) {

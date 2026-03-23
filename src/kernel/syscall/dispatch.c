@@ -65,6 +65,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_ARCH_PRCTL:    return do_arch_prctl((int)a1, (unsigned long)a2);
     case SYS_SET_TID_ADDRESS: {
         thread_t *t = thread_current();
+        if (t && user_ok((uint64_t)a1, 4))
+            t->clear_child_tid = (int *)a1;
         return t ? (long)t->tid : 1;
     }
     case SYS_SET_ROBUST_LIST: return 0;

@@ -409,6 +409,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         /* Use do_exit_group to properly close FDs, wake parent, etc. */
         extern void do_exit_group(int status);
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+        t->proc->exit_signal = vector;
         do_exit_group(128 + vector);
     }
 

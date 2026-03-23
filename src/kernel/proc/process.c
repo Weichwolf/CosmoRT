@@ -630,7 +630,7 @@ long do_fork(void) {
     /* Inherit signal state */
     child->sig_pending = 0; /* child starts with no pending signals */
     child->sig_blocked = parent->sig_blocked;
-    for (int si = 0; si < 32; si++)
+    for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
     /* Duplicate fd_table — increment refcount on all shared FD objects */
@@ -1284,7 +1284,11 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                 int exit_status = child->exit_code;
 
                 if (wstatus) {
-                    int kstatus = (exit_status & 0xFF) << 8;
+                    int kstatus;
+                    if (child->exit_signal)
+                        kstatus = child->exit_signal & 0x7F; /* killed by signal */
+                    else
+                        kstatus = (exit_status & 0xFF) << 8;  /* normal exit */
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
 

@@ -138,6 +138,7 @@ void deliver_signal(thread_t *t, int signo) {
     vma_t *vma = vma_find(p->vma_root, new_rsp);
     if (!vma || new_rsp < vma->start || (new_rsp + frame_size) > vma->end
         || !(vma->prot & PROT_WRITE)) {
+        p->exit_signal = signo;
         do_exit(128 + signo);
         return;
     }
@@ -146,6 +147,7 @@ void deliver_signal(thread_t *t, int signo) {
     for (uint64_t addr = new_rsp & ~0xFFFULL; addr < new_rsp + frame_size; addr += 4096) {
         if (ensure_user_page(p, addr) < 0) {
             /* Can't allocate stack page — kill process */
+            p->exit_signal = signo;
             do_exit(128 + signo);
             return;
         }
@@ -265,10 +267,12 @@ void check_pending_signals(void) {
             if (sig == 17) continue;
             /* Fatal signals: SIGKILL=9, SIGSEGV=11, SIGPIPE=13, SIGTERM=15, SIGABRT=6 */
             if (sig == 9 || sig == 11 || sig == 13 || sig == 15 || sig == 6) {
+                p->exit_signal = sig;
                 do_exit(128 + sig); /* doesn't return */
             }
             /* RT signals (32-63): default action is terminate */
             if (sig >= 32) {
+                p->exit_signal = sig;
                 do_exit(128 + sig); /* doesn't return */
             }
             /* Others (1-31 not listed above): default ignore */
@@ -360,6 +364,7 @@ static long kill_one(process_t *target, int sig) {
 
         /* Fatal signals: terminate */
         if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
+            target->exit_signal = sig;
             if (target == proc_current()) {
                 do_exit_group(128 + sig); /* doesn't return */
             }
@@ -454,6 +459,7 @@ long do_tgkill(int tgid, int tid, int sig) {
     if (handler == SIG_DFL) {
         if (sig == 17) return 0; /* SIGCHLD: default ignore */
         if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
+            p->exit_signal = sig;
             if (p == proc_current()) {
                 do_exit_group(128 + sig);
             }

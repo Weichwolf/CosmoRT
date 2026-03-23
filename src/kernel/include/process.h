@@ -24,6 +24,7 @@ typedef struct process {
     uint32_t    pgid;           /* Process Group ID */
     uint32_t    sid;            /* Session ID */
     int         exit_code;
+    int         exit_signal;       /* 0 = normal exit, >0 = killed by signal */
 
     /* Address space */
     uint64_t   *pml4;
