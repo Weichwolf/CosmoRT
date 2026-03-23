@@ -19,7 +19,7 @@
 #include "vfs.h"
 #include "procfs.h"
 #include "net.h"
-#include "hw.h"
+#include "cosmo_hw.h"
 #include "random.h"
 #include "vt.h"
 #include "fb.h"

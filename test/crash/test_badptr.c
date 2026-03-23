@@ -43,60 +43,60 @@ static void test_badptr(void) {
 
     /* ── read() ── */
     check_efault("read(0, kaddr_high, 100)",
-        sc3(SYS_read, 0, (long)KADDR_HIGH, 100));
+        sc3(SYS_READ, 0, (long)KADDR_HIGH, 100));
     check_efault("read(0, kaddr_canon, 100)",
-        sc3(SYS_read, 0, (long)KADDR_CANON, 100));
+        sc3(SYS_READ, 0, (long)KADDR_CANON, 100));
 
     /* ── write() ── */
     check_efault("write(1, NULL, 100)",
-        sc3(SYS_write, 1, (long)ADDR_NULL, 100));
+        sc3(SYS_WRITE, 1, (long)ADDR_NULL, 100));
     check_efault("write(1, kaddr_high, 100)",
-        sc3(SYS_write, 1, (long)KADDR_HIGH, 100));
+        sc3(SYS_WRITE, 1, (long)KADDR_HIGH, 100));
 
     /* ── open() with bad path ── */
     check_efault("open(kaddr_high, 0, 0)",
-        sc3(SYS_open, (long)KADDR_HIGH, 0, 0));
+        sc3(SYS_OPEN, (long)KADDR_HIGH, 0, 0));
     check_efault("open(0xDEAD, 0, 0)",
-        sc3(SYS_open, (long)ADDR_DEAD, 0, 0));
+        sc3(SYS_OPEN, (long)ADDR_DEAD, 0, 0));
 
     /* ── mmap with kernel address hint ── */
     check_rejected("mmap(kaddr, 4096, RW)",
-        sc6(SYS_mmap, (long)KADDR_HIGH, 4096, PROT_RW,
+        sc6(SYS_MMAP, (long)KADDR_HIGH, 4096, PROT_RW,
             MAP_PRIV_ANON, -1, 0));
 
     /* ── mprotect on kernel address ── */
     check_rejected("mprotect(kaddr, 4096, RW)",
-        sc3(SYS_mprotect, (long)KADDR_HIGH, 4096, PROT_RW));
+        sc3(SYS_MPROTECT, (long)KADDR_HIGH, 4096, PROT_RW));
 
     /* ── munmap kernel address ── */
     check_rejected("munmap(kaddr, 4096)",
-        sc2(SYS_munmap, (long)KADDR_HIGH, 4096));
+        sc2(SYS_MUNMAP, (long)KADDR_HIGH, 4096));
 
     /* ── clock_gettime with bad buffer ── */
     check_efault("clock_gettime(0, kaddr)",
-        sc2(SYS_clock_gettime, CLOCK_MONOTONIC, (long)KADDR_HIGH));
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)KADDR_HIGH));
     check_efault("clock_gettime(0, NULL)",
-        sc2(SYS_clock_gettime, CLOCK_MONOTONIC, (long)ADDR_NULL));
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)ADDR_NULL));
 
     /* ── uname with bad buffer ── */
     check_efault("uname(kaddr)",
-        sc1(SYS_uname, (long)KADDR_HIGH));
+        sc1(SYS_UNAME, (long)KADDR_HIGH));
 
     /* ── getrandom with bad buffer ── */
     check_efault("getrandom(kaddr, 8, 0)",
-        sc3(SYS_getrandom, (long)KADDR_HIGH, 8, 0));
+        sc3(SYS_GETRANDOM, (long)KADDR_HIGH, 8, 0));
 
     /* ── getcwd with bad buffer ── */
     check_efault("getcwd(kaddr, 256)",
-        sc2(SYS_getcwd, (long)KADDR_HIGH, 256));
+        sc2(SYS_GETCWD, (long)KADDR_HIGH, 256));
 
     /* ── rt_sigaction with bad pointers ── */
     check_efault("rt_sigaction(10, kaddr, 0, 8)",
-        sc4(SYS_rt_sigaction, 10, (long)KADDR_HIGH, 0, 8));
+        sc4(SYS_RT_SIGACTION, 10, (long)KADDR_HIGH, 0, 8));
 
     /* ── fstat with bad buffer ── */
     check_efault("fstat(1, kaddr)",
-        sc2(SYS_fstat, 1, (long)KADDR_HIGH));
+        sc2(SYS_FSTAT, 1, (long)KADDR_HIGH));
 
     /* ── pipe with bad buffer ── */
     check_efault("pipe(kaddr)",
@@ -105,21 +105,21 @@ static void test_badptr(void) {
     /* ── Wrap-around address: just below boundary ── */
     /* size that wraps past kernel space */
     check_efault("read(0, 0x7FFFFFFFE000, 0x10000)",
-        sc3(SYS_read, 0, 0x7FFFFFFFE000LL, 0x10000));
+        sc3(SYS_READ, 0, 0x7FFFFFFFE000LL, 0x10000));
 
     /* ── write(1, low_unmapped, 1) — should not crash ── */
-    long r = sc3(SYS_write, 1, (long)ADDR_LOW, 1);
+    long r = sc3(SYS_WRITE, 1, (long)ADDR_LOW, 1);
     check("write(1, 0x1, 1) rejected", r < 0);
 
     /* ── Bonus: huge size values ── */
     check_rejected("mmap(0, SIZE_MAX, RW)",
-        sc6(SYS_mmap, 0, (long)-1, PROT_RW, MAP_PRIV_ANON, -1, 0));
+        sc6(SYS_MMAP, 0, (long)-1, PROT_RW, MAP_PRIV_ANON, -1, 0));
     check_rejected("mmap(0, -4096, RW)",
-        sc6(SYS_mmap, 0, (long)-4096, PROT_RW, MAP_PRIV_ANON, -1, 0));
+        sc6(SYS_MMAP, 0, (long)-4096, PROT_RW, MAP_PRIV_ANON, -1, 0));
 
     /* ── brk to kernel address ── */
-    long brk_orig = sc1(SYS_brk, 0);
-    long brk_bad = sc1(SYS_brk, (long)KADDR_HIGH);
+    long brk_orig = sc1(SYS_BRK, 0);
+    long brk_bad = sc1(SYS_BRK, (long)KADDR_HIGH);
     check("brk(kaddr) rejected", brk_bad == brk_orig || brk_bad < (long)KADDR_HIGH);
 
     /* ── openat with bad path ── */

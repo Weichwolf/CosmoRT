@@ -10,18 +10,18 @@ static void test_fork_bomb(void) {
     /* Snapshot: count open fds before */
     int fds_before = 0;
     for (int fd = 0; fd < 64; fd++) {
-        long r = sc2(SYS_fstat, fd, 0); /* just probe, buf=NULL will EFAULT but not EBADF */
+        long r = sc2(SYS_FSTAT, fd, 0); /* just probe, buf=NULL will EFAULT but not EBADF */
         if (r != -9) fds_before++; /* -9 = EBADF → not open */
     }
 
     /* mmap a page to detect leaks via memory pressure */
-    long sentinel = sc6(SYS_mmap, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
+    long sentinel = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
     check("sentinel page", sentinel > 0);
     *(volatile uint64_t *)sentinel = 0xFEEDFACE;
 
     int ok = 0;
     for (int i = 0; i < FORK_CYCLES; i++) {
-        long pid = sc0(SYS_fork);
+        long pid = sc0(SYS_FORK);
         if (pid < 0) {
             puts("  fork failed at cycle "); put_int(i);
             puts(" (err="); put_int(pid); puts(")\n");
@@ -29,12 +29,12 @@ static void test_fork_bomb(void) {
         }
         if (pid == 0) {
             /* Child: exit immediately */
-            sc1(SYS_exit_group, 0);
+            sc1(SYS_EXIT_GROUP, 0);
             __builtin_unreachable();
         }
         /* Parent: wait for child */
         int status = 0;
-        long w = sc4(SYS_wait4, (long)pid, (long)&status, 0, 0);
+        long w = sc4(SYS_WAIT4, (long)pid, (long)&status, 0, 0);
         if (w < 0) {
             puts("  wait4 failed at cycle "); put_int(i);
             puts(" (err="); put_int(w); puts(")\n");
@@ -50,21 +50,21 @@ static void test_fork_bomb(void) {
     /* Check fd count unchanged */
     int fds_after = 0;
     for (int fd = 0; fd < 64; fd++) {
-        long r = sc2(SYS_fstat, fd, 0);
+        long r = sc2(SYS_FSTAT, fd, 0);
         if (r != -9) fds_after++;
     }
     check("no fd leak", fds_after == fds_before);
 
-    sc2(SYS_munmap, sentinel, 4096);
+    sc2(SYS_MUNMAP, sentinel, 4096);
 
     /* Rapid-fire: fork many without waiting, then reap all */
     long pids[32];
     int spawned = 0;
     for (int i = 0; i < 32; i++) {
-        long pid = sc0(SYS_fork);
+        long pid = sc0(SYS_FORK);
         if (pid < 0) break;
         if (pid == 0) {
-            sc1(SYS_exit_group, 0);
+            sc1(SYS_EXIT_GROUP, 0);
             __builtin_unreachable();
         }
         pids[i] = pid;
@@ -72,7 +72,7 @@ static void test_fork_bomb(void) {
     }
     int reaped = 0;
     for (int i = 0; i < spawned; i++) {
-        long w = sc4(SYS_wait4, pids[i], 0, 0, 0);
+        long w = sc4(SYS_WAIT4, pids[i], 0, 0, 0);
         if (w > 0) reaped++;
     }
     check("rapid fork+reap", reaped == spawned);

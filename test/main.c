@@ -18,7 +18,7 @@ static void run_crash_test(const char *name, void (*fn)(void)) {
     int pass_before = passes;
     int fail_before = failures;
 
-    long pid = sc0(SYS_fork);
+    long pid = sc0(SYS_FORK);
     if (pid < 0) {
         fail(name, "fork failed");
         return;
@@ -28,13 +28,13 @@ static void run_crash_test(const char *name, void (*fn)(void)) {
         failures = 0;
         passes = 0;
         fn();
-        sc1(SYS_exit_group, (long)failures);
+        sc1(SYS_EXIT_GROUP, (long)failures);
         __builtin_unreachable();
     }
 
     /* Parent: wait for child */
     int status = 0;
-    long w = sc4(SYS_wait4, pid, (long)&status, 0, 0);
+    long w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
     if (w < 0) {
         fail(name, "wait4 failed");
         return;
@@ -87,6 +87,6 @@ void _start(void) {
     put_int((long)passes); puts(" passed, ");
     put_int((long)failures); puts(" failed ===\n");
     if (failures == 0) puts("ALL PASSED\n");
-    sc1(SYS_exit_group, (long)failures);
+    sc1(SYS_EXIT_GROUP, (long)failures);
     __builtin_unreachable();
 }

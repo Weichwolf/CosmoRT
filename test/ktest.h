@@ -32,50 +32,6 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
     long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory"); return r;
 }
 
-/* ── Convenience aliases (lowercase, matching test code) ────── */
-
-#define SYS_read            SYS_READ
-#define SYS_write           SYS_WRITE
-#define SYS_open            SYS_OPEN
-#define SYS_close           SYS_CLOSE
-#define SYS_fstat           SYS_FSTAT
-#define SYS_mmap            SYS_MMAP
-#define SYS_mprotect        SYS_MPROTECT
-#define SYS_munmap          SYS_MUNMAP
-#define SYS_brk             SYS_BRK
-#define SYS_rt_sigaction    SYS_RT_SIGACTION
-#define SYS_rt_sigprocmask  SYS_RT_SIGPROCMASK
-#define SYS_sched_yield     SYS_SCHED_YIELD
-#define SYS_getpid          SYS_GETPID
-#define SYS_clone           SYS_CLONE
-#define SYS_fork            SYS_FORK
-#define SYS_exit            SYS_EXIT
-#define SYS_wait4           SYS_WAIT4
-#define SYS_kill            SYS_KILL
-#define SYS_uname           SYS_UNAME
-#define SYS_getcwd          SYS_GETCWD
-#define SYS_getpgrp         SYS_GETPGRP
-#define SYS_arch_prctl      SYS_ARCH_PRCTL
-#define SYS_gettid          SYS_GETTID
-#define SYS_gettimeofday    SYS_GETTIMEOFDAY
-#define SYS_clock_gettime   SYS_CLOCK_GETTIME
-#define SYS_exit_group      SYS_EXIT_GROUP
-#define SYS_getrandom       SYS_GETRANDOM
-#define SYS_socket          SYS_SOCKET
-#define SYS_sendto          SYS_SENDTO
-#define SYS_recvfrom        SYS_RECVFROM
-#define SYS_sendmsg         SYS_SENDMSG
-#define SYS_recvmsg         SYS_RECVMSG
-#define SYS_socketpair      SYS_SOCKETPAIR
-#define SYS_access          SYS_ACCESS
-#define SYS_fcntl           SYS_FCNTL
-#define SYS_setpgid         SYS_SETPGID
-#define SYS_getpgid         SYS_GETPGID
-#define SYS_setsid          SYS_SETSID
-#define SYS_getsid          SYS_GETSID
-#define SYS_tgkill          SYS_TGKILL
-#define SYS_mremap          SYS_MREMAP
-
 /* ── Additional constants used by tests ─────── */
 
 #define PROT_RW     (PROT_READ | PROT_WRITE)
@@ -85,7 +41,7 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 
 static inline void puts(const char *s) {
     int n = 0; while (s[n]) n++;
-    sc3(SYS_write, 1, (long)s, n);
+    sc3(SYS_WRITE, 1, (long)s, n);
 }
 
 static inline void put_hex(uint64_t v) {

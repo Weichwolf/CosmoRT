@@ -39,11 +39,11 @@ static void test_signals(void) {
     sa.flags = 0;
     sa.restorer = 0;
     sa.mask = 0;
-    long r = sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, (long)&old, 8);
+    long r = sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, (long)&old, 8);
     check_val("rt_sigaction SIG_IGN", r, 0);
 
     /* Send SIGUSR1 to self — should not crash (SIG_IGN) */
-    r = sc2(SYS_kill, sc0(SYS_getpid), SIGUSR1);
+    r = sc2(SYS_KILL, sc0(SYS_GETPID), SIGUSR1);
     check_val("kill(self, SIGUSR1) SIG_IGN", r, 0);
 
     /* Test 2: User signal handler */
@@ -53,11 +53,11 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    r = sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, 0, 8);
+    r = sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
     check_val("rt_sigaction user handler", r, 0);
 
     /* Send SIGUSR1 to self — handler should run */
-    r = sc2(SYS_kill, sc0(SYS_getpid), SIGUSR1);
+    r = sc2(SYS_KILL, sc0(SYS_GETPID), SIGUSR1);
     check_val("kill(self, SIGUSR1) handler", r, 0);
     check_val("handler received sig", sig_received, 1);
     check_val("handler got SIGUSR1", sig_value, SIGUSR1);
@@ -69,8 +69,8 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    sc4(SYS_rt_sigaction, SIGUSR2, (long)&sa, 0, 8);
-    sc2(SYS_kill, sc0(SYS_getpid), SIGUSR2);
+    sc4(SYS_RT_SIGACTION, SIGUSR2, (long)&sa, 0, 8);
+    sc2(SYS_KILL, sc0(SYS_GETPID), SIGUSR2);
     check_val("SIGUSR2 handler ran", sig_received, 1);
     check_val("SIGUSR2 value", sig_value, SIGUSR2);
 
@@ -82,18 +82,18 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, 0, 8);
+    sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
 
     uint64_t block_mask = (1ULL << SIGUSR1);
     uint64_t old_mask = 0;
-    sc4(SYS_rt_sigprocmask, 0 /* SIG_BLOCK */, (long)&block_mask, (long)&old_mask, 8);
+    sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&block_mask, (long)&old_mask, 8);
 
     /* Send while blocked — should be queued */
-    sc2(SYS_kill, sc0(SYS_getpid), SIGUSR1);
+    sc2(SYS_KILL, sc0(SYS_GETPID), SIGUSR1);
     check_val("blocked sig not delivered", sig_received, 0);
 
     /* Unblock — should deliver now */
-    sc4(SYS_rt_sigprocmask, 1 /* SIG_UNBLOCK */, (long)&block_mask, 0, 8);
+    sc4(SYS_RT_SIGPROCMASK, 1 /* SIG_UNBLOCK */, (long)&block_mask, 0, 8);
     check_val("unblocked sig delivered", sig_received, 1);
     check_val("unblocked sig value", sig_value, SIGUSR1);
 
@@ -102,9 +102,9 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, 0, 8);
+    sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
     struct ksigaction got;
-    sc4(SYS_rt_sigaction, SIGUSR1, 0, (long)&got, 8);
+    sc4(SYS_RT_SIGACTION, SIGUSR1, 0, (long)&got, 8);
     check("oldact handler matches", got.handler == (void *)test_handler);
     check("oldact restorer matches", got.restorer == (void *)sig_restorer);
 
@@ -117,11 +117,11 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    r = sc4(SYS_rt_sigaction, 32, (long)&sa, 0, 8);
+    r = sc4(SYS_RT_SIGACTION, 32, (long)&sa, 0, 8);
     check_val("rt_sigaction sig 32", r, 0);
 
     /* Send signal 32 to self — handler should run */
-    r = sc2(SYS_kill, sc0(SYS_getpid), 32);
+    r = sc2(SYS_KILL, sc0(SYS_GETPID), 32);
     check_val("kill(self, 32)", r, 0);
     check_val("sig 32 handler ran", sig_received, 1);
     check_val("sig 32 value", sig_value, 32);
@@ -133,8 +133,8 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    sc4(SYS_rt_sigaction, 63, (long)&sa, 0, 8);
-    sc2(SYS_kill, sc0(SYS_getpid), 63);
+    sc4(SYS_RT_SIGACTION, 63, (long)&sa, 0, 8);
+    sc2(SYS_KILL, sc0(SYS_GETPID), 63);
     check_val("sig 63 handler ran", sig_received, 1);
     check_val("sig 63 value", sig_value, 63);
 
@@ -145,21 +145,21 @@ static void test_signals(void) {
     sa.flags = SA_RESTORER;
     sa.restorer = (void *)sig_restorer;
     sa.mask = 0;
-    sc4(SYS_rt_sigaction, SIGUSR1, (long)&sa, 0, 8);
+    sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
 
-    long my_pid = sc0(SYS_getpid);
-    long my_tid = sc0(SYS_gettid);
-    r = sc3(SYS_tgkill, my_pid, my_tid, SIGUSR1);
+    long my_pid = sc0(SYS_GETPID);
+    long my_tid = sc0(SYS_GETTID);
+    r = sc3(SYS_TGKILL, my_pid, my_tid, SIGUSR1);
     check_val("tgkill(self) returns 0", r, 0);
     check_val("tgkill handler ran", sig_received, 1);
     check_val("tgkill handler got SIGUSR1", sig_value, SIGUSR1);
 
     /* Test 9: tgkill with bad tgid → -EINVAL */
-    r = sc3(SYS_tgkill, -1, my_tid, SIGUSR1);
+    r = sc3(SYS_TGKILL, -1, my_tid, SIGUSR1);
     check("tgkill bad tgid → error", r < 0);
 
     /* Test 10: tgkill sig 0 (permission check only) */
-    r = sc3(SYS_tgkill, my_pid, my_tid, 0);
+    r = sc3(SYS_TGKILL, my_pid, my_tid, 0);
     check_val("tgkill sig 0", r, 0);
 }
 

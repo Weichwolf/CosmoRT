@@ -13,11 +13,11 @@ static void test_threads(void) {
     worker_done = 0;
 
     /* Allocate stack for worker */
-    long stack = sc6(SYS_mmap, 0, 65536, PROT_RW, MAP_PRIV_ANON, -1, 0);
+    long stack = sc6(SYS_MMAP, 0, 65536, PROT_RW, MAP_PRIV_ANON, -1, 0);
     check("mmap thread stack", stack > 0);
     if (stack <= 0) return;
 
-    long ret = sc5(SYS_clone, CLONE_VM | CLONE_THREAD, stack + 65536, 0, 0, 0);
+    long ret = sc5(SYS_CLONE, CLONE_VM | CLONE_THREAD, stack + 65536, 0, 0, 0);
     if (ret == 0) {
         /* Child */
         worker_fn();

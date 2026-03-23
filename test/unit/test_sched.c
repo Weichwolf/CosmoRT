@@ -2,7 +2,7 @@
 
 static void test_yield(void) {
     puts("\n[Scheduler]\n");
-    long r = sc0(SYS_sched_yield);
+    long r = sc0(SYS_SCHED_YIELD);
     check_val("sched_yield returns 0", r, 0);
 }
 
