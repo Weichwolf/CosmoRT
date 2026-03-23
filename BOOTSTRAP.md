@@ -555,12 +555,92 @@ Paketverwaltung     CosmoBrew (Ruby)
 Der Kernel muss nur die Syscall-Schicht bereitstellen.
 Alles darueber kommt aus CosmoPX.
 
-## 10. Quellen
+## 10. Dateien fuer das Image
+
+Alle fertigen Artefakte liegen unter ~/Git/CosmoPX/brew/prefix/.
+Node ist mit -fno-stack-protector + --with-intl=small-icu gebaut.
+Alle Binaries sind statisch gelinkt (kein glibc, kein ld-linux).
+
+### Node.js Binary
 
 ```
-CosmoPX Repo:     ~/Git/CosmoPX
-CosmoPX CLAUDE.md: vollstaendige Projektdokumentation
-Node.js Source:   ~/Git/CosmoPX/brew/src/node-v22.14.0/
-Binaries:         ~/Git/CosmoPX/brew/prefix/bin/
-Claude Code:      ~/Git/CosmoPX/brew/prefix/lib/node_modules/@anthropic-ai/claude-code/
+~/Git/CosmoPX/brew/prefix/bin/node
+  75 MB (73 MB stripped)
+  Statisch, x86_64, ICU 76.1, -fno-stack-protector
+  → ins Image als /usr/bin/node
+```
+
+### Claude Code
+
+```
+~/Git/CosmoPX/brew/prefix/lib/node_modules/@anthropic-ai/claude-code/
+  73 MB, cli.js ist Einstiegspunkt
+  → ins Image als /opt/claude-code/
+
+Einstiegspunkt: node /opt/claude-code/cli.js
+```
+
+### npm (optional)
+
+```
+~/Git/CosmoPX/brew/prefix/lib/node_modules/npm/
+  24 MB
+  → ins Image als /opt/npm/  (nur noetig fuer npm install)
+```
+
+### Userland-Binaries
+
+```
+~/Git/CosmoPX/brew/prefix/bin/
+  36 Binaries, davon relevant fuer Image:
+
+  Pflicht (Claude Code spawnt diese):
+    node bash sh git env id uname which
+    ls cat cp mv rm mkdir chmod touch
+    head tail wc tee sleep pwd basename dirname
+    find grep sed awk diff sort uniq cut tr xargs
+    mktemp readlink realpath expr date printf test
+    ln tar gzip
+
+  Optional:
+    npm npx          (Symlinks, brauchen node + /opt/npm/)
+    ruby miniruby    (nur fuer CosmoBrew)
+    gcc g++ cpp      (nur fuer Kompilierung)
+
+  → alle nach /usr/bin/ im Image
+```
+
+### CosmoPX Coreutils (from scratch)
+
+```
+~/Git/CosmoPX/coreutils/build/
+  47 statische Binaries, gegen CosmoCL libc gelinkt
+  Falls brew/prefix/bin/ nicht alle enthaelt,
+  hier die vollstaendige Sammlung.
+```
+
+### Zusammenfassung: was ins initrd muss
+
+```
+/usr/bin/node                          75 MB  ← brew/prefix/bin/node
+/usr/bin/{sh,bash,git,env,ls,...}      18 MB  ← brew/prefix/bin/*
+/opt/claude-code/                      73 MB  ← brew/prefix/lib/node_modules/@anthropic-ai/claude-code/
+/opt/npm/  (optional)                  24 MB  ← brew/prefix/lib/node_modules/npm/
+/etc/{resolv.conf,hosts,passwd}         < 1 KB  ← manuell erstellen
+/init                                   < 1 KB  ← siehe Abschnitt 1
+─────────────────────────────────────────────
+Gesamt                                ~190 MB unkomprimiert
+                                       ~60 MB gzip/squashfs
+```
+
+### Quellen
+
+```
+CosmoPX Repo:      ~/Git/CosmoPX
+Projektdoku:       ~/Git/CosmoPX/CLAUDE.md
+Node.js Source:    ~/Git/CosmoPX/brew/src/node-v22.14.0/
+Node Configure:    --fully-static --with-intl=small-icu --without-inspector
+                   --without-node-snapshot CFLAGS="-fno-stack-protector"
+Fertige Binaries:  ~/Git/CosmoPX/brew/prefix/bin/
+Claude Code:       ~/Git/CosmoPX/brew/prefix/lib/node_modules/@anthropic-ai/claude-code/
 ```

@@ -480,12 +480,8 @@ qemu-gui: $(BUILD)/user/vt_shell
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
 qemu-disk: disk.img
-	$(QEMU) -cpu qemu64 -smp 2 -m 4096 \
-	        -bios /usr/share/ovmf/OVMF.fd \
-	        -drive file=disk.img,format=raw \
-	        -serial stdio -display none -no-reboot \
-	        -device e1000,netdev=net0 \
-	        -netdev user,id=net0
+	$(QEMU) $(QEMU_FLAGS) \
+	        -drive file=build/cosmofs.img,format=raw,if=virtio
 
 vhdx: disk.img
 	qemu-img convert -f raw -O vhdx disk.img disk.vhdx

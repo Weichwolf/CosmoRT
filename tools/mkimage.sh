@@ -109,6 +109,7 @@ rm -f .esp.tmp
 # ── Step 4: Write CosmoFS into combined image ─────
 FS_OFFSET=$((FS_START * 512))
 dd if="$COSMOFS_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
+cp "$COSMOFS_TMP" build/cosmofs.img
 rm -f "$COSMOFS_TMP"
 
 echo "disk.img: $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB CosmoFS)"
