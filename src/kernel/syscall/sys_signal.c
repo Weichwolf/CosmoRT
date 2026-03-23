@@ -36,23 +36,58 @@ static int ensure_user_page(process_t *p, uint64_t uaddr) {
 /* No SMAP in CosmoRT — user memory is directly accessible from kernel mode.
  * These helpers validate the address range before access. */
 
-/* ── Signal frame layout (Linux-compatible) ──────────────── */
+/* ── Signal frame layout (Linux x86_64 ABI-compatible) ───── */
 
-/* mcontext_t register layout (Linux x86_64 compatible) */
+/* Linux x86_64 gregset_t: 23 × uint64_t = 184 bytes
+ * Index: R8=0 R9=1 R10=2 R11=3 R12=4 R13=5 R14=6 R15=7
+ *        RDI=8 RSI=9 RBP=10 RBX=11 RDX=12 RAX=13 RCX=14 RSP=15
+ *        RIP=16 EFL=17 CSGSFS=18 ERR=19 TRAPNO=20 OLDMASK=21 CR2=22 */
 typedef struct {
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
-    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp;
-    uint64_t rip, rflags;
-    uint64_t cs, gs, fs, err, trapno, oldmask, cr2; /* zeroed */
-} sig_mcontext_t; /* 25 * 8 = 200 bytes */
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;  /* 0-56   */
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp; /* 64-120 */
+    uint64_t rip, eflags;                              /* 128-136 */
+    uint64_t csgsfs;       /* cs|gs|fs packed: cs(16)|gs(16)|fs(16)|pad(16) */
+    uint64_t err, trapno, oldmask, cr2;                /* 152-176 */
+} sig_gregset_t; /* 23 * 8 = 184 bytes */
 
+/* Linux x86_64 _fpstate (FXSAVE layout) — 512 bytes.
+ * No aligned attribute here — alignment for FXSAVE/FXRSTOR is handled
+ * via separate temp buffers. Struct packing must match Linux ABI exactly. */
 typedef struct {
-    uint64_t uc_flags;
-    uint64_t uc_link;
-    uint64_t ss_sp, ss_flags, ss_size; /* uc_stack */
-    sig_mcontext_t uc_mcontext;
-    uint64_t uc_sigmask;
-} sig_ucontext_t; /* 8 + 8 + 24 + 200 + 8 = 248 bytes */
+    uint16_t cwd, swd, twd, fop;        /* 0-6   */
+    uint64_t rip, rdp;                   /* 8-24  */
+    uint32_t mxcsr, mxcsr_mask;          /* 24-32 */
+    uint8_t  st_space[128];              /* 32-160: 8 × 16-byte FP regs */
+    uint8_t  xmm_space[256];             /* 160-416: 16 × 16-byte XMM regs */
+    uint8_t  _reserved[96];              /* 416-512 */
+} sig_fpstate_t; /* 512 bytes */
+
+/* Linux x86_64 mcontext_t: gregset(184) + fpstate_ptr(8) + reserved(64) = 256 bytes */
+typedef struct {
+    sig_gregset_t gregs;     /* offset 0:   184 bytes */
+    uint64_t      fpstate;   /* offset 184: pointer to sig_fpstate_t */
+    uint64_t      _reserved[8]; /* offset 192: 64 bytes padding */
+} sig_mcontext_t; /* 256 bytes */
+
+/* Linux x86_64 stack_t: 24 bytes */
+typedef struct {
+    uint64_t ss_sp;          /* 0  */
+    int32_t  ss_flags;       /* 8  */
+    int32_t  _pad;           /* 12 */
+    uint64_t ss_size;        /* 16 */
+} sig_stack_t; /* 24 bytes */
+
+/* Linux x86_64 ucontext_t: 936 bytes total
+ * uc_flags(8) + uc_link(8) + uc_stack(24) + uc_mcontext(256) +
+ * uc_sigmask(128) + __fpregs_mem(512) = 936 */
+typedef struct {
+    uint64_t       uc_flags;        /* offset 0   */
+    uint64_t       uc_link;         /* offset 8   */
+    sig_stack_t    uc_stack;        /* offset 16  (24 bytes) */
+    sig_mcontext_t uc_mcontext;     /* offset 40  (256 bytes) */
+    uint64_t       uc_sigmask[16];  /* offset 296 (128 bytes, _NSIG/8) */
+    sig_fpstate_t  __fpregs_mem;    /* offset 424 (512 bytes, inline FXSAVE area) */
+} sig_ucontext_t; /* 936 bytes */
 
 typedef struct {
     int32_t si_signo;
@@ -68,14 +103,14 @@ static const uint8_t sig_trampoline[] = {
     0x0f, 0x05                                   /* syscall */
 };
 
-/* Total signal frame: restorer_addr(8) + siginfo(128) + ucontext(248) + trampoline(9) */
+/* Total signal frame: restorer_addr(8) + siginfo(128) + ucontext(936) + trampoline(9) */
 #define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t) + sizeof(sig_trampoline))
 
 /* Offsets from new RSP (bottom of frame):
- *   [RSP+0]   = return address (restorer or trampoline)
- *   [RSP+8]   = siginfo_t
- *   [RSP+136] = ucontext_t
- *   [RSP+384] = trampoline bytes (if no sa_restorer)
+ *   [RSP+0]    = return address (restorer or trampoline)
+ *   [RSP+8]    = siginfo_t  (128 bytes)
+ *   [RSP+136]  = ucontext_t (936 bytes)
+ *   [RSP+1072] = trampoline bytes (if no sa_restorer)
  */
 #define SIGFRAME_OFF_RETADDR   0
 #define SIGFRAME_OFF_SIGINFO   8
@@ -116,19 +151,35 @@ void deliver_signal(thread_t *t, int signo) {
         }
     }
 
-    /* Build ucontext (save current registers) */
+    /* Build ucontext (save current registers — Linux x86_64 ABI) */
     sig_ucontext_t uc;
     kmemset(&uc, 0, sizeof(uc));
-    uc.uc_mcontext.r8  = t->r8;  uc.uc_mcontext.r9  = t->r9;
-    uc.uc_mcontext.r10 = t->r10; uc.uc_mcontext.r11 = t->r11;
-    uc.uc_mcontext.r12 = t->r12; uc.uc_mcontext.r13 = t->r13;
-    uc.uc_mcontext.r14 = t->r14; uc.uc_mcontext.r15 = t->r15;
-    uc.uc_mcontext.rdi = t->rdi; uc.uc_mcontext.rsi = t->rsi;
-    uc.uc_mcontext.rbp = t->rbp; uc.uc_mcontext.rbx = t->rbx;
-    uc.uc_mcontext.rdx = t->rdx; uc.uc_mcontext.rax = t->rax;
-    uc.uc_mcontext.rcx = t->rcx; uc.uc_mcontext.rsp = t->rsp;
-    uc.uc_mcontext.rip = t->rip; uc.uc_mcontext.rflags = t->rflags;
-    uc.uc_sigmask = p->sig_blocked;
+
+    /* gregset: 23 × uint64_t in Linux order */
+    uc.uc_mcontext.gregs.r8  = t->r8;  uc.uc_mcontext.gregs.r9  = t->r9;
+    uc.uc_mcontext.gregs.r10 = t->r10; uc.uc_mcontext.gregs.r11 = t->r11;
+    uc.uc_mcontext.gregs.r12 = t->r12; uc.uc_mcontext.gregs.r13 = t->r13;
+    uc.uc_mcontext.gregs.r14 = t->r14; uc.uc_mcontext.gregs.r15 = t->r15;
+    uc.uc_mcontext.gregs.rdi = t->rdi; uc.uc_mcontext.gregs.rsi = t->rsi;
+    uc.uc_mcontext.gregs.rbp = t->rbp; uc.uc_mcontext.gregs.rbx = t->rbx;
+    uc.uc_mcontext.gregs.rdx = t->rdx; uc.uc_mcontext.gregs.rax = t->rax;
+    uc.uc_mcontext.gregs.rcx = t->rcx; uc.uc_mcontext.gregs.rsp = t->rsp;
+    uc.uc_mcontext.gregs.rip = t->rip; uc.uc_mcontext.gregs.eflags = t->rflags;
+    uc.uc_mcontext.gregs.csgsfs = 0x33 | ((uint64_t)0 << 16) | ((uint64_t)0 << 32);
+
+    /* fpstate pointer → inline __fpregs_mem (patched below after frame address known) */
+    /* uc_mcontext.fpstate will be set to point to __fpregs_mem on user stack */
+
+    /* uc_sigmask: 128 bytes, store blocked mask in first word */
+    uc.uc_sigmask[0] = p->sig_blocked;
+
+    /* Save FPU/SSE state into inline __fpregs_mem.
+     * FXSAVE requires 16-byte aligned operand, so use a temp buffer. */
+    {
+        sig_fpstate_t _fxbuf __attribute__((aligned(16)));
+        __asm__ volatile("fxsave %0" : "=m"(_fxbuf));
+        kmemcpy(&uc.__fpregs_mem, &_fxbuf, sizeof(sig_fpstate_t));
+    }
 
     /* Build siginfo */
     sig_siginfo_t si;
@@ -150,6 +201,11 @@ void deliver_signal(thread_t *t, int signo) {
     } else {
         restorer_addr = new_rsp + SIGFRAME_OFF_TRAMPOLINE;
     }
+
+    /* Set fpstate pointer to the inline __fpregs_mem on user stack.
+     * __fpregs_mem is at offset 424 within ucontext_t. */
+    uint64_t uc_user_addr = new_rsp + SIGFRAME_OFF_UCONTEXT;
+    uc.uc_mcontext.fpstate = uc_user_addr + __builtin_offsetof(sig_ucontext_t, __fpregs_mem);
 
     /* Write signal frame directly to user stack.
      * No SMAP in CosmoRT, CR3 = user page tables during SYSCALL. */
@@ -343,29 +399,37 @@ long do_rt_sigreturn(void) {
     sig_ucontext_t uc;
     kmemcpy(&uc, (const void *)uc_addr, sizeof(uc));
 
-    /* Restore registers from ucontext into syscall frame.
+    /* Restore FPU/SSE state from inline __fpregs_mem via FXRSTOR.
+     * FXRSTOR requires 16-byte aligned operand, so use a temp buffer. */
+    {
+        sig_fpstate_t _fxbuf __attribute__((aligned(16)));
+        kmemcpy(&_fxbuf, &uc.__fpregs_mem, sizeof(sig_fpstate_t));
+        __asm__ volatile("fxrstor %0" : : "m"(_fxbuf));
+    }
+
+    /* Restore registers from ucontext gregset into syscall frame.
      * The SYSRET epilog in syscall_entry.asm will pop these. */
     syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
-    frame->r15 = uc.uc_mcontext.r15; frame->r14 = uc.uc_mcontext.r14;
-    frame->r13 = uc.uc_mcontext.r13; frame->r12 = uc.uc_mcontext.r12;
-    frame->rbp = uc.uc_mcontext.rbp; frame->rbx = uc.uc_mcontext.rbx;
-    frame->r9  = uc.uc_mcontext.r9;  frame->r8  = uc.uc_mcontext.r8;
-    frame->r10 = uc.uc_mcontext.r10; frame->rdx = uc.uc_mcontext.rdx;
-    frame->rsi = uc.uc_mcontext.rsi; frame->rdi = uc.uc_mcontext.rdi;
-    frame->rax = uc.uc_mcontext.rax;
-    frame->r11 = uc.uc_mcontext.rflags; /* SYSRET restores RFLAGS from R11 */
-    frame->rcx = uc.uc_mcontext.rip;    /* SYSRET restores RIP from RCX */
-    cpu->user_rsp = uc.uc_mcontext.rsp;
+    frame->r15 = uc.uc_mcontext.gregs.r15; frame->r14 = uc.uc_mcontext.gregs.r14;
+    frame->r13 = uc.uc_mcontext.gregs.r13; frame->r12 = uc.uc_mcontext.gregs.r12;
+    frame->rbp = uc.uc_mcontext.gregs.rbp; frame->rbx = uc.uc_mcontext.gregs.rbx;
+    frame->r9  = uc.uc_mcontext.gregs.r9;  frame->r8  = uc.uc_mcontext.gregs.r8;
+    frame->r10 = uc.uc_mcontext.gregs.r10; frame->rdx = uc.uc_mcontext.gregs.rdx;
+    frame->rsi = uc.uc_mcontext.gregs.rsi; frame->rdi = uc.uc_mcontext.gregs.rdi;
+    frame->rax = uc.uc_mcontext.gregs.rax;
+    frame->r11 = uc.uc_mcontext.gregs.eflags; /* SYSRET restores RFLAGS from R11 */
+    frame->rcx = uc.uc_mcontext.gregs.rip;    /* SYSRET restores RIP from RCX */
+    cpu->user_rsp = uc.uc_mcontext.gregs.rsp;
 
-    /* Restore signal mask */
-    p->sig_blocked = uc.uc_sigmask;
+    /* Restore signal mask (first word of 128-byte sigset) */
+    p->sig_blocked = uc.uc_sigmask[0];
     p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER
      * we set frame->rax. We need RAX to be the saved value.
      * Trick: return the saved RAX so it ends up correct. */
-    return (long)uc.uc_mcontext.rax;
+    return (long)uc.uc_mcontext.gregs.rax;
 }
 
 /* Check and deliver signals in the SYSCALL return path.
