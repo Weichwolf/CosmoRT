@@ -366,8 +366,8 @@ $(BUILD)/kernel/context.o: $(SRC)/kernel/context.asm | $(BUILD)/kernel
 $(BUILD)/kernel/syscall_entry.o: $(SRC)/kernel/syscall_entry.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-$(BUILD)/kernel/memops.o: $(SRC)/kernel/memops.asm | $(BUILD)/kernel
-	$(NASM) -f elf64 -o $@ $<
+$(BUILD)/kernel/memops.o: $(SRC)/kernel/memops.c | $(BUILD)/kernel
+	$(CC) $(KCFLAGS) -o $@ $<
 
 # ── Kernel C (subdirectories) ────────────────────
 $(BUILD)/kernel/core/%.o: $(SRC)/kernel/core/%.c | $(BUILD)/kernel/core
