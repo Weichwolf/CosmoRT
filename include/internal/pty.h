@@ -32,6 +32,7 @@ typedef struct {
     /* Ownership */
     int      slave_pid;
     int      in_use;
+    int      fg_pgid;       /* foreground process group (TIOCSPGRP/TIOCGPGRP) */
 
     /* Blocked reader (thread waiting for input data) */
     struct thread *blocked_reader;

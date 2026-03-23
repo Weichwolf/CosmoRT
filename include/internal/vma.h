@@ -11,6 +11,7 @@
 
 /* VMA flags (internal, stored in vma_t.flags upper bits) */
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */
+#define VMA_SHARED    0x200  /* MAP_SHARED: fork shares physical pages */
 
 typedef struct vma {
     uint64_t start;      /* page-aligned start address */

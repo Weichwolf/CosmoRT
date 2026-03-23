@@ -862,14 +862,29 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     /* Terminal set: accept and ignore (no real termios backend) */
     if (request == TCSETS || request == TCSETSW || request == TCSETSF)
         return 0;
-    /* Controlling terminal / process group stubs */
-    if (request == TIOCSCTTY || request == TIOCNOTTY ||
-        request == TIOCSPGRP)
+    /* Controlling terminal */
+    if (request == TIOCSCTTY || request == TIOCNOTTY)
         return 0;
+    /* Foreground process group: stored per-PTY */
+    if (request == TIOCSPGRP) {
+        if (!user_ok(arg, 4)) return -EFAULT;
+        int32_t pgid;
+        kmemcpy(&pgid, (const void *)arg, 4);
+        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
+            pty_t *pt = (pty_t *)fde->obj;
+            pt->fg_pgid = pgid;
+        }
+        return 0;
+    }
     if (request == TIOCGPGRP) {
         if (!user_ok(arg, 4)) return -EFAULT;
-        process_t *gp = proc_current();
-        int32_t pgid = gp ? (int32_t)gp->pgid : 1;
+        int32_t pgid;
+        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
+            pty_t *pt = (pty_t *)fde->obj;
+            pgid = (int32_t)pt->fg_pgid;
+        } else {
+            pgid = (int32_t)p->pgid;
+        }
         kmemcpy((void *)arg, &pgid, 4);
         return 0;
     }

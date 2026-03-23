@@ -212,12 +212,28 @@ int cosmo_pci_config_write(int bus, int dev, int fn, int reg, uint32_t val) {
 /* ── Firmware Loading ────────────────────────────── */
 
 int cosmo_fw_load(const char *name, void **data, size_t *len) {
-    /* TODO: load from ramfs/initrd when VFS is available.
-     * For now: no firmware blobs embedded. */
-    (void)name;
-    if (data) *data = 0;
-    if (len) *len = 0;
-    return -ENOENT;
+    if (!name || !data || !len) return -EINVAL;
+
+    /* Build path: /lib/firmware/<name> */
+    char path[320];
+    const char *prefix = "/lib/firmware/";
+    int pi = 0;
+    while (*prefix && pi < 300) path[pi++] = *prefix++;
+    while (*name && pi < 318) path[pi++] = *name++;
+    path[pi] = '\0';
+
+    extern int vfs_read_file(const char *, uint8_t **, size_t *);
+    uint8_t *fwdata = 0;
+    size_t fwlen = 0;
+    int r = vfs_read_file(path, &fwdata, &fwlen);
+    if (r < 0) {
+        *data = 0;
+        *len = 0;
+        return -ENOENT;
+    }
+    *data = fwdata;
+    *len = fwlen;
+    return 0;
 }
 
 /* ── Monotonic Time ──────────────────────────────── */

@@ -833,6 +833,60 @@ static void test_epollet(void) {
     sc1(SYS_close, efd);
 }
 
+/* ── MAP_SHARED fork test ─────────────────── */
+
+#define SYS_ioctl          16
+#define MAP_SHARED_ANON    0x21  /* MAP_SHARED | MAP_ANONYMOUS */
+#define TIOCSPGRP          0x5410
+#define TIOCGPGRP          0x540F
+
+static void test_map_shared(void) {
+    puts("\n[MAP_SHARED]\n");
+
+    /* mmap a shared anonymous page */
+    long addr = sc6(SYS_mmap, 0, 4096, PROT_RW, MAP_SHARED_ANON, -1, 0);
+    check("mmap MAP_SHARED|ANON", addr > 0);
+    if (addr <= 0) return;
+
+    volatile int32_t *shared = (volatile int32_t *)addr;
+    *shared = 0;
+
+    long pid = sc0(57 /* SYS_fork */);
+    if (pid == 0) {
+        /* Child: write sentinel, exit */
+        *shared = 0xCAFE;
+        sc1(SYS_exit_group, 0);
+        __builtin_unreachable();
+    }
+    check("fork returns child pid", pid > 0);
+
+    /* Wait for child */
+    int wstatus = 0;
+    sc4(61 /* SYS_wait4 */, (long)pid, (long)&wstatus, 0, 0);
+
+    /* Parent reads child's write through shared page */
+    check_val("shared page visible", (long)*shared, 0xCAFE);
+
+    sc2(SYS_munmap, addr, 4096);
+}
+
+/* ── ioctl job control test ───────────────── */
+
+static void test_ioctl_jobctl(void) {
+    puts("\n[ioctl jobctl]\n");
+
+    /* stdin (fd 0) should be a PTY slave in ktest.
+     * Set foreground pgid, read it back. */
+    int32_t set_pgid = 42;
+    long r = sc3(SYS_ioctl, 0, TIOCSPGRP, (long)&set_pgid);
+    check_val("TIOCSPGRP returns 0", r, 0);
+
+    int32_t got_pgid = 0;
+    r = sc3(SYS_ioctl, 0, TIOCGPGRP, (long)&got_pgid);
+    check_val("TIOCGPGRP returns 0", r, 0);
+    check_val("TIOCGPGRP roundtrip", (long)got_pgid, 42);
+}
+
 /* ── Main ────────────────────────────────────── */
 
 void _start(void) {
@@ -856,6 +910,8 @@ void _start(void) {
     test_sigaltstack();
     test_poll_infinite();
     test_epollet();
+    test_map_shared();
+    test_ioctl_jobctl();
 
     puts("\n=== ");
     put_int((long)passes); puts(" passed, ");

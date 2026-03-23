@@ -100,6 +100,17 @@ int hyperv_fb_init(void) {
     while (!fb_resp_ready && hw_ms() < deadline)
         __asm__ volatile("pause");
 
-    serial_puts("hyperv_fb: ready (stub)\n");
+    /* TODO Hyper-V Framebuffer — needs:
+     * 1. Receive SYNTHVID_MSG_VERSION_RESPONSE, check is_accepted.
+     * 2. Send SYNTHVID_MSG_VRAM_LOCATION with a DMA-allocated VRAM
+     *    buffer (cosmo_dma_alloc, ~8MB for 1920x1080x32). Wait for
+     *    SYNTHVID_MSG_VRAM_LOCATION_ACK.
+     * 3. Send SYNTHVID_MSG_SITUATION_UPDATE with desired resolution.
+     *    Wait for ACK with actual resolution.
+     * 4. Register VRAM buffer as the fb.c framebuffer (fb_set_buffer)
+     *    so VT rendering writes there.
+     * 5. On dirty regions: send SYNTHVID_MSG_DIRT rectangles to tell
+     *    the host which parts of VRAM changed (performance). */
+    serial_puts("hyperv_fb: ready (stub — no VRAM mapped)\n");
     return 0;
 }

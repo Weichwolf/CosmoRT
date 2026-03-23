@@ -444,23 +444,31 @@ static void copy_one_vma(vma_t *v, void *arg) {
     vma_t *cv = vma_insert(ctx->dst_root, v->start, v->end, v->prot, v->flags);
     if (!cv) { ctx->err = 1; return; }
 
-    /* Copy pages */
+    /* MAP_SHARED anonymous: share same physical pages (no copy) */
+    int shared = (v->flags & VMA_SHARED);
+
     for (uint64_t va = v->start; va < v->end; va += 4096) {
         uint64_t pte = read_pte(ctx->src_pml4, va);
         if (!(pte & PTE_PRESENT)) continue;
 
-        uint64_t *new_page = alloc_page();
-        if (!new_page) { ctx->err = 1; return; }
-
-        /* Copy content from parent page */
         uint64_t src_phys = pte & PTE_ADDR_MASK;
-        void *src = phys_to_virt(src_phys);
-        kmemcpy(new_page, src, 4096);
 
-        if (map_user_page(ctx->dst_pml4, va, virt_to_phys(new_page), v->prot) < 0) {
-            page_free(new_page);
-            ctx->err = 1;
-            return;
+        if (shared) {
+            /* Map same physical page into child — writes visible in both */
+            if (map_user_page(ctx->dst_pml4, va, src_phys, v->prot) < 0) {
+                ctx->err = 1;
+                return;
+            }
+        } else {
+            /* Private: deep-copy page */
+            uint64_t *new_page = alloc_page();
+            if (!new_page) { ctx->err = 1; return; }
+            kmemcpy(new_page, phys_to_virt(src_phys), 4096);
+            if (map_user_page(ctx->dst_pml4, va, virt_to_phys(new_page), v->prot) < 0) {
+                page_free(new_page);
+                ctx->err = 1;
+                return;
+            }
         }
     }
 }
@@ -523,6 +531,29 @@ void vma_free_tree(vma_t *node) {
     vma_free(node);
 }
 
+/* Clear PTEs for shared VMAs without freeing physical pages (owner frees them).
+ * Must run BEFORE free_address_space which frees every present page. */
+static void unmap_shared_vmas(vma_t *node, uint64_t *pml4) {
+    if (!node || !pml4) return;
+    unmap_shared_vmas(node->left, pml4);
+    if (node->flags & VMA_SHARED) {
+        for (uint64_t va = node->start; va < node->end; va += 4096) {
+            int pml4i = (va >> 39) & 0x1FF;
+            if (!(pml4[pml4i] & PTE_PRESENT)) continue;
+            uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[pml4i] & PTE_ADDR_MASK);
+            int pdpti = (va >> 30) & 0x1FF;
+            if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+            int pdi = (va >> 21) & 0x1FF;
+            if (!(pd[pdi] & PTE_PRESENT)) continue;
+            uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+            int pti = (va >> 12) & 0x1FF;
+            pt[pti] = 0;  /* clear PTE, don't free the page */
+        }
+    }
+    unmap_shared_vmas(node->right, pml4);
+}
+
 /* ── Process cleanup (2.3) ───────────────────────── */
 
 void proc_cleanup(process_t *p) {
@@ -551,6 +582,10 @@ void proc_cleanup(process_t *p) {
     p->threads = 0;
     p->main_thread = 0;
     p->thread_count = 0;
+
+    /* Shared VMA pages belong to the allocator — clear PTEs so
+     * free_address_space doesn't double-free them. */
+    unmap_shared_vmas(p->vma_root, p->pml4);
 
     /* Free address space (pages + page tables) */
     free_address_space(p->pml4);

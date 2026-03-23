@@ -149,10 +149,15 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
 
-    /* MAP_SHARED accepted but treated as MAP_PRIVATE (no shared-memory semantics yet).
-     * TODO: real shared mappings for IPC/cl_ring */
-    if (flags & MAP_SHARED)
-        flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
+    /* MAP_SHARED|MAP_ANONYMOUS: mark VMA as shared so fork maps the same
+     * physical pages instead of copying (changes visible across processes).
+     * File-backed MAP_SHARED not supported — silently downgrade to PRIVATE. */
+    if (flags & MAP_SHARED) {
+        if (flags & MAP_ANONYMOUS)
+            flags |= VMA_SHARED;
+        else
+            flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
+    }
 
     /* Validate file-backed mmap parameters */
     int is_file = (fd >= 0 && !(flags & MAP_ANONYMOUS));
