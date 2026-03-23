@@ -456,7 +456,13 @@ int vfs_open(const char *path, int flags, int mode) {
     const char *pname = procfs_name(path);
     if (pname) {
         int handle = procfs_open(pname);
-        if (!handle) return -ENOENT;
+        if (!handle) {
+            /* TEMP: log missing procfs paths */
+            serial_puts("procfs: miss /proc/");
+            serial_puts(pname);
+            serial_putchar('\n');
+            return -ENOENT;
+        }
 
         procfs_fd_t *pf = procfs_fd_alloc();
         if (!pf) return -ENOMEM;

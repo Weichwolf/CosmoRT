@@ -279,6 +279,98 @@ void procfs_fd_free(procfs_fd_t *pf) {
         fd_used[idx] = 0;
 }
 
+/* ── /proc/self/status ──────────────────────────── */
+
+static int procfs_self_status(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    process_t *p = proc_current();
+    if (!p) return 0;
+
+    char tmp[512];
+    int pos = 0;
+    pos = append_str(tmp, pos, 512, "Name:\tnode\n");
+    pos = append_str(tmp, pos, 512, "Pid:\t");
+    pos = append_int(tmp, pos, 512, (long)p->pid);
+    pos = append_str(tmp, pos, 512, "\nPPid:\t");
+    pos = append_int(tmp, pos, 512, (long)p->parent_pid);
+    pos = append_str(tmp, pos, 512, "\nThreads:\t");
+    pos = append_int(tmp, pos, 512, (long)p->thread_count);
+    pos = append_str(tmp, pos, 512, "\nVmSize:\t0 kB\nVmRSS:\t0 kB\n");
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/self/stat ───────────────────────────────── */
+
+static int procfs_self_stat(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    process_t *p = proc_current();
+    if (!p) return 0;
+
+    char tmp[256];
+    int pos = 0;
+    pos = append_int(tmp, pos, 256, (long)p->pid);
+    pos = append_str(tmp, pos, 256, " (node) R ");
+    pos = append_int(tmp, pos, 256, (long)p->parent_pid);
+    /* pgid sid tty_nr tpgid flags minflt cminflt majflt cmajflt
+     * utime stime cutime cstime priority nice num_threads itrealvalue
+     * starttime vsize rss ... */
+    pos = append_str(tmp, pos, 256, " ");
+    pos = append_int(tmp, pos, 256, (long)p->pgid);
+    pos = append_str(tmp, pos, 256, " ");
+    pos = append_int(tmp, pos, 256, (long)p->sid);
+    pos = append_str(tmp, pos, 256, " 0 0 0 0 0 0 0 0 0 0 0 20 0 ");
+    pos = append_int(tmp, pos, 256, (long)p->thread_count);
+    pos = append_str(tmp, pos, 256, " 0 0 0 0");
+    /* Fill remaining fields with zeros */
+    for (int i = 0; i < 20 && pos < 250; i++)
+        pos = append_str(tmp, pos, 256, " 0");
+    pos = append_str(tmp, pos, 256, "\n");
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/sys/vm/overcommit_memory ────────────────── */
+
+static int procfs_overcommit(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    if (offset > 0) return 0;
+    if (size < 2) return 0;
+    buf[0] = '0'; buf[1] = '\n';
+    return 2;
+}
+
+/* ── /proc/self/statm ──────────────────────────────── */
+
+static int procfs_self_statm(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    /* size resident shared text lib data dt (in pages) */
+    const char *s = "0 0 0 0 0 0 0\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+/* ── /proc/self/cgroup ─────────────────────────────── */
+
+static int procfs_self_cgroup(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "0::/\n";
+    int len = 5;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
 /* ── Init ────────────────────────────────────────── */
 
 __attribute__((cold))
@@ -288,5 +380,10 @@ void procfs_init(void) {
     procfs_register("meminfo", procfs_meminfo, 0);
     procfs_register("cpuinfo", procfs_cpuinfo, 0);
     procfs_register("self/maps", procfs_self_maps, 0);
-    serial_puts("procfs: init (4 entries)\n");
+    procfs_register("self/status", procfs_self_status, 0);
+    procfs_register("self/stat", procfs_self_stat, 0);
+    procfs_register("self/statm", procfs_self_statm, 0);
+    procfs_register("sys/vm/overcommit_memory", procfs_overcommit, 0);
+    procfs_register("self/cgroup", procfs_self_cgroup, 0);
+    serial_puts("procfs: init (9 entries)\n");
 }
