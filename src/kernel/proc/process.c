@@ -69,6 +69,7 @@ thread_t *thread_alloc(void) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         t->tid = next_tid++;
+        if (next_tid >= TID_TABLE_MAX) next_tid = 2; /* wrap */
         if (t->tid < TID_TABLE_MAX)
             tid_table[t->tid] = t;
         spin_unlock_irq(&pid_lock, flags);
@@ -91,6 +92,7 @@ static process_t *proc_alloc(void) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         p->pid = (uint32_t)next_pid++;
+        if (next_pid >= (int)PID_TABLE_MAX) next_pid = 2; /* wrap */
         if (p->pid < PID_TABLE_MAX)
             pid_table[p->pid] = p;
         spin_unlock_irq(&pid_lock, flags);
