@@ -9,7 +9,7 @@ Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
 - [ ] TD8: Cold-Path Strings aus Hot-Path extrahieren (irq_dispatch etc.)
 - [ ] TD9: Bottom-Up Sortierung aller .c Dateien
 - [ ] TD10: Syscall-Fuzzer (zufaellige Args, Kernel muss ueberleben)
-- [ ] TD12: X-Macro Syscall-Tabelle (laeuft)
+- [x] TD12: X-Macro Syscall-Tabelle ✓
 - [ ] TD13: copy_from_user/copy_to_user Pattern
 - [ ] TD14: Loopback (lo) — 127.0.0.1 direkt in RX-Queue
 
