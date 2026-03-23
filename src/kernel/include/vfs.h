@@ -13,9 +13,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* O_*, SEEK_*, S_IF*, k_stat — all from cosmo_uapi.h */
+/* O_*, SEEK_*, S_IF*, k_stat — all from linux.h */
 #define __KERNEL__
-#include "cosmo_uapi.h"
+#include "linux.h"
 
 /* Node types */
 #define VFS_FILE    1

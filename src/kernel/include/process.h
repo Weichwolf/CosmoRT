@@ -10,7 +10,7 @@
 #include "fd.h"
 #include "vma.h"
 
-/* k_sigaction, SA_* flags — from cosmo_uapi.h (via syscall.h) */
+/* k_sigaction, SA_* flags — from linux.h (via syscall.h) */
 
 /* Process states */
 #define PROC_FREE    0

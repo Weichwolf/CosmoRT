@@ -8,7 +8,7 @@
 
 #include "virtio_net.h"
 #include "virtio.h"
-#include "cosmo_hw.h"
+#include "cosmo.h"
 
 /* ── Virtio-net header (prepended to every packet) ── */
 

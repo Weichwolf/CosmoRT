@@ -15,7 +15,7 @@
 #include "vfs.h"
 #include "memops.h"
 #include "socket.h"
-#include "cosmo_hw.h"
+#include "cosmo.h"
 #include "net_port.h"
 #include "irq.h"
 #include "spinlock.h"
@@ -46,7 +46,7 @@ typedef struct {
     uint64_t rcx;       /* user RIP */
 } syscall_frame_t;
 
-/* clone flags — from cosmo_uapi.h (via syscall.h) */
+/* clone flags — from linux.h (via syscall.h) */
 
 /* PTE flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -144,7 +144,7 @@ long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
 
-/* k_timeval — from cosmo_uapi.h (via syscall.h) */
+/* k_timeval — from linux.h (via syscall.h) */
 
 /* ── Forward declarations: sys_time.c ── */
 long do_clock_gettime(int clk_id, struct k_timespec *tp);

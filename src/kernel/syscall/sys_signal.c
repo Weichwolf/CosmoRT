@@ -283,7 +283,7 @@ void check_pending_signals(void) {
 
 /* ── Signals (2.4) ───────────────────────────────── */
 
-/* SIG_DFL, SIG_IGN, SIGKILL, SIGSEGV etc. — from cosmo_uapi.h */
+/* SIG_DFL, SIG_IGN, SIGKILL, SIGSEGV etc. — from linux.h */
 
 long do_rt_sigaction(int sig, const void *act_,
                             void *oldact_, size_t sigsetsize) {

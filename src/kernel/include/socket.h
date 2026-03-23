@@ -10,12 +10,52 @@
 #define SOCK_UNUSED    0
 #define SOCK_CREATED   1
 #define SOCK_CONNECTED 2
+#define SOCK_LISTENING 3
+#define SOCK_SHUTDOWN  4
 
+/* Accept queue capacity */
+#define ACCEPT_QUEUE_MAX 8
+
+/* Socket option flags (bitfield) */
+#define SOCKF_REUSEADDR  (1 << 0)
+#define SOCKF_KEEPALIVE  (1 << 1)
+#define SOCKF_NODELAY    (1 << 2)
+
+typedef struct socket socket_t;
+
+/* Pending connection in accept queue */
 typedef struct {
     net_tcp_t tcp;
+    uint32_t  remote_ip;   /* big-endian */
+    uint16_t  remote_port; /* big-endian */
+    uint16_t  _pad;
+} accept_conn_t;
+
+struct socket {
+    net_tcp_t tcp;
     int       state;
-    int       refcount;   /* number of FDs referencing this socket */
-} socket_t;
+    int       refcount;    /* number of FDs referencing this socket */
+
+    /* bind state */
+    uint32_t  local_ip;    /* big-endian */
+    uint16_t  local_port;  /* big-endian */
+
+    /* connect/accept state */
+    uint32_t  remote_ip;   /* big-endian */
+    uint16_t  remote_port; /* big-endian */
+
+    /* shutdown flags */
+    uint8_t   shut_rd;
+    uint8_t   shut_wr;
+
+    /* socket options */
+    uint32_t  sockflags;
+
+    /* accept queue (only for listening sockets) */
+    accept_conn_t accept_q[ACCEPT_QUEUE_MAX];
+    int           accept_head;
+    int           accept_count;
+};
 
 /* Syscall implementations */
 long do_socket(int domain, int type, int protocol);
@@ -31,6 +71,7 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
 long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen);
 long do_getsockname(int fd, void *addr, int *addrlen);
 long do_getpeername(int fd, void *addr, int *addrlen);
+long do_shutdown(int fd, int how);
 long do_poll(void *fds, int nfds, int timeout);
 
 /* Called from do_read/do_write/do_close for FD_SOCKET */

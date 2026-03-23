@@ -7,9 +7,9 @@
 #include "spinlock.h"
 
 /* k_timespec, k_itimerspec, epoll_event, EPOLL_*, EFD_*, TFD_*, IN_*
- * — all from cosmo_uapi.h */
+ * — all from linux.h */
 #define __KERNEL__
-#include "cosmo_uapi.h"
+#include "linux.h"
 
 /* ── eventfd_t — exposed so syscall.c can check .counter for readiness ── */
 

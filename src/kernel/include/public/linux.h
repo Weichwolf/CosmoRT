@@ -224,6 +224,7 @@ typedef long               ssize_t;
 #define ENOTEMPTY       39
 #define ELOOP           40
 #define ENOTSOCK        88
+#define EDESTADDRREQ    89
 #define EMSGSIZE        90
 #define EPROTONOSUPPORT 93
 #define EOPNOTSUPP      95
@@ -356,6 +357,13 @@ typedef long               ssize_t;
 #define SOCK_DGRAM      2
 #define SOL_SOCKET      1
 #define SO_REUSEADDR    2
+#define SO_KEEPALIVE    9
+#define IPPROTO_TCP     6
+#define TCP_NODELAY     1
+
+#define SHUT_RD         0
+#define SHUT_WR         1
+#define SHUT_RDWR       2
 
 /* ══════════════════════════════════════════════════════════════════
  * epoll / eventfd / timerfd / inotify constants

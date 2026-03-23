@@ -1,7 +1,7 @@
 /* CosmoRT Hardware Primitives — the ENTIRE hardware abstraction for drivers
  *
  * This is the public driver API. Drivers in src/drivers/ include ONLY this
- * header (plus cosmo_uapi.h). No kernel internals (process.h, sched.h, etc.).
+ * header (plus linux.h). No kernel internals (process.h, sched.h, etc.).
  *
  * 5 core primitives + DMA free + PCI write + driver-safe utilities.
  * Same API works for kernel-mode and future userspace drivers.

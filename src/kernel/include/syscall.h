@@ -1,13 +1,13 @@
 /* CosmoRT POSIX Syscall Layer
  *
- * All constants (SYS_*, errno, flags) live in cosmo_uapi.h.
+ * All constants (SYS_*, errno, flags) live in linux.h.
  * This header re-exports them and declares kernel-internal syscall functions.
  */
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
 #define __KERNEL__
-#include "cosmo_uapi.h"
+#include "linux.h"
 
 /* Clean up a single FD entry (socket, pipe, etc.) during process exit.
  * Does NOT free FD_FILE — caller handles that via vfs.

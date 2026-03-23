@@ -25,7 +25,7 @@
 #define FD_PTY_SLAVE  12
 #define FD_UNIX_SOCK  13
 
-/* O_RDONLY, O_WRONLY, O_RDWR, O_NONBLOCK — from cosmo_uapi.h */
+/* O_RDONLY, O_WRONLY, O_RDWR, O_NONBLOCK — from linux.h */
 
 #define FD_MAX 256
 

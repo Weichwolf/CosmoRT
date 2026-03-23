@@ -5,9 +5,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* PROT_* and MAP_* flags come from cosmo_uapi.h (via syscall.h or direct) */
+/* PROT_* and MAP_* flags come from linux.h (via syscall.h or direct) */
 #define __KERNEL__
-#include "cosmo_uapi.h"
+#include "linux.h"
 
 /* VMA flags (internal, stored in vma_t.flags upper bits) */
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */

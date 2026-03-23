@@ -24,7 +24,7 @@ KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -Wall -Wextra -Werror -O2 -c \
            -I$(SRC)/kernel/include/public -I$(SRC)/kernel/include -I$(SRC)/kernel -std=c11
 
-# Drivers: only public headers (cosmo_uapi.h, cosmo_hw.h) + own subdirectory
+# Drivers: only public headers (linux.h, cosmo.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -Wall -Wextra -Werror -O2 -c \
            -I$(SRC)/kernel/include/public -std=c11

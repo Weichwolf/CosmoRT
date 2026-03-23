@@ -267,7 +267,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_GETPEERNAME: return do_getpeername((int)a1, (void *)a2, (int *)a3);
     case SYS_SENDMSG:     return usock_sendmsg((int)a1, (const void *)a2, (int)a3);
     case SYS_RECVMSG:     return usock_recvmsg((int)a1, (void *)a2, (int)a3);
-    case SYS_SHUTDOWN:     return 0;
+    case SYS_SHUTDOWN:     return do_shutdown((int)a1, (int)a2);
     case SYS_SOCKETPAIR: {
         if ((int)a1 != 1 /* AF_UNIX */) return -EAFNOSUPPORT;
         return usock_socketpair((int)a2, (int *)a4);

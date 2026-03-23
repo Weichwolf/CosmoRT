@@ -3,7 +3,7 @@
 #define KTEST_H
 
 /* All constants (syscall numbers, errno, flags, structs) from uapi */
-#include "cosmo_uapi.h"
+#include "linux.h"
 
 /* ── Syscall wrappers ─────────────────────────── */
 

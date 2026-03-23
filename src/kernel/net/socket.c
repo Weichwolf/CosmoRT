@@ -35,6 +35,9 @@ static socket_t *sock_alloc(void) {
     spin_lock_irq(&sock_lock, &flags);
     for (int i = 0; i < MAX_SOCKETS; i++) {
         if (sockets[i].state == SOCK_UNUSED) {
+            /* Zero entire struct */
+            for (int j = 0; j < (int)sizeof(socket_t); j++)
+                ((uint8_t *)&sockets[i])[j] = 0;
             sockets[i].state = SOCK_CREATED;
             spin_unlock_irq(&sock_lock, flags);
             return &sockets[i];
@@ -50,6 +53,11 @@ static socket_t *sock_from_fd(int fd) {
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde || fde->type != FD_SOCKET) return 0;
     return (socket_t *)fde->obj;
+}
+
+/* Byte-swap helpers */
+static inline uint16_t bswap16(uint16_t v) {
+    return (uint16_t)((v >> 8) | (v << 8));
 }
 
 /* ── SYS_SOCKET (41) ─────────────────────────────── */
@@ -73,8 +81,8 @@ long do_socket(int domain, int type, int protocol) {
     if (!p) { s->state = SOCK_UNUSED; return -EFAULT; }
 
     int flags = 0x02; /* O_RDWR */
-    if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC → O_CLOEXEC */
-    if (type & 0x800) flags |= 0x800;          /* SOCK_NONBLOCK → O_NONBLOCK */
+    if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC -> O_CLOEXEC */
+    if (type & 0x800) flags |= 0x800;          /* SOCK_NONBLOCK -> O_NONBLOCK */
 
     int fd = fd_alloc(&p->fds, FD_SOCKET, s, flags);
     if (fd < 0) { s->state = SOCK_UNUSED; return -EMFILE; }
@@ -97,7 +105,8 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state == SOCK_CONNECTED) return -EINVAL;
+    if (s->state == SOCK_CONNECTED) return -EISCONN;
+    if (s->state == SOCK_LISTENING) return -EISCONN;
 
     /* Copy sockaddr to kernel to prevent TOCTOU */
     struct k_sockaddr_in k_addr;
@@ -110,7 +119,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
         (uint8_t)((ip_be >> 24) & 0xFF)
     };
     /* sin_port is big-endian, net_tcp_connect expects host uint16_t */
-    uint16_t port = (uint16_t)((k_addr.sin_port >> 8) | (k_addr.sin_port << 8));
+    uint16_t port = bswap16(k_addr.sin_port);
 
     /* Zero the tcp struct */
     for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
@@ -118,6 +127,8 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
     if (net_tcp_connect(&s->tcp, dst_ip, port) < 0) return -ETIMEDOUT;
     s->state = SOCK_CONNECTED;
+    s->remote_ip = k_addr.sin_addr;
+    s->remote_port = k_addr.sin_port;
     return 0;
 }
 
@@ -129,6 +140,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (s->shut_wr) return -EPIPE;
     /* Bounce user buffer to kernel to prevent TOCTOU with NIC DMA */
     uint8_t kbuf[1500];
     long todo = len > 1500 ? 1500 : len;
@@ -145,6 +157,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (s->shut_rd) return 0; /* EOF */
     int r = net_tcp_recv(&s->tcp, buf, (int)len, NET_TCP_TIMEOUT_MS);
     return r < 0 ? -EIO : r;
 }
@@ -154,6 +167,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
 long socket_read(int fd, void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (s->shut_rd) return 0;
     int r = net_tcp_recv(&s->tcp, buf, (int)count, NET_TCP_TIMEOUT_MS);
     return r < 0 ? -EIO : r;
 }
@@ -161,6 +175,7 @@ long socket_read(int fd, void *buf, long count) {
 long socket_write(int fd, const void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (s->shut_wr) return -EPIPE;
     int r = net_tcp_send(&s->tcp, buf, (int)count);
     return r < 0 ? -EIO : r;
 }
@@ -177,7 +192,7 @@ long socket_close(int fd) {
     return 0;
 }
 
-/* ── Stubs ───────────────────────────────────────── */
+/* ── SYS_BIND (49) ───────────────────────────────── */
 
 long do_bind(int fd, const void *addr, int addrlen) {
     /* Check if AF_UNIX */
@@ -187,9 +202,41 @@ long do_bind(int fd, const void *addr, int addrlen) {
         if (fde && fde->type == FD_UNIX_SOCK)
             return usock_bind(fd, (const struct k_sockaddr_un *)addr, addrlen);
     }
-    /* AF_INET bind: stub */
-    (void)addr; (void)addrlen; return 0;
+
+    if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
+    if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
+
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -EBADF;
+    if (s->state != SOCK_CREATED) return -EINVAL;
+
+    struct k_sockaddr_in k_addr;
+    kmemcpy(&k_addr, addr, sizeof(k_addr));
+    if (k_addr.sin_family != 2 /* AF_INET */) return -EAFNOSUPPORT;
+
+    /* Check for port conflict (unless SO_REUSEADDR) */
+    uint64_t lflags;
+    spin_lock_irq(&sock_lock, &lflags);
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        socket_t *o = &sockets[i];
+        if (o == s || o->state == SOCK_UNUSED) continue;
+        if (o->local_port == k_addr.sin_port &&
+            (o->local_ip == k_addr.sin_addr || k_addr.sin_addr == 0 || o->local_ip == 0)) {
+            if (!(s->sockflags & SOCKF_REUSEADDR)) {
+                spin_unlock_irq(&sock_lock, lflags);
+                return -EADDRINUSE;
+            }
+        }
+    }
+    spin_unlock_irq(&sock_lock, lflags);
+
+    s->local_ip = k_addr.sin_addr;
+    s->local_port = k_addr.sin_port;
+    return 0;
 }
+
+/* ── SYS_LISTEN (50) ─────────────────────────────── */
+
 long do_listen(int fd, int backlog) {
     process_t *p = proc_current();
     if (p) {
@@ -197,8 +244,21 @@ long do_listen(int fd, int backlog) {
         if (fde && fde->type == FD_UNIX_SOCK)
             return usock_listen(fd, backlog);
     }
-    (void)backlog; return 0;
+
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -EBADF;
+    if (s->state != SOCK_CREATED) return -EINVAL;
+    if (s->local_port == 0) return -EDESTADDRREQ;
+
+    (void)backlog; /* accept queue is fixed at ACCEPT_QUEUE_MAX */
+    s->state = SOCK_LISTENING;
+    s->accept_head = 0;
+    s->accept_count = 0;
+    return 0;
 }
+
+/* ── SYS_ACCEPT (43) / SYS_ACCEPT4 (288) ─────────── */
+
 long do_accept(int fd, void *addr, int *addrlen) {
     process_t *p = proc_current();
     if (p) {
@@ -206,25 +266,225 @@ long do_accept(int fd, void *addr, int *addrlen) {
         if (fde && fde->type == FD_UNIX_SOCK)
             return usock_accept4(fd, addr, addrlen, 0);
     }
-    (void)addr; (void)addrlen; return -ENOSYS;
+
+    socket_t *ls = sock_from_fd(fd);
+    if (!ls) return -EBADF;
+    if (ls->state != SOCK_LISTENING) return -EINVAL;
+
+    /* TODO: blocking accept with incoming SYN handling.
+     * The TCP state machine in net.c only has client-side (SYN->SYN-ACK->ESTABLISHED).
+     * Full server support requires: receive SYN -> send SYN-ACK -> ESTABLISHED,
+     * which needs net_poll() integration to dispatch incoming SYNs to listening sockets.
+     *
+     * For now: non-blocking check of accept queue. If empty, return -EAGAIN.
+     * When the server path is wired into net_poll(), this will work end-to-end. */
+
+    uint64_t flags;
+    spin_lock_irq(&sock_lock, &flags);
+    if (ls->accept_count == 0) {
+        spin_unlock_irq(&sock_lock, flags);
+        return -EAGAIN;
+    }
+
+    accept_conn_t *ac = &ls->accept_q[ls->accept_head];
+    ls->accept_head = (ls->accept_head + 1) % ACCEPT_QUEUE_MAX;
+    ls->accept_count--;
+
+    /* Allocate new socket for the accepted connection */
+    socket_t *ns = 0;
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if (sockets[i].state == SOCK_UNUSED) {
+            for (int j = 0; j < (int)sizeof(socket_t); j++)
+                ((uint8_t *)&sockets[i])[j] = 0;
+            ns = &sockets[i];
+            break;
+        }
+    }
+    if (!ns) {
+        spin_unlock_irq(&sock_lock, flags);
+        return -EMFILE;
+    }
+
+    /* Copy connection state */
+    kmemcpy(&ns->tcp, &ac->tcp, sizeof(net_tcp_t));
+    ns->state = SOCK_CONNECTED;
+    ns->refcount = 1;
+    ns->local_ip = ls->local_ip;
+    ns->local_port = ls->local_port;
+    ns->remote_ip = ac->remote_ip;
+    ns->remote_port = ac->remote_port;
+    spin_unlock_irq(&sock_lock, flags);
+
+    /* Allocate FD */
+    p = proc_current();
+    if (!p) { ns->state = SOCK_UNUSED; return -EFAULT; }
+    int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02 /* O_RDWR */);
+    if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
+
+    /* Fill in addr if requested */
+    if (addr && addrlen && user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in)) &&
+        user_ok((uint64_t)addrlen, sizeof(int))) {
+        struct k_sockaddr_in sa;
+        for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+        sa.sin_family = 2; /* AF_INET */
+        sa.sin_port = ac->remote_port;
+        sa.sin_addr = ac->remote_ip;
+        kmemcpy(addr, &sa, sizeof(sa));
+        int len = (int)sizeof(struct k_sockaddr_in);
+        kmemcpy(addrlen, &len, sizeof(int));
+    }
+
+    return newfd;
 }
+
+/* ── SYS_SETSOCKOPT (54) ─────────────────────────── */
+
 long do_setsockopt(int fd, int level, int optname, const void *optval, int optlen) {
-    (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; return 0;
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -EBADF;
+
+    if (optlen < (int)sizeof(int)) return -EINVAL;
+    if (!user_ok((uint64_t)optval, (size_t)optlen)) return -EFAULT;
+
+    int val;
+    kmemcpy(&val, optval, sizeof(int));
+
+    if (level == 1 /* SOL_SOCKET */) {
+        switch (optname) {
+        case 2 /* SO_REUSEADDR */:
+            if (val) s->sockflags |= SOCKF_REUSEADDR;
+            else     s->sockflags &= ~(uint32_t)SOCKF_REUSEADDR;
+            return 0;
+        case 9 /* SO_KEEPALIVE */:
+            if (val) s->sockflags |= SOCKF_KEEPALIVE;
+            else     s->sockflags &= ~(uint32_t)SOCKF_KEEPALIVE;
+            return 0;
+        default:
+            return 0; /* silently accept unknown SOL_SOCKET opts */
+        }
+    }
+
+    if (level == 6 /* IPPROTO_TCP */) {
+        switch (optname) {
+        case 1 /* TCP_NODELAY */:
+            if (val) s->sockflags |= SOCKF_NODELAY;
+            else     s->sockflags &= ~(uint32_t)SOCKF_NODELAY;
+            return 0;
+        default:
+            return 0;
+        }
+    }
+
+    return 0; /* unknown level: silently accept */
 }
+
+/* ── SYS_GETSOCKOPT (55) ─────────────────────────── */
+
 long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
-    (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; return 0;
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -EBADF;
+
+    if (!user_ok((uint64_t)optval, sizeof(int))) return -EFAULT;
+    if (!user_ok((uint64_t)optlen, sizeof(int))) return -EFAULT;
+
+    int val = 0;
+
+    if (level == 1 /* SOL_SOCKET */) {
+        switch (optname) {
+        case 2 /* SO_REUSEADDR */: val = (s->sockflags & SOCKF_REUSEADDR) ? 1 : 0; break;
+        case 9 /* SO_KEEPALIVE */: val = (s->sockflags & SOCKF_KEEPALIVE) ? 1 : 0; break;
+        default: break;
+        }
+    } else if (level == 6 /* IPPROTO_TCP */) {
+        switch (optname) {
+        case 1 /* TCP_NODELAY */: val = (s->sockflags & SOCKF_NODELAY) ? 1 : 0; break;
+        default: break;
+        }
+    }
+
+    kmemcpy(optval, &val, sizeof(int));
+    int len = (int)sizeof(int);
+    kmemcpy(optlen, &len, sizeof(int));
+    return 0;
 }
+
+/* ── SYS_GETSOCKNAME (51) ────────────────────────── */
+
 long do_getsockname(int fd, void *addr, int *addrlen) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -ENOTSOCK;
-    (void)addr; (void)addrlen;
+
+    if (!user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in))) return -EFAULT;
+    if (!user_ok((uint64_t)addrlen, sizeof(int))) return -EFAULT;
+
+    struct k_sockaddr_in sa;
+    for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+    sa.sin_family = 2; /* AF_INET */
+    sa.sin_port = s->local_port;
+    sa.sin_addr = s->local_ip;
+
+    kmemcpy(addr, &sa, sizeof(sa));
+    int len = (int)sizeof(struct k_sockaddr_in);
+    kmemcpy(addrlen, &len, sizeof(int));
     return 0;
 }
+
+/* ── SYS_GETPEERNAME (52) ────────────────────────── */
+
 long do_getpeername(int fd, void *addr, int *addrlen) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -ENOTSOCK;
     if (s->state != SOCK_CONNECTED) return -ENOTCONN;
-    (void)addr; (void)addrlen;
+
+    if (!user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in))) return -EFAULT;
+    if (!user_ok((uint64_t)addrlen, sizeof(int))) return -EFAULT;
+
+    struct k_sockaddr_in sa;
+    for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+    sa.sin_family = 2; /* AF_INET */
+    sa.sin_port = s->remote_port;
+    sa.sin_addr = s->remote_ip;
+
+    kmemcpy(addr, &sa, sizeof(sa));
+    int len = (int)sizeof(struct k_sockaddr_in);
+    kmemcpy(addrlen, &len, sizeof(int));
+    return 0;
+}
+
+/* ── SYS_SHUTDOWN (48) ───────────────────────────── */
+
+long do_shutdown(int fd, int how) {
+    /* Check AF_UNIX first */
+    process_t *p = proc_current();
+    if (p) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (fde && fde->type == FD_UNIX_SOCK)
+            return 0; /* AF_UNIX shutdown: no-op for now */
+    }
+
+    socket_t *s = sock_from_fd(fd);
+    if (!s) return -EBADF;
+    if (s->state != SOCK_CONNECTED && s->state != SOCK_LISTENING)
+        return -ENOTCONN;
+
+    switch (how) {
+    case 0 /* SHUT_RD */:
+        s->shut_rd = 1;
+        break;
+    case 1 /* SHUT_WR */:
+        s->shut_wr = 1;
+        if (s->state == SOCK_CONNECTED)
+            net_tcp_close(&s->tcp); /* sends FIN */
+        break;
+    case 2 /* SHUT_RDWR */:
+        s->shut_rd = 1;
+        s->shut_wr = 1;
+        if (s->state == SOCK_CONNECTED)
+            net_tcp_close(&s->tcp);
+        break;
+    default:
+        return -EINVAL;
+    }
     return 0;
 }
 
@@ -262,6 +522,11 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
                 if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
                     kfds[i].revents |= POLLIN;
             }
+            /* Listening sockets: POLLIN when accept queue non-empty */
+            if ((kfds[i].events & POLLIN) && s->state == SOCK_LISTENING) {
+                if (s->accept_count > 0)
+                    kfds[i].revents |= POLLIN;
+            }
             if (kfds[i].events & POLLOUT) {
                 if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
             }
@@ -280,7 +545,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     }
     if (timeout == 0) return 0;
 
-    /* No events ready — block until woken by epoll_wake_all or timeout. */
+    /* No events ready -- block until woken by epoll_wake_all or timeout. */
     {
         extern uint64_t pml4[];
         extern void save_user_state_for_block(thread_t *t, long return_value);

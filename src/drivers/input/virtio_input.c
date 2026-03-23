@@ -10,7 +10,7 @@
 
 #include "virtio_input.h"
 #include "virtio.h"
-#include "cosmo_hw.h"
+#include "cosmo.h"
 
 /* ── Virtio-input event (from device) ──────────────── */
 

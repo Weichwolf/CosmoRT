@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-/* Higher-half direct physical map — canonical source is cosmo_hw.h */
-#include "cosmo_hw.h"
+/* Higher-half direct physical map — canonical source is cosmo.h */
+#include "cosmo.h"
 #define PHYS_OFFSET    COSMO_PHYS_OFFSET
 
 /* Ensure address is in direct map (handles EFI-relocated identity-mapped symbols).
