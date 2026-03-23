@@ -68,22 +68,22 @@ Node.js v22.14.0 + Claude Code 2.1.81 laufen. Interaktive bash via Serial.
 - [x] dmesg_ring spinlock (MED)
 - [x] brk-Shrink: VMA vor unmap (MED)
 
-### Audit 4 — In Arbeit (Agents)
-- [ ] #1 mmap file-backed Lock-Release Race
-- [ ] #2 mmap addr+length Ceiling-Check
-- [ ] #3 order_for_pages signed shift UB
-- [ ] #4 TLB-Shootdown Atomizitaet
-- [ ] #5 vma_find_free gap_end-size Wrap
-- [ ] #6 usock_write peer Use-after-free
-- [ ] #7 unix_socket ring ohne Sync
-- [ ] #8 Accept Socket Leak
-- [ ] #9 kill_one nicht-atomarer State-Wechsel
-- [ ] #11 deliver_signal stale RCX/R11
-- [ ] #12 sched_preempt Signal-Path RCX
-- [ ] #13 cosmofs_inode_read statischer Buffer
-- [ ] #14 futex pi_boost ohne Sched-Lock
-- [ ] #15 EPOLLET Extra-Event
-- [ ] #17 rt_sigreturn FS_BASE Validierung
+### Audit 4 — GEFIXT (via Agents)
+- [x] #1 mmap file-backed Lock-Release Race
+- [x] #2 mmap addr+length Ceiling-Check
+- [x] #3 order_for_pages signed shift UB (1U << order)
+- [x] #5 vma_find_free gap_end-size Wrap Guard
+- [x] #6 usock_write peer NULL-Check
+- [x] #7 unix_socket Ring-Lock
+- [x] #8 Accept Socket Cleanup
+- [x] #11 deliver_signal RCX/R11 = 0
+- [x] #13 cosmofs_inode_read unter Lock
+- [x] #14 futex pi_boost unter Lock
+- [x] #15 EPOLLET last_events Tracking
+- [x] #17 rt_sigreturn FS_BASE < 0x800000000000
+- [ ] #4 TLB-Shootdown Atomizitaet (Design-Review noetig)
+- [ ] #9 kill_one State-Transition-Atomizitaet
+- [ ] #12 sched_preempt Signal-Path RCX (bedingt durch #11 Fix)
 
 ### Verbleibend
 - [ ] SYS_COSMO_FW_LOAD: Output-Pointer
