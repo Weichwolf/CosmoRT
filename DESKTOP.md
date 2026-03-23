@@ -17,6 +17,19 @@ F12: cosmo$
 
 Kein Setup, kein Splash-Screen. Sofort 12 Shells.
 
+## Multi-Monitor
+
+12 Slots, aufgeteilt nach Anzahl Monitore:
+
+```
+1 Monitor:   F1-F12 → 12 Slots
+2 Monitore:  F1-F6 → Monitor 1,  F7-F12 → Monitor 2
+3 Monitore:  F1-F4 → Monitor 1,  F5-F8 → Monitor 2,  F9-F12 → Monitor 3
+```
+
+Jeder Monitor zeigt den aktiven Slot seiner Gruppe. F-Taste wechselt
+innerhalb der Gruppe. Fokus wechselt per Mausbewegung zwischen Monitoren.
+
 ## Eine App pro Slot
 
 Jeder Slot ist Fullscreen. Kein Fensterrahmen, kein Resize, kein Drag.
