@@ -114,7 +114,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
     case SYS_PRCTL:       return -ENOSYS;
     case SYS_SIGALTSTACK: return 0; /* accept but ignore */
-    case SYS_RT_SIGSUSPEND: return -EINTR; /* immediate return */
+    case SYS_RT_SIGSUSPEND: return do_rt_sigsuspend((const uint64_t *)a1, (size_t)a2);
     case SYS_TGKILL:      return do_kill((int)a2, (int)a3); /* route to kill */
     case SYS_GETRLIMIT:   return do_prlimit64(0, (int)a1, 0, (void *)a2);
     case SYS_DUP: {
@@ -157,7 +157,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
     case SYS_MREMAP:      return -ENOSYS;
     case SYS_MADVISE:     return do_madvise((unsigned long)a1, (size_t)a2, (int)a3);
-    case SYS_FACCESSAT:   return 0; /* pretend accessible */
+    case SYS_FACCESSAT:   return do_access((const char *)a2); /* path in a2 (dirfd ignored) */
     case SYS_READLINKAT:  return do_readlink((const char *)a2, (char *)a3, (size_t)a4);
 
     /* System info */
@@ -275,7 +275,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_FCNTL:  return do_fcntl((int)a1, (int)a2, a3);
 
     /* Stubs */
-    case SYS_ACCESS: return 0; /* pretend everything is accessible */
+    case SYS_ACCESS: return do_access((const char *)a1);
 
     /* epoll / eventfd / timerfd / signalfd / inotify */
     case SYS_EPOLL_CREATE1:     return do_epoll_create1((int)a1);

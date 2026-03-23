@@ -698,17 +698,38 @@ long do_getdents64(int fd, void *buf, size_t count) {
     return (long)written;
 }
 
+/* ── SYS_access (21) / SYS_faccessat (269) ──────── */
+
+long do_access(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    /* Check ramfs first, then CosmoFS on disk */
+    if (vfs_lookup(kpath)) return 0;
+    extern uint64_t cosmofs_walk_path(const char *);
+    if (cosmofs_walk_path(kpath)) return 0;
+    return -ENOENT;
+}
+
 /* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
 
 #define TCGETS     0x5401
+#define TCSETS     0x5402
+#define TCSETSW    0x5403
+#define TCSETSF    0x5404
+#define TIOCSCTTY  0x540E
+#define TIOCGPGRP  0x540F
+#define TIOCSPGRP  0x5410
 #define TIOCGWINSZ 0x5413
+#define TIOCNOTTY  0x5422
 #define TIOCGPTN   0x80045430
 #define TIOCSPTLCK 0x40045431
-#define F_DUPFD    0
-#define F_GETFD    1
-#define F_SETFD    2
-#define F_GETFL    3
-#define F_SETFL    4
+#define F_DUPFD         0
+#define F_GETFD         1
+#define F_SETFD         2
+#define F_GETFL         3
+#define F_SETFL         4
+#define F_DUPFD_CLOEXEC 1030
 
 struct winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
 
@@ -737,6 +758,20 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         ws->ws_ypixel = 0;
         return 0;
     }
+    /* Terminal set: accept and ignore (no real termios backend) */
+    if (request == TCSETS || request == TCSETSW || request == TCSETSF)
+        return 0;
+    /* Controlling terminal / process group stubs */
+    if (request == TIOCSCTTY || request == TIOCNOTTY ||
+        request == TIOCSPGRP)
+        return 0;
+    if (request == TIOCGPGRP) {
+        if (!user_ok(arg, 4)) return -EFAULT;
+        process_t *gp = proc_current();
+        int32_t pgid = gp ? (int32_t)gp->pid : 1;
+        kmemcpy((void *)arg, &pgid, 4);
+        return 0;
+    }
     return -ENOTTY;
 }
 
@@ -755,11 +790,14 @@ long do_fcntl(int fd, int cmd, long arg) {
         else fde->flags &= ~O_CLOEXEC;
         return 0;
     }
-    case F_DUPFD: {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC: {
         /* Find lowest fd >= arg */
         for (int i = (int)arg; i < FD_MAX; i++) {
             if (!fd_get(&p->fds, i) || p->fds.entries[i].type == FD_NONE) {
                 p->fds.entries[i] = *fde;
+                if (cmd == F_DUPFD_CLOEXEC)
+                    p->fds.entries[i].flags |= O_CLOEXEC;
                 if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
                 /* Increment refcount for vfs_file if needed */
                 if (fde->type == FD_FILE && fde->obj) {

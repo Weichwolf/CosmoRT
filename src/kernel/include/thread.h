@@ -84,6 +84,10 @@ typedef struct thread {
 
     /* ── Timed wakeup (epoll_wait / poll timeout) ── */
     uint64_t wake_at;      /* timer_ms() deadline; 0 = no timeout */
+
+    /* ── rt_sigsuspend saved mask (restored before signal delivery) ── */
+    uint64_t sig_saved_mask;  /* old sig_blocked during sigsuspend; 0 = not in sigsuspend */
+    int      in_sigsuspend;   /* 1 while blocked in rt_sigsuspend */
 } thread_t;
 
 #define THREAD_MAX 64

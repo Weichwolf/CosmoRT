@@ -240,6 +240,13 @@ void check_pending_signals(void) {
     if (!t || !t->proc) return;
     process_t *p = t->proc;
 
+    /* If returning from rt_sigsuspend, restore the original mask before
+     * delivering the signal so the ucontext captures the pre-sigsuspend mask. */
+    if (t->in_sigsuspend) {
+        p->sig_blocked = t->sig_saved_mask;
+        t->in_sigsuspend = 0;
+    }
+
     uint64_t deliverable = p->sig_pending & ~p->sig_blocked;
     if (!deliverable) return;
 
@@ -374,6 +381,20 @@ long do_kill(int pid, int sig) {
     /* User handler registered — set pending bit.
      * Delivery happens on return to userspace via check_pending_signals. */
     target->sig_pending |= (1ULL << sig);
+
+    /* Wake blocked threads so the signal can be delivered.
+     * Needed for rt_sigsuspend and any blocking syscall. */
+    if ((1ULL << sig) & ~target->sig_blocked) {
+        extern void sched_add(thread_t *t);
+        thread_t *t = target->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED) {
+                t->state = THREAD_RUNNING;
+                sched_add(t);
+            }
+            t = t->proc_next;
+        }
+    }
     return 0;
 }
 
@@ -430,6 +451,44 @@ long do_rt_sigreturn(void) {
      * we set frame->rax. We need RAX to be the saved value.
      * Trick: return the saved RAX so it ends up correct. */
     return (long)uc.uc_mcontext.gregs.rax;
+}
+
+/* ── SYS_RT_SIGSUSPEND (130) ────────────────────────── */
+
+long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
+    (void)sigsetsize;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (!mask || !user_ok((uint64_t)mask, 8)) return -EFAULT;
+
+    uint64_t new_mask;
+    kmemcpy(&new_mask, mask, 8);
+    new_mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
+
+    uint64_t old_blocked = p->sig_blocked;
+
+    /* Install temporary mask */
+    p->sig_blocked = new_mask;
+
+    /* If a signal is already deliverable, restore and return */
+    if (p->sig_pending & ~p->sig_blocked) {
+        p->sig_blocked = old_blocked;
+        return -EINTR;
+    }
+
+    /* Save old mask on thread so signal delivery path restores it */
+    thread_t *t = thread_current();
+    if (!t) { p->sig_blocked = old_blocked; return -EINTR; }
+    t->sig_saved_mask = old_blocked;
+    t->in_sigsuspend = 1;
+
+    /* Block — woken by do_kill when signal becomes deliverable */
+    extern uint64_t pml4[];
+    save_user_state_for_block(t, -EINTR);
+    t->state = THREAD_BLOCKED;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t);
+    return -EINTR; /* unreachable */
 }
 
 /* Check and deliver signals in the SYSCALL return path.

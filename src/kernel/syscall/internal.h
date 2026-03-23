@@ -106,6 +106,7 @@ long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev);
 long do_getdents64(int fd, void *buf, size_t count);
 long do_ioctl(int fd, unsigned long request, unsigned long arg);
 long do_fcntl(int fd, int cmd, long arg);
+long do_access(const char *path);
 
 /* ── Forward declarations: sys_mem.c ── */
 long do_brk(unsigned long addr);
@@ -147,6 +148,7 @@ long do_rt_sigaction(int sig, const void *act, void *oldact, size_t sigsetsize);
 long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset, size_t sigsetsize);
 long do_rt_sigreturn(void);
 long do_kill(int pid, int sig);
+long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
 
 /* k_timeval for gettimeofday */
 struct k_timeval  { long tv_sec; long tv_usec; };
