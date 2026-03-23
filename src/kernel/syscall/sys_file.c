@@ -292,8 +292,7 @@ long do_read(int fd, void *buf, size_t count) {
 
 long do_readv(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
-    /* Copy iov to kernel to prevent TOCTOU — cap at 64 on stack */
-    if (iovcnt > 64) iovcnt = 64;
+    if (iovcnt > 64) return -EINVAL; /* kernel stack limit */
     struct iovec kiov[64];
     { int r = copy_from_user(kiov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;

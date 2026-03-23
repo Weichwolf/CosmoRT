@@ -1,6 +1,7 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
+Stand: 2026-03-23. 373 ktest PASS. SMP 2. RT+Compute Core-Modell.
+Node.js v22.14.0 + Claude Code 2.1.81 laufen. Interaktive bash via Serial.
 
 ---
 
@@ -19,45 +20,36 @@ Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
 - [ ] src/kernel/ soll kein inline-asm mehr haben (nur includes von arch-Header)
 - [ ] GNU as (.S) statt NASM (.asm) fuer Konsistenz ueber Architekturen
 
-## Node.js — Stack-Smash (3 Bugs in Signal-Delivery)
+## Node.js — GEFIXT
 
-### BUG-SIG1: Fehlende Red-Zone-Subtraktion (SEC-CRIT)
-- Datei: src/kernel/syscall/sys_signal.c, deliver_signal(), Zeile ~148
-- Code: `new_rsp = (stack_rsp - frame_size) & ~0xFULL`
-- Problem: x86_64 ABI Red Zone (128 Bytes unter RSP) wird nicht respektiert.
-  Signal-Frame ueberschreibt Red-Zone-Daten von Leaf-Funktionen.
-- Fix: `stack_rsp -= 128` vor Frame-Berechnung
-- Linux: arch/x86/kernel/signal.c get_sigframe() macht `sp -= 128`
-
-### BUG-SIG2: Falsches RSP-Alignment im Signal-Frame (CORR-HIGH)
-- Datei: gleiche Stelle
-- Code: `& ~0xFULL` ergibt RSP ≡ 0 (mod 16)
-- Problem: ABI erwartet RSP ≡ 8 (mod 16) bei Funktions-Entry
-- Fix: `((sp + 8) & ~0xFULL) - 8` statt `sp & ~0xFULL`
-- Linux: align_sigframe() macht round_down(sp, 16) - 8
-
-### BUG-SIG3: sig_blocked ist process-level statt per-Thread (CORR-HIGH)
-- Datei: include/internal/process.h
-- Problem: sig_blocked in process_t geteilt zwischen allen Threads.
-  Linux hat blocked per task_struct (per Thread).
-  Bei Node.js (clone CLONE_VM): Race auf sig_blocked, falsche Masken.
-- Fix: sig_blocked von process_t nach thread_t verschieben
-
-### Naechste Schritte
-- [x] Tests schreiben die BUG-SIG1/SIG2/SIG3 reproduzieren (2 FAIL bestaetigt) ✓
-- [ ] Alle drei Bugs fixen (Agent laeuft)
-- [ ] Node.js erneut testen
-- [ ] Wenn Node.js laeuft: Claude Code testen
+- [x] BUG-SIG1: Red-Zone-Subtraktion (stack_rsp -= 128)
+- [x] BUG-SIG2: RSP-Alignment (((sp - frame) & ~0xF) - 8)
+- [x] BUG-SIG3: sig_blocked per-Thread (thread_t statt process_t)
+- [x] TCGETS Stack-Smash: 60→36 Bytes (Kernel-termios)
+- [x] mmap Hint ignoriert: vma_find_free_above fuer V8-Cage
+- [x] AP-Core CR0.EM/MP: SSE auf Compute-Cores aktiviert
+- [x] Kernel -mno-sse: Timer-ISR korrumpierte XMM-Register
+- [x] VMA-Lock: spin_lock_irq fuer alle VMA-Operationen
+- [x] FD_SERIAL TTY-Compat: sane termios-Defaults + FIONREAD
+- [x] FIONBIO ioctl: O_NONBLOCK setzen/loeschen
+- [x] /dev/tty: PTY_SLAVE statt Device
+- [x] pselect6/select: Konvertierung zu poll
+- [x] PTY poll readiness: EPOLLIN/EPOLLOUT
+- [x] TIOCGPGRP: Caller-pgid wenn fg_pgid==0
+- [x] PTY-Read Syscall-Restart statt -EAGAIN
+- [x] Serial↔VT Bridge: Interaktive bash ueber serial stdio
+- [x] Node.js laeuft ✓
+- [x] Claude Code --version laeuft ✓
 
 ## Neue Findings aus Testsuite-Planung
 
 ### SEC-CRIT
 - [ ] rt_sigreturn: RIP/RSP aus User-ucontext ohne Validierung (Kernel-Exec moeglich)
 
-### CORR-CRIT
-- [ ] Kein FPU/SSE Save/Restore bei Context-Switch (sched_preempt nur GPRs, kein FXSAVE)
-- [ ] FS_BASE nicht in rt_sigreturn restauriert (TLS nach Signal+Preemption falsch)
-- [ ] do_fork() kopiert fs_base nicht ins Child
+### CORR-CRIT — GEFIXT
+- [x] FPU/SSE Save/Restore bei Context-Switch (fxsave/fxrstor in sched_preempt + thread_run)
+- [x] FS_BASE in rt_sigreturn restauriert
+- [x] do_fork() kopiert fs_base ins Child
 
 ## Netzwerk
 
@@ -67,7 +59,7 @@ Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
 
 ## Audit 3 — Verbleibende Findings
 
-### SEC-HIGH (5 — teilweise gefixt durch Batch-Arbeit)
+### SEC-HIGH (2)
 - [ ] do_recvfrom: TCP-Daten direkt in User-Buffer ohne Bounce
 - [ ] socket_write: kein Bounce-Buffer
 
@@ -77,10 +69,16 @@ Stand: 2026-03-23. 366 ktest PASS. SMP 2. RT+Compute Core-Modell.
 - [ ] PID/TID Wraparound: next_pid/next_tid ohne Wrap-Check
 - [ ] pipe_slab_ensure: Race bei konkurrenter Initialisierung
 
-### CORR-MED (6 — teilweise gefixt)
+### CORR-MED (3)
 - [ ] timer_sleep_ms: Busywait < 10ms blockiert Core
 - [ ] do_readv: iovcnt Clamping statt EINVAL
 - [ ] do_kill pid=-1: nur self statt alle
 
-### PERF-MED (3)
+### PERF-MED (1)
 - [ ] inotify_event: Scannt alle Pool-Entries bei jedem VFS-Event
+
+## Interaktive Shell — Verbleibend
+
+- [ ] Job Control (bash ohne +m Flag)
+- [ ] Dynamic Linker: cat/coreutils crashen (RIP=0x0)
+- [ ] Ctrl-C (SIGINT an Foreground-Prozessgruppe)

@@ -539,10 +539,20 @@ long do_kill(int pid, int sig) {
         if (!self) return -ESRCH;
         return kill_pgrp(self->pgid, sig);
     } else if (pid == -1) {
-        /* Signal to all processes (except init) — send to self for now */
+        /* Signal to all processes except init (pid 1) and self */
+        extern process_t proc_pool[];
         process_t *self = proc_current();
-        if (!self) return -ESRCH;
-        return kill_one(self, sig);
+        int found = 0;
+        for (int i = 0; i < PROC_MAX; i++) {
+            process_t *p = &proc_pool[i];
+            if (p->state != PROC_ALIVE) continue;
+            if (p->pid <= 1) continue; /* skip init */
+            kill_one(p, sig);
+            found = 1;
+        }
+        /* Also signal self */
+        if (self) kill_one(self, sig);
+        return found || self ? 0 : -ESRCH;
     } else {
         /* pid < -1: signal to process group abs(pid) */
         return kill_pgrp((uint32_t)(-pid), sig);
@@ -658,9 +668,20 @@ long do_rt_sigreturn(void) {
     frame->r10 = uc.uc_mcontext.gregs.r10; frame->rdx = uc.uc_mcontext.gregs.rdx;
     frame->rsi = uc.uc_mcontext.gregs.rsi; frame->rdi = uc.uc_mcontext.gregs.rdi;
     frame->rax = uc.uc_mcontext.gregs.rax;
-    frame->r11 = uc.uc_mcontext.gregs.eflags; /* SYSRET restores RFLAGS from R11 */
-    frame->rcx = uc.uc_mcontext.gregs.rip;    /* SYSRET restores RIP from RCX */
-    cpu->user_rsp = uc.uc_mcontext.gregs.rsp;
+    /* Validate RIP/RSP — must be in user space to prevent kernel exec */
+    uint64_t new_rip = uc.uc_mcontext.gregs.rip;
+    uint64_t new_rsp = uc.uc_mcontext.gregs.rsp;
+    if (new_rip >= 0x800000000000ULL || new_rsp >= 0x800000000000ULL)
+        return -EFAULT;
+    /* Sanitize RFLAGS — clear IOPL, VM, RF, keep only safe flags */
+    uint64_t new_flags = uc.uc_mcontext.gregs.eflags;
+    new_flags &= 0x000000000000FFFFULL; /* keep lower 16 bits */
+    new_flags &= ~(3ULL << 12);         /* clear IOPL */
+    new_flags |= (1ULL << 9);           /* force IF=1 (interrupts enabled) */
+    new_flags |= (1ULL << 1);           /* reserved bit 1 always set */
+    frame->r11 = new_flags;
+    frame->rcx = new_rip;
+    cpu->user_rsp = new_rsp;
 
     /* Restore FS_BASE from _reserved[0] (saved in deliver_signal) */
     {

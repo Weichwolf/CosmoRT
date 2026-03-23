@@ -165,8 +165,12 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_rd) return 0; /* EOF */
-    int r = net_tcp_recv(&s->tcp, buf, (int)len, NET_TCP_TIMEOUT_MS);
+    /* Bounce buffer to avoid kernel fault on unmapped user pages */
+    uint8_t kbuf[4096];
+    int want = (int)len > 4096 ? 4096 : (int)len;
+    int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+    if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;
 }
 
@@ -176,8 +180,11 @@ long socket_read(int fd, void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_rd) return 0;
-    int r = net_tcp_recv(&s->tcp, buf, (int)count, NET_TCP_TIMEOUT_MS);
+    uint8_t kbuf[4096];
+    int want = (int)count > 4096 ? 4096 : (int)count;
+    int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+    if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;
 }
 
@@ -185,12 +192,14 @@ long socket_write(int fd, const void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_wr) return -EPIPE;
-    const uint8_t *p = (const uint8_t *)buf;
     long total = 0;
     while (total < count) {
+        uint8_t kbuf[1460];
         int chunk = (int)(count - total);
         if (chunk > 1460) chunk = 1460;
-        int r = net_tcp_send(&s->tcp, p + total, chunk);
+        int cr = copy_from_user(kbuf, (const uint8_t *)buf + total, (size_t)chunk);
+        if (cr) return total > 0 ? total : cr;
+        int r = net_tcp_send(&s->tcp, kbuf, chunk);
         if (r < 0) return total > 0 ? total : -EIO;
         total += r;
     }
