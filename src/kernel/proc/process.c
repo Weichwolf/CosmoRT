@@ -651,8 +651,11 @@ long do_fork(void) {
         tlb_shootdown(virt_to_phys(parent->pml4));
     }
 
-    /* Deep-copy address space */
+    /* Deep-copy address space (hold parent VMA lock to prevent concurrent modification) */
+    uint64_t fork_irqf;
+    spin_lock_irq(&parent->lock, &fork_irqf);
     int copy_err = copy_address_space(child, parent);
+    spin_unlock_irq(&parent->lock, fork_irqf);
 
     /* Resume only threads we stopped (saved_priority == -2) */
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
@@ -1035,9 +1038,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
 
     /* Free current address space */
+    uint64_t exec_irqf;
+    spin_lock_irq(&p->lock, &exec_irqf);
     free_address_space(p->pml4);
     vma_free_tree(p->vma_root);
     p->vma_root = 0;
+    spin_unlock_irq(&p->lock, exec_irqf);
 
     /* Create new PML4 */
     p->pml4 = create_user_pml4();
@@ -1080,6 +1086,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
 
         /* Create VMAs (skip for CosmoFS — segments already mapped) */
+        spin_lock_irq(&p->lock, &exec_irqf);
         if (!from_cosmofs)
             create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
 
@@ -1108,6 +1115,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                    0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        spin_unlock_irq(&p->lock, exec_irqf);
         /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
 
         stack_ptr = build_user_stack(p->pml4, stack_top,
@@ -1146,12 +1154,14 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         p->brk_current = brk_end;
 
         /* Stack VMA with guard page */
+        spin_lock_irq(&p->lock, &exec_irqf);
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
         uint64_t guard_bottom = stack_bottom - 4096;
         vma_insert(&p->vma_root, guard_bottom, stack_bottom,
                    0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        spin_unlock_irq(&p->lock, exec_irqf);
         /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
 
         /* Rebuild stack with real argv/envp (elf_load already set up minimal stack) */

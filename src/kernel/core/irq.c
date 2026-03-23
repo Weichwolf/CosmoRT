@@ -181,19 +181,25 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 thread_t *kt = kcpu->current_thread;
                 process_t *kp = kt ? kt->proc : 0;
                 if (kp) {
-                    vma_t *kvma = vma_find(kp->vma_root, cr2);
-                    if (kvma && !(error & 1)) {
-                        /* Not-present fault in valid VMA — allocate page */
-                        uint64_t kpage_addr = cr2 & ~0xFFFULL;
-                        uint64_t *kpage = alloc_page();
-                        if (kpage) {
-                            if (map_user_page(kp->pml4, kpage_addr,
-                                              virt_to_phys(kpage), kvma->prot) == 0) {
-                                return; /* resume kernel code */
+                    uint64_t kflags;
+                    if (spin_trylock_irq(&kp->lock, &kflags)) {
+                        vma_t *kvma = vma_find(kp->vma_root, cr2);
+                        int kprot = kvma ? kvma->prot : 0;
+                        int knp = kvma && !(error & 1);
+                        spin_unlock_irq(&kp->lock, kflags);
+                        if (knp) {
+                            uint64_t kpage_addr = cr2 & ~0xFFFULL;
+                            uint64_t *kpage = alloc_page();
+                            if (kpage) {
+                                if (map_user_page(kp->pml4, kpage_addr,
+                                                  virt_to_phys(kpage), kprot) == 0) {
+                                    return; /* resume kernel code */
+                                }
+                                page_free(kpage);
                             }
-                            page_free(kpage);
                         }
                     }
+                    /* trylock failed → fall through to fault_recover */
                 }
             }
             /* Kernel accessed unmapped user address (e.g. bad pointer from syscall).
@@ -234,43 +240,51 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         process_t *p = t ? t->proc : 0;
 
         if (p) {
+            uint64_t vma_flags;
+            spin_lock_irq(&p->lock, &vma_flags);
             vma_t *vma = vma_find(p->vma_root, cr2);
             if (vma) {
                 /* Protection violation: check write permission */
                 if ((error & 1) && (error & 2) && !(vma->prot & PROT_WRITE)) {
                     /* Write to read-only VMA → kill */
+                    spin_unlock_irq(&p->lock, vma_flags);
                     goto kill_process;
                 }
                 /* NX violation: page present + instruction fetch, but VMA allows exec.
                  * Re-map the page with correct permissions (PTE stale from mprotect race). */
                 if ((error & 1) && (error & 0x10) && (vma->prot & PROT_EXEC)) {
+                    int nx_prot = vma->prot;
+                    spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
-                    /* Read existing PTE to get physical address */
                     extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
                     uint64_t pte = read_pte_pub(p->pml4, page_addr);
                     if (pte & 1) {
-                        /* Re-map with correct permissions (clears NX) */
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
-                        if (map_user_page(p->pml4, page_addr, phys, vma->prot) == 0) {
+                        if (map_user_page(p->pml4, page_addr, phys, nx_prot) == 0) {
                             __asm__ volatile("invlpg (%0)" :: "r"(page_addr) : "memory");
                             return; /* resume execution */
                         }
                     }
+                    goto kill_process;
                 }
                 /* Not-present fault in a valid VMA → allocate page.
                  * PROT_NONE VMAs must NOT be demand-paged — access = SIGSEGV. */
                 if (!(error & 1) && (vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) {
+                    int dp_prot = vma->prot;
+                    spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
                     uint64_t *page = alloc_page();
                     if (page) {
                         if (map_user_page(p->pml4, page_addr,
-                                          virt_to_phys(page), vma->prot) == 0) {
+                                          virt_to_phys(page), dp_prot) == 0) {
                             return; /* resume execution */
                         }
                         page_free(page);
                     }
+                    goto kill_process;
                 }
             }
+            spin_unlock_irq(&p->lock, vma_flags);
         }
 
     kill_process:

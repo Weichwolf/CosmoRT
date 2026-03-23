@@ -16,6 +16,9 @@ long do_brk(unsigned long addr) {
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
 
+    uint64_t flags;
+    spin_lock_irq(&p->lock, &flags);
+
     uint64_t old_end = (p->brk_current + 0xFFF) & ~0xFFFULL;
     uint64_t new_end = (addr + 0xFFF) & ~0xFFFULL;
 
@@ -24,14 +27,17 @@ long do_brk(unsigned long addr) {
         vma_t *overlap = vma_find_overlap(p->vma_root, old_end, new_end);
         if (overlap && !(overlap->start == p->brk_base)) {
             /* brk would collide with an mmap'd region — refuse */
+            long ret = (long)p->brk_current;
+            uint64_t ov_start = overlap->start, ov_end = overlap->end;
+            spin_unlock_irq(&p->lock, flags);
             serial_puts("brk: ENOMEM collision 0x");
             serial_hex64(addr);
             serial_puts(" vs VMA [0x");
-            serial_hex64(overlap->start);
+            serial_hex64(ov_start);
             serial_puts(",0x");
-            serial_hex64(overlap->end);
+            serial_hex64(ov_end);
             serial_puts(")\n");
-            return (long)p->brk_current;
+            return ret;
         }
     } else if (new_end < old_end) {
         /* Shrinking: unmap pages and free physical frames */
@@ -50,6 +56,7 @@ long do_brk(unsigned long addr) {
     }
 
     p->brk_current = addr;
+    spin_unlock_irq(&p->lock, flags);
     return (long)addr;
 }
 
@@ -95,9 +102,12 @@ long do_mlockall(int flags) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     if (flags & ~(MCL_CURRENT | MCL_FUTURE)) return -EINVAL;
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
     p->mlockall_flags = flags;
     if (flags & MCL_CURRENT)
         vma_walk_prefault(p->vma_root, p->pml4);
+    spin_unlock_irq(&p->lock, irqf);
     return 0;
 }
 
@@ -115,7 +125,8 @@ long do_mlock(unsigned long addr, size_t len) {
     if (!p) return -EFAULT;
     addr &= ~0xFFFULL;
     len = (len + 0xFFF) & ~0xFFFULL;
-    /* Find and lock VMAs in range */
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
     for (uint64_t va = addr; va < addr + len; ) {
         vma_t *v = vma_find(p->vma_root, va);
         if (!v) { va += 4096; continue; }
@@ -124,6 +135,7 @@ long do_mlock(unsigned long addr, size_t len) {
         prefault_range(p->pml4, va, end, v->prot);
         va = v->end;
     }
+    spin_unlock_irq(&p->lock, irqf);
     return 0;
 }
 
@@ -132,12 +144,15 @@ long do_munlock(unsigned long addr, size_t len) {
     if (!p) return -EFAULT;
     addr &= ~0xFFFULL;
     len = (len + 0xFFF) & ~0xFFFULL;
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
     for (uint64_t va = addr; va < addr + len; ) {
         vma_t *v = vma_find(p->vma_root, va);
         if (!v) { va += 4096; continue; }
         v->flags &= ~VMA_LOCKED;
         va = v->end;
     }
+    spin_unlock_irq(&p->lock, irqf);
     return 0;
 }
 
@@ -174,13 +189,18 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     if (length == 0) return -EINVAL;
     if (addr + length < addr) return -EINVAL; /* overflow */
 
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+
     uint64_t vaddr = 0;
     if (addr && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE))) {
         vaddr = addr & ~0xFFFULL;
         /* MAP_FIXED_NOREPLACE: fail if any overlap exists */
         if (flags & MAP_FIXED_NOREPLACE) {
-            if (vma_find_overlap(p->vma_root, vaddr, vaddr + length))
+            if (vma_find_overlap(p->vma_root, vaddr, vaddr + length)) {
+                spin_unlock_irq(&p->lock, irqf);
                 return -EEXIST;
+            }
         }
         /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
         for (;;) {
@@ -224,6 +244,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 /* Retry from top — munmap may have freed space above mmap_next */
                 vaddr = vma_find_free(p->vma_root, USER_MMAP_BASE, length);
                 if (!vaddr) {
+                    spin_unlock_irq(&p->lock, irqf);
                     serial_puts("mmap: ENOMEM len=0x");
                     serial_hex64(length);
                     serial_puts(" hint=0x");
@@ -240,10 +261,14 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     int vma_flags = flags;
     if (p->mlockall_flags & MCL_FUTURE) vma_flags |= VMA_LOCKED;
     vma_t *v = vma_insert(&p->vma_root, vaddr, vaddr + length, prot, vma_flags);
-    if (!v) return -ENOMEM;
+    if (!v) {
+        spin_unlock_irq(&p->lock, irqf);
+        return -ENOMEM;
+    }
 
     /* File-backed mmap: allocate pages and read file content */
     if (is_file) {
+        spin_unlock_irq(&p->lock, irqf);
         extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t off);
         uint64_t file_off = (uint64_t)offset;
         for (uint64_t va = vaddr; va < vaddr + length; va += 4096) {
@@ -265,6 +290,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     if (vma_flags & VMA_LOCKED)
         prefault_range(p->pml4, vaddr, vaddr + length, prot);
 
+    spin_unlock_irq(&p->lock, irqf);
     return (long)vaddr;
 }
 
@@ -346,6 +372,9 @@ long do_munmap(unsigned long addr, size_t length) {
     uint64_t start = addr;
     uint64_t end = addr + length;
 
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
     /* TLB flush: local + remote cores sharing this address space */
@@ -373,6 +402,7 @@ long do_munmap(unsigned long addr, size_t length) {
         }
     }
 
+    spin_unlock_irq(&p->lock, irqf);
     return 0;
 }
 
@@ -385,6 +415,9 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     len = (len + 0xFFF) & ~0xFFFULL;
     uint64_t start = addr;
     uint64_t end = addr + len;
+
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
 
     /* Update PTE permissions for already-mapped pages */
     update_pte_prot(p->pml4, start, end, prot);
@@ -418,6 +451,7 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
         probe = v->end;
     }
 
+    spin_unlock_irq(&p->lock, irqf);
     return 0;
 }
 
@@ -437,6 +471,8 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         if (!p) return -EFAULT;
         uint64_t start = addr;
         uint64_t end = addr + length;
+        uint64_t irqf;
+        spin_lock_irq(&p->lock, &irqf);
         for (uint64_t va = start; va < end; ) {
             vma_t *v = vma_find(p->vma_root, va);
             if (!v) { va += 4096; continue; }
@@ -450,6 +486,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
+        spin_unlock_irq(&p->lock, irqf);
     }
     /* All other advice: accept but ignore */
     return 0;
@@ -498,19 +535,23 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
     new_size = (new_size + 0xFFF) & ~0xFFFULL;
     if (new_size == 0) return -EINVAL;
 
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+
     /* Find VMA covering old_addr */
     vma_t *v = vma_find(p->vma_root, old_addr);
-    if (!v) return -EFAULT;
+    if (!v) { spin_unlock_irq(&p->lock, irqf); return -EFAULT; }
     /* old_addr must be VMA start and old_size must match */
-    if (v->start != old_addr) return -EFAULT;
+    if (v->start != old_addr) { spin_unlock_irq(&p->lock, irqf); return -EFAULT; }
 
     /* MREMAP_FIXED not supported yet */
     if (flags & MREMAP_FIXED) {
         (void)new_addr;
+        spin_unlock_irq(&p->lock, irqf);
         return -ENOSYS;
     }
 
-    if (new_size == old_size) return (long)old_addr;
+    if (new_size == old_size) { spin_unlock_irq(&p->lock, irqf); return (long)old_addr; }
 
     if (new_size < old_size) {
         /* Shrink: unmap tail pages, adjust VMA */
@@ -520,6 +561,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
         __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
         tlb_shootdown(virt_to_phys(p->pml4));
         v->end = old_addr + new_size;
+        spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;
     }
 
@@ -530,26 +572,30 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
     if (!vma_find_overlap(p->vma_root, grow_start, grow_end)) {
         /* No overlap — expand VMA in place */
         v->end = grow_end;
+        spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;
     }
 
     /* Can't expand in-place — need MREMAP_MAYMOVE */
-    if (!(flags & MREMAP_MAYMOVE)) return -ENOMEM;
+    if (!(flags & MREMAP_MAYMOVE)) { spin_unlock_irq(&p->lock, irqf); return -ENOMEM; }
 
     /* Allocate new region */
     uint64_t new_va = vma_find_free(p->vma_root, p->mmap_next, new_size);
     if (!new_va) {
         new_va = vma_find_free(p->vma_root, USER_MMAP_BASE, new_size);
-        if (!new_va) return -ENOMEM;
+        if (!new_va) { spin_unlock_irq(&p->lock, irqf); return -ENOMEM; }
     }
     p->mmap_next = new_va;
 
+    int v_prot = v->prot;
+    int v_flags = v->flags;
+
     /* Create new VMA */
-    vma_t *nv = vma_insert(&p->vma_root, new_va, new_va + new_size, v->prot, v->flags);
-    if (!nv) return -ENOMEM;
+    vma_t *nv = vma_insert(&p->vma_root, new_va, new_va + new_size, v_prot, v_flags);
+    if (!nv) { spin_unlock_irq(&p->lock, irqf); return -ENOMEM; }
 
     /* Copy existing pages to new location */
-    copy_user_pages(p->pml4, new_va, old_addr, old_size, v->prot);
+    copy_user_pages(p->pml4, new_va, old_addr, old_size, v_prot);
 
     /* Unmap old region */
     unmap_range(p->pml4, old_addr, old_addr + old_size);
@@ -561,5 +607,6 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
     if (old_v && old_v->start == old_addr)
         vma_remove(&p->vma_root, old_v);
 
+    spin_unlock_irq(&p->lock, irqf);
     return (long)new_va;
 }

@@ -52,4 +52,11 @@ static inline void spin_unlock_irq(spinlock_t *l, uint64_t flags) {
     irq_restore(flags);
 }
 
+static inline int spin_trylock_irq(spinlock_t *l, uint64_t *flags) {
+    *flags = irq_save();
+    if (spin_trylock(l)) return 1;
+    irq_restore(*flags);
+    return 0;
+}
+
 #endif

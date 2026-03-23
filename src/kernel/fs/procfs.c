@@ -250,7 +250,10 @@ static int procfs_self_maps(char *buf, int size, int offset, void *ctx) {
     if (!p) return 0;
 
     struct maps_ctx c = { buf, size, 0, offset, 0 };
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
     vma_walk_maps(p->vma_root, &c);
+    spin_unlock_irq(&p->lock, irqf);
     return c.written;
 }
 

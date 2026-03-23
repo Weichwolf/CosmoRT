@@ -22,12 +22,14 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
              -DGNU_EFI_USE_MS_ABI
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
-           -mno-red-zone -Wall -Wextra -Werror -O2 -c \
+           -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
+           -Wall -Wextra -Werror -O2 -c \
            -Iinclude/public -Iinclude/internal -I$(SRC)/kernel -I$(BUILD) -std=c11
 
 # Drivers: only public headers (cosmo_rt.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
-           -mno-red-zone -Wall -Wextra -Werror -O2 -c \
+           -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
+           -Wall -Wextra -Werror -O2 -c \
            -Iinclude/public -std=c11
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
