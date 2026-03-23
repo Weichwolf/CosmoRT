@@ -184,6 +184,7 @@ long do_clone(unsigned long flags, void *child_stack,
     /* Share address space (CLONE_VM) */
     t->proc = cur->proc;
     t->state = THREAD_RUNNABLE;
+    t->sig_blocked = cur->sig_blocked; /* inherit parent thread's signal mask */
     t->sched_policy = cur->sched_policy;
     t->priority = cur->priority;
     t->cpu_affinity = -1;

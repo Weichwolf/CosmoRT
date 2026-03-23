@@ -49,7 +49,6 @@ typedef struct process {
 
     /* Signals */
     uint64_t    sig_pending;        /* bitmask of pending signals */
-    uint64_t    sig_blocked;        /* bitmask of blocked signals (sigprocmask) */
     struct k_sigaction sig_actions[64]; /* per-signal action (0-63, SIGRTMIN=32..SIGRTMAX=63) */
     uint64_t    sig_trampoline_page; /* user-addr of RX trampoline page (0 = not yet allocated) */
 

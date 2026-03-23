@@ -145,7 +145,9 @@ void deliver_signal(thread_t *t, int signo) {
         if (t->rsp < t->sigalt_sp || t->rsp >= t->sigalt_sp + t->sigalt_size)
             stack_rsp = t->sigalt_sp + t->sigalt_size;
     }
-    uint64_t new_rsp = (stack_rsp - frame_size) & ~0xFULL; /* 16-byte align */
+    stack_rsp -= 128; /* Skip x86_64 red zone (ABI mandates 128 bytes below RSP) */
+    /* 16-byte align RSP for signal handler entry */
+    uint64_t new_rsp = (stack_rsp - frame_size) & ~0xFULL;
 
     /* Verify target stack area is in a writable VMA */
     vma_t *vma = vma_find(p->vma_root, new_rsp);
@@ -186,7 +188,7 @@ void deliver_signal(thread_t *t, int signo) {
     /* uc_mcontext.fpstate will be set to point to __fpregs_mem on user stack */
 
     /* uc_sigmask: 128 bytes, store blocked mask in first word */
-    uc.uc_sigmask[0] = p->sig_blocked;
+    uc.uc_sigmask[0] = t->sig_blocked;
 
     /* Save FPU/SSE state into inline __fpregs_mem.
      * FXSAVE requires 16-byte aligned operand, so use a temp buffer. */
@@ -250,9 +252,9 @@ void deliver_signal(thread_t *t, int signo) {
     t->rflags |= (1ULL << 9);   /* IF=1 */
 
     /* Block this signal during handler + sa_mask */
-    p->sig_blocked |= (1ULL << signo) | sa->sa_mask;
+    t->sig_blocked |= (1ULL << signo) | sa->sa_mask;
     /* SIGKILL/SIGSTOP never blocked */
-    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
+    t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
 }
 
 /* Check and deliver pending signals. Operates on thread_t register fields.
@@ -265,11 +267,11 @@ void check_pending_signals(void) {
     /* If returning from rt_sigsuspend, restore the original mask before
      * delivering the signal so the ucontext captures the pre-sigsuspend mask. */
     if (t->in_sigsuspend) {
-        p->sig_blocked = t->sig_saved_mask;
+        t->sig_blocked = t->sig_saved_mask;
         t->in_sigsuspend = 0;
     }
 
-    uint64_t deliverable = p->sig_pending & ~p->sig_blocked;
+    uint64_t deliverable = p->sig_pending & ~t->sig_blocked;
     if (!deliverable) return;
 
     for (int sig = 1; sig < 64; sig++) {
@@ -398,11 +400,11 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
     /* musl passes _NSIG/8 = 128/8 = 16 bytes (128 signals).
      * We support 64 signals (8 bytes). Accept 8 or 16, ignore upper bytes. */
     if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
-    process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
 
     if (oldset) {
-        uint64_t tmp = p->sig_blocked;
+        uint64_t tmp = t->sig_blocked;
         int r = copy_to_user(oldset, &tmp, 8);
         if (r) return r;
         /* Zero upper bytes if sigsetsize == 16 */
@@ -420,9 +422,9 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
         uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
-        case 0: p->sig_blocked |= mask; break;  /* SIG_BLOCK */
-        case 1: p->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
-        case 2: p->sig_blocked = mask; break;    /* SIG_SETMASK */
+        case 0: t->sig_blocked |= mask; break;  /* SIG_BLOCK */
+        case 1: t->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
+        case 2: t->sig_blocked = mask; break;    /* SIG_SETMASK */
         default: return -EINVAL;
         }
     }
@@ -483,12 +485,12 @@ static long kill_one(process_t *target, int sig) {
      * Delivery happens on return to userspace via check_pending_signals. */
     target->sig_pending |= (1ULL << sig);
 
-    /* Wake blocked threads so the signal can be delivered. */
-    if ((1ULL << sig) & ~target->sig_blocked) {
+    /* Wake blocked threads that have this signal unblocked. */
+    {
         extern void sched_add(thread_t *t);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED) {
+            if (t->state == THREAD_BLOCKED && !((1ULL << sig) & t->sig_blocked)) {
                 t->state = THREAD_RUNNING;
                 sched_add(t);
             }
@@ -597,7 +599,7 @@ long do_tgkill(int tgid, int tid, int sig) {
 
     /* User handler — set pending and wake target thread */
     p->sig_pending |= (1ULL << sig);
-    if ((1ULL << sig) & ~p->sig_blocked) {
+    if (!((1ULL << sig) & target->sig_blocked)) {
         if (target->state == THREAD_BLOCKED) {
             extern void sched_add(thread_t *t);
             target->state = THREAD_RUNNING;
@@ -613,7 +615,6 @@ long do_rt_sigreturn(void) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
     if (!t || !t->proc) return -EFAULT;
-    process_t *p = t->proc;
 
     /* After the handler did `ret`, RSP points past the return address.
      * The restorer then called `syscall` for SYS_RT_SIGRETURN.
@@ -651,8 +652,8 @@ long do_rt_sigreturn(void) {
     cpu->user_rsp = uc.uc_mcontext.gregs.rsp;
 
     /* Restore signal mask (first word of 128-byte sigset) */
-    p->sig_blocked = uc.uc_sigmask[0];
-    p->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
+    t->sig_blocked = uc.uc_sigmask[0];
+    t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER
@@ -665,27 +666,27 @@ long do_rt_sigreturn(void) {
 
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
-    process_t *p = proc_current();
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+    process_t *p = t->proc;
     if (!p) return -EFAULT;
     if (!mask) return -EFAULT;
     uint64_t new_mask;
     { int r = copy_from_user(&new_mask, mask, 8); if (r) return r; }
     new_mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
-    uint64_t old_blocked = p->sig_blocked;
+    uint64_t old_blocked = t->sig_blocked;
 
     /* Install temporary mask */
-    p->sig_blocked = new_mask;
+    t->sig_blocked = new_mask;
 
     /* If a signal is already deliverable, restore and return */
-    if (p->sig_pending & ~p->sig_blocked) {
-        p->sig_blocked = old_blocked;
+    if (p->sig_pending & ~t->sig_blocked) {
+        t->sig_blocked = old_blocked;
         return -EINTR;
     }
 
     /* Save old mask on thread so signal delivery path restores it */
-    thread_t *t = thread_current();
-    if (!t) { p->sig_blocked = old_blocked; return -EINTR; }
     t->sig_saved_mask = old_blocked;
     t->in_sigsuspend = 1;
 
@@ -718,7 +719,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     thread_t *t = thread_current();
     if (!t || !t->proc) return;
     process_t *p = t->proc;
-    uint64_t deliverable = p->sig_pending & ~p->sig_blocked;
+    uint64_t deliverable = p->sig_pending & ~t->sig_blocked;
     if (!deliverable) return;
 
     percpu_t *cpu = percpu_self();

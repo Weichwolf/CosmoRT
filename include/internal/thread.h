@@ -91,6 +91,9 @@ typedef struct thread {
     /* ── Timed wakeup (epoll_wait / poll timeout) ── */
     uint64_t wake_at;      /* timer_ms() deadline; 0 = no timeout */
 
+    /* ── Signal mask (per-thread, like Linux task_struct.blocked) ── */
+    uint64_t sig_blocked;     /* bitmask of blocked signals (sigprocmask) */
+
     /* ── rt_sigsuspend saved mask (restored before signal delivery) ── */
     uint64_t sig_saved_mask;  /* old sig_blocked during sigsuspend; 0 = not in sigsuspend */
     int      in_sigsuspend;   /* 1 while blocked in rt_sigsuspend */

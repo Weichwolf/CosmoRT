@@ -136,7 +136,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         if (sysnum != 15 /* SYS_RT_SIGRETURN */) {
             extern void check_pending_signals(void);
             thread_t *t = percpu_self()->current_thread;
-            if (t && t->proc && (t->proc->sig_pending & ~t->proc->sig_blocked)) {
+            if (t && t->proc && (t->proc->sig_pending & ~t->sig_blocked)) {
                 /* Save irq frame → thread_t */
                 t->r15 = frame->r15; t->r14 = frame->r14;
                 t->r13 = frame->r13; t->r12 = frame->r12;
@@ -278,7 +278,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         if (t && t->proc) {
             process_t *faultp = t->proc;
             struct k_sigaction *sa = &faultp->sig_actions[11]; /* SIGSEGV=11 */
-            if ((uint64_t)sa->sa_handler > 1 && !(faultp->sig_blocked & (1ULL << 11))) {
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & (1ULL << 11))) {
                 /* User SIGSEGV handler registered and not blocked — deliver signal.
                  * Save IRQ frame into thread_t, deliver, write back. */
                 t->fault_addr = cr2;
@@ -374,7 +374,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];
             /* Only deliver if handler exists AND signal not already blocked
              * (blocked = we're already in the handler → avoid infinite loop) */
-            if ((uint64_t)sa->sa_handler > 1 && !(t->proc->sig_blocked & (1ULL << signo))) {
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & (1ULL << signo))) {
                 /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
                 if (vector == 14) {
                     __asm__ volatile("mov %%cr2, %0" : "=r"(t->fault_addr));

@@ -678,7 +678,6 @@ long do_fork(void) {
 
     /* Inherit signal state */
     child->sig_pending = 0; /* child starts with no pending signals */
-    child->sig_blocked = parent->sig_blocked;
     for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
@@ -740,6 +739,7 @@ long do_fork(void) {
     ct->timeslice = RR_TIMESLICE;
     ct->proc = child;
     ct->state = THREAD_RUNNABLE;
+    ct->sig_blocked = cur->sig_blocked; /* inherit parent thread's signal mask */
 
     /* Kernel stack */
     ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
