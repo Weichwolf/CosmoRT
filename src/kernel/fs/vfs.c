@@ -1184,13 +1184,14 @@ int vfs_symlink(const char *target, const char *linkpath) {
 int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     if (!path || !buf || bufsiz == 0) return -EINVAL;
 
-    /* /proc/self/exe → executable path (stub: return /usr/bin/node) */
+    /* /proc/self/exe → executable path from process_t */
     if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
         path[4]=='c' && path[5]=='/' && path[6]=='s' && path[7]=='e' &&
         path[8]=='l' && path[9]=='f' && path[10]=='/' &&
         path[11]=='e' && path[12]=='x' && path[13]=='e' && path[14]==0) {
-        /* TODO: track actual exe path per process */
-        const char *exe = "/usr/bin/node";
+        extern process_t *proc_current(void);
+        process_t *p = proc_current();
+        const char *exe = (p && p->exe_path[0]) ? p->exe_path : "/usr/bin/unknown";
         int len = 0;
         while (exe[len]) len++;
         if ((size_t)len > bufsiz) len = (int)bufsiz;

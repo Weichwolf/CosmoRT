@@ -241,6 +241,8 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->pgid = p->pid;  /* initial process is own process group leader */
     p->sid  = p->pid;  /* initial process is own session leader */
     p->cwd[0] = '/'; p->cwd[1] = '\0';
+    { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }
+    { const char *s = "init";  int ii = 0; while (s[ii] && ii < 15)  { p->comm[ii] = s[ii]; ii++; } p->comm[ii] = 0; }
     fd_table_init(&p->fds);
 
     /* Create VMA for the stack region */
@@ -1217,6 +1219,13 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
     if (elf_buf) pages_free(elf_buf, elf_pages);
     if (interp_buf) pages_free(interp_buf, interp_pages);
+
+    /* Store executable path for /proc/self/exe */
+    {
+        int ei = 0;
+        while (ei < 255 && kpath[ei]) { p->exe_path[ei] = kpath[ei]; ei++; }
+        p->exe_path[ei] = '\0';
+    }
 
     /* Close O_CLOEXEC fds */
     for (int i = 0; i < FD_MAX; i++) {

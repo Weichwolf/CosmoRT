@@ -236,6 +236,15 @@ typedef long               ssize_t;
 #define ENOTCONN        107
 #define ETIMEDOUT       110
 #define ECONNREFUSED    111
+#define ERESTARTSYS     512   /* internal: restart syscall (never seen by userspace) */
+
+/* ══════════════════════════════════════════════════════════════════
+ * prctl constants
+ * ══════════════════════════════════════════════════════════════════ */
+
+#define PR_SET_PDEATHSIG    1
+#define PR_SET_NAME         15
+#define PR_GET_NAME         16
 
 /* ══════════════════════════════════════════════════════════════════
  * Memory mapping flags (Linux-compatible)
@@ -246,6 +255,7 @@ typedef long               ssize_t;
 #define PROT_WRITE      0x2
 #define PROT_EXEC       0x4
 
+#define MAP_SHARED           0x01
 #define MAP_PRIVATE          0x02
 #define MAP_FIXED            0x10
 #define MAP_ANONYMOUS        0x20

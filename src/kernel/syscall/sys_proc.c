@@ -280,17 +280,128 @@ long do_uname(void *buf_) {
     return 0;
 }
 
+/* ── SYS_prctl (157) ─────────────────────────────── */
+
+long do_prctl(int option, unsigned long a2, unsigned long a3,
+              unsigned long a4, unsigned long a5) {
+    (void)a3; (void)a4; (void)a5;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    switch (option) {
+    case PR_SET_PDEATHSIG:
+        return 0; /* no-op: single-user, not critical */
+
+    case PR_SET_NAME: {
+        if (!user_ok(a2, 1)) return -EFAULT;
+        const char *uname = (const char *)a2;
+        int i = 0;
+        while (i < 15 && (uint64_t)(uname + i) < 0x800000000000ULL && uname[i])
+            { p->comm[i] = uname[i]; i++; }
+        p->comm[i] = '\0';
+        return 0;
+    }
+
+    case PR_GET_NAME:
+        if (!user_ok(a2, 16)) return -EFAULT;
+        kmemcpy((void *)a2, p->comm, 16);
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
+}
+
+/* ── SYS_statfs (137) / SYS_fstatfs (138) ───────── */
+
+struct k_statfs {
+    long f_type;     long f_bsize;
+    long f_blocks;   long f_bfree;   long f_bavail;
+    long f_files;    long f_ffree;
+    struct { int __val[2]; } f_fsid;
+    long f_namelen;  long f_frsize;
+    long f_flags;    long f_spare[4];
+};
+
+static long fill_statfs(struct k_statfs *kbuf, const char *path) {
+    kmemset(kbuf, 0, sizeof(*kbuf));
+    kbuf->f_bsize = 4096;
+    kbuf->f_frsize = 4096;
+    kbuf->f_namelen = 255;
+
+    /* Check filesystem type by path */
+    int is_proc = (path && path[0]=='/' && path[1]=='p' && path[2]=='r' &&
+                   path[3]=='o' && path[4]=='c' && (path[5]=='/' || path[5]==0));
+    int is_tmp  = (path && path[0]=='/' && path[1]=='t' && path[2]=='m' &&
+                   path[3]=='p' && (path[4]=='/' || path[4]==0));
+    int is_dev  = (path && path[0]=='/' && path[1]=='d' && path[2]=='e' &&
+                   path[3]=='v' && (path[4]=='/' || path[4]==0));
+
+    if (is_proc) {
+        kbuf->f_type = 0x9FA0; /* PROC_SUPER_MAGIC */
+        kbuf->f_blocks = 0;
+        kbuf->f_bfree = 0;
+        kbuf->f_bavail = 0;
+    } else if (is_tmp || is_dev) {
+        kbuf->f_type = 0x01021994; /* TMPFS_MAGIC */
+        kbuf->f_blocks = 1024;
+        kbuf->f_bfree = 512;
+        kbuf->f_bavail = 512;
+    } else {
+        /* CosmoFS */
+        kbuf->f_type = 0x434F534D; /* 'COSM' */
+        kbuf->f_blocks = (long)(page_alloc_total());
+        kbuf->f_bfree = (long)(page_alloc_free());
+        kbuf->f_bavail = kbuf->f_bfree;
+    }
+    kbuf->f_files = 1024;
+    kbuf->f_ffree = 512;
+    return 0;
+}
+
+long do_statfs(const char *path, void *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct k_statfs))) return -EFAULT;
+    char kpath[256];
+    int r = copy_path_from_user(kpath, path, 256);
+    if (r < 0) return r;
+    struct k_statfs kbuf;
+    fill_statfs(&kbuf, kpath);
+    kmemcpy(buf, &kbuf, sizeof(kbuf));
+    return 0;
+}
+
+long do_fstatfs(int fd, void *buf) {
+    if (!user_ok((uint64_t)buf, sizeof(struct k_statfs))) return -EFAULT;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    struct k_statfs kbuf;
+    /* Infer filesystem from fd type */
+    const char *pseudo_path = "/";
+    if (fde->type == FD_PROCFS) pseudo_path = "/proc";
+    fill_statfs(&kbuf, pseudo_path);
+    kmemcpy(buf, &kbuf, sizeof(kbuf));
+    return 0;
+}
+
 /* ── SYS_getrandom (318) ────────────────────────── */
 
 long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
     (void)flags;
     if (!user_ok((uint64_t)buf, buflen)) return -EFAULT;
-    if (buflen > 256) buflen = 256; /* cap kernel stack usage */
-    uint8_t kbuf[256];
+    if (buflen > 4096) buflen = 4096; /* cap like Linux */
     extern int random_get(void *buf, size_t len);
-    if (random_get(kbuf, buflen) < 0) return -EIO;
-    kmemcpy(buf, kbuf, buflen);
-    return (long)buflen;
+    uint8_t kbuf[256];
+    size_t done = 0;
+    while (done < buflen) {
+        size_t chunk = buflen - done;
+        if (chunk > 256) chunk = 256;
+        if (random_get(kbuf, chunk) < 0) return -EIO;
+        kmemcpy((uint8_t *)buf + done, kbuf, chunk);
+        done += chunk;
+    }
+    return (long)done;
 }
 
 /* ── SYS_sched_setaffinity (203) / getaffinity (204) ── */

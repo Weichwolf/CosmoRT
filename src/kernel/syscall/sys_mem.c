@@ -147,6 +147,11 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
+    /* MAP_SHARED accepted but treated as MAP_PRIVATE (no shared-memory semantics yet).
+     * TODO: real shared mappings for IPC/cl_ring */
+    if (flags & MAP_SHARED)
+        flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
+
     /* Validate file-backed mmap parameters */
     int is_file = (fd >= 0 && !(flags & MAP_ANONYMOUS));
     struct vfs_file *vf = 0;

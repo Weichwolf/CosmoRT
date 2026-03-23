@@ -134,6 +134,12 @@ long do_getrusage(int who, void *usage);
 long do_prlimit64(int pid, int resource, const void *new_rlim, void *old_rlim);
 long do_times(void *buf);
 
+/* ── Forward declarations: sys_proc.c (continued) ── */
+long do_prctl(int option, unsigned long a2, unsigned long a3,
+              unsigned long a4, unsigned long a5);
+long do_statfs(const char *path, void *buf);
+long do_fstatfs(int fd, void *buf);
+
 /* ── Forward declarations: sys_signal.c ── */
 void check_pending_signals(void);
 void check_signals_syscall_path(long *result_ptr, long num);

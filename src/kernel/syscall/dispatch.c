@@ -143,7 +143,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (!p || p->state == PROC_FREE) return -ESRCH;
         return (long)p->sid;
     }
-    case SYS_PRCTL:       return -ENOSYS;
+    case SYS_PRCTL:       return do_prctl((int)a1, (unsigned long)a2, (unsigned long)a3,
+                                         (unsigned long)a4, (unsigned long)a5);
     case SYS_SIGALTSTACK: return 0; /* accept but ignore */
     case SYS_RT_SIGSUSPEND: return do_rt_sigsuspend((const uint64_t *)a1, (size_t)a2);
     case SYS_TGKILL:      return do_tgkill((int)a1, (int)a2, (int)a3);
@@ -171,12 +172,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         }
         return -EMFILE;
     }
-    case SYS_VFORK:       return do_fork(); /* vfork = fork (no COW optimization) */
+    case SYS_VFORK:       return do_fork(); /* Known limitation: vfork = fork (parent doesn't block until child exec/exit) */
     case SYS_CLONE3:      return do_clone3((void *)a1, (size_t)a2);
     case SYS_MOUNT:       return 0; /* pretend mount succeeds */
     case SYS_SETHOSTNAME: return 0;
-    case SYS_STATFS:      return -ENOSYS;
-    case SYS_FSTATFS:     return -ENOSYS;
+    case SYS_STATFS:      return do_statfs((const char *)a1, (void *)a2);
+    case SYS_FSTATFS:     return do_fstatfs((int)a1, (void *)a2);
     case SYS_ACCEPT4: {
         process_t *a4p = proc_current();
         if (a4p) {

@@ -584,6 +584,17 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
  * Syncs percpu syscall frame <-> thread_t around delivery.
  * Called from syscall_entry.asm between sys_handler return and SYSRET.
  * Actually called from the ASM-adjacent C code. */
+/* Is this syscall restartable when interrupted by a signal with SA_RESTART? */
+static int is_restartable_syscall(long num) {
+    return num == SYS_READ || num == SYS_WRITE || num == SYS_READV ||
+           num == SYS_WRITEV || num == SYS_WAIT4 || num == SYS_NANOSLEEP ||
+           num == SYS_CLOCK_NANOSLEEP || num == SYS_POLL ||
+           num == SYS_RECVFROM || num == SYS_SENDTO ||
+           num == SYS_RECVMSG || num == SYS_SENDMSG ||
+           num == SYS_ACCEPT || num == SYS_ACCEPT4 ||
+           num == SYS_CONNECT;
+}
+
 void check_signals_syscall_path(long *result_ptr, long num) {
     if (num == SYS_RT_SIGRETURN) return;
     thread_t *t = thread_current();
@@ -604,6 +615,24 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
     t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
+
+    /* SA_RESTART: if syscall returned -EINTR and the about-to-be-delivered
+     * signal has SA_RESTART, set up registers so rt_sigreturn restarts the
+     * syscall instead of returning -EINTR. */
+    if (*result_ptr == -EINTR && is_restartable_syscall(num)) {
+        /* Find which signal will be delivered */
+        for (int sig = 1; sig < 64; sig++) {
+            if (!(deliverable & (1ULL << sig))) continue;
+            struct k_sigaction *sa = &p->sig_actions[sig];
+            if ((uint64_t)sa->sa_handler > 1 && (sa->sa_flags & SA_RESTART)) {
+                /* Rewind RIP to re-execute syscall instruction.
+                 * Set RAX to syscall number so it re-enters correctly. */
+                t->rip -= 2;        /* back over `syscall` (0F 05) */
+                t->rax = (uint64_t)num;
+            }
+            break; /* only first deliverable signal matters */
+        }
+    }
 
     check_pending_signals();
 

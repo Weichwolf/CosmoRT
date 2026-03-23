@@ -49,6 +49,12 @@ typedef struct process {
     struct k_sigaction sig_actions[64]; /* per-signal action (0-63, SIGRTMIN=32..SIGRTMAX=63) */
     uint64_t    sig_trampoline_page; /* user-addr of RX trampoline page (0 = not yet allocated) */
 
+    /* Executable path (set by execve, read by /proc/self/exe) */
+    char        exe_path[256];
+
+    /* Thread name (prctl PR_SET_NAME / PR_GET_NAME) */
+    char        comm[16];
+
     /* Working directory */
     char        cwd[256];
 

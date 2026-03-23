@@ -181,7 +181,6 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
 }
 
 long do_pipe2(int *fds, int flags) {
-    (void)flags;
     if (!user_ok((uint64_t)fds, 2 * sizeof(int))) return -EFAULT;
 
     pipe_slab_ensure();
@@ -197,9 +196,15 @@ long do_pipe2(int *fds, int flags) {
     process_t *p = proc_current();
     if (!p) { slab_free(&pipe_slab, pp); return -EFAULT; }
 
-    int rfd = fd_alloc(&p->fds, FD_PIPE, pp, O_RDONLY);
+    /* Build fd flags: carry over O_CLOEXEC and O_NONBLOCK from pipe2 flags */
+    int rflags = O_RDONLY;
+    int wflags = O_WRONLY;
+    if (flags & O_CLOEXEC)  { rflags |= O_CLOEXEC;  wflags |= O_CLOEXEC; }
+    if (flags & O_NONBLOCK) { rflags |= O_NONBLOCK;  wflags |= O_NONBLOCK; }
+
+    int rfd = fd_alloc(&p->fds, FD_PIPE, pp, rflags);
     if (rfd < 0) { slab_free(&pipe_slab, pp); return -EMFILE; }
-    int wfd = fd_alloc(&p->fds, FD_PIPE, (void *)((uint8_t *)pp + 1), O_WRONLY);
+    int wfd = fd_alloc(&p->fds, FD_PIPE, (void *)((uint8_t *)pp + 1), wflags);
     if (wfd < 0) {
         fd_close(&p->fds, rfd);
         slab_free(&pipe_slab, pp);
