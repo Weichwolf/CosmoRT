@@ -359,46 +359,7 @@ long do_fstat(int fd, struct k_stat *buf) {
     return vfs_fstat(fd, buf);
 }
 
-long do_stat(const char *path, struct k_stat *buf) {
-    char kpath[PATH_MAX], rpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
-    if (len < 0) return len;
-    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    resolve_path(kpath, rpath, PATH_MAX);
-    return vfs_stat(rpath, buf);
-}
-
-/* ── SYS_dup2 (33) / SYS_dup3 (292) ────────────── */
-
-long do_dup2(int oldfd, int newfd) {
-    process_t *p = proc_current();
-    if (!p) return -EFAULT;
-    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
-    fd_entry_t *old = fd_get(&p->fds, oldfd);
-    if (!old) return -EBADF;
-    if (oldfd == newfd) return newfd;
-
-    /* Close newfd if open */
-    fd_entry_t *cur = fd_get(&p->fds, newfd);
-    if (cur) {
-        if (cur->type == FD_FILE) vfs_close(newfd);
-        else if (cur->type == FD_PIPE) pipe_close(cur);
-        else fd_close(&p->fds, newfd);
-        p->fds.entries[newfd].type = FD_NONE;
-        p->fds.entries[newfd].obj = 0;
-    }
-
-    /* Copy the fd entry and bump refcount */
-    p->fds.entries[newfd] = *old;
-    if (old->type == FD_FILE && old->obj) {
-        extern void vfs_file_incref(struct vfs_file *f);
-        vfs_file_incref((struct vfs_file *)old->obj);
-    } else if (old->type == FD_PIPE && old->obj) {
-        fd_obj_incref(FD_PIPE, old->obj);
-    }
-    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
-    return newfd;
-}
+/* ── SYS_dup3 (292) — primary; dup2 delegates here via dispatch ── */
 
 long do_dup3(int oldfd, int newfd, int flags) {
     if (oldfd == newfd) return -EINVAL;
@@ -450,101 +411,62 @@ long do_chdir(const char *path) {
     return vfs_chdir(kpath);
 }
 
-/* ── SYS_lstat (6) ──────────────────────────────── */
+/* ── SYS_fstatat (262) — primary; stat/lstat delegate here via dispatch ── */
 
-long do_lstat(const char *path, struct k_stat *buf) {
-    char kpath[PATH_MAX];
+long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
     if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    return vfs_lstat(kpath, buf);
-}
-
-/* ── SYS_fstatat (262) ─────────────────────────── */
-
-long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
     /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD) {
-        char kp[PATH_MAX];
-        int l = copy_path_from_user(kp, path, PATH_MAX);
-        if (l >= 0 && kp[0] != '/') return -EBADF;
-    }
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
+    resolve_path(kpath, rpath, PATH_MAX);
     if (flags & AT_SYMLINK_NOFOLLOW)
-        return do_lstat(path, buf);
-    return do_stat(path, buf);
+        return vfs_lstat(rpath, buf);
+    return vfs_stat(rpath, buf);
 }
 
 /* ── SYS_mkdir/rmdir/unlink/rename ───────────────── */
 
-long do_mkdir(const char *path, int mode) {
+/* ── SYS_mkdirat (258) — primary; mkdir delegates here via dispatch ── */
+
+long do_mkdirat(int dirfd, const char *path, int mode) {
     (void)mode;
     char kpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_mkdir(kpath);
 }
 
-long do_mkdirat(int dirfd, const char *path, int mode) {
+/* ── SYS_unlinkat (263) — primary; unlink/rmdir delegate here via dispatch ── */
+
+long do_unlinkat(int dirfd, const char *path, int flags) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
     /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD) {
-        char kp[PATH_MAX];
-        int l = copy_path_from_user(kp, path, PATH_MAX);
-        if (l >= 0 && kp[0] != '/') return -EBADF;
-    }
-    return do_mkdir(path, mode);
-}
-
-long do_rmdir(const char *path) {
-    char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
-    if (len < 0) return len;
-    return vfs_rmdir(kpath);
-}
-
-long do_unlink(const char *path) {
-    char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
-    if (len < 0) return len;
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
+    if (flags & AT_REMOVEDIR)
+        return vfs_rmdir(kpath);
     return vfs_unlink(kpath);
 }
 
-long do_unlinkat(int dirfd, const char *path, int flags) {
-    /* TODO: real dirfd support */
-    if (dirfd != AT_FDCWD) {
-        char kp[PATH_MAX];
-        int l = copy_path_from_user(kp, path, PATH_MAX);
-        if (l >= 0 && kp[0] != '/') return -EBADF;
-    }
-    if (flags & AT_REMOVEDIR)
-        return do_rmdir(path);
-    return do_unlink(path);
-}
+/* ── SYS_renameat2 (316) — primary; rename delegates here via dispatch ── */
 
-long do_rename(const char *oldpath, const char *newpath) {
+long do_renameat2(int olddirfd, const char *oldpath,
+                          int newdirfd, const char *newpath, int flags) {
+    (void)flags; /* TODO: RENAME_NOREPLACE etc. */
     char kold[PATH_MAX], knew[PATH_MAX];
     int r = copy_path_from_user(kold, oldpath, PATH_MAX);
     if (r < 0) return r;
     r = copy_path_from_user(knew, newpath, PATH_MAX);
     if (r < 0) return r;
-    return vfs_rename(kold, knew);
-}
-
-long do_renameat2(int olddirfd, const char *oldpath,
-                          int newdirfd, const char *newpath, int flags) {
-    (void)flags; /* TODO: RENAME_NOREPLACE etc. */
     /* TODO: real dirfd support */
-    if (olddirfd != AT_FDCWD || newdirfd != AT_FDCWD) {
-        char kp[PATH_MAX];
-        if (olddirfd != AT_FDCWD) {
-            int l = copy_path_from_user(kp, oldpath, PATH_MAX);
-            if (l >= 0 && kp[0] != '/') return -EBADF;
-        }
-        if (newdirfd != AT_FDCWD) {
-            int l = copy_path_from_user(kp, newpath, PATH_MAX);
-            if (l >= 0 && kp[0] != '/') return -EBADF;
-        }
-    }
-    return do_rename(oldpath, newpath);
+    if (olddirfd != AT_FDCWD && kold[0] != '/') return -EBADF;
+    if (newdirfd != AT_FDCWD && knew[0] != '/') return -EBADF;
+    return vfs_rename(kold, knew);
 }
 
 /* ── SYS_fchmod (91) ─────────────────────────────── */
@@ -561,33 +483,48 @@ long do_fchown(int fd, uint32_t uid, uint32_t gid) {
 
 /* ── SYS_link (86) ───────────────────────────────── */
 
-long do_link(const char *oldpath, const char *newpath) {
+/* ── SYS_linkat (265) — primary; link delegates here via dispatch ── */
+
+long do_linkat(int olddirfd, const char *oldpath,
+               int newdirfd, const char *newpath, int flags) {
+    (void)flags; /* TODO: AT_EMPTY_PATH, AT_SYMLINK_FOLLOW */
     char kold[PATH_MAX], knew[PATH_MAX];
     int r = copy_path_from_user(kold, oldpath, PATH_MAX);
     if (r < 0) return r;
     r = copy_path_from_user(knew, newpath, PATH_MAX);
     if (r < 0) return r;
+    /* TODO: real dirfd support */
+    if (olddirfd != AT_FDCWD && kold[0] != '/') return -EBADF;
+    if (newdirfd != AT_FDCWD && knew[0] != '/') return -EBADF;
     return vfs_link(kold, knew);
 }
 
 /* ── SYS_symlink (88) ───────────────────────────── */
 
-long do_symlink(const char *target, const char *linkpath) {
+/* ── SYS_symlinkat (266) — primary; symlink delegates here via dispatch ── */
+
+long do_symlinkat(const char *target, int newdirfd, const char *linkpath) {
     char ktarget[PATH_MAX], klink[PATH_MAX];
     int r = copy_path_from_user(ktarget, target, PATH_MAX);
     if (r < 0) return r;
     r = copy_path_from_user(klink, linkpath, PATH_MAX);
     if (r < 0) return r;
+    /* TODO: real dirfd support */
+    if (newdirfd != AT_FDCWD && klink[0] != '/') return -EBADF;
     return vfs_symlink(ktarget, klink);
 }
 
 /* ── SYS_readlink (89) ──────────────────────────── */
 
-long do_readlink(const char *path, char *buf, size_t bufsiz) {
+/* ── SYS_readlinkat (267) — primary; readlink delegates here via dispatch ── */
+
+long do_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
     char kpath[PATH_MAX];
     int r = copy_path_from_user(kpath, path, PATH_MAX);
     if (r < 0) return r;
     if (!user_ok((uint64_t)buf, bufsiz)) return -EFAULT;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_readlink(kpath, buf, bufsiz);
 }
 
@@ -818,12 +755,15 @@ long do_getdents64(int fd, void *buf, size_t count) {
     return (long)written;
 }
 
-/* ── SYS_access (21) / SYS_faccessat (269) ──────── */
+/* ── SYS_faccessat (269) — primary; access delegates here via dispatch ── */
 
-long do_access(const char *path) {
+long do_faccessat(int dirfd, const char *path, int mode, int flags) {
+    (void)mode; (void)flags; /* TODO: real mode/flags checking */
     char kpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     /* Check ramfs first */
     if (vfs_lookup(kpath)) return 0;
     /* Check procfs entries (/proc/NAME) */

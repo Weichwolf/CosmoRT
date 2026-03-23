@@ -106,6 +106,7 @@ typedef long               ssize_t;
 #define SYS_UNLINK          87
 #define SYS_SYMLINK         88
 #define SYS_READLINK        89
+#define SYS_CHMOD           90
 #define SYS_FCHMOD          91
 #define SYS_FCHOWN          93
 #define SYS_GETTIMEOFDAY    96
@@ -162,6 +163,8 @@ typedef long               ssize_t;
 #define SYS_MKNODAT          259
 #define SYS_FSTATAT          262
 #define SYS_UNLINKAT         263
+#define SYS_LINKAT           265
+#define SYS_SYMLINKAT        266
 #define SYS_READLINKAT       267
 #define SYS_FCHMODAT         268
 #define SYS_FACCESSAT        269
@@ -317,6 +320,7 @@ typedef long               ssize_t;
 #define SIGHUP          1
 #define SIGINT          2
 #define SIGQUIT         3
+#define SIGILL          4
 #define SIGTRAP         5
 #define SIGABRT         6
 #define SIGBUS          7

@@ -190,8 +190,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_MREMAP:      return do_mremap((unsigned long)a1, (size_t)a2,
                                            (size_t)a3, (int)a4, (unsigned long)a5);
     case SYS_MADVISE:     return do_madvise((unsigned long)a1, (size_t)a2, (int)a3);
-    case SYS_FACCESSAT:   return do_access((const char *)a2); /* path in a2 (dirfd ignored) */
-    case SYS_READLINKAT:  return do_readlink((const char *)a2, (char *)a3, (size_t)a4);
+    case SYS_FACCESSAT:   return do_faccessat((int)a1, (const char *)a2, (int)a3, (int)a4);
+    case SYS_READLINKAT:  return do_readlinkat((int)a1, (const char *)a2, (char *)a3, (size_t)a4);
 
     /* System info */
     case SYS_UNAME:     return do_uname((void *)a1);
@@ -243,11 +243,19 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_OPENAT: return do_openat((int)a1, (const char *)a2, (int)a3, (int)a4);
     case SYS_LSEEK:  return do_lseek((int)a1, a2, (int)a3);
     case SYS_FSTAT:  return do_fstat((int)a1, (struct k_stat *)a2);
-    case SYS_STAT:   return do_stat((const char *)a1, (struct k_stat *)a2);
-    case SYS_LSTAT:  return do_lstat((const char *)a1, (struct k_stat *)a2);
+    case SYS_STAT:   return do_fstatat(AT_FDCWD, (const char *)a1, (struct k_stat *)a2, 0);
+    case SYS_LSTAT:  return do_fstatat(AT_FDCWD, (const char *)a1, (struct k_stat *)a2, AT_SYMLINK_NOFOLLOW);
     case SYS_FSTATAT: return do_fstatat((int)a1, (const char *)a2,
                                          (struct k_stat *)a3, (int)a4);
-    case SYS_DUP2:   return do_dup2((int)a1, (int)a2);
+    case SYS_DUP2: {
+        /* dup2 special case: oldfd==newfd returns newfd (dup3 returns -EINVAL) */
+        if ((int)a1 == (int)a2) {
+            process_t *p = proc_current();
+            if (!p) return -EFAULT;
+            return fd_get(&p->fds, (int)a1) ? (int)a2 : -EBADF;
+        }
+        return do_dup3((int)a1, (int)a2, 0);
+    }
     case SYS_DUP3:   return do_dup3((int)a1, (int)a2, (int)a3);
     case SYS_GETCWD: return do_getcwd((char *)a1, (size_t)a2);
     case SYS_CHDIR:  return do_chdir((const char *)a1);
@@ -278,12 +286,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_POLL:        return do_poll((void *)a1, (int)a2, (int)a3);
 
     /* Filesystem mutation */
-    case SYS_MKDIR:      return do_mkdir((const char *)a1, (int)a2);
+    case SYS_MKDIR:      return do_mkdirat(AT_FDCWD, (const char *)a1, (int)a2);
     case SYS_MKDIRAT:    return do_mkdirat((int)a1, (const char *)a2, (int)a3);
-    case SYS_RMDIR:      return do_rmdir((const char *)a1);
-    case SYS_UNLINK:     return do_unlink((const char *)a1);
+    case SYS_RMDIR:      return do_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);
+    case SYS_UNLINK:     return do_unlinkat(AT_FDCWD, (const char *)a1, 0);
     case SYS_UNLINKAT:   return do_unlinkat((int)a1, (const char *)a2, (int)a3);
-    case SYS_RENAME:     return do_rename((const char *)a1, (const char *)a2);
+    case SYS_RENAME:     return do_renameat2(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0);
     case SYS_RENAMEAT2:  return do_renameat2((int)a1, (const char *)a2,
                                               (int)a3, (const char *)a4, (int)a5);
     case SYS_GETDENTS64: return do_getdents64((int)a1, (void *)a2, (size_t)a3);
@@ -291,11 +299,14 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     /* Filesystem metadata */
     case SYS_FCHMOD:     return do_fchmod((int)a1, (uint32_t)a2);
     case SYS_FCHOWN:     return do_fchown((int)a1, (uint32_t)a2, (uint32_t)a3);
-    case SYS_LINK:       return do_link((const char *)a1, (const char *)a2);
-    case SYS_SYMLINK:    return do_symlink((const char *)a1, (const char *)a2);
-    case SYS_READLINK:   return do_readlink((const char *)a1, (char *)a2, (size_t)a3);
+    case SYS_LINK:       return do_linkat(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0);
+    case SYS_LINKAT:     return do_linkat((int)a1, (const char *)a2, (int)a3, (const char *)a4, (int)a5);
+    case SYS_SYMLINK:    return do_symlinkat((const char *)a1, AT_FDCWD, (const char *)a2);
+    case SYS_SYMLINKAT:  return do_symlinkat((const char *)a1, (int)a2, (const char *)a3);
+    case SYS_READLINK:   return do_readlinkat(AT_FDCWD, (const char *)a1, (char *)a2, (size_t)a3);
     case SYS_TRUNCATE:   return do_truncate((const char *)a1, (int64_t)a2);
     case SYS_FTRUNCATE:  return do_ftruncate((int)a1, (int64_t)a2);
+    case SYS_CHMOD:      return do_fchmodat(AT_FDCWD, (const char *)a1, (uint32_t)a2, 0);
     case SYS_FCHMODAT:   return do_fchmodat((int)a1, (const char *)a2, (uint32_t)a3, (int)a4);
     case SYS_UTIMENSAT:  return do_utimensat((int)a1, (const char *)a2, (const void *)a3, (int)a4);
     case SYS_FALLOCATE:  return do_fallocate((int)a1, (int)a2, (int64_t)a3, (int64_t)a4);
@@ -308,8 +319,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_IOCTL:  return do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3);
     case SYS_FCNTL:  return do_fcntl((int)a1, (int)a2, a3);
 
-    /* Stubs */
-    case SYS_ACCESS: return do_access((const char *)a1);
+    case SYS_ACCESS: return do_faccessat(AT_FDCWD, (const char *)a1, 0, 0);
 
     /* epoll / eventfd / timerfd / signalfd / inotify */
     case SYS_EPOLL_CREATE1:     return do_epoll_create1((int)a1);

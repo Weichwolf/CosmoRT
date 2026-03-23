@@ -68,26 +68,20 @@ long do_open(const char *path, int flags, int mode);
 long do_openat(int dirfd, const char *path, int flags, int mode);
 long do_lseek(int fd, long offset, int whence);
 long do_fstat(int fd, struct k_stat *buf);
-long do_stat(const char *path, struct k_stat *buf);
-long do_lstat(const char *path, struct k_stat *buf);
 long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags);
-long do_dup2(int oldfd, int newfd);
 long do_dup3(int oldfd, int newfd, int flags);
 long do_getcwd(char *buf, size_t size);
 long do_chdir(const char *path);
-long do_mkdir(const char *path, int mode);
 long do_mkdirat(int dirfd, const char *path, int mode);
-long do_rmdir(const char *path);
-long do_unlink(const char *path);
 long do_unlinkat(int dirfd, const char *path, int flags);
-long do_rename(const char *oldpath, const char *newpath);
 long do_renameat2(int olddirfd, const char *oldpath,
                   int newdirfd, const char *newpath, int flags);
 long do_fchmod(int fd, uint32_t mode);
 long do_fchown(int fd, uint32_t uid, uint32_t gid);
-long do_link(const char *oldpath, const char *newpath);
-long do_symlink(const char *target, const char *linkpath);
-long do_readlink(const char *path, char *buf, size_t bufsiz);
+long do_linkat(int olddirfd, const char *oldpath,
+               int newdirfd, const char *newpath, int flags);
+long do_symlinkat(const char *target, int newdirfd, const char *linkpath);
+long do_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz);
 long do_truncate(const char *path, int64_t length);
 long do_ftruncate(int fd, int64_t length);
 long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags);
@@ -97,7 +91,7 @@ long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev);
 long do_getdents64(int fd, void *buf, size_t count);
 long do_ioctl(int fd, unsigned long request, unsigned long arg);
 long do_fcntl(int fd, int cmd, long arg);
-long do_access(const char *path);
+long do_faccessat(int dirfd, const char *path, int mode, int flags);
 
 /* ── Forward declarations: sys_mem.c ── */
 long do_brk(unsigned long addr);

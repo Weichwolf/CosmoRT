@@ -344,7 +344,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         if (vector == 13 || vector == 14) signo = SIGSEGV;
         else if (vector == 3) signo = SIGTRAP;
         else if (vector == 0 || vector == 16 || vector == 19) signo = SIGFPE;
-        else if (vector == 6) signo = 4; /* SIGILL — no SIGILL in linux.h */
+        else if (vector == 6) signo = SIGILL;
 
         if (signo) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];
