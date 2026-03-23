@@ -337,11 +337,12 @@ long do_open(const char *path, int flags, int mode) {
 }
 
 long do_openat(int dirfd, const char *path, int flags, int mode) {
-    /* Only AT_FDCWD (-100) supported for now */
-    (void)dirfd;
     char kpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
+    /* Absolute paths ignore dirfd; relative paths require AT_FDCWD.
+     * TODO: real dirfd support (resolve path relative to open directory fd) */
+    if (kpath[0] != '/' && dirfd != AT_FDCWD) return -EBADF;
     return vfs_open(kpath, flags, mode);
 }
 
@@ -462,7 +463,12 @@ long do_lstat(const char *path, struct k_stat *buf) {
 /* ── SYS_fstatat (262) ─────────────────────────── */
 
 long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
-    (void)dirfd; /* AT_FDCWD only */
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD) {
+        char kp[PATH_MAX];
+        int l = copy_path_from_user(kp, path, PATH_MAX);
+        if (l >= 0 && kp[0] != '/') return -EBADF;
+    }
     if (flags & AT_SYMLINK_NOFOLLOW)
         return do_lstat(path, buf);
     return do_stat(path, buf);
@@ -479,7 +485,12 @@ long do_mkdir(const char *path, int mode) {
 }
 
 long do_mkdirat(int dirfd, const char *path, int mode) {
-    (void)dirfd; /* AT_FDCWD only */
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD) {
+        char kp[PATH_MAX];
+        int l = copy_path_from_user(kp, path, PATH_MAX);
+        if (l >= 0 && kp[0] != '/') return -EBADF;
+    }
     return do_mkdir(path, mode);
 }
 
@@ -498,7 +509,12 @@ long do_unlink(const char *path) {
 }
 
 long do_unlinkat(int dirfd, const char *path, int flags) {
-    (void)dirfd;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD) {
+        char kp[PATH_MAX];
+        int l = copy_path_from_user(kp, path, PATH_MAX);
+        if (l >= 0 && kp[0] != '/') return -EBADF;
+    }
     if (flags & AT_REMOVEDIR)
         return do_rmdir(path);
     return do_unlink(path);
@@ -515,7 +531,19 @@ long do_rename(const char *oldpath, const char *newpath) {
 
 long do_renameat2(int olddirfd, const char *oldpath,
                           int newdirfd, const char *newpath, int flags) {
-    (void)olddirfd; (void)newdirfd; (void)flags;
+    (void)flags; /* TODO: RENAME_NOREPLACE etc. */
+    /* TODO: real dirfd support */
+    if (olddirfd != AT_FDCWD || newdirfd != AT_FDCWD) {
+        char kp[PATH_MAX];
+        if (olddirfd != AT_FDCWD) {
+            int l = copy_path_from_user(kp, oldpath, PATH_MAX);
+            if (l >= 0 && kp[0] != '/') return -EBADF;
+        }
+        if (newdirfd != AT_FDCWD) {
+            int l = copy_path_from_user(kp, newpath, PATH_MAX);
+            if (l >= 0 && kp[0] != '/') return -EBADF;
+        }
+    }
     return do_rename(oldpath, newpath);
 }
 
@@ -579,22 +607,25 @@ long do_ftruncate(int fd, int64_t length) {
 /* ── SYS_fchmodat (268) ─────────────────────────── */
 
 long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
-    (void)dirfd; (void)flags; /* AT_FDCWD only */
+    (void)flags;
     char kpath[PATH_MAX];
     int r = copy_path_from_user(kpath, path, PATH_MAX);
     if (r < 0) return r;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
     return vfs_chmod(kpath, mode);
 }
 
 /* ── SYS_utimensat (280) ────────────────────────── */
 
 long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
-    (void)dirfd; /* AT_FDCWD only */
     if (!path) return 0; /* futimens with NULL path = no-op for now */
 
     char kpath[PATH_MAX];
     int r = copy_path_from_user(kpath, path, PATH_MAX);
     if (r < 0) return r;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
 
     int64_t ktimes[4];
     if (utimes) {
@@ -622,7 +653,7 @@ long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
 /* ── SYS_mknodat (259) ──────────────────────────── */
 
 long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
-    (void)dirfd; (void)dev; /* AT_FDCWD only */
+    (void)dev;
 
     /* Only S_IFREG (regular files) supported */
     if ((mode & S_IFMT) != S_IFREG && (mode & S_IFMT) != 0)
@@ -631,6 +662,8 @@ long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
     char kpath[PATH_MAX];
     int r = copy_path_from_user(kpath, path, PATH_MAX);
     if (r < 0) return r;
+    /* TODO: real dirfd support */
+    if (dirfd != AT_FDCWD && kpath[0] != '/') return -EBADF;
 
     /* Create as regular file via open+close */
     int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
@@ -648,16 +681,117 @@ struct linux_dirent64 {
     char     d_name[1]; /* flexible */
 };
 
+/* Emit one dirent into the output buffer. Returns bytes written or 0 if no space. */
+static size_t emit_dirent(uint8_t *out, size_t remaining,
+                          uint64_t ino, uint64_t off, uint8_t d_type,
+                          const char *name) {
+    int nlen = 0;
+    while (name[nlen]) nlen++;
+    /* d_reclen: header (19 bytes) + name + NUL, rounded up to 8 */
+    size_t reclen = (19 + (size_t)nlen + 1 + 7) & ~(size_t)7;
+    if (reclen > remaining) return 0;
+
+    struct linux_dirent64 *ent = (struct linux_dirent64 *)out;
+    ent->d_ino = ino;
+    ent->d_off = (int64_t)off;
+    ent->d_reclen = (uint16_t)reclen;
+    ent->d_type = d_type;
+    for (int i = 0; i < nlen; i++)
+        ((char *)ent + 19)[i] = name[i];
+    ((char *)ent + 19)[nlen] = 0;
+    /* Zero padding */
+    for (size_t i = 19 + (size_t)nlen + 1; i < reclen; i++)
+        ((uint8_t *)ent)[i] = 0;
+    return reclen;
+}
+
+/* Callback context for CosmoFS getdents64 via cosmofs_dir_iterate */
+struct getdents_ctx {
+    uint8_t *out;
+    size_t   count;
+    size_t   written;
+    uint64_t next_off;
+    int      full;       /* set when buffer is exhausted */
+};
+
+static int getdents_cb(const char *name, uint64_t ino, void *arg) {
+    struct getdents_ctx *ctx = (struct getdents_ctx *)arg;
+    /* Determine type: read inode to check */
+    uint8_t d_type = 8; /* DT_REG */
+    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
+    if (ip && ip->type == COSMOFS_TYPE_DIR) d_type = 4; /* DT_DIR */
+
+    ctx->next_off++;
+    size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
+                           ino, ctx->next_off, d_type, name);
+    if (n == 0) { ctx->full = 1; return 1; /* stop */ }
+    ctx->written += n;
+    return 0; /* continue */
+}
+
+/* Callback for procfs directory enumeration */
+struct procfs_getdents_ctx {
+    uint8_t *out;
+    size_t   count;
+    size_t   written;
+    uint64_t next_off;
+};
+
+static int procfs_getdents_cb(const char *name, void *arg) {
+    struct procfs_getdents_ctx *ctx = (struct procfs_getdents_ctx *)arg;
+    ctx->next_off++;
+    size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
+                           ctx->next_off, ctx->next_off, 8 /* DT_REG */, name);
+    if (n == 0) return 1; /* stop: buffer full */
+    ctx->written += n;
+    return 0;
+}
+
 long do_getdents64(int fd, void *buf, size_t count) {
     if (!user_ok((uint64_t)buf, count)) return -EFAULT;
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde || fde->type != FD_FILE) return -EBADF;
+    if (!fde) return -EBADF;
+
+    /* /proc directory (FD_PROCFS with handle == -1) */
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (!pf || pf->handle != -1) return -ENOTDIR;
+        struct procfs_getdents_ctx ctx = {
+            .out = (uint8_t *)buf,
+            .count = count,
+            .written = 0,
+            .next_off = (uint64_t)pf->offset
+        };
+        procfs_iterate(pf->offset, procfs_getdents_cb, &ctx);
+        pf->offset = (int)ctx.next_off;
+        return (long)ctx.written;
+    }
+
+    if (fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
-    if (!f || !f->node || f->node->type != VFS_DIR) return -ENOTDIR;
+    if (!f) return -EBADF;
+
+    /* CosmoFS directory */
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        if (f->type != VFS_DIR) return -ENOTDIR;
+        struct getdents_ctx ctx = {
+            .out = (uint8_t *)buf,
+            .count = count,
+            .written = 0,
+            .next_off = f->offset,
+            .full = 0
+        };
+        cosmofs_dir_iterate(f->cosmofs_ino, (int)f->offset, getdents_cb, &ctx);
+        f->offset = ctx.next_off;
+        return (long)ctx.written;
+    }
+
+    /* ramfs directory */
+    if (!f->node || f->node->type != VFS_DIR) return -ENOTDIR;
 
     struct vfs_node *dir = f->node;
     uint8_t *out = (uint8_t *)buf;
@@ -672,25 +806,11 @@ long do_getdents64(int fd, void *buf, size_t count) {
     }
 
     while (child) {
-        int nlen = 0;
-        while (child->name[nlen]) nlen++;
-        /* d_reclen: header (19 bytes) + name + NUL, rounded up to 8 */
-        size_t reclen = (19 + (size_t)nlen + 1 + 7) & ~(size_t)7;
-        if (written + reclen > count) break;
-
-        struct linux_dirent64 *ent = (struct linux_dirent64 *)(out + written);
-        ent->d_ino = child->ino;
-        ent->d_off = (int64_t)(f->offset + 1);
-        ent->d_reclen = (uint16_t)reclen;
-        ent->d_type = (child->type == VFS_DIR) ? 4 : 8; /* DT_DIR / DT_REG */
-        for (int i = 0; i < nlen; i++)
-            ((char *)ent + 19)[i] = child->name[i];
-        ((char *)ent + 19)[nlen] = 0;
-        /* Zero padding */
-        for (size_t i = 19 + (size_t)nlen + 1; i < reclen; i++)
-            ((uint8_t *)ent)[i] = 0;
-
-        written += reclen;
+        uint8_t d_type = (child->type == VFS_DIR) ? 4 : 8;
+        size_t n = emit_dirent(out + written, count - written,
+                               child->ino, f->offset + 1, d_type, child->name);
+        if (n == 0) break;
+        written += n;
         f->offset++;
         child = child->next;
     }

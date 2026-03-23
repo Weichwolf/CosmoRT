@@ -396,6 +396,21 @@ int vfs_open(const char *path, int flags, int mode) {
         return fd < 0 ? -EMFILE : fd;
     }
 
+    /* /proc directory itself? */
+    if (kstreq(path, "/proc") || kstreq(path, "/proc/")) {
+        procfs_fd_t *pf = procfs_fd_alloc();
+        if (!pf) return -ENOMEM;
+        pf->handle = -1;  /* sentinel: directory listing, not a file */
+        pf->offset = 0;
+
+        process_t *p = proc_current();
+        if (!p) { procfs_fd_free(pf); return -EFAULT; }
+
+        int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+        if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
+        return fd;
+    }
+
     /* procfs path? */
     const char *pname = procfs_name(path);
     if (pname) {

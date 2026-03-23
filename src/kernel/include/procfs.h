@@ -34,6 +34,10 @@ void procfs_close(int handle);
 /* Stat a procfs entry by name. Returns 0 on success, -1 if not found. */
 int procfs_stat(const char *name, int *size_out);
 
+/* Iterate procfs entries starting at offset. cb returns 0 to continue, nonzero to stop.
+ * Returns number of entries visited. */
+int procfs_iterate(int offset, int (*cb)(const char *name, void *ctx), void *ctx);
+
 /* Allocate / free procfs_fd_t from a small static pool */
 procfs_fd_t *procfs_fd_alloc(void);
 void procfs_fd_free(procfs_fd_t *pf);

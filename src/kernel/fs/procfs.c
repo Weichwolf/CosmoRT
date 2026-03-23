@@ -70,6 +70,17 @@ int procfs_stat(const char *name, int *size_out) {
     return 0;
 }
 
+/* ── Iterate entries (for getdents64 on /proc) ───── */
+
+int procfs_iterate(int offset, int (*cb)(const char *name, void *ctx), void *ctx) {
+    int visited = 0;
+    for (int i = offset; i < num_entries; i++) {
+        visited++;
+        if (cb(entries[i].name, ctx)) break;
+    }
+    return visited;
+}
+
 /* ── int-to-string helper ────────────────────────── */
 
 static int itoa_buf(char *dst, int max, long v) {
