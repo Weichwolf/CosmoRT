@@ -12,9 +12,20 @@ long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     uint64_t ms = timer_ms();
     kts.tv_sec = (long)(ms / 1000);
     kts.tv_nsec = (long)((ms % 1000) * 1000000);
-    if (clk_id == CLOCK_REALTIME) {
+    switch (clk_id) {
+    case CLOCK_REALTIME:
+    case CLOCK_REALTIME_COARSE: {
         extern uint64_t rtc_epoch_sec;
         kts.tv_sec += (long)rtc_epoch_sec;
+        break;
+    }
+    case CLOCK_MONOTONIC:
+    case CLOCK_MONOTONIC_RAW:
+    case CLOCK_MONOTONIC_COARSE:
+    case CLOCK_BOOTTIME:
+        break;
+    default:
+        return -EINVAL;
     }
     { int r = copy_to_user(tp, &kts, sizeof(kts)); if (r) return r; }
     return 0;
@@ -56,7 +67,7 @@ long do_clock_nanosleep(int clk_id, int flags,
         uint64_t target_ms = (uint64_t)kreq.tv_sec * 1000
                            + (uint64_t)(kreq.tv_nsec / 1000000);
         /* CLOCK_REALTIME absolute target is wall-clock; convert to uptime */
-        if (clk_id == CLOCK_REALTIME) {
+        if (clk_id == CLOCK_REALTIME || clk_id == CLOCK_REALTIME_COARSE) {
             extern uint64_t rtc_epoch_sec;
             uint64_t epoch_ms = rtc_epoch_sec * 1000;
             if (target_ms > epoch_ms)

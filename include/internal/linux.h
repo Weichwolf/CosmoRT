@@ -274,6 +274,8 @@ typedef long               ssize_t;
 #define MAP_PRIVATE          0x02
 #define MAP_FIXED            0x10
 #define MAP_ANONYMOUS        0x20
+#define MAP_NORESERVE        0x4000
+#define MAP_POPULATE         0x8000
 #define MAP_FIXED_NOREPLACE  0x100000
 
 /* mremap flags */
@@ -295,7 +297,9 @@ typedef long               ssize_t;
 #define O_TRUNC         0x0200
 #define O_APPEND        0x0400
 #define O_NONBLOCK      0x0800
+#define O_NOCTTY        0x100
 #define O_DIRECTORY     0x10000
+#define O_NOFOLLOW      0x20000
 #define O_CLOEXEC       0x80000
 
 /* fcntl commands */
@@ -385,9 +389,13 @@ typedef long               ssize_t;
  * Clock IDs (POSIX / Linux)
  * ══════════════════════════════════════════════════════════════════ */
 
-#define CLOCK_REALTIME  0
-#define CLOCK_MONOTONIC 1
-#define TIMER_ABSTIME   1
+#define CLOCK_REALTIME          0
+#define CLOCK_MONOTONIC         1
+#define CLOCK_MONOTONIC_RAW     4
+#define CLOCK_REALTIME_COARSE   5
+#define CLOCK_MONOTONIC_COARSE  6
+#define CLOCK_BOOTTIME          7
+#define TIMER_ABSTIME           1
 
 /* ══════════════════════════════════════════════════════════════════
  * clone flags
@@ -442,11 +450,31 @@ typedef long               ssize_t;
 #define TFD_CLOEXEC     02000000
 #define TFD_NONBLOCK    04000
 
-#define IN_MODIFY       0x00000002
-#define IN_MOVED_FROM   0x00000040
-#define IN_MOVED_TO     0x00000080
-#define IN_CREATE       0x00000100
-#define IN_DELETE       0x00000200
+#define IN_ACCESS        0x00000001
+#define IN_MODIFY        0x00000002
+#define IN_ATTRIB        0x00000004
+#define IN_CLOSE_WRITE   0x00000008
+#define IN_CLOSE_NOWRITE 0x00000010
+#define IN_OPEN          0x00000020
+#define IN_MOVED_FROM    0x00000040
+#define IN_MOVED_TO      0x00000080
+#define IN_CREATE        0x00000100
+#define IN_DELETE        0x00000200
+#define IN_DELETE_SELF   0x00000400
+#define IN_MOVE_SELF     0x00000800
+#define IN_UNMOUNT       0x00002000
+#define IN_Q_OVERFLOW    0x00004000
+#define IN_IGNORED       0x00008000
+#define IN_CLOSE         (IN_CLOSE_WRITE | IN_CLOSE_NOWRITE)
+#define IN_MOVE          (IN_MOVED_FROM | IN_MOVED_TO)
+#define IN_ALL_EVENTS    0x00000FFF
+#define IN_ONLYDIR       0x01000000
+#define IN_DONT_FOLLOW   0x02000000
+#define IN_EXCL_UNLINK   0x04000000
+#define IN_MASK_CREATE   0x10000000
+#define IN_MASK_ADD      0x20000000
+#define IN_ISDIR         0x40000000
+#define IN_ONESHOT       0x80000000
 
 /* ══════════════════════════════════════════════════════════════════
  * Stat struct — Linux x86_64 layout

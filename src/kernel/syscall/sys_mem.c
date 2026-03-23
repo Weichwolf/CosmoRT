@@ -286,8 +286,8 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         return (long)vaddr;
     }
 
-    /* Anonymous: pre-fault if locked */
-    if (vma_flags & VMA_LOCKED)
+    /* Anonymous: pre-fault if locked or MAP_POPULATE */
+    if ((vma_flags & VMA_LOCKED) || (flags & MAP_POPULATE))
         prefault_range(p->pml4, vaddr, vaddr + length, prot);
 
     spin_unlock_irq(&p->lock, irqf);
