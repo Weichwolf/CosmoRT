@@ -7,7 +7,7 @@
  * FW:    load firmware from embedded storage (ramfs/initrd)
  */
 
-#include "cosmo.h"
+#include "cosmo_rt.h"
 #include "config.h"
 #include "page_alloc.h"
 #include "paging.h"

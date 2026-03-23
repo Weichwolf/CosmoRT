@@ -3,13 +3,23 @@
 Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
 C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
 
-## Public Headers (include/public/)
+## Headers
 
 ```
-linux.h      Exakt Linux x86_64 ABI. Nur fuer CosmoPX libc.
-cosmo_rt.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
-cosmo_ui.h   CosmoUI-API: Display, Audio, Input, Power.
+include/public/
+  cosmo_rt.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
+  cosmo_ui.h   CosmoUI-API: Display, Audio, Input, Power (Stubs).
+
+include/internal/
+  linux.h      Linux x86_64 ABI (Syscalls, Structs, Errno). Nur Kernel + libc.
+  process.h, sched.h, vma.h, ... (alle Kernel-Interna)
 ```
+
+Sichtbarkeit:
+- Kernel-Code: -Iinclude/public -Iinclude/internal (beides)
+- Treiber: -Iinclude/public (kein internal!)
+- Tests (ktest): -Iinclude/public -Iinclude/internal (braucht linux.h)
+- Userspace: -Iinclude/public
 
 Kein Consumer braucht mehr als eine Datei:
 - CosmoPX libc: linux.h → uebersetzt POSIX in Syscalls
@@ -72,8 +82,8 @@ CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
 
 ```
 include/
-  public/        linux.h (ABI), cosmo.h (Treiber-API)
-  internal/      process.h, sched.h, vma.h, ... (Kernel-Interna)
+  public/        cosmo_rt.h (Treiber-API), cosmo_ui.h (CosmoUI-API)
+  internal/      linux.h (ABI), process.h, sched.h, vma.h, ... (Kernel-Interna)
 src/kernel/
   core/          main, irq, sched, timer, smp, tss, percpu
   mm/            page_alloc, paging, vma, slab, random

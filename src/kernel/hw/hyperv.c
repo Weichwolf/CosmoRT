@@ -5,7 +5,7 @@
  */
 
 #include "hyperv.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 #include "config.h"
 #include "page_alloc.h"
 #include "paging.h"

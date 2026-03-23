@@ -9,7 +9,7 @@
 #include "spinlock.h"
 
 /* nic_driver_t, net_nic_register — from cosmo.h (public driver API) */
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* Initialize network state. Requires a NIC to be registered first.
  * Returns 0 on success, -1 if no NIC registered. */

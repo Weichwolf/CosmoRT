@@ -4,7 +4,7 @@
  */
 
 #include "e1000.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* ── E1000 Registers ───────────────────────────────── */
 

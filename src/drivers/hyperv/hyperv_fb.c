@@ -7,7 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* Hyper-V Synthetic Video GUID: {da0a7802-e377-4aac-8e77-0558eb1073f8} */
 static const uint8_t SYNTHVID_GUID[16] = {

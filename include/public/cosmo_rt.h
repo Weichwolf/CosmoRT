@@ -6,8 +6,8 @@
  * 5 core primitives + DMA free + PCI write + driver-safe utilities.
  * Same API works for kernel-mode and future userspace drivers.
  */
-#ifndef COSMO_HW_H
-#define COSMO_HW_H
+#ifndef COSMO_RT_H
+#define COSMO_RT_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -144,4 +144,4 @@ void serial_putchar(char c);
 void serial_puts(const char *s);
 void serial_hex64(uint64_t v);
 
-#endif /* COSMO_HW_H */
+#endif /* COSMO_RT_H */

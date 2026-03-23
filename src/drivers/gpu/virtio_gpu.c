@@ -11,7 +11,7 @@
 
 #include "virtio_gpu.h"
 #include "virtio.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* ── Virtio-GPU command types ──────────────────────── */
 

@@ -6,7 +6,7 @@
  */
 
 #include "virtio.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* ── PCI capability types for virtio ──────────────── */
 

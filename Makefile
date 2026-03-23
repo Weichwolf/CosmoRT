@@ -22,12 +22,12 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -Wall -Wextra -Werror -O2 -c \
-           -I$(SRC)/kernel/include/public -I$(SRC)/kernel/include -I$(SRC)/kernel -std=c11
+           -Iinclude/public -Iinclude/internal -I$(SRC)/kernel -std=c11
 
-# Drivers: only public headers (linux.h, cosmo.h) + own subdirectory
+# Drivers: only public headers (cosmo_rt.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -Wall -Wextra -Werror -O2 -c \
-           -I$(SRC)/kernel/include/public -std=c11
+           -Iinclude/public -std=c11
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
            -Bsymbolic -L$(EFI_LIB)
@@ -260,7 +260,7 @@ disk: disk.img
 # ── Benchmark binary ────────────────────────────
 UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-plt -mno-red-zone -nostdlib -O2 \
-          -I$(SRC)/kernel/include/public
+          -Iinclude/public
 
 $(BUILD)/user/kbench.o: $(SRC)/user/kbench.c | $(BUILD)/user
 	$(CC) $(UCFLAGS) -c -o $@ $<
@@ -307,13 +307,13 @@ $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash:
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
-	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
-	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
 
 $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
-	$(CC) $(UCFLAGS) -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
 
 $(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_OBJ)
@@ -416,9 +416,9 @@ $(BUILD)/drivers/gpu/%.o: $(SRC)/drivers/gpu/%.c | $(BUILD)/drivers/gpu
 $(BUILD)/drivers/input/%.o: $(SRC)/drivers/input/%.c | $(BUILD)/drivers/input
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/input -I$(SRC)/drivers/virtio -o $@ $<
 
-# Hyper-V drivers: also need hyperv.h from kernel/include (TODO: move to public/)
+# Hyper-V drivers: need hyperv.h from internal/ (kernel-side MSR/SynIC defs)
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -I$(SRC)/kernel/include -o $@ $<
+	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/internal -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
 $(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(SRC)/kernel/gen/init_bin.h $(SRC)/kernel/gen/ld_cosmo_bin.h $(SRC)/kernel/gen/e1000d_bin.h $(SRC)/kernel/gen/svcmgr_bin.h | $(BUILD)/kernel/core

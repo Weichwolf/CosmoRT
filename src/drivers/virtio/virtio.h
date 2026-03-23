@@ -7,7 +7,7 @@
 #define VIRTIO_H
 
 #include <stdint.h>
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* ── Virtio PCI legacy register offsets (from BAR0 I/O) ── */
 

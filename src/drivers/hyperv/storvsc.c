@@ -7,7 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 
 /* StorVSC device GUID: {ba6163d9-04a1-4d29-b605-72e2ffb1dc7f} */
 static const uint8_t STORVSC_GUID[16] = {

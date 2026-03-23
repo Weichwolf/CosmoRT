@@ -15,7 +15,7 @@
 #include "vfs.h"
 #include "memops.h"
 #include "socket.h"
-#include "cosmo.h"
+#include "cosmo_rt.h"
 #include "net_port.h"
 #include "irq.h"
 #include "spinlock.h"
