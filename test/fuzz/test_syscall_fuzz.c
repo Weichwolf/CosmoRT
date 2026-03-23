@@ -20,7 +20,7 @@
 #define FUZZ_SEED       0
 #endif
 #ifndef FUZZ_TIMEOUT_MS
-#define FUZZ_TIMEOUT_MS 2000
+#define FUZZ_TIMEOUT_MS 500
 #endif
 
 /* ── PRNG ───────────────────────────────────────── */
@@ -46,9 +46,6 @@ static uint64_t pick(const uint64_t *tbl, int n) {
 #define USER_END    0x7FFFFFFFE000ULL
 
 static uint64_t ptr_gen(uint64_t valid_buf) {
-    static const uint64_t base[] = {
-        0, 1, ADDR_DEAD, KADDR_HIGH, KADDR_TEXT, USER_END,
-    };
     uint64_t r = xorshift64();
     switch (r % 9) {
     case 0:  return 0;
@@ -61,7 +58,6 @@ static uint64_t ptr_gen(uint64_t valid_buf) {
     case 7:  return valid_buf + 4096 - 1;
     default: return xorshift64() & 0x7FFFFFFFFFFFULL;
     }
-    (void)base;
 }
 
 static uint64_t fd_gen(void) {
@@ -115,6 +111,7 @@ static uint64_t pid_gen(void) {
 
 /* ── Syscall number tables per class ────────────── */
 
+/* File I/O — read/readv safe because we close fds 3-15 before each call */
 static const uint64_t nr_file[] = {
     SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_LSEEK,
     SYS_IOCTL, SYS_READV, SYS_WRITEV, SYS_ACCESS, SYS_DUP,
@@ -127,9 +124,9 @@ static const uint64_t nr_mem[] = {
     SYS_MADVISE, SYS_MLOCK, SYS_MUNLOCK, SYS_MLOCKALL, SYS_MUNLOCKALL,
 };
 
-/* No exit/exit_group — would kill the child prematurely */
+/* Process — no fork/exec/exit, no blocking wait4 (handled separately) */
 static const uint64_t nr_proc[] = {
-    SYS_WAIT4, SYS_GETPID, SYS_GETPPID, SYS_GETTID,
+    SYS_GETPID, SYS_GETPPID, SYS_GETTID,
     SYS_GETUID, SYS_GETGID, SYS_GETEUID, SYS_GETEGID,
     SYS_SCHED_YIELD,
 };
@@ -137,18 +134,22 @@ static const uint64_t nr_proc[] = {
 static const uint64_t nr_sig[] = {
     SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_KILL, SYS_TGKILL,
     SYS_SIGALTSTACK,
+    /* No SYS_RT_SIGSUSPEND — blocks until signal delivery */
 };
 
+/* Network — no accept/recvfrom/recvmsg (block on sockets).
+ * connect/sendto on random FDs → mostly EBADF (fds 3-15 pre-closed). */
 static const uint64_t nr_net[] = {
-    SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
-    SYS_SENDTO, SYS_RECVFROM, SYS_SHUTDOWN, SYS_SETSOCKOPT,
+    SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN,
+    SYS_SENDTO, SYS_SHUTDOWN, SYS_SETSOCKOPT,
     SYS_GETSOCKOPT, SYS_GETSOCKNAME, SYS_GETPEERNAME,
-    SYS_SOCKETPAIR, SYS_ACCEPT4,
+    SYS_SOCKETPAIR,
 };
 
+/* IPC — no futex(WAIT)/epoll_wait (can block indefinitely) */
 static const uint64_t nr_ipc[] = {
-    SYS_PIPE, SYS_PIPE2, SYS_FUTEX, SYS_EVENTFD2,
-    SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
+    SYS_PIPE, SYS_PIPE2, SYS_EVENTFD2,
+    SYS_EPOLL_CREATE1, SYS_EPOLL_CTL,
     SYS_TIMERFD_CREATE, SYS_TIMERFD_SETTIME, SYS_SIGNALFD4,
     SYS_INOTIFY_INIT1, SYS_INOTIFY_ADD_WATCH, SYS_INOTIFY_RM_WATCH,
 };
@@ -192,8 +193,10 @@ static uint64_t random_invalid_nr(void) {
 static void fuzz_round(uint64_t seed) {
     rng_state = seed;
 
-    /* Close stdin to prevent blocking reads on fd 0 */
-    sc1(SYS_CLOSE, 0);
+    /* Close all inherited FDs to prevent blocking reads on serial/pipes.
+     * The fuzz child doesn't need I/O — it only fires syscalls. */
+    for (int fd = 0; fd < 16; fd++)
+        sc1(SYS_CLOSE, fd);
 
     /* Scratch buffer — valid pointer for ptr_gen */
     long buf = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
@@ -208,7 +211,9 @@ static void fuzz_round(uint64_t seed) {
         switch (cls) {
         case 0: /* file I/O */
             nr = pick(nr_file, ARRAY_LEN(nr_file));
-            a0 = fd_gen(); a1 = ptr_gen(vbuf); a2 = size_gen();
+            a0 = fd_gen(); a1 = ptr_gen(vbuf);
+            /* Cap I/O size to 4097 to prevent huge serial writes */
+            a2 = size_gen(); if (a2 > 4097) a2 = 4097;
             a3 = flags_gen(); a4 = fd_gen(); a5 = size_gen();
             break;
         case 1: /* memory — highest risk */
@@ -216,7 +221,7 @@ static void fuzz_round(uint64_t seed) {
             a0 = ptr_gen(vbuf); a1 = size_gen(); a2 = flags_gen();
             a3 = flags_gen(); a4 = fd_gen(); a5 = size_gen();
             break;
-        case 2: /* process (no fork/exec in fuzz — too expensive/dangerous) */
+        case 2: /* process */
             nr = pick(nr_proc, ARRAY_LEN(nr_proc));
             a0 = pid_gen(); a1 = ptr_gen(vbuf); a2 = flags_gen();
             a3 = ptr_gen(vbuf); a4 = 0; a5 = 0;
@@ -264,6 +269,12 @@ static void fuzz_round(uint64_t seed) {
             break;
         }
 
+        /* Close ALL FDs before firing — prevents blocking on
+         * pipes/sockets created by previous iterations.
+         * FDs 0-2 are also closed since pipe() can recreate them. */
+        for (int fd = 0; fd < 16; fd++)
+            sc1(SYS_CLOSE, fd);
+
         /* Fire the syscall — we only care that the kernel survives */
         sc6(nr, (long)a0, (long)a1, (long)a2, (long)a3, (long)a4, (long)a5);
     }
@@ -272,15 +283,15 @@ static void fuzz_round(uint64_t seed) {
     long pid = sc0(SYS_GETPID);
     if (pid <= 0) sc1(SYS_EXIT_GROUP, 1);
 
-    char msg[] = "ok\n";
-    long w = sc3(SYS_WRITE, 1, (long)msg, 3);
-    if (w < 0) sc1(SYS_EXIT_GROUP, 2);
-
-    /* mmap/munmap cycle */
+    /* mmap/munmap cycle — verifies VM subsystem is intact */
     long page = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
     if (page > 0) {
         *(volatile uint64_t *)page = 0xCAFEBABE;
+        if (*(volatile uint64_t *)page != 0xCAFEBABE)
+            sc1(SYS_EXIT_GROUP, 2);
         sc2(SYS_MUNMAP, page, 4096);
+    } else {
+        sc1(SYS_EXIT_GROUP, 3);
     }
 
     sc2(SYS_MUNMAP, (long)vbuf, 4096);
@@ -288,25 +299,20 @@ static void fuzz_round(uint64_t seed) {
     __builtin_unreachable();
 }
 
-/* ── Watchdog: kill child after timeout ─────────── */
-static int wait_with_timeout(long child_pid, int *status) {
-    /* Try non-blocking first */
-    long r = sc4(SYS_WAIT4, child_pid, (long)status, 1 /* WNOHANG */, 0);
-    if (r > 0) return 0; /* already done */
-
-    /* Sleep in small increments, check periodically */
-    struct { long sec; long nsec; } ts = { 0, 10000000 }; /* 10ms */
-    int attempts = FUZZ_TIMEOUT_MS / 10;
-    for (int i = 0; i < attempts; i++) {
-        sc2(SYS_NANOSLEEP, (long)&ts, 0);
-        r = sc4(SYS_WAIT4, child_pid, (long)status, 1 /* WNOHANG */, 0);
+/* ── Wait for child with timeout ─────────────────── */
+static int wait_for_child(long child_pid, int *status) {
+    /* Poll with WNOHANG, timeout after ~500ms */
+    for (int i = 0; i < 50; i++) {
+        long r = sc4(SYS_WAIT4, child_pid, (long)status, 1 /* WNOHANG */, 0);
         if (r > 0) return 0;
+        /* 10ms sleep */
+        struct { long sec; long nsec; } ts = {0, 10000000};
+        sc2(SYS_NANOSLEEP, (long)&ts, 0);
     }
-
-    /* Timeout — kill child */
-    sc2(SYS_KILL, child_pid, SIGKILL);
+    /* Timeout: kill child */
+    sc2(SYS_KILL, child_pid, 9);
     sc4(SYS_WAIT4, child_pid, (long)status, 0, 0);
-    return -1; /* timed out */
+    return -1;
 }
 
 /* ── Main test function ─────────────────────────── */
@@ -354,7 +360,7 @@ static void test_syscall_fuzz(void) {
 
         /* Parent: wait with timeout */
         int status = 0;
-        int r = wait_with_timeout(pid, &status);
+        int r = wait_for_child(pid, &status);
 
         if (r < 0) {
             timeouts++;

@@ -15,6 +15,9 @@ long do_brk(unsigned long addr) {
     if (__builtin_expect(!p, 0)) return -EFAULT;
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
+    if (addr >= 0x800000000000ULL) return (long)p->brk_current;
+    /* Cap brk growth to 256MB above base to prevent excessive virtual memory use */
+    if (addr > p->brk_base + (256ULL << 20)) return (long)p->brk_current;
 
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
