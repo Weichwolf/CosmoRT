@@ -1,70 +1,15 @@
-/* CosmoRT ktest — shared definitions for hardware tests */
+/* CosmoRT ktest — test framework */
 #ifndef KTEST_H
 #define KTEST_H
 
-/* All constants (syscall numbers, errno, flags, structs) from uapi */
-#include "linux.h"
+#include "syscall.h"
+#include "io.h"
 
-/* ── Syscall wrappers ─────────────────────────── */
-
-static inline long sc0(long n) {
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n):"rcx","r11","memory"); return r;
-}
-static inline long sc1(long n, long a) {
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a):"rcx","r11","memory"); return r;
-}
-static inline long sc2(long n, long a, long b) {
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b):"rcx","r11","memory"); return r;
-}
-static inline long sc3(long n, long a, long b, long c) {
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c):"rcx","r11","memory"); return r;
-}
-static inline long sc4(long n, long a, long b, long c, long d) {
-    register long r10 __asm__("r10")=d;
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10):"rcx","r11","memory"); return r;
-}
-static inline long sc5(long n, long a, long b, long c, long d, long e) {
-    register long r10 __asm__("r10")=d; register long r8 __asm__("r8")=e;
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8):"rcx","r11","memory"); return r;
-}
-static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
-    register long r10 __asm__("r10")=d; register long r8 __asm__("r8")=e; register long r9 __asm__("r9")=f;
-    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory"); return r;
-}
-
-/* ── Additional constants used by tests ─────── */
-
+/* Shorthand */
 #define PROT_RW     (PROT_READ | PROT_WRITE)
 #define MAP_PRIV_ANON (MAP_PRIVATE | MAP_ANONYMOUS)
 
-/* ── Output ───────────────────────────────────── */
-
-static inline void puts(const char *s) {
-    int n = 0; while (s[n]) n++;
-    sc3(SYS_WRITE, 1, (long)s, n);
-}
-
-static inline void put_hex(uint64_t v) {
-    char buf[17]; int i = 0;
-    if (v == 0) { puts("0"); return; }
-    while (v) { buf[i++] = "0123456789abcdef"[v & 0xf]; v >>= 4; }
-    char out[17]; int j = 0;
-    while (i--) out[j++] = buf[i];
-    out[j] = 0;
-    puts(out);
-}
-
-static inline void put_int(long v) {
-    if (v < 0) { puts("-"); v = -v; }
-    char buf[20]; int i = 0;
-    do { buf[i++] = '0' + (char)(v % 10); v /= 10; } while (v);
-    char out[20]; int j = 0;
-    while (i--) out[j++] = buf[i];
-    out[j] = 0;
-    puts(out);
-}
-
-/* ── Test bookkeeping ─────────────────────────── */
+/* ── Assertions ──────────────────────────────── */
 
 extern int failures;
 extern int passes;
@@ -82,7 +27,7 @@ static inline void fail(const char *name, const char *detail) {
 }
 
 static inline void check(const char *name, int condition) {
-    if (condition) pass(name); else fail(name, NULL);
+    if (condition) pass(name); else fail(name, 0);
 }
 
 static inline void check_val(const char *name, long got, long expected) {
@@ -107,12 +52,12 @@ static inline void check_ge(const char *name, long got, long minimum) {
     }
 }
 
-/* ── Self-registering tests via linker section ── */
+/* ── Self-registering tests ──────────────────── */
 
 typedef struct {
     const char *name;
     void (*fn)(void);
-    int crash;  /* 1 = run in fork'd child */
+    int crash;
     int _pad;
     uint64_t _reserved;
 } ktest_entry_t;
@@ -125,4 +70,4 @@ typedef struct {
     __attribute__((used, section(".ktest"))) \
     static const ktest_entry_t _reg_##fn = { n, fn, 1 }
 
-#endif /* KTEST_H */
+#endif
