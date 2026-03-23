@@ -8,17 +8,8 @@
 #include "config.h"
 #include "spinlock.h"
 
-/* ── NIC driver interface (implemented by each driver) ── */
-
-typedef struct {
-    int  (*send)(const void *data, uint16_t len);
-    int  (*recv)(void *buf, uint16_t bufsize);
-    void (*get_mac)(uint8_t mac[6]);
-    const char *name;  /* "e1000", "virtio-net", etc. */
-} nic_driver_t;
-
-/* Register a NIC driver. Called by driver init (e.g., e1000_init). */
-void net_nic_register(const nic_driver_t *nic);
+/* nic_driver_t, net_nic_register — from cosmo_hw.h (public driver API) */
+#include "cosmo_hw.h"
 
 /* Initialize network state. Requires a NIC to be registered first.
  * Returns 0 on success, -1 if no NIC registered. */

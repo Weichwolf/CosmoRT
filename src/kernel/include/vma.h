@@ -5,19 +5,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Protection flags (Linux-compatible) */
-#define PROT_NONE   0x0
-#define PROT_READ   0x1
-#define PROT_WRITE  0x2
-#define PROT_EXEC   0x4
-
-/* Map flags (Linux-compatible) — also in syscall.h */
-#ifndef MAP_FIXED
-#define MAP_FIXED            0x10
-#define MAP_ANONYMOUS        0x20
-#define MAP_PRIVATE          0x02
-#define MAP_FIXED_NOREPLACE  0x100000
-#endif
+/* PROT_* and MAP_* flags come from cosmo_uapi.h (via syscall.h or direct) */
+#define __KERNEL__
+#include "cosmo_uapi.h"
 
 /* VMA flags (internal, stored in vma_t.flags upper bits) */
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */

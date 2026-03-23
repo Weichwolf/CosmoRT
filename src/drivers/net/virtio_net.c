@@ -8,10 +8,7 @@
 
 #include "virtio_net.h"
 #include "virtio.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
-#include "net.h"
+#include "cosmo_hw.h"
 
 /* ── Virtio-net header (prepended to every packet) ── */
 

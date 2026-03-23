@@ -10,18 +10,7 @@
 #include "fd.h"
 #include "vma.h"
 
-/* Signal action (Linux-compatible layout for rt_sigaction) */
-struct k_sigaction {
-    void    *sa_handler;   /* SIG_DFL=0, SIG_IGN=1, or handler address */
-    uint64_t sa_flags;
-    void    *sa_restorer;
-    uint64_t sa_mask;
-};
-
-/* SA_* flags */
-#define SA_SIGINFO   0x00000004
-#define SA_RESTART   0x10000000
-#define SA_RESTORER  0x04000000
+/* k_sigaction, SA_* flags — from cosmo_uapi.h (via syscall.h) */
 
 /* Process states */
 #define PROC_FREE    0

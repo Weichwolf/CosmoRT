@@ -25,11 +25,7 @@
 #define FD_PTY_SLAVE  12
 #define FD_UNIX_SOCK  13
 
-/* Open flags (subset of POSIX) */
-#define O_RDONLY   0x0000
-#define O_WRONLY   0x0001
-#define O_RDWR     0x0002
-#define O_NONBLOCK 0x0800
+/* O_RDONLY, O_WRONLY, O_RDWR, O_NONBLOCK — from cosmo_uapi.h */
 
 #define FD_MAX 256
 

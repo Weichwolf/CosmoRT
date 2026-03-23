@@ -4,10 +4,7 @@
  */
 
 #include "e1000.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
-#include "net.h"
+#include "cosmo_hw.h"
 
 /* ── E1000 Registers ───────────────────────────────── */
 

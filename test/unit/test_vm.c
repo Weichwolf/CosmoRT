@@ -65,7 +65,7 @@ static void test_vm_patterns(void) {
     check("mmap base for NOREPLACE", base > 0x1000);
     /* Try to map on top — should fail with EEXIST */
     long dup = sc6(SYS_mmap, (long)base, 4096, PROT_RW,
-                   MAP_FIXED_NOREPLACE, -1, 0);
+                   MAP_FIXED_NOREPLACE | MAP_PRIV_ANON, -1, 0);
     check("MAP_FIXED_NOREPLACE → EEXIST", dup < 0);
     sc2(SYS_munmap, (long)base, 4096);
 

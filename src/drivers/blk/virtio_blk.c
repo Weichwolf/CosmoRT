@@ -6,9 +6,7 @@
 
 #include "virtio_blk.h"
 #include "virtio.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
+#include "cosmo_hw.h"
 
 /* Virtio-blk request header */
 struct virtio_blk_req {

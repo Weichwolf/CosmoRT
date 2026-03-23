@@ -8,9 +8,7 @@
 
 extern void sched_add(thread_t *t);
 
-/* Signal constants */
-#define SIGINT  2
-#define SIGQUIT 3
+/* SIGINT, SIGQUIT — from cosmo_uapi.h (via process.h chain) */
 
 static pty_t pty_pool[PTY_MAX];
 

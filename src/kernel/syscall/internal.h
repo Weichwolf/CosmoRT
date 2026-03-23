@@ -45,17 +45,7 @@ typedef struct {
     uint64_t rcx;       /* user RIP */
 } syscall_frame_t;
 
-/* clone flags */
-#define CLONE_VM             0x00000100
-#define CLONE_FS             0x00000200
-#define CLONE_FILES          0x00000400
-#define CLONE_SIGHAND        0x00000800
-#define CLONE_THREAD         0x00010000
-#define CLONE_SYSVSEM        0x00040000
-#define CLONE_SETTLS         0x00080000
-#define CLONE_PARENT_SETTID  0x00100000
-#define CLONE_CHILD_CLEARTID 0x00200000
-#define CLONE_CHILD_SETTID   0x01000000
+/* clone flags — from cosmo_uapi.h (via syscall.h) */
 
 /* PTE flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -151,8 +141,7 @@ long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
 
-/* k_timeval for gettimeofday */
-struct k_timeval  { long tv_sec; long tv_usec; };
+/* k_timeval — from cosmo_uapi.h (via syscall.h) */
 
 /* ── Forward declarations: sys_time.c ── */
 long do_clock_gettime(int clk_id, struct k_timespec *tp);

@@ -6,10 +6,7 @@
  */
 
 #include "vmbus.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
-#include "net.h"
+#include "cosmo_hw.h"
 
 /* NetVSC device GUID: {f8615163-df3e-46c5-913f-f2d2f965ed0e} */
 static const uint8_t NETVSC_GUID[16] = {

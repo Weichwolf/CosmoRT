@@ -2,15 +2,8 @@
 #ifndef KTEST_H
 #define KTEST_H
 
-typedef unsigned long uint64_t;
-typedef long int64_t;
-typedef unsigned int uint32_t;
-typedef int int32_t;
-typedef unsigned char uint8_t;
-typedef unsigned long size_t;
-typedef long ssize_t;
-
-#define NULL ((void *)0)
+/* All constants (syscall numbers, errno, flags, structs) from uapi */
+#include "cosmo_uapi.h"
 
 /* ── Syscall wrappers ─────────────────────────── */
 
@@ -39,93 +32,53 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
     long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory"); return r;
 }
 
-/* ── Syscall numbers ──────────────────────────── */
+/* ── Convenience aliases (lowercase, matching test code) ────── */
 
-#define SYS_read           0
-#define SYS_write          1
-#define SYS_open           2
-#define SYS_close          3
-#define SYS_fstat          5
-#define SYS_mmap           9
-#define SYS_mprotect       10
-#define SYS_munmap         11
-#define SYS_brk            12
-#define SYS_rt_sigaction   13
-#define SYS_rt_sigprocmask 14
-#define SYS_sched_yield    24
-#define SYS_getpid         39
-#define SYS_clone          56
-#define SYS_fork           57
-#define SYS_exit           60
-#define SYS_wait4          61
-#define SYS_kill           62
-#define SYS_uname          63
-#define SYS_getcwd         79
-#define SYS_getpgrp        111
-#define SYS_arch_prctl     158
-#define SYS_gettid         186
-#define SYS_gettimeofday   96
-#define SYS_clock_gettime  228
-#define SYS_exit_group     231
-#define SYS_getrandom      318
+#define SYS_read            SYS_READ
+#define SYS_write           SYS_WRITE
+#define SYS_open            SYS_OPEN
+#define SYS_close           SYS_CLOSE
+#define SYS_fstat           SYS_FSTAT
+#define SYS_mmap            SYS_MMAP
+#define SYS_mprotect        SYS_MPROTECT
+#define SYS_munmap          SYS_MUNMAP
+#define SYS_brk             SYS_BRK
+#define SYS_rt_sigaction    SYS_RT_SIGACTION
+#define SYS_rt_sigprocmask  SYS_RT_SIGPROCMASK
+#define SYS_sched_yield     SYS_SCHED_YIELD
+#define SYS_getpid          SYS_GETPID
+#define SYS_clone           SYS_CLONE
+#define SYS_fork            SYS_FORK
+#define SYS_exit            SYS_EXIT
+#define SYS_wait4           SYS_WAIT4
+#define SYS_kill            SYS_KILL
+#define SYS_uname           SYS_UNAME
+#define SYS_getcwd          SYS_GETCWD
+#define SYS_getpgrp         SYS_GETPGRP
+#define SYS_arch_prctl      SYS_ARCH_PRCTL
+#define SYS_gettid          SYS_GETTID
+#define SYS_gettimeofday    SYS_GETTIMEOFDAY
+#define SYS_clock_gettime   SYS_CLOCK_GETTIME
+#define SYS_exit_group      SYS_EXIT_GROUP
+#define SYS_getrandom       SYS_GETRANDOM
+#define SYS_socket          SYS_SOCKET
+#define SYS_sendto          SYS_SENDTO
+#define SYS_recvfrom        SYS_RECVFROM
+#define SYS_sendmsg         SYS_SENDMSG
+#define SYS_recvmsg         SYS_RECVMSG
+#define SYS_socketpair      SYS_SOCKETPAIR
+#define SYS_access          SYS_ACCESS
+#define SYS_fcntl           SYS_FCNTL
+#define SYS_setpgid         SYS_SETPGID
+#define SYS_getpgid         SYS_GETPGID
+#define SYS_setsid          SYS_SETSID
+#define SYS_getsid          SYS_GETSID
+#define SYS_tgkill          SYS_TGKILL
 
-/* Socket syscalls */
-#define SYS_socket         41
-#define SYS_sendto         44
-#define SYS_recvfrom       45
-#define SYS_sendmsg        46
-#define SYS_recvmsg        47
-#define SYS_socketpair     53
+/* ── Additional constants used by tests ─────── */
 
-/* CosmoRT hardware syscalls */
-#define SYS_COSMO_PCI_READ 516
-
-/* ── Constants ────────────────────────────────── */
-
-#define PROT_NONE   0x0
-#define PROT_READ   0x1
-#define PROT_WRITE  0x2
-#define PROT_EXEC   0x4
-#define PROT_RW     0x3
-#define MAP_PRIV_ANON 0x22
-#define MAP_FIXED_NOREPLACE 0x100032
-#define O_RDONLY    0
-#define O_WRONLY    1
-#define O_RDWR     2
-#define O_CREAT    0x40
-#define O_TRUNC    0x200
-#define CLOCK_REALTIME  0
-#define CLOCK_MONOTONIC 1
-#define ARCH_SET_FS 0x1002
-#define ARCH_GET_FS 0x1003
-#define CLONE_VM    0x100
-#define CLONE_THREAD 0x10000
-
-#define SIGUSR1 10
-#define SIGUSR2 12
-#define SIGTERM 15
-
-#define SA_RESTORER 0x04000000
-#define SA_SIGINFO  0x00000004
-
-/* fcntl commands */
-#define F_DUPFD         0
-#define F_GETFD         1
-#define F_SETFD         2
-#define F_GETFL         3
-#define F_SETFL         4
-#define F_DUPFD_CLOEXEC 1030
-#define FD_CLOEXEC      1
-#define O_CLOEXEC       0x80000
-
-/* Process group / session syscalls */
-#define SYS_access          21
-#define SYS_fcntl           72
-#define SYS_setpgid         109
-#define SYS_getpgid         121
-#define SYS_setsid          112
-#define SYS_getsid          124
-#define SYS_tgkill          234
+#define PROT_RW     (PROT_READ | PROT_WRITE)
+#define MAP_PRIV_ANON (MAP_PRIVATE | MAP_ANONYMOUS)
 
 /* ── Output ───────────────────────────────────── */
 

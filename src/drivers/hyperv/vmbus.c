@@ -7,9 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
+#include "cosmo_hw.h"
 #include "hyperv.h"
 
 /* ---- State ---- */

@@ -7,10 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "hw.h"
-#include "config.h"
-#include "serial.h"
-#include "input.h"
+#include "cosmo_hw.h"
 
 /* EV_KEY from Linux input-event-codes.h */
 #define EV_KEY 0x01

@@ -13,51 +13,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* O_*, SEEK_*, S_IF*, k_stat — all from cosmo_uapi.h */
+#define __KERNEL__
+#include "cosmo_uapi.h"
+
 /* Node types */
 #define VFS_FILE    1
 #define VFS_DIR     2
 #define VFS_PIPE    3
 #define VFS_SYMLINK 4
 
-/* Open flags (Linux-compatible) */
-#ifndef O_RDONLY
-#define O_RDONLY   0x0000
-#define O_WRONLY   0x0001
-#define O_RDWR     0x0002
-#endif
-#define O_CREAT    0x0040
-#define O_TRUNC    0x0200
-#define O_APPEND   0x0400
-#define O_CLOEXEC  0x80000
-#define O_DIRECTORY 0x10000
-
-/* Seek */
-#define SEEK_SET  0
-#define SEEK_CUR  1
-#define SEEK_END  2
-
-/* Stat struct — Linux x86_64 layout */
-struct k_stat {
-    uint64_t st_dev, st_ino;
-    uint64_t st_nlink;
-    uint32_t st_mode, st_uid, st_gid, __pad0;
-    uint64_t st_rdev;
-    int64_t  st_size;
-    int64_t  st_blksize, st_blocks;
-    int64_t  st_atime_sec, st_atime_nsec;
-    int64_t  st_mtime_sec, st_mtime_nsec;
-    int64_t  st_ctime_sec, st_ctime_nsec;
-    int64_t  __unused[3];
-};
-
-/* st_mode bits */
-#define S_IFMT   0170000
-#define S_IFCHR  0020000
-#define S_IFIFO  0010000
-#define S_IFREG  0100000
-#define S_IFDIR  0040000
-#define S_IFLNK  0120000
-#define S_IFSOCK 0140000
+/* S_I permission bits (not in uapi — kernel-only detail) */
 #define S_IRWXU  0700
 #define S_IRUSR  0400
 #define S_IWUSR  0200

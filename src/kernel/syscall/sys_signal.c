@@ -283,10 +283,7 @@ void check_pending_signals(void) {
 
 /* ── Signals (2.4) ───────────────────────────────── */
 
-#define SIG_DFL  ((void *)0)
-#define SIG_IGN  ((void *)1)
-
-/* SIGKILL=9, SIGSEGV=11, SIGPIPE=13, SIGCHLD=17, SIGTERM=15 */
+/* SIG_DFL, SIG_IGN, SIGKILL, SIGSEGV etc. — from cosmo_uapi.h */
 
 long do_rt_sigaction(int sig, const void *act_,
                             void *oldact_, size_t sigsetsize) {

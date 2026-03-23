@@ -4,11 +4,9 @@
 
 #include <stdint.h>
 
-/* Higher-half direct physical map: PML4[256..259] → up to 2TB */
-#define PHYS_OFFSET    0xFFFF800000000000ULL
-
-#define phys_to_virt(p) ((void *)((uint64_t)(p) + PHYS_OFFSET))
-#define virt_to_phys(v) ((uint64_t)(v) - PHYS_OFFSET)
+/* Higher-half direct physical map — canonical source is cosmo_hw.h */
+#include "cosmo_hw.h"
+#define PHYS_OFFSET    COSMO_PHYS_OFFSET
 
 /* Ensure address is in direct map (handles EFI-relocated identity-mapped symbols).
  * Identity-mapped addrs are < 8GB; direct-map addrs are >= PHYS_OFFSET. */
