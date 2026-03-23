@@ -115,7 +115,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_PRCTL:       return -ENOSYS;
     case SYS_SIGALTSTACK: return 0; /* accept but ignore */
     case SYS_RT_SIGSUSPEND: return do_rt_sigsuspend((const uint64_t *)a1, (size_t)a2);
-    case SYS_TGKILL:      return do_kill((int)a2, (int)a3); /* route to kill */
+    case SYS_TGKILL:      return do_tgkill((int)a1, (int)a2, (int)a3);
     case SYS_GETRLIMIT:   return do_prlimit64(0, (int)a1, 0, (void *)a2);
     case SYS_DUP: {
         /* dup(oldfd): find lowest free fd */

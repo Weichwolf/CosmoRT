@@ -250,7 +250,7 @@ void check_pending_signals(void) {
     uint64_t deliverable = p->sig_pending & ~p->sig_blocked;
     if (!deliverable) return;
 
-    for (int sig = 1; sig < 32; sig++) {
+    for (int sig = 1; sig < 64; sig++) {
         if (!(deliverable & (1ULL << sig))) continue;
         p->sig_pending &= ~(1ULL << sig);
 
@@ -267,7 +267,11 @@ void check_pending_signals(void) {
             if (sig == 9 || sig == 11 || sig == 13 || sig == 15 || sig == 6) {
                 do_exit(128 + sig); /* doesn't return */
             }
-            /* Others: default ignore */
+            /* RT signals (32-63): default action is terminate */
+            if (sig >= 32) {
+                do_exit(128 + sig); /* doesn't return */
+            }
+            /* Others (1-31 not listed above): default ignore */
             continue;
         }
 
@@ -288,8 +292,9 @@ long do_rt_sigaction(int sig, const void *act_,
                             void *oldact_, size_t sigsetsize) {
     const struct k_sigaction *act = (const struct k_sigaction *)act_;
     struct k_sigaction *oldact = (struct k_sigaction *)oldact_;
-    (void)sigsetsize;
-    if (sig < 1 || sig >= 32) return -EINVAL;
+    /* musl passes sigsetsize=8 (64 signals). Accept 8 or 16. */
+    if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
+    if (sig < 1 || sig >= 64) return -EINVAL;
     if (sig == 9) return -EINVAL; /* SIGKILL cannot be caught */
 
     process_t *p = proc_current();
@@ -312,19 +317,26 @@ long do_rt_sigaction(int sig, const void *act_,
 
 long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
                               size_t sigsetsize) {
-    (void)sigsetsize;
+    /* musl passes _NSIG/8 = 128/8 = 16 bytes (128 signals).
+     * We support 64 signals (8 bytes). Accept 8 or 16, ignore upper bytes. */
+    if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
     if (oldset) {
-        if (!user_ok((uint64_t)oldset, 8)) return -EFAULT;
+        if (!user_ok((uint64_t)oldset, sigsetsize)) return -EFAULT;
         *oldset = p->sig_blocked;
+        /* Zero upper bytes if sigsetsize == 16 */
+        if (sigsetsize == 16) {
+            uint64_t *oldset2 = oldset + 1;
+            *oldset2 = 0;
+        }
     }
 
     if (set) {
-        if (!user_ok((uint64_t)set, 8)) return -EFAULT;
+        if (!user_ok((uint64_t)set, sigsetsize)) return -EFAULT;
         uint64_t k_set;
-        kmemcpy(&k_set, set, 8);
+        kmemcpy(&k_set, set, 8); /* only first 8 bytes matter */
         uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
@@ -339,7 +351,7 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
 }
 
 long do_kill(int pid, int sig) {
-    if (sig < 0 || sig >= 32) return -EINVAL;
+    if (sig < 0 || sig >= 64) return -EINVAL;
     if (sig == 0) return 0; /* check permission only */
 
     process_t *target = 0;
@@ -393,6 +405,54 @@ long do_kill(int pid, int sig) {
                 sched_add(t);
             }
             t = t->proc_next;
+        }
+    }
+    return 0;
+}
+
+/* ── SYS_TGKILL (234) — thread-directed signal ────── */
+
+long do_tgkill(int tgid, int tid, int sig) {
+    if (sig < 0 || sig >= 64) return -EINVAL;
+    if (tgid <= 0 || tid <= 0) return -EINVAL;
+    if (sig == 0) return 0; /* permission check only */
+
+    /* Find target thread */
+    thread_t *target = thread_find_by_tid(tid);
+    if (!target || !target->proc) return -ESRCH;
+    if ((int)target->proc->pid != tgid) return -EINVAL; /* tid not in tgid */
+
+    process_t *p = target->proc;
+
+    /* Check handler */
+    void *handler = p->sig_actions[sig].sa_handler;
+    if (handler == SIG_IGN) return 0;
+
+    if (handler == SIG_DFL) {
+        if (sig == 17) return 0; /* SIGCHLD: default ignore */
+        if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
+            if (p == proc_current()) {
+                do_exit_group(128 + sig);
+            }
+            p->state = PROC_ZOMBIE;
+            p->exit_code = 128 + sig;
+            thread_t *th = p->threads;
+            while (th) {
+                if (th->state == THREAD_BLOCKED || th->state == THREAD_RUNNING)
+                    th->state = THREAD_DEAD;
+                th = th->proc_next;
+            }
+        }
+        return 0;
+    }
+
+    /* User handler — set pending and wake target thread */
+    p->sig_pending |= (1ULL << sig);
+    if ((1ULL << sig) & ~p->sig_blocked) {
+        if (target->state == THREAD_BLOCKED) {
+            extern void sched_add(thread_t *t);
+            target->state = THREAD_RUNNING;
+            sched_add(target);
         }
     }
     return 0;
@@ -456,10 +516,10 @@ long do_rt_sigreturn(void) {
 /* ── SYS_RT_SIGSUSPEND (130) ────────────────────────── */
 
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
-    (void)sigsetsize;
+    if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    if (!mask || !user_ok((uint64_t)mask, 8)) return -EFAULT;
+    if (!mask || !user_ok((uint64_t)mask, sigsetsize)) return -EFAULT;
 
     uint64_t new_mask;
     kmemcpy(&new_mask, mask, 8);

@@ -148,6 +148,7 @@ long do_rt_sigaction(int sig, const void *act, void *oldact, size_t sigsetsize);
 long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset, size_t sigsetsize);
 long do_rt_sigreturn(void);
 long do_kill(int pid, int sig);
+long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
 
 /* k_timeval for gettimeofday */
