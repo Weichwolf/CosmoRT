@@ -820,6 +820,7 @@ found:
 #define TIOCGPGRP  0x540F
 #define TIOCSPGRP  0x5410
 #define TIOCGWINSZ 0x5413
+#define FIONREAD   0x541B
 #define TIOCNOTTY  0x5422
 #define TIOCGPTN   0x80045430
 #define TIOCSPTLCK 0x40045431
@@ -841,14 +842,26 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (request == TCGETS) {
         /* Kernel struct termios: 4×tcflag_t(16) + c_line(1) + c_cc[19] = 36 bytes.
          * NOT glibc's 60-byte struct (NCCS=32 + c_ispeed/c_ospeed).
-         * Writing 60 bytes would smash the caller's stack canary. */
+         * Writing 60 bytes would smash the caller's stack canary.
+         * Set sane Linux-standard defaults so isatty() AND Node.js
+         * terminal detection both succeed. */
         if (fde->type == FD_SERIAL || fde->type == FD_PTY_SLAVE ||
             fde->type == FD_PTY_MASTER) {
             if (!user_ok(arg, 36)) return -EFAULT;
             kmemset((void *)arg, 0, 36);
+            uint32_t *termios = (uint32_t *)arg;
+            termios[0] = 0x6D02; /* c_iflag: ICRNL|IXON|IXANY|IMAXBEL|IUTF8 */
+            termios[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
+            termios[2] = 0x08BD; /* c_cflag: B38400|CS8|CREAD|CLOCAL|HUPCL */
+            termios[3] = 0x8A3B; /* c_lflag: ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
             return 0;
         }
         return -ENOTTY;
+    }
+    if (request == FIONREAD) {
+        if (!user_ok(arg, 4)) return -EFAULT;
+        *(int *)arg = 0;
+        return 0;
     }
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
@@ -884,6 +897,14 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
             pgid = (int32_t)p->pgid;
         }
         return copy_to_user((void *)arg, &pgid, 4);
+    }
+    /* FIONBIO: set/clear O_NONBLOCK */
+    if (request == 0x5421 /* FIONBIO */) {
+        if (!user_ok(arg, 4)) return -EFAULT;
+        int on = *(int *)arg;
+        if (on) fde->flags |= O_NONBLOCK;
+        else    fde->flags &= ~O_NONBLOCK;
+        return 0;
     }
     return -ENOTTY;
 }
