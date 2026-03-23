@@ -21,13 +21,8 @@
 #include "memops.h"
 #include "net.h"
 
-/* ── Validate user pointer ───────────────────────── */
-
-static inline int user_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr;
-}
+/* User-pointer validation + copy helpers */
+#include "uaccess.h"
 
 /* ── Epoll internals ─────────────────────────────── */
 
@@ -151,10 +146,13 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 
     switch (op) {
     case EPOLL_CTL_ADD: {
-        if (!event || !user_ok((uint64_t)event, sizeof(*event))) {
+        if (!event) {
             spin_unlock_irq(&ep->lock, irqf);
             return -EFAULT;
         }
+        struct epoll_event kev;
+        { int r = copy_from_user(&kev, event, sizeof(kev));
+          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
         for (int i = 0; i < ep->count; i++) {
             if (ep->entries[i].fd == fd) {
                 spin_unlock_irq(&ep->lock, irqf);
@@ -165,8 +163,6 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
             spin_unlock_irq(&ep->lock, irqf);
             return -ENOMEM;
         }
-        struct epoll_event kev;
-        kmemcpy(&kev, event, sizeof(kev));
         ep->entries[ep->count].fd     = fd;
         ep->entries[ep->count].events = kev.events;
         ep->entries[ep->count].data   = kev.data;
@@ -175,12 +171,13 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         break;
     }
     case EPOLL_CTL_MOD: {
-        if (!event || !user_ok((uint64_t)event, sizeof(*event))) {
+        if (!event) {
             spin_unlock_irq(&ep->lock, irqf);
             return -EFAULT;
         }
         struct epoll_event kev;
-        kmemcpy(&kev, event, sizeof(kev));
+        { int r = copy_from_user(&kev, event, sizeof(kev));
+          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
         int found = 0;
         for (int i = 0; i < ep->count; i++) {
             if (ep->entries[i].fd == fd) {
@@ -324,7 +321,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
                     ent->et_armed = 0; /* disarm until re-armed by MOD or not-ready->ready */
                 }
                 ev.data = ent->data;
-                kmemcpy(&events[nready], &ev, sizeof(ev));
+                copy_to_user(&events[nready], &ev, sizeof(ev)); /* user_ok checked at entry */
                 nready++;
             }
         } else {
@@ -416,7 +413,7 @@ long eventfd_read(void *obj, void *buf, long count) {
     efd->counter = 0;
     spin_unlock_irq(&efd->lock, irqf);
 
-    kmemcpy(buf, &val, sizeof(val));
+    copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);
 }
 
@@ -426,7 +423,7 @@ long eventfd_write(void *obj, const void *buf, long count) {
     if (!efd) return -EBADF;
 
     uint64_t val;
-    kmemcpy(&val, buf, sizeof(val));
+    copy_from_user(&val, buf, sizeof(val)); /* buf validated by do_write caller */
 
     uint64_t irqf;
     spin_lock_irq(&efd->lock, &irqf);
@@ -491,10 +488,7 @@ static void ms_to_ts(uint64_t ms, struct k_timespec *ts) {
 long do_timerfd_settime(int fd, int tfd_flags,
                         const struct k_itimerspec *new_value,
                         struct k_itimerspec *old_value) {
-    if (!new_value || !user_ok((uint64_t)new_value, sizeof(*new_value)))
-        return -EFAULT;
-    if (old_value && !user_ok((uint64_t)old_value, sizeof(*old_value)))
-        return -EFAULT;
+    if (!new_value) return -EFAULT;
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -504,7 +498,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
     if (!tfd) return -EBADF;
 
     struct k_itimerspec knew;
-    kmemcpy(&knew, new_value, sizeof(knew));
+    { int r = copy_from_user(&knew, new_value, sizeof(knew)); if (r) return r; }
 
     uint64_t irqf;
     spin_lock_irq(&tfd->lock, &irqf);
@@ -522,7 +516,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
             kold.it_interval.tv_sec = 0;
             kold.it_interval.tv_nsec = 0;
         }
-        kmemcpy(old_value, &kold, sizeof(kold));
+        copy_to_user(old_value, &kold, sizeof(kold));
     }
 
     uint64_t val_ms = ts_to_ms(&knew.it_value);
@@ -573,7 +567,7 @@ long timerfd_read(void *obj, void *buf, long count) {
     tfd->expirations = 0;
     spin_unlock_irq(&tfd->lock, irqf);
 
-    kmemcpy(buf, &val, sizeof(val));
+    copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);
 }
 
@@ -710,12 +704,12 @@ long inotify_read(void *obj, void *buf, long count) {
         hdr[1] = ev->mask;
         hdr[2] = 0;                /* cookie (0 for now) */
         hdr[3] = (uint32_t)padded;
-        kmemcpy(dst + written, hdr, 16);
+        copy_to_user(dst + written, hdr, 16); /* buf validated by do_read caller */
         written += 16;
 
         /* Write name (zero-padded) */
         kmemset(dst + written, 0, (size_t)padded);
-        kmemcpy(dst + written, ev->name, (size_t)(namelen - 1));
+        copy_to_user(dst + written, ev->name, (size_t)(namelen - 1));
         /* NUL already set by kmemset */
         written += padded;
 

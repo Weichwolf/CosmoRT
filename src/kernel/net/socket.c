@@ -20,12 +20,8 @@ struct k_sockaddr_in {
     uint8_t  sin_zero[8];
 };
 
-/* Validate user pointer: must be in lower half */
-static inline int user_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr;
-}
+/* User-pointer validation + copy helpers */
+#include "uaccess.h"
 
 /* Socket pool */
 static socket_t sockets[MAX_SOCKETS];
@@ -102,7 +98,6 @@ long do_connect(int fd, const void *addr, int addrlen) {
     }
 
     if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
-    if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
 
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
@@ -111,7 +106,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
     /* Copy sockaddr to kernel to prevent TOCTOU */
     struct k_sockaddr_in k_addr;
-    kmemcpy(&k_addr, addr, sizeof(k_addr));
+    { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
     uint32_t ip_be = k_addr.sin_addr;
     uint8_t dst_ip[4] = {
         (uint8_t)(ip_be & 0xFF),
@@ -153,7 +148,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     while (total < len) {
         int chunk = (int)(len - total);
         if (chunk > 1460) chunk = 1460;
-        kmemcpy(kbuf, ubuf + total, (size_t)chunk);
+        copy_from_user(kbuf, ubuf + total, (size_t)chunk); /* user_ok checked at entry */
         int r = net_tcp_send(&s->tcp, kbuf, chunk);
         if (r < 0) return total > 0 ? total : -EIO;
         total += r;
@@ -226,14 +221,13 @@ long do_bind(int fd, const void *addr, int addrlen) {
     }
 
     if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
-    if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
 
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != SOCK_CREATED) return -EINVAL;
 
     struct k_sockaddr_in k_addr;
-    kmemcpy(&k_addr, addr, sizeof(k_addr));
+    { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
     if (k_addr.sin_family != 2 /* AF_INET */) return -EAFNOSUPPORT;
 
     /* Check for port conflict (unless SO_REUSEADDR) */
@@ -326,16 +320,15 @@ long do_accept(int fd, void *addr, int *addrlen) {
         int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
         if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
 
-        if (addr && addrlen && user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in)) &&
-            user_ok((uint64_t)addrlen, sizeof(int))) {
+        if (addr && addrlen) {
             struct k_sockaddr_in sa;
             for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
             sa.sin_family = 2;
             sa.sin_port = ac->remote_port;
             sa.sin_addr = ac->remote_ip;
-            kmemcpy(addr, &sa, sizeof(sa));
+            copy_to_user(addr, &sa, sizeof(sa));
             int len = (int)sizeof(struct k_sockaddr_in);
-            kmemcpy(addrlen, &len, sizeof(int));
+            copy_to_user(addrlen, &len, sizeof(int));
         }
         return newfd;
     }
@@ -385,16 +378,15 @@ long do_accept(int fd, void *addr, int *addrlen) {
     if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
 
     /* Fill in addr if requested */
-    if (addr && addrlen && user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in)) &&
-        user_ok((uint64_t)addrlen, sizeof(int))) {
+    if (addr && addrlen) {
         struct k_sockaddr_in sa;
         for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
         sa.sin_family = 2;
         sa.sin_port = ns->remote_port;
         sa.sin_addr = ns->remote_ip;
-        kmemcpy(addr, &sa, sizeof(sa));
+        copy_to_user(addr, &sa, sizeof(sa));
         int len = (int)sizeof(struct k_sockaddr_in);
-        kmemcpy(addrlen, &len, sizeof(int));
+        copy_to_user(addrlen, &len, sizeof(int));
     }
 
     return newfd;
@@ -407,10 +399,9 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
     if (!s) return -EBADF;
 
     if (optlen < (int)sizeof(int)) return -EINVAL;
-    if (!user_ok((uint64_t)optval, (size_t)optlen)) return -EFAULT;
 
     int val;
-    kmemcpy(&val, optval, sizeof(int));
+    { int r = copy_from_user(&val, optval, sizeof(int)); if (r) return r; }
 
     if (level == SOL_SOCKET) {
         switch (optname) {
@@ -447,9 +438,6 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
 
-    if (!user_ok((uint64_t)optval, sizeof(int))) return -EFAULT;
-    if (!user_ok((uint64_t)optlen, sizeof(int))) return -EFAULT;
-
     int val = 0;
 
     if (level == SOL_SOCKET) {
@@ -465,9 +453,8 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
         }
     }
 
-    kmemcpy(optval, &val, sizeof(int));
-    int len = (int)sizeof(int);
-    kmemcpy(optlen, &len, sizeof(int));
+    { int r = copy_to_user(optval, &val, sizeof(int)); if (r) return r; }
+    { int len = (int)sizeof(int); int r = copy_to_user(optlen, &len, sizeof(int)); if (r) return r; }
     return 0;
 }
 
@@ -477,18 +464,14 @@ long do_getsockname(int fd, void *addr, int *addrlen) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -ENOTSOCK;
 
-    if (!user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in))) return -EFAULT;
-    if (!user_ok((uint64_t)addrlen, sizeof(int))) return -EFAULT;
-
     struct k_sockaddr_in sa;
     for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
     sa.sin_family = 2; /* AF_INET */
     sa.sin_port = s->local_port;
     sa.sin_addr = s->local_ip;
 
-    kmemcpy(addr, &sa, sizeof(sa));
-    int len = (int)sizeof(struct k_sockaddr_in);
-    kmemcpy(addrlen, &len, sizeof(int));
+    { int r = copy_to_user(addr, &sa, sizeof(sa)); if (r) return r; }
+    { int len = (int)sizeof(struct k_sockaddr_in); int r = copy_to_user(addrlen, &len, sizeof(int)); if (r) return r; }
     return 0;
 }
 
@@ -499,18 +482,14 @@ long do_getpeername(int fd, void *addr, int *addrlen) {
     if (!s) return -ENOTSOCK;
     if (s->state != SOCK_CONNECTED) return -ENOTCONN;
 
-    if (!user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in))) return -EFAULT;
-    if (!user_ok((uint64_t)addrlen, sizeof(int))) return -EFAULT;
-
     struct k_sockaddr_in sa;
     for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
     sa.sin_family = 2; /* AF_INET */
     sa.sin_port = s->remote_port;
     sa.sin_addr = s->remote_ip;
 
-    kmemcpy(addr, &sa, sizeof(sa));
-    int len = (int)sizeof(struct k_sockaddr_in);
-    kmemcpy(addrlen, &len, sizeof(int));
+    { int r = copy_to_user(addr, &sa, sizeof(sa)); if (r) return r; }
+    { int len = (int)sizeof(struct k_sockaddr_in); int r = copy_to_user(addrlen, &len, sizeof(int)); if (r) return r; }
     return 0;
 }
 
@@ -559,12 +538,9 @@ struct k_pollfd { int fd; short events; short revents; };
 
 long do_poll(void *fds_ptr, int nfds, int timeout) {
     if (nfds <= 0 || nfds > 256) return -EINVAL;
-    if (!user_ok((uint64_t)fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)))
-        return -EFAULT;
-
     /* Bounce user pollfd[] to kernel stack to prevent TOCTOU */
     struct k_pollfd kfds[256];
-    kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
+    { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
 
     int infinite = (timeout < 0);
     uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
@@ -587,14 +563,14 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
-            kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+            copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
             return ready;
         }
         if (timeout == 0) return 0;
         __asm__ volatile("sti; hlt");
     }
     if (ready > 0) {
-        kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+        copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
         return ready;
     }
     if (timeout == 0) return 0;

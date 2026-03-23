@@ -177,8 +177,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         extern uint64_t timer_ms(void);
         extern uint64_t rtc_epoch_sec;
         long secs = (long)(timer_ms() / 1000 + rtc_epoch_sec);
-        if (a1 && user_ok((uint64_t)a1, 8))
-            kmemcpy((void *)a1, &secs, sizeof(secs));
+        if (a1) copy_to_user((void *)a1, &secs, sizeof(secs));
         return secs;
     }
 
@@ -197,18 +196,19 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
 
     case SYS_COSMO_MMIO_MAP: {
         HW_CAP_CHECK();
-        if (!user_ok(a3, 8)) return -EFAULT;
         void *virt;
         int r = cosmo_mmio_map((uint64_t)a1, (size_t)a2, &virt);
-        if (r == 0) kmemcpy((void *)a3, &virt, sizeof(virt));
+        if (r == 0) { r = copy_to_user((void *)a3, &virt, sizeof(virt)); if (r) return r; }
         return r;
     }
     case SYS_COSMO_DMA_ALLOC: {
         HW_CAP_CHECK();
-        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         void *virt; uint64_t phys;
         int r = cosmo_dma_alloc((size_t)a1, &virt, &phys);
-        if (r == 0) { kmemcpy((void *)a2, &virt, sizeof(virt)); kmemcpy((void *)a3, &phys, sizeof(phys)); }
+        if (r == 0) {
+            int r2 = copy_to_user((void *)a2, &virt, sizeof(virt)); if (r2) return r2;
+            r2 = copy_to_user((void *)a3, &phys, sizeof(phys)); if (r2) return r2;
+        }
         return r;
     }
     case SYS_COSMO_DMA_FREE:
@@ -235,9 +235,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     }
     case SYS_COSMO_NIC_ATTACH: {
         HW_CAP_CHECK();
-        if (!user_ok(a1, 22)) return -EFAULT;
         struct { uint64_t shm_phys; uint64_t shm_size; uint8_t mac[6]; } kargs;
-        kmemcpy(&kargs, (const void *)a1, sizeof(kargs));
+        { int r = copy_from_user(&kargs, (const void *)a1, sizeof(kargs)); if (r) return r; }
         return net_port_attach(kargs.shm_phys, (size_t)kargs.shm_size, kargs.mac);
     }
 

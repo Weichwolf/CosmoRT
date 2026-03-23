@@ -181,7 +181,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
 }
 
 long do_pipe2(int *fds, int flags) {
-    if (!user_ok((uint64_t)fds, 2 * sizeof(int))) return -EFAULT;
+    if (!user_ok((uint64_t)fds, 2 * sizeof(int))) return -EFAULT; /* validated early, copy_to_user below */
 
     pipe_slab_ensure();
     struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
@@ -215,7 +215,7 @@ long do_pipe2(int *fds, int flags) {
 
     {
         int kfds[2] = { rfd, wfd };
-        kmemcpy(fds, kfds, sizeof(kfds));
+        copy_to_user(fds, kfds, sizeof(kfds)); /* user_ok checked at entry */
     }
     return 0;
 }

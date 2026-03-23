@@ -27,11 +27,8 @@
 #include "syscall.h"
 #include "thread.h"
 
-static inline int user_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr;
-}
+/* User-pointer validation + copy helpers */
+#include "uaccess.h"
 
 /* Trampoline binary (assembled from kexec_tramp.asm → flat binary → C header) */
 #include "gen/kexec_tramp_bin.h"
@@ -225,8 +222,6 @@ load_and_jump(const void *kbuf, size_t len __attribute__((unused))) {
 int do_kexec(const void *image, size_t len) {
     /* Sanity: reject unreasonable sizes (max 64MB) */
     if (len == 0 || len > 64 * 1024 * 1024) return -EINVAL;
-    if (!user_ok((uint64_t)image, len)) return -EFAULT;
-
     serial_puts("kexec: loading new kernel (");
     serial_hex64(len);
     serial_puts(" bytes)\n");
@@ -238,7 +233,7 @@ int do_kexec(const void *image, size_t len) {
         serial_puts("kexec: out of memory\n");
         return -ENOMEM;
     }
-    kmemcpy(kbuf, image, len);
+    { int r = copy_from_user(kbuf, image, len); if (r) { pages_free(kbuf, npages); return r; } }
 
     /* Validate ELF */
     int err = validate_elf((const Elf64_Ehdr *)kbuf, len);

@@ -324,7 +324,6 @@ long do_sigaltstack(const void *ss_, void *oss_) {
 
     /* Return old stack first */
     if (oss_) {
-        if (!user_ok((uint64_t)oss_, sizeof(struct k_stack_t))) return -EFAULT;
         struct k_stack_t koss;
         koss.ss_sp    = t->sigalt_sp;
         koss.ss_size  = t->sigalt_size;
@@ -337,13 +336,14 @@ long do_sigaltstack(const void *ss_, void *oss_) {
             koss.ss_flags = SS_DISABLE;
         else
             koss.ss_flags = 0;
-        kmemcpy(oss_, &koss, sizeof(koss));
+        int r = copy_to_user(oss_, &koss, sizeof(koss));
+        if (r) return r;
     }
 
     if (ss_) {
-        if (!user_ok((uint64_t)ss_, sizeof(struct k_stack_t))) return -EFAULT;
         struct k_stack_t kss;
-        kmemcpy(&kss, ss_, sizeof(kss));
+        int r = copy_from_user(&kss, ss_, sizeof(kss));
+        if (r) return r;
 
         if (kss.ss_flags & ~SS_DISABLE) return -EINVAL; /* unknown flags */
 
@@ -379,14 +379,14 @@ long do_rt_sigaction(int sig, const void *act_,
     if (!p) return -EFAULT;
 
     if (oldact) {
-        if (!user_ok((uint64_t)oldact, sizeof(struct k_sigaction))) return -EFAULT;
-        *oldact = p->sig_actions[sig];
+        int r = copy_to_user(oldact, &p->sig_actions[sig], sizeof(struct k_sigaction));
+        if (r) return r;
     }
 
     if (act) {
-        if (!user_ok((uint64_t)act, sizeof(struct k_sigaction))) return -EFAULT;
         struct k_sigaction k_act;
-        kmemcpy(&k_act, act, sizeof(k_act));
+        int r = copy_from_user(&k_act, act, sizeof(k_act));
+        if (r) return r;
         p->sig_actions[sig] = k_act;
     }
 
@@ -402,19 +402,21 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
     if (!p) return -EFAULT;
 
     if (oldset) {
-        if (!user_ok((uint64_t)oldset, sigsetsize)) return -EFAULT;
-        *oldset = p->sig_blocked;
+        uint64_t tmp = p->sig_blocked;
+        int r = copy_to_user(oldset, &tmp, 8);
+        if (r) return r;
         /* Zero upper bytes if sigsetsize == 16 */
         if (sigsetsize == 16) {
-            uint64_t *oldset2 = oldset + 1;
-            *oldset2 = 0;
+            uint64_t zero = 0;
+            r = copy_to_user(oldset + 1, &zero, 8);
+            if (r) return r;
         }
     }
 
     if (set) {
-        if (!user_ok((uint64_t)set, sigsetsize)) return -EFAULT;
         uint64_t k_set;
-        kmemcpy(&k_set, set, 8); /* only first 8 bytes matter */
+        int r = copy_from_user(&k_set, set, 8); /* only first 8 bytes matter */
+        if (r) return r;
         uint64_t mask = k_set;
         mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
@@ -623,9 +625,8 @@ long do_rt_sigreturn(void) {
 
     /* Read ucontext from the signal frame (direct access — no SMAP) */
     uint64_t uc_addr = frame_rsp + SIGFRAME_OFF_UCONTEXT;
-    if (!user_ok(uc_addr, sizeof(sig_ucontext_t))) return -EFAULT;
     sig_ucontext_t uc;
-    kmemcpy(&uc, (const void *)uc_addr, sizeof(uc));
+    { int r = copy_from_user(&uc, (const void *)uc_addr, sizeof(uc)); if (r) return r; }
 
     /* Restore FPU/SSE state from inline __fpregs_mem via FXRSTOR.
      * FXRSTOR requires 16-byte aligned operand, so use a temp buffer. */
@@ -666,10 +667,9 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    if (!mask || !user_ok((uint64_t)mask, sigsetsize)) return -EFAULT;
-
+    if (!mask) return -EFAULT;
     uint64_t new_mask;
-    kmemcpy(&new_mask, mask, 8);
+    { int r = copy_from_user(&new_mask, mask, 8); if (r) return r; }
     new_mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
     uint64_t old_blocked = p->sig_blocked;

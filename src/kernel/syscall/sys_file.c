@@ -70,7 +70,7 @@ long do_write(int fd, const void *buf, size_t count) {
             uint8_t kbuf[256]; size_t pos = 0;
             while (pos < actual) {
                 size_t chunk = actual - pos > 256 ? 256 : actual - pos;
-                kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+                copy_from_user(kbuf, (const uint8_t *)buf + pos, chunk);
                 for (size_t j = 0; j < chunk; j++) serial_putchar((char)kbuf[j]);
                 pos += chunk;
             }
@@ -84,7 +84,7 @@ long do_write(int fd, const void *buf, size_t count) {
         size_t pos = 0;
         while (pos < actual) {
             size_t chunk = actual - pos > 256 ? 256 : actual - pos;
-            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            copy_from_user(kbuf, (const uint8_t *)buf + pos, chunk);
             for (size_t j = 0; j < chunk; j++) serial_putchar((char)kbuf[j]);
             pos += chunk;
         }
@@ -115,7 +115,7 @@ long do_write(int fd, const void *buf, size_t count) {
         size_t actual = count > 0x10000 ? 0x10000 : count;
         while (pos < actual) {
             size_t chunk = actual - pos > 256 ? 256 : actual - pos;
-            kmemcpy(kbuf, (const uint8_t *)buf + pos, chunk);
+            copy_from_user(kbuf, (const uint8_t *)buf + pos, chunk);
             int w = pty_slave_write(pty_id, (const char *)kbuf, (int)chunk);
             if (w <= 0) break;
             pos += (size_t)w;
@@ -131,10 +131,9 @@ long do_write(int fd, const void *buf, size_t count) {
 
 long do_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 16) return -EINVAL;
-    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
     /* Copy iov array to kernel stack to prevent TOCTOU */
     struct iovec k_iov[16];
-    kmemcpy(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec));
+    { int r = copy_from_user(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
         if (!user_ok((uint64_t)k_iov[i].iov_base, k_iov[i].iov_len)) return -EFAULT;
@@ -181,7 +180,7 @@ long do_read(int fd, void *buf, size_t count) {
             if (c == 0) break;
             kbuf[got++] = (uint8_t)c;
         }
-        kmemcpy(buf, kbuf, got);
+        copy_to_user(buf, kbuf, got);
         return (long)got;
     }
     if (fde->type == FD_FILE)
@@ -195,7 +194,7 @@ long do_read(int fd, void *buf, size_t count) {
         if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
         int got = procfs_read(pf->handle, kbuf, want, pf->offset);
         if (got > 0) {
-            kmemcpy(buf, kbuf, (size_t)got);
+            copy_to_user(buf, kbuf, (size_t)got);
             pf->offset += got;
         }
         return (long)got;
@@ -236,7 +235,7 @@ long do_read(int fd, void *buf, size_t count) {
         size_t want = count > 256 ? 256 : count;
         int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
         if (got > 0) {
-            kmemcpy(buf, kbuf, (size_t)got);
+            copy_to_user(buf, kbuf, (size_t)got);
             /* Flush VT after read — renders echo from line discipline */
             extern void vt_flush(int vt_id);
             vt_flush(pty_id);
@@ -263,7 +262,7 @@ long do_read(int fd, void *buf, size_t count) {
                         pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
                     }
                     spin_unlock_irq(&pty->lock, irqf);
-                    kmemcpy(buf, kbuf, (size_t)n);
+                    copy_to_user(buf, kbuf, (size_t)n);
                     extern void vt_flush(int vt_id);
                     vt_flush(pty_id);
                     return (long)n;
@@ -291,11 +290,10 @@ long do_read(int fd, void *buf, size_t count) {
 
 long do_readv(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
-    if (!user_ok((uint64_t)iov, (size_t)iovcnt * sizeof(struct iovec))) return -EFAULT;
     /* Copy iov to kernel to prevent TOCTOU — cap at 64 on stack */
     if (iovcnt > 64) iovcnt = 64;
     struct iovec kiov[64];
-    kmemcpy(kiov, iov, (size_t)iovcnt * sizeof(struct iovec));
+    { int r = copy_from_user(kiov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
         if (!user_ok((uint64_t)kiov[i].iov_base, kiov[i].iov_len)) return -EFAULT;
@@ -577,8 +575,8 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
 
     int64_t ktimes[4];
     if (utimes) {
-        if (!user_ok((uint64_t)utimes, 32)) return -EFAULT;
-        kmemcpy(ktimes, utimes, 32); /* 2 × struct timespec = 2 × 16 bytes */
+        int r = copy_from_user(ktimes, utimes, 32); /* 2 × struct timespec = 2 × 16 bytes */
+        if (r) return r;
     }
 
     return vfs_utimensat(kpath, utimes ? ktimes : 0, flags);
@@ -867,9 +865,8 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         return 0;
     /* Foreground process group: stored per-PTY */
     if (request == TIOCSPGRP) {
-        if (!user_ok(arg, 4)) return -EFAULT;
         int32_t pgid;
-        kmemcpy(&pgid, (const void *)arg, 4);
+        { int r = copy_from_user(&pgid, (const void *)arg, 4); if (r) return r; }
         if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
             pty_t *pt = (pty_t *)fde->obj;
             pt->fg_pgid = pgid;
@@ -877,7 +874,6 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         return 0;
     }
     if (request == TIOCGPGRP) {
-        if (!user_ok(arg, 4)) return -EFAULT;
         int32_t pgid;
         if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
             pty_t *pt = (pty_t *)fde->obj;
@@ -885,8 +881,7 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         } else {
             pgid = (int32_t)p->pgid;
         }
-        kmemcpy((void *)arg, &pgid, 4);
-        return 0;
+        return copy_to_user((void *)arg, &pgid, 4);
     }
     return -ENOTTY;
 }

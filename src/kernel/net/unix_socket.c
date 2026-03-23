@@ -18,12 +18,8 @@
 static unix_socket_t usock_pool[USOCK_MAX];
 static spinlock_t usock_lock = SPINLOCK_INIT;
 
-/* Validate user pointer */
-static inline int user_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr;
-}
+/* User-pointer validation + copy helpers */
+#include "uaccess.h"
 
 static unix_socket_t *usock_alloc(void) {
     uint64_t flags;
@@ -132,7 +128,7 @@ long usock_socket(int type) {
 /* ── socketpair(AF_UNIX, SOCK_STREAM, 0, sv[2]) ─ */
 
 long usock_socketpair(int type, int *sv) {
-    if (!user_ok((uint64_t)sv, 2 * sizeof(int))) return -EFAULT;
+    if (!user_ok((uint64_t)sv, 2 * sizeof(int))) return -EFAULT; /* validated early, copy_to_user below */
 
     int base_type = type & 0xF;
     if (base_type != 1 /* SOCK_STREAM */) return -EPROTONOSUPPORT;
@@ -170,7 +166,7 @@ long usock_socketpair(int type, int *sv) {
 
     /* Copy to user */
     int k_sv[2] = { fd0, fd1 };
-    kmemcpy(sv, k_sv, sizeof(k_sv));
+    copy_to_user(sv, k_sv, sizeof(k_sv)); /* user_ok checked at entry */
     return 0;
 }
 
@@ -178,7 +174,6 @@ long usock_socketpair(int type, int *sv) {
 
 long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     if (addrlen < 3) return -EINVAL; /* at least family + 1 char */
-    if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
 
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
@@ -186,7 +181,7 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 
     struct k_sockaddr_un k_addr;
     int copy_len = addrlen < (int)sizeof(k_addr) ? addrlen : (int)sizeof(k_addr);
-    kmemcpy(&k_addr, addr, (size_t)copy_len);
+    { int r = copy_from_user(&k_addr, addr, (size_t)copy_len); if (r) return r; }
 
     if (k_addr.sun_family != 1 /* AF_UNIX */) return -EINVAL;
 
@@ -273,7 +268,6 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
 
 long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     if (addrlen < 3) return -EINVAL;
-    if (!user_ok((uint64_t)addr, (size_t)addrlen)) return -EFAULT;
 
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
@@ -281,7 +275,7 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 
     struct k_sockaddr_un k_addr;
     int copy_len = addrlen < (int)sizeof(k_addr) ? addrlen : (int)sizeof(k_addr);
-    kmemcpy(&k_addr, addr, (size_t)copy_len);
+    { int r = copy_from_user(&k_addr, addr, (size_t)copy_len); if (r) return r; }
 
     if (k_addr.sun_family != 1 /* AF_UNIX */) return -EINVAL;
 
@@ -451,7 +445,6 @@ struct iovec { const void *iov_base; size_t iov_len; };
 
 long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     (void)flags;
-    if (!user_ok((uint64_t)msg_ptr, sizeof(struct k_msghdr))) return -EFAULT;
 
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
@@ -459,16 +452,14 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
 
     /* Copy msghdr to kernel */
     struct k_msghdr kmsg;
-    kmemcpy(&kmsg, msg_ptr, sizeof(kmsg));
+    { int r = copy_from_user(&kmsg, msg_ptr, sizeof(kmsg)); if (r) return r; }
 
     if (kmsg.msg_iovlen == 0) return 0;
     if (kmsg.msg_iovlen > 16) return -EMSGSIZE;
-    if (!user_ok((uint64_t)kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)))
-        return -EFAULT;
 
     /* Copy iov array */
     struct iovec k_iov[16];
-    kmemcpy(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec));
+    { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
     long total = 0;
     for (uint64_t i = 0; i < kmsg.msg_iovlen; i++) {
@@ -481,7 +472,7 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
         const uint8_t *src = (const uint8_t *)k_iov[i].iov_base;
         while (remaining > 0) {
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
-            kmemcpy(kbuf, src, (size_t)chunk);
+            copy_from_user(kbuf, src, (size_t)chunk); /* user_ok checked per-iov above */
             int w = ring_write(s->peer, kbuf, (int)chunk);
             if (w <= 0) {
                 if (total > 0) goto done;
@@ -503,7 +494,6 @@ done:
 
 long usock_recvmsg(int fd, void *msg_ptr, int flags) {
     (void)flags;
-    if (!user_ok((uint64_t)msg_ptr, sizeof(struct k_msghdr))) return -EFAULT;
 
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
@@ -511,16 +501,14 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
 
     /* Copy msghdr to kernel */
     struct k_msghdr kmsg;
-    kmemcpy(&kmsg, msg_ptr, sizeof(kmsg));
+    { int r = copy_from_user(&kmsg, msg_ptr, sizeof(kmsg)); if (r) return r; }
 
     if (kmsg.msg_iovlen == 0) return 0;
     if (kmsg.msg_iovlen > 16) return -EINVAL;
-    if (!user_ok((uint64_t)kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)))
-        return -EFAULT;
 
     /* Copy iov array */
     struct iovec k_iov[16];
-    kmemcpy(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec));
+    { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
     if (s->count == 0) {
         if (!s->peer) return 0; /* EOF */
@@ -539,7 +527,7 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
             int r = ring_read(s, kbuf, (int)chunk);
             if (r <= 0) break;
-            kmemcpy(dst, kbuf, (size_t)r);
+            copy_to_user(dst, kbuf, (size_t)r); /* user_ok checked per-iov above */
             total += r;
             dst += r;
             remaining -= (uint64_t)r;
@@ -550,7 +538,7 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
     /* Zero out msg_controllen — no ancillary data */
     kmsg.msg_controllen = 0;
     kmsg.msg_flags = 0;
-    kmemcpy(msg_ptr, &kmsg, sizeof(kmsg));
+    copy_to_user(msg_ptr, &kmsg, sizeof(kmsg));
 
     if (total > 0) {
         extern void epoll_wake_all(void);

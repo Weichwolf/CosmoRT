@@ -14,6 +14,7 @@
 #include "slab.h"
 #include "vfs.h"
 #include "memops.h"
+#include "uaccess.h"
 #include "socket.h"
 #include "cosmo_rt.h"
 #include "net_port.h"
@@ -24,13 +25,6 @@
 #include "cosmofs.h"
 #include "pty.h"
 #include "vt.h"
-
-/* Validate user pointer: must be in lower half, no overflow */
-static inline int user_ok(uint64_t addr, size_t len) {
-    return addr < 0x800000000000ULL &&
-           addr + len <= 0x800000000000ULL &&
-           addr + len >= addr;
-}
 
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */

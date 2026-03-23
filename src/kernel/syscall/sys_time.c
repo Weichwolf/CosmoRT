@@ -7,7 +7,7 @@
 /* struct k_timespec defined in epoll.h, k_timeval in internal.h */
 
 long do_clock_gettime(int clk_id, struct k_timespec *tp) {
-    if (!tp || !user_ok((uint64_t)tp, 16)) return -EFAULT;
+    if (!tp) return -EFAULT;
     struct k_timespec kts;
     uint64_t ms = timer_ms();
     kts.tv_sec = (long)(ms / 1000);
@@ -16,43 +16,43 @@ long do_clock_gettime(int clk_id, struct k_timespec *tp) {
         extern uint64_t rtc_epoch_sec;
         kts.tv_sec += (long)rtc_epoch_sec;
     }
-    kmemcpy(tp, &kts, sizeof(kts));
+    { int r = copy_to_user(tp, &kts, sizeof(kts)); if (r) return r; }
     return 0;
 }
 
 long do_clock_getres(int clk_id, struct k_timespec *tp) {
     (void)clk_id;
-    if (tp && !user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
     if (tp) {
         struct k_timespec kts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1ms */
-        kmemcpy(tp, &kts, sizeof(kts));
+        int r = copy_to_user(tp, &kts, sizeof(kts));
+        if (r) return r;
     }
     return 0;
 }
 
 long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
-    if (!req || !user_ok((uint64_t)req, 16)) return -EFAULT;
-    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
+    if (!req) return -EFAULT;
     struct k_timespec kreq;
-    kmemcpy(&kreq, req, sizeof(kreq));
+    { int r = copy_from_user(&kreq, req, sizeof(kreq)); if (r) return r; }
+    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     uint64_t ms = (uint64_t)kreq.tv_sec * 1000 + (uint64_t)(kreq.tv_nsec / 1000000);
     if (ms == 0) ms = 1;
     timer_sleep_ms((uint32_t)ms);
     if (rem) {
         struct k_timespec krem = { .tv_sec = 0, .tv_nsec = 0 };
-        kmemcpy(rem, &krem, sizeof(krem));
+        int r2 = copy_to_user(rem, &krem, sizeof(krem));
+        if (r2) return r2;
     }
     return 0;
 }
 
 long do_clock_nanosleep(int clk_id, int flags,
                                const struct k_timespec *req, struct k_timespec *rem) {
-    if (req && !user_ok((uint64_t)req, 16)) return -EFAULT;
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
         if (!req) return -EFAULT;
         struct k_timespec kreq;
-        kmemcpy(&kreq, req, sizeof(kreq));
+        { int r = copy_from_user(&kreq, req, sizeof(kreq)); if (r) return r; }
         uint64_t target_ms = (uint64_t)kreq.tv_sec * 1000
                            + (uint64_t)(kreq.tv_nsec / 1000000);
         /* CLOCK_REALTIME absolute target is wall-clock; convert to uptime */
@@ -73,14 +73,14 @@ long do_clock_nanosleep(int clk_id, int flags,
 
 long do_gettimeofday(struct k_timeval *tv, void *tz) {
     (void)tz;
-    if (tv && !user_ok((uint64_t)tv, 16)) return -EFAULT;
     if (tv) {
         extern uint64_t rtc_epoch_sec;
         struct k_timeval ktv;
         uint64_t ms = timer_ms();
         ktv.tv_sec = (long)(ms / 1000 + rtc_epoch_sec);
         ktv.tv_usec = (long)((ms % 1000) * 1000);
-        kmemcpy(tv, &ktv, sizeof(ktv));
+        int r = copy_to_user(tv, &ktv, sizeof(ktv));
+        if (r) return r;
     }
     return 0;
 }

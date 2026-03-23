@@ -24,17 +24,17 @@ long do_arch_prctl(int code, unsigned long addr) {
          * After SWAPGS in syscall entry, KERNEL_GS_BASE holds user's GS-base,
          * but we never set it, so it's always 0.  Return 0 to indicate "unset"
          * rather than -EINVAL, since callers (e.g. glibc) may probe this. */
-        if (!user_ok(addr, 8)) return -EFAULT;
         uint64_t val = 0;
-        kmemcpy((void *)addr, &val, 8);
+        int r = copy_to_user((void *)addr, &val, 8);
+        if (r) return r;
         return 0;
     }
     if (code == ARCH_GET_FS) {
-        if (!user_ok(addr, 8)) return -EFAULT;
         uint32_t lo, hi;
         __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
         uint64_t val = ((uint64_t)hi << 32) | lo;
-        kmemcpy((void *)addr, &val, 8);
+        int r = copy_to_user((void *)addr, &val, 8);
+        if (r) return r;
         return 0;
     }
     return -EINVAL;
@@ -100,9 +100,7 @@ void do_exit(int status) {
     if (t->clear_child_tid && p) {
         /* Ensure user page tables for user memory access */
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");
-        if (user_ok((uint64_t)t->clear_child_tid, 4)) {
-            int zero = 0;
-            kmemcpy(t->clear_child_tid, &zero, 4);
+        if (!copy_to_user(t->clear_child_tid, &(int){0}, 4)) {
             long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
             (void)wr;
         }
@@ -254,11 +252,11 @@ struct clone_args {
 };
 
 long do_clone3(void *uargs, size_t size) {
-    if (!user_ok((uint64_t)uargs, size)) return -EFAULT;
     struct clone_args kargs;
     kmemset(&kargs, 0, sizeof(kargs));
     size_t copy = size > sizeof(kargs) ? sizeof(kargs) : size;
-    kmemcpy(&kargs, uargs, copy);
+    int r = copy_from_user(&kargs, uargs, copy);
+    if (r) return r;
 
     /* Map clone3 flags to clone flags */
     unsigned long flags = (unsigned long)kargs.flags;
@@ -285,7 +283,6 @@ static void kstrcpy(char *dst, const char *src, int max) {
 
 long do_uname(void *buf_) {
     struct utsname *buf = (struct utsname *)buf_;
-    if (!user_ok((uint64_t)buf, sizeof(struct utsname))) return -EFAULT;
     struct utsname kbuf;
     kstrcpy(kbuf.sysname, "CosmoRT", 65);
     kstrcpy(kbuf.nodename, "cosmo", 65);
@@ -293,7 +290,8 @@ long do_uname(void *buf_) {
     kstrcpy(kbuf.version, "CosmoRT 0.1", 65);
     kstrcpy(kbuf.machine, "x86_64", 65);
     kstrcpy(kbuf.domainname, "", 65);
-    kmemcpy(buf, &kbuf, sizeof(struct utsname));
+    int r = copy_to_user(buf, &kbuf, sizeof(struct utsname));
+    if (r) return r;
     return 0;
 }
 
@@ -320,9 +318,7 @@ long do_prctl(int option, unsigned long a2, unsigned long a3,
     }
 
     case PR_GET_NAME:
-        if (!user_ok(a2, 16)) return -EFAULT;
-        kmemcpy((void *)a2, p->comm, 16);
-        return 0;
+        return copy_to_user((void *)a2, p->comm, 16);
 
     default:
         return -EINVAL;
@@ -377,18 +373,15 @@ static long fill_statfs(struct k_statfs *kbuf, const char *path) {
 }
 
 long do_statfs(const char *path, void *buf) {
-    if (!user_ok((uint64_t)buf, sizeof(struct k_statfs))) return -EFAULT;
     char kpath[256];
     int r = copy_path_from_user(kpath, path, 256);
     if (r < 0) return r;
     struct k_statfs kbuf;
     fill_statfs(&kbuf, kpath);
-    kmemcpy(buf, &kbuf, sizeof(kbuf));
-    return 0;
+    return copy_to_user(buf, &kbuf, sizeof(kbuf)) ? -EFAULT : 0;
 }
 
 long do_fstatfs(int fd, void *buf) {
-    if (!user_ok((uint64_t)buf, sizeof(struct k_statfs))) return -EFAULT;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
@@ -398,8 +391,7 @@ long do_fstatfs(int fd, void *buf) {
     const char *pseudo_path = "/";
     if (fde->type == FD_PROCFS) pseudo_path = "/proc";
     fill_statfs(&kbuf, pseudo_path);
-    kmemcpy(buf, &kbuf, sizeof(kbuf));
-    return 0;
+    return copy_to_user(buf, &kbuf, sizeof(kbuf)) ? -EFAULT : 0;
 }
 
 /* ── SYS_getrandom (318) ────────────────────────── */
@@ -415,7 +407,8 @@ long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
         size_t chunk = buflen - done;
         if (chunk > 256) chunk = 256;
         if (random_get(kbuf, chunk) < 0) return -EIO;
-        kmemcpy((uint8_t *)buf + done, kbuf, chunk);
+        int r = copy_to_user((uint8_t *)buf + done, kbuf, chunk);
+        if (r) return r;
         done += chunk;
     }
     return (long)done;
@@ -428,9 +421,9 @@ long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mask) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
-    if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
     uint64_t k_mask;
-    kmemcpy(&k_mask, mask, 8);
+    int r = copy_from_user(&k_mask, mask, 8);
+    if (r) return r;
     if (k_mask == 0) return -EINVAL;
     int core = __builtin_ctzll(k_mask);
     if (core >= SMP_MAX_CORES) return -EINVAL;
@@ -443,13 +436,12 @@ long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
-    if (!user_ok((uint64_t)mask, cpusetsize)) return -EFAULT;
     uint64_t kmask;
     if (t->cpu_affinity >= 0)
         kmask = 1ULL << t->cpu_affinity;
     else
         kmask = ~0ULL;  /* all 64 cores */
-    kmemcpy(mask, &kmask, 8);
+    { int r = copy_to_user(mask, &kmask, 8); if (r) return r; }
     return (long)sizeof(uint64_t);
 }
 
@@ -469,9 +461,9 @@ long do_sched_setscheduler(int pid, int policy, const void *param_) {
     if (policy < 0 || policy > 2) return -EINVAL;
     t->sched_policy = policy;
     if (param) {
-        if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
         struct sched_param_k kp;
-        kmemcpy(&kp, param, sizeof(kp));
+        int r = copy_from_user(&kp, param, sizeof(kp));
+        if (r) return r;
         if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
         t->priority = kp.sched_priority;
     }
@@ -489,9 +481,9 @@ long do_sched_setparam(int pid, const void *param_) {
     (void)pid;
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
-    if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
     struct sched_param_k kp;
-    kmemcpy(&kp, param, sizeof(kp));
+    int r = copy_from_user(&kp, param, sizeof(kp));
+    if (r) return r;
     if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
     t->priority = kp.sched_priority;
     return 0;
@@ -502,10 +494,9 @@ long do_sched_getparam(int pid, void *param_) {
     (void)pid;
     thread_t *t = thread_current();
     if (!t || !param) return -EFAULT;
-    if (!user_ok((uint64_t)param, sizeof(struct sched_param_k))) return -EFAULT;
     struct sched_param_k kparam;
     kparam.sched_priority = t->priority;
-    kmemcpy(param, &kparam, sizeof(kparam));
+    { int r = copy_to_user(param, &kparam, sizeof(kparam)); if (r) return r; }
     return 0;
 }
 
@@ -529,7 +520,6 @@ struct k_sysinfo {
 
 long do_sysinfo(void *info_) {
     struct k_sysinfo *info = (struct k_sysinfo *)info_;
-    if (!user_ok((uint64_t)info, sizeof(struct k_sysinfo))) return -EFAULT;
     struct k_sysinfo ksi;
     kmemset(&ksi, 0, sizeof(ksi));
     ksi.uptime = (long)(timer_ms() / 1000);
@@ -541,7 +531,7 @@ long do_sysinfo(void *info_) {
         if (proc_pool[i].state == PROC_ALIVE) nprocs++;
     ksi.procs = nprocs;
     ksi.mem_unit = 1;
-    kmemcpy(info, &ksi, sizeof(ksi));
+    { int r = copy_to_user(info, &ksi, sizeof(ksi)); if (r) return r; }
     return 0;
 }
 
@@ -574,7 +564,6 @@ struct k_rusage {
 long do_getrusage(int who, void *usage_) {
     struct k_rusage *usage = (struct k_rusage *)usage_;
     if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN) return -EINVAL;
-    if (!user_ok((uint64_t)usage, sizeof(struct k_rusage))) return -EFAULT;
     struct k_rusage kru;
     kmemset(&kru, 0, sizeof(kru));
     if (who == RUSAGE_SELF) {
@@ -587,7 +576,7 @@ long do_getrusage(int who, void *usage_) {
         kru.ru_utime.tv_usec = (long)((ms % 1000) * 1000);
         /* ru_stime: 0 (kernel time not tracked separately) */
     }
-    kmemcpy(usage, &kru, sizeof(kru));
+    { int r = copy_to_user(usage, &kru, sizeof(kru)); if (r) return r; }
     return 0;
 }
 
@@ -609,7 +598,6 @@ long do_prlimit64(int pid, int resource,
     struct k_rlimit *old_rlim = (struct k_rlimit *)old_rlim_;
     (void)pid; (void)new_rlim_; /* ignore set for now */
     if (old_rlim) {
-        if (!user_ok((uint64_t)old_rlim, sizeof(struct k_rlimit))) return -EFAULT;
         struct k_rlimit krl;
         switch (resource) {
         case RLIMIT_STACK:
@@ -629,7 +617,8 @@ long do_prlimit64(int pid, int resource,
             krl.rlim_max = RLIM_INFINITY;
             break;
         }
-        kmemcpy(old_rlim, &krl, sizeof(krl));
+        int r = copy_to_user(old_rlim, &krl, sizeof(krl));
+        if (r) return r;
     }
     return 0;
 }
@@ -645,7 +634,6 @@ struct k_tms {
 
 long do_times(void *buf_) {
     struct k_tms *buf = (struct k_tms *)buf_;
-    if (!user_ok((uint64_t)buf, sizeof(struct k_tms))) return -EFAULT;
     struct k_tms ktms;
     /* CLK_TCK = 100 Hz on Linux x86_64 */
     uint64_t ticks = timer_ms() / 10;
@@ -653,6 +641,6 @@ long do_times(void *buf_) {
     ktms.tms_stime  = 0;
     ktms.tms_cutime = 0;           /* children time not tracked */
     ktms.tms_cstime = 0;
-    kmemcpy(buf, &ktms, sizeof(ktms));
+    { int r = copy_to_user(buf, &ktms, sizeof(ktms)); if (r) return r; }
     return (long)ticks;
 }
