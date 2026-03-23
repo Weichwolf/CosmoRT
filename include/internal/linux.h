@@ -294,6 +294,7 @@ typedef long               ssize_t;
 #define O_WRONLY        0x0001
 #define O_RDWR          0x0002
 #define O_CREAT         0x0040
+#define O_EXCL          0x0080
 #define O_TRUNC         0x0200
 #define O_APPEND        0x0400
 #define O_NONBLOCK      0x0800
@@ -377,9 +378,13 @@ typedef long               ssize_t;
 #define SIGIO           29
 #define SIGSYS          31
 
+#define SA_NOCLDSTOP    0x00000001
+#define SA_NOCLDWAIT    0x00000002
 #define SA_SIGINFO      0x00000004
 #define SA_ONSTACK      0x08000000
 #define SA_RESTART      0x10000000
+#define SA_NODEFER      0x40000000
+#define SA_RESETHAND    0x80000000
 #define SA_RESTORER     0x04000000
 
 #define SIG_DFL         ((void *)0)
@@ -439,6 +444,7 @@ typedef long               ssize_t;
 #define EPOLLOUT        0x004
 #define EPOLLERR        0x008
 #define EPOLLHUP        0x010
+#define EPOLLRDHUP      0x2000
 #define EPOLLET         (1U << 31)
 
 #define EPOLL_CTL_ADD   1

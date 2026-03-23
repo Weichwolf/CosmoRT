@@ -382,6 +382,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
                 if (pp->count > 0) ready |= EPOLLIN;
                 if (!pp->write_open) ready |= EPOLLIN | EPOLLHUP;
             }
+            if (!pp->write_open) ready |= EPOLLRDHUP;
         } else {
             if (interest & EPOLLOUT) {
                 if (pp->count < PIPE_BUF_SIZE) ready |= EPOLLOUT;

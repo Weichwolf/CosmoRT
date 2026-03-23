@@ -456,13 +456,7 @@ int vfs_open(const char *path, int flags, int mode) {
     const char *pname = procfs_name(path);
     if (pname) {
         int handle = procfs_open(pname);
-        if (!handle) {
-            /* TEMP: log missing procfs paths */
-            serial_puts("procfs: miss /proc/");
-            serial_puts(pname);
-            serial_putchar('\n');
-            return -ENOENT;
-        }
+        if (!handle) return -ENOENT;
 
         procfs_fd_t *pf = procfs_fd_alloc();
         if (!pf) return -ENOMEM;
@@ -480,6 +474,9 @@ int vfs_open(const char *path, int flags, int mode) {
     /* CosmoFS path? */
     if (!is_ramfs_path(path)) {
         uint64_t ino = cosmofs_walk(path);
+
+        if (ino != 0 && (flags & O_CREAT) && (flags & O_EXCL))
+            return -EEXIST;
 
         if (ino == 0 && (flags & O_CREAT)) {
             /* Create file on CosmoFS */
@@ -541,6 +538,9 @@ int vfs_open(const char *path, int flags, int mode) {
 
     /* ramfs path */
     struct vfs_node *node = vfs_lookup(path);
+
+    if (node && (flags & O_CREAT) && (flags & O_EXCL))
+        return -EEXIST;
 
     if (!node && (flags & O_CREAT)) {
         ensure_dirs(path);

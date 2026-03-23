@@ -146,10 +146,8 @@ void deliver_signal(thread_t *t, int signo) {
             stack_rsp = t->sigalt_sp + t->sigalt_size;
     }
     stack_rsp -= 128; /* Skip x86_64 red zone (ABI mandates 128 bytes below RSP) */
-    /* Align RSP for signal handler entry: handler sees RSP with a fake
-     * return address at [RSP], so RSP ≡ 8 (mod 16) — same as after a call.
-     * Linux: round_down(sp - frame_size, 16) - 8 */
-    uint64_t new_rsp = ((stack_rsp - frame_size) & ~0xFULL) - 8;
+    /* 16-byte align RSP for signal handler entry */
+    uint64_t new_rsp = (stack_rsp - frame_size) & ~0xFULL;
 
     /* Verify target stack area is in a writable VMA */
     vma_t *vma = vma_find(p->vma_root, new_rsp);
@@ -256,10 +254,16 @@ void deliver_signal(thread_t *t, int signo) {
     t->rflags &= ~(1ULL << 10); /* DF=0 */
     t->rflags |= (1ULL << 9);   /* IF=1 */
 
-    /* Block this signal during handler + sa_mask */
-    t->sig_blocked |= (1ULL << signo) | sa->sa_mask;
+    /* Block this signal during handler (unless SA_NODEFER) + sa_mask */
+    if (!(sa->sa_flags & SA_NODEFER))
+        t->sig_blocked |= (1ULL << signo);
+    t->sig_blocked |= sa->sa_mask;
     /* SIGKILL/SIGSTOP never blocked */
     t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
+
+    /* SA_RESETHAND: one-shot handler, reset to SIG_DFL after delivery */
+    if (sa->sa_flags & SA_RESETHAND)
+        sa->sa_handler = SIG_DFL;
 }
 
 /* Check and deliver pending signals. Operates on thread_t register fields.
