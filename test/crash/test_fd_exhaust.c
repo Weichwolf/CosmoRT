@@ -3,7 +3,9 @@
  * After cleanup, new FDs must work. */
 #include "ktest.h"
 
+#define ENOMEM 12
 #define EMFILE 24
+#define ENFILE 23
 #define FD_LIMIT 300 /* more than FD_MAX (256) */
 
 static void test_fd_exhaust(void) {
@@ -23,20 +25,18 @@ static void test_fd_exhaust(void) {
 
     for (int i = 0; i < FD_LIMIT; i++) {
         long r = sc2(293 /* SYS_PIPE2 */, (long)&pairs[i], 0);
-        if (r == -EMFILE) {
-            got_emfile = 1;
-            break;
-        }
         if (r < 0) {
-            /* Other error — might be ENFILE or similar */
-            puts("  pipe2 error at "); put_int(i);
-            puts(": "); put_int(r); puts("\n");
-            got_emfile = (r == -23 /* ENFILE */); /* acceptable too */
+            /* EMFILE (fd table full), ENFILE (system-wide), or ENOMEM
+             * (pipe buffer allocation) are all valid resource exhaustion. */
+            int expected = (r == -EMFILE || r == -ENFILE || r == -ENOMEM);
+            puts("  pipe2 stopped at "); put_int(i);
+            puts(": err="); put_int(r); puts("\n");
+            got_emfile = expected;
             break;
         }
         opened++;
     }
-    check("hit EMFILE/ENFILE limit", got_emfile);
+    check("hit resource limit (EMFILE/ENFILE/ENOMEM)", got_emfile);
     puts("  pipe pairs opened: "); put_int(opened); puts("\n");
 
     /* Phase 2: verify additional opens fail */

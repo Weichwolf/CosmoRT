@@ -21,8 +21,11 @@
  *       gregs     = +40  (184 = 23 * uint64_t)
  *         greg indices: R8=0..RSP=15, RIP=16, EFL=17, CSGSFS=18
  */
-#define UC_OFF       136    /* ucontext offset from frame base */
-#define GREGS_OFF    (UC_OFF + 40)  /* gregs inside ucontext */
+/* rt_sigreturn reads ucontext from (user_rsp - 8 + SIGFRAME_OFF_UCONTEXT).
+ * SIGFRAME_OFF_UCONTEXT = 8 + 128 = 136. So uc_addr = user_rsp + 128.
+ * Since we set RSP to `frame`, ucontext is at frame + 128. */
+#define UC_OFF       128    /* ucontext offset from user_rsp (frame ptr) */
+#define GREGS_OFF    (UC_OFF + 40)  /* uc_mcontext.gregs inside ucontext */
 #define GREG_RSP     15
 #define GREG_RIP     16
 #define GREG_EFL     17
