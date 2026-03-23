@@ -23,9 +23,10 @@ void net_nic_register(const nic_driver_t *driver) {
 }
 
 /* NIC access macros */
-#define nic_send(data, len)       (nic->send((data), (len)))
 #define nic_recv(buf, bufsize)    (nic->recv((buf), (bufsize)))
 #define nic_get_mac(mac)          (nic->get_mac((mac)))
+/* nic_send is a function (defined after queues for loopback support) */
+static void nic_send(const uint8_t *data, uint16_t len);
 
 /* Idle: sti+hlt to wait for interrupt (saves power, wakes on any IRQ) */
 static inline void net_idle(void) {
@@ -98,6 +99,27 @@ static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     q->count--;
     spin_unlock_irq(&q->lock, flags);
     return l;
+}
+
+/* ── Loopback NIC Send ────────────────────────────── */
+
+static void nic_send(const uint8_t *data, uint16_t len) {
+    /* Loopback: dst IP 127.x.x.x → feed directly into RX queues */
+    if (len >= 34 && data[12] == 0x08 && data[13] == 0x00 && data[30] == 127) {
+        uint8_t lo[1600];
+        if (len > 1600) return;
+        for (int i = 0; i < len; i++) lo[i] = data[i];
+        uint8_t proto = lo[23];
+        if (proto == 6)       q_push(&q_tcp, lo, len);
+        else if (proto == 1)  q_push(&q_icmp, lo, len);
+        else if (proto == 17) {
+            uint16_t dport = get16(lo + 36);
+            if (dport == 68) q_push(&q_udp_dhcp, lo, len);
+            else             q_push(&q_udp_dns, lo, len);
+        }
+        return;
+    }
+    if (nic) nic->send(data, len);
 }
 
 /* ── IP Checksum ──────────────────────────────────── */
