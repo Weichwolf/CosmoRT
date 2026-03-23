@@ -5,6 +5,7 @@
  */
 
 #include "serial.h"
+#include "spinlock.h"
 #include <stdint.h>
 
 #define COM1 0x3F8
@@ -26,6 +27,7 @@ static inline uint8_t port_in8(uint16_t port) {
 static char dmesg_ring[DMESG_SIZE];
 static int dmesg_head;  /* next write position (wraps) */
 static int dmesg_len;   /* total bytes stored (capped at DMESG_SIZE) */
+static spinlock_t dmesg_lock = SPINLOCK_INIT;
 
 /* ── Public API ────────────────────────────────────── */
 
@@ -44,11 +46,13 @@ void serial_putchar(char c) {
         ;
     port_out8(COM1, c);
 
-    /* Append to ring buffer */
+    /* Append to ring buffer (multi-core safe) */
+    uint64_t df;
+    spin_lock_irq(&dmesg_lock, &df);
     dmesg_ring[dmesg_head] = c;
     dmesg_head = (dmesg_head + 1) % DMESG_SIZE;
-    if (dmesg_len < DMESG_SIZE)
-        dmesg_len++;
+    if (dmesg_len < DMESG_SIZE) dmesg_len++;
+    spin_unlock_irq(&dmesg_lock, df);
 }
 
 void serial_putchar_raw(char c) {

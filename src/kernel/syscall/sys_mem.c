@@ -40,19 +40,24 @@ long do_brk(unsigned long addr) {
             return ret;
         }
     } else if (new_end < old_end) {
-        /* Shrinking: unmap pages and free physical frames */
+        /* Shrinking: update VMA FIRST (so page-fault handler on other cores
+         * won't re-allocate pages in the freed range), then unmap + TLB flush */
+        vma_t *bv = vma_find(p->vma_root, p->brk_base);
+        if (bv && bv->start == p->brk_base) bv->end = new_end;
         unmap_range(p->pml4, new_end, old_end);
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
         tlb_shootdown(virt_to_phys(p->pml4));
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     }
 
-    /* Update brk VMA */
-    vma_t *brk_vma = vma_find(p->vma_root, p->brk_base);
-    if (brk_vma && brk_vma->start == p->brk_base) {
-        brk_vma->end = new_end;
-    } else if (new_end > p->brk_base) {
-        vma_insert(&p->vma_root, p->brk_base, new_end,
-                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    /* Update brk VMA (for grow cases — shrink already handled above) */
+    if (new_end >= old_end) {
+        vma_t *brk_vma = vma_find(p->vma_root, p->brk_base);
+        if (brk_vma && brk_vma->start == p->brk_base) {
+            brk_vma->end = new_end;
+        } else if (new_end > p->brk_base) {
+            vma_insert(&p->vma_root, p->brk_base, new_end,
+                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        }
     }
 
     p->brk_current = addr;
@@ -195,6 +200,10 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     uint64_t vaddr = 0;
     if (addr && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE))) {
         vaddr = addr & ~0xFFFULL;
+        if (vaddr + length > 0x800000000000ULL) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -ENOMEM;
+        }
         /* MAP_FIXED_NOREPLACE: fail if any overlap exists */
         if (flags & MAP_FIXED_NOREPLACE) {
             if (vma_find_overlap(p->vma_root, vaddr, vaddr + length)) {
@@ -266,12 +275,16 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         return -ENOMEM;
     }
 
-    /* File-backed mmap: allocate pages and read file content */
+    /* File-backed mmap: allocate pages and read file content.
+     * Release lock during I/O (vfs_pread may block), then re-acquire
+     * and verify the VMA still exists before returning. */
     if (is_file) {
+        uint64_t saved_vaddr = vaddr;
+        uint64_t saved_length = length;
         spin_unlock_irq(&p->lock, irqf);
         extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t off);
         uint64_t file_off = (uint64_t)offset;
-        for (uint64_t va = vaddr; va < vaddr + length; va += 4096) {
+        for (uint64_t va = saved_vaddr; va < saved_vaddr + saved_length; va += 4096) {
             uint64_t *pg = alloc_page(); /* zeroed */
             if (!pg) return -ENOMEM;
             /* Read up to 4096 bytes from file at current offset */
@@ -283,7 +296,16 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             }
             file_off += 4096;
         }
-        return (long)vaddr;
+        /* Re-acquire lock and verify VMA wasn't torn down by concurrent munmap */
+        spin_lock_irq(&p->lock, &irqf);
+        vma_t *check = vma_find(p->vma_root, saved_vaddr);
+        if (!check || check->start > saved_vaddr ||
+            check->end < saved_vaddr + saved_length) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -ENOMEM;
+        }
+        spin_unlock_irq(&p->lock, irqf);
+        return (long)saved_vaddr;
     }
 
     /* Anonymous: pre-fault if locked or MAP_POPULATE */
@@ -558,8 +580,8 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
         uint64_t trim_start = old_addr + new_size;
         uint64_t trim_end = old_addr + old_size;
         unmap_range(p->pml4, trim_start, trim_end);
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
         tlb_shootdown(virt_to_phys(p->pml4));
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
         v->end = old_addr + new_size;
         spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;

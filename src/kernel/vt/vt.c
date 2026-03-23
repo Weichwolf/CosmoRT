@@ -498,8 +498,9 @@ void vt_process_byte(int vt_id, uint8_t byte) {
         }
         if (byte >= '0' && byte <= '9') {
             if (vt->esc_nparam == 0) vt->esc_nparam = 1;
-            vt->esc_params[vt->esc_nparam - 1] =
-                vt->esc_params[vt->esc_nparam - 1] * 10 + (byte - '0');
+            int p = vt->esc_params[vt->esc_nparam - 1];
+            if (p < 100000) /* overflow guard */
+                vt->esc_params[vt->esc_nparam - 1] = p * 10 + (byte - '0');
             return;
         }
         if (byte == ';') {
