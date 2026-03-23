@@ -22,6 +22,8 @@ typedef struct percpu {
     int            in_kernel;       /* offset 28 */
     uint64_t       syscall_frame;   /* offset 32: saved regs pointer for clone() */
     struct percpu *self;            /* offset 40: self-pointer for GS-relative access */
+    uint64_t       fault_jmpbuf[8]; /* fault recovery setjmp buffer */
+    int            fault_recover;   /* nonzero: kernel_longjmp on user-addr PF */
 } percpu_t;
 
 extern percpu_t percpu_data[SMP_MAX_CORES];

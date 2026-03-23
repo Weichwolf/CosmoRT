@@ -326,9 +326,11 @@ long do_munmap(unsigned long addr, size_t length) {
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
     if (addr & 0xFFF) return -EINVAL;
+    if (addr >= 0x800000000000ULL) return -EINVAL;
 
     length = (length + 0xFFF) & ~0xFFFULL;
     if (addr + length < addr) return -EINVAL; /* overflow */
+    if (addr + length > 0x800000000000ULL) return -EINVAL;
     uint64_t start = addr;
     uint64_t end = addr + length;
 
@@ -366,6 +368,7 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     if (addr & 0xFFF) return -EINVAL;
+    if (addr >= 0x800000000000ULL) return -ENOMEM;
 
     len = (len + 0xFFF) & ~0xFFFULL;
     uint64_t start = addr;

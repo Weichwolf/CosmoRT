@@ -245,8 +245,12 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     { const char *s = "init";  int ii = 0; while (s[ii] && ii < 15)  { p->comm[ii] = s[ii]; ii++; } p->comm[ii] = 0; }
     fd_table_init(&p->fds);
 
-    /* Create VMA for the stack region */
+    /* Create VMA for the stack region with guard page at the bottom.
+     * Guard page is PROT_NONE — access triggers SIGSEGV, not demand-paging. */
     uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+    uint64_t guard_bottom = stack_bottom - 4096;
+    vma_insert(&p->vma_root, guard_bottom, stack_bottom,
+               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
     vma_insert(&p->vma_root, stack_bottom, stack_top,
                PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
 
@@ -615,6 +619,14 @@ long do_fork(void) {
     }
 
     if (copy_err < 0) {
+        if (child->pml4) {
+            free_address_space(child->pml4);
+            child->pml4 = 0;
+        }
+        vma_free_tree(child->vma_root);
+        child->vma_root = 0;
+        if (child->pid < PID_TABLE_MAX)
+            pid_table[child->pid] = 0;
         slab_free(&proc_slab, child);
         return -ENOMEM;
     }
@@ -1046,6 +1058,9 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         entry = info.entry;
 
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+        uint64_t guard_bottom = stack_bottom - 4096;
+        vma_insert(&p->vma_root, guard_bottom, stack_bottom,
+                   0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
         /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
@@ -1085,8 +1100,11 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         p->brk_base = brk_end;
         p->brk_current = brk_end;
 
-        /* Stack VMA */
+        /* Stack VMA with guard page */
         uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+        uint64_t guard_bottom = stack_bottom - 4096;
+        vma_insert(&p->vma_root, guard_bottom, stack_bottom,
+                   0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
         /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */

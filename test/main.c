@@ -40,9 +40,10 @@ static void run_crash_test(const char *name, void (*fn)(void)) {
         return;
     }
 
-    /* Decode status: exit code is in bits 15:8 on Linux,
-     * signal in bits 6:0. Our kernel returns raw exit code from do_wait4. */
-    int exit_code = status;
+    /* Decode wait status: Linux encoding — signal in bits 6:0,
+     * exit code in bits 15:8 (if exited normally, signal bits = 0). */
+    int exit_signal = status & 0x7F;
+    int exit_code = exit_signal ? (128 + exit_signal) : ((status >> 8) & 0xFF);
 
     /* The child printed its own PASS/FAIL lines.
      * We just track whether the whole suite survived. */

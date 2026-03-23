@@ -2,7 +2,7 @@
  * 100 fork/wait cycles. Kernel must not leak resources. */
 #include "ktest.h"
 
-#define FORK_CYCLES 10  /* reduced: fork exhaustion crashes kernel (TODO) */
+#define FORK_CYCLES 100
 
 static void test_fork_bomb(void) {
     puts("\n[Fork Bomb]\n");
@@ -80,5 +80,4 @@ static void test_fork_bomb(void) {
     puts(" reaped="); put_int(reaped); puts("\n");
 }
 
-/* DISABLED: fork exhaustion triggers kernel NULL-deref panic (TODO fix) */
-/* CRASH_TEST("crash/fork_bomb", test_fork_bomb); */
+CRASH_TEST("crash/fork_bomb", test_fork_bomb);

@@ -127,5 +127,4 @@ static void test_badptr(void) {
     check("openat(-100, kaddr) → EFAULT", oat == -EFAULT);
 }
 
-/* DISABLED: badptr triggers kernel NULL-deref panic (TODO fix) */
-/* CRASH_TEST("crash/badptr", test_badptr); */
+CRASH_TEST("crash/badptr", test_badptr);

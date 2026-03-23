@@ -196,6 +196,28 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     }
                 }
             }
+            /* Kernel accessed unmapped user address (e.g. bad pointer from syscall).
+             * If fault_recover is armed, resume execution at the setjmp return
+             * point by restoring callee-saved registers and RSP/RIP from the
+             * jmpbuf into the IRQ frame. The setjmp will return 1 (via RAX). */
+            {
+                percpu_t *kfcpu = percpu_self();
+                if (kfcpu->fault_recover && cr2 < 0x800000000000ULL) {
+                    kfcpu->fault_recover = 0;
+                    /* jmpbuf layout: [rbx, rbp, r12, r13, r14, r15, rsp, rip] */
+                    uint64_t *jb = kfcpu->fault_jmpbuf;
+                    frame->rbx = jb[0];
+                    frame->rbp = jb[1];
+                    frame->r12 = jb[2];
+                    frame->r13 = jb[3];
+                    frame->r14 = jb[4];
+                    frame->r15 = jb[5];
+                    frame->rsp = jb[6] + 8; /* +8: skip return addr (not popped by ret) */
+                    frame->rip = jb[7];
+                    frame->rax = 1; /* setjmp return value */
+                    return; /* IRET will resume at setjmp return */
+                }
+            }
             serial_puts("\nPAGE FAULT in kernel CR2=");
             serial_hex64(cr2);
             serial_puts(" err=");

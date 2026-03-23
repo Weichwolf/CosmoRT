@@ -29,11 +29,12 @@ __attribute__((used)) static void sigsegv_handler(int sig) {
 /* Infinite recursion — deliberately overflows the stack */
 static volatile int recurse_depth;
 
-__attribute__((noinline)) static void deep_recurse(void) {
+__attribute__((noinline, optimize("O0"))) static void deep_recurse(void) {
     volatile char frame[256]; /* burn stack space */
     frame[0] = (char)recurse_depth;
     recurse_depth++;
     deep_recurse();
+    frame[255] = (char)recurse_depth; /* prevent tail-call optimization */
 }
 
 static void test_stack(void) {
@@ -96,5 +97,4 @@ static void test_stack(void) {
     puts("  alloca child status="); put_int(status); puts("\n");
 }
 
-/* DISABLED: stack recursion test hangs (child never terminates) (TODO fix) */
-/* CRASH_TEST("crash/stack", test_stack); */
+CRASH_TEST("crash/stack", test_stack);
