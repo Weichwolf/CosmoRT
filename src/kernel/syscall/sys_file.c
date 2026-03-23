@@ -206,8 +206,11 @@ long do_read(int fd, void *buf, size_t count) {
         long r = usock_read(fd, buf, (long)count);
         if (r != -EAGAIN) return r;
         if (fde->flags & O_NONBLOCK) return -EAGAIN;
-        /* Blocking: restart syscall when peer writes */
-        return -EAGAIN; /* TODO: proper blocking */
+        /* Block until peer writes or closes */
+        extern long usock_read_blocking(unix_socket_t *s, void *buf, long count);
+        unix_socket_t *s = usock_from_fd(fd);
+        if (!s) return -EBADF;
+        return usock_read_blocking(s, buf, (long)count);
     }
     if (fde->type == FD_PIPE) {
         int is_write = 0;
@@ -378,12 +381,15 @@ long do_dup3(int oldfd, int newfd, int flags) {
     fd_entry_t *old = fd_get(&p->fds, oldfd);
     if (!old) return -EBADF;
 
-    /* Close newfd if open */
+    /* Close newfd if open (must match do_close logic) */
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) vfs_close(newfd);
         else if (cur->type == FD_PIPE) pipe_close(cur);
-        else fd_close(&p->fds, newfd);
+        else {
+            fd_cleanup_entry(cur->type, cur->obj);
+            fd_close(&p->fds, newfd);
+        }
         p->fds.entries[newfd].type = FD_NONE;
         p->fds.entries[newfd].obj = 0;
     }
@@ -393,8 +399,8 @@ long do_dup3(int oldfd, int newfd, int flags) {
     if (old->type == FD_FILE && old->obj) {
         extern void vfs_file_incref(struct vfs_file *f);
         vfs_file_incref((struct vfs_file *)old->obj);
-    } else if (old->type == FD_PIPE && old->obj) {
-        fd_obj_incref(FD_PIPE, old->obj);
+    } else if (old->obj) {
+        fd_obj_incref(old->type, old->obj);
     }
     if (flags & O_CLOEXEC)
         p->fds.entries[newfd].flags |= O_CLOEXEC;

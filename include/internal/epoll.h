@@ -16,6 +16,7 @@
 typedef struct {
     uint64_t   counter;
     int        flags;
+    int        refcount;
     spinlock_t lock;
 } eventfd_t;
 
@@ -27,6 +28,7 @@ typedef struct {
     uint64_t   expirations;   /* unread expiration count */
     int        armed;
     int        flags;
+    int        refcount;
     spinlock_t lock;
 } timerfd_t;
 
@@ -52,6 +54,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask);
 long do_inotify_rm_watch(int fd, int wd);
 
 /* FD cleanup hooks (called from fd_cleanup_entry / do_close) */
+void epoll_incref(void *obj);
 void epoll_destroy(void *obj);
 void eventfd_destroy(void *obj);
 void timerfd_destroy(void *obj);

@@ -46,6 +46,9 @@ struct unix_socket {
 
     /* Flags from socket() */
     int       flags;
+
+    /* Blocked reader (waiting for data) */
+    void     *blocked_reader;   /* thread_t* — blocked in read() */
 };
 
 /* Syscall implementations */
@@ -60,6 +63,7 @@ long usock_recvmsg(int fd, void *msghdr, int flags);
 
 /* FD ops (called from do_read/do_write/do_close) */
 long usock_read(int fd, void *buf, long count);
+long usock_read_blocking(unix_socket_t *s, void *buf, long count);
 long usock_write(int fd, const void *buf, long count);
 long usock_close(int fd);
 

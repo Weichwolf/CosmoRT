@@ -44,6 +44,7 @@ typedef struct {
 typedef struct {
     epoll_entry_t entries[EPOLL_MAX_FDS];
     int           count;
+    int           refcount;
     spinlock_t    lock;
 } epoll_t;
 
@@ -117,6 +118,7 @@ long do_epoll_create1(int flags) {
     if (!ep) return -ENOMEM;
 
     ep->count = 0;
+    ep->refcount = 1;
     ep->lock = (spinlock_t)SPINLOCK_INIT;
 
     int fd = fd_alloc(&p->fds, FD_EPOLL, ep, O_RDWR);
@@ -359,8 +361,17 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     return 0; /* unreachable */
 }
 
+void epoll_incref(void *obj) {
+    if (!obj) return;
+    epoll_t *ep = (epoll_t *)obj;
+    __sync_add_and_fetch(&ep->refcount, 1);
+}
+
 void epoll_destroy(void *obj) {
-    if (obj) slab_free(&epoll_slab, obj);
+    if (!obj) return;
+    epoll_t *ep = (epoll_t *)obj;
+    if (__sync_sub_and_fetch(&ep->refcount, 1) <= 0)
+        slab_free(&epoll_slab, obj);
 }
 
 /* ── SYS_EVENTFD2 (290) ─────────────────────────── */
@@ -374,6 +385,7 @@ long do_eventfd2(unsigned int initval, int flags) {
 
     efd->counter = initval;
     efd->flags = flags;
+    efd->refcount = 1;
     efd->lock = (spinlock_t)SPINLOCK_INIT;
 
     /* EFD_CLOEXEC/EFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
@@ -430,7 +442,10 @@ long eventfd_write(void *obj, const void *buf, long count) {
 }
 
 void eventfd_destroy(void *obj) {
-    if (obj) slab_free(&eventfd_slab, obj);
+    if (!obj) return;
+    eventfd_t *efd = (eventfd_t *)obj;
+    if (__sync_sub_and_fetch(&efd->refcount, 1) <= 0)
+        slab_free(&eventfd_slab, obj);
 }
 
 /* ── SYS_TIMERFD_CREATE (283) ────────────────────── */
@@ -448,6 +463,7 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->expirations = 0;
     tfd->armed = 0;
     tfd->flags = flags;
+    tfd->refcount = 1;
     tfd->lock = (spinlock_t)SPINLOCK_INIT;
 
     /* TFD_CLOEXEC/TFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
@@ -562,7 +578,10 @@ long timerfd_read(void *obj, void *buf, long count) {
 }
 
 void timerfd_destroy(void *obj) {
-    if (obj) slab_free(&timerfd_slab, obj);
+    if (!obj) return;
+    timerfd_t *tfd = (timerfd_t *)obj;
+    if (__sync_sub_and_fetch(&tfd->refcount, 1) <= 0)
+        slab_free(&timerfd_slab, obj);
 }
 
 /* ── SYS_SIGNALFD4 (289) — intentionally unimplemented ─────────────

@@ -85,6 +85,32 @@ static void test_unix_socket(void) {
     long sfd = sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM, 0);
     check("socket(AF_UNIX) >= 0", sfd >= 0);
     if (sfd >= 0) sc1(SYS_CLOSE, sfd);
+
+    /* ── blocking read: write-before-read path ── */
+    int sv3[2] = { -1, -1 };
+    r = sc4(SYS_SOCKETPAIR, AF_UNIX, SOCK_STREAM, 0, (long)sv3);
+    check_val("socketpair #3 returns 0", r, 0);
+    const char *bmsg = "block";
+    w = sc3(SYS_WRITE, sv3[0], (long)bmsg, 5);
+    check_val("blocking: write 5 bytes", w, 5);
+    /* Read on sv3[1] — data already present, blocking path re-check succeeds */
+    char bbuf[8] = {0};
+    rd = sc3(SYS_READ, sv3[1], (long)bbuf, 8);
+    check_val("blocking: read returns 5", rd, 5);
+    check("blocking: data 'b'", bbuf[0] == 'b');
+    check("blocking: data 'k'", bbuf[4] == 'k');
+    sc1(SYS_CLOSE, sv3[0]);
+    sc1(SYS_CLOSE, sv3[1]);
+
+    /* ── EOF on blocking socket after peer close ── */
+    int sv4[2] = { -1, -1 };
+    r = sc4(SYS_SOCKETPAIR, AF_UNIX, SOCK_STREAM, 0, (long)sv4);
+    check_val("socketpair #4 returns 0", r, 0);
+    sc1(SYS_CLOSE, sv4[0]); /* close peer */
+    char eof2[4];
+    rd = sc3(SYS_READ, sv4[1], (long)eof2, 4);
+    check_val("blocking EOF: read = 0", rd, 0);
+    sc1(SYS_CLOSE, sv4[1]);
 }
 
 TEST("af_unix", test_unix_socket);

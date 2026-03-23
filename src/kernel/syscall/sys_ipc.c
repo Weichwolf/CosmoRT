@@ -331,7 +331,18 @@ void fd_obj_incref(int fde_type, void *fde_obj) {
     if (fde_type == FD_UNIX_SOCK) {
         usock_incref(fde_obj);
     }
-    /* TODO: refcounting for epoll, eventfd, etc. */
+    if (fde_type == FD_EPOLL) {
+        extern void epoll_incref(void *obj);
+        epoll_incref(fde_obj);
+    }
+    if (fde_type == FD_EVENTFD) {
+        eventfd_t *efd = (eventfd_t *)fde_obj;
+        __sync_add_and_fetch(&efd->refcount, 1);
+    }
+    if (fde_type == FD_TIMERFD) {
+        timerfd_t *tfd = (timerfd_t *)fde_obj;
+        __sync_add_and_fetch(&tfd->refcount, 1);
+    }
 }
 
 /* ── fd_poll_readiness — check what events are ready on an FD ── */

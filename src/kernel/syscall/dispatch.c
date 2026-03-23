@@ -162,10 +162,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                 if (dold->type == FD_FILE && dold->obj) {
                     extern void vfs_file_incref(struct vfs_file *f);
                     vfs_file_incref((struct vfs_file *)dold->obj);
-                } else if (dold->type == FD_PIPE && dold->obj) {
-                    fd_obj_incref(FD_PIPE, dold->obj);
-                } else if (dold->type == FD_UNIX_SOCK && dold->obj) {
-                    usock_incref(dold->obj);
+                } else if (dold->obj) {
+                    fd_obj_incref(dold->type, dold->obj);
                 }
                 if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
                 return di;
