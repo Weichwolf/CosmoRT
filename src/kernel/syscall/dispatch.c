@@ -172,9 +172,10 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_CAPGET:    return -EPERM;
     case SYS_CAPSET:    return -EPERM;
     case SYS_TIME: {
-        /* time(2): return seconds since epoch, optionally write to *a1 */
+        /* time(2): return seconds since epoch */
         extern uint64_t timer_ms(void);
-        long secs = (long)(timer_ms() / 1000) + 1711000000LL; /* rough epoch offset */
+        extern uint64_t rtc_epoch_sec;
+        long secs = (long)(timer_ms() / 1000 + rtc_epoch_sec);
         if (a1 && user_ok((uint64_t)a1, 8))
             kmemcpy((void *)a1, &secs, sizeof(secs));
         return secs;

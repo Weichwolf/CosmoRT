@@ -64,6 +64,7 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 #define SYS_getpgrp        111
 #define SYS_arch_prctl     158
 #define SYS_gettid         186
+#define SYS_gettimeofday   96
 #define SYS_clock_gettime  228
 #define SYS_exit_group     231
 #define SYS_getrandom      318
@@ -93,6 +94,7 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 #define O_RDWR     2
 #define O_CREAT    0x40
 #define O_TRUNC    0x200
+#define CLOCK_REALTIME  0
 #define CLOCK_MONOTONIC 1
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003

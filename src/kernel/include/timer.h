@@ -16,4 +16,10 @@ void timer_sleep_ms(uint32_t ms);
 /* TSC ticks per millisecond (after calibration) */
 extern uint64_t timer_tsc_per_ms;
 
+/* Seconds since Unix epoch at boot (from CMOS RTC) */
+extern uint64_t rtc_epoch_sec;
+
+/* Read CMOS RTC and set rtc_epoch_sec. Call once at boot. */
+void rtc_init(void);
+
 #endif

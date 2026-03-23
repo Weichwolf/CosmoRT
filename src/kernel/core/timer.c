@@ -1,4 +1,5 @@
-/* Calibrated timer — uses TSC, calibrated against APIC timer */
+/* Calibrated timer — uses TSC, calibrated against APIC timer.
+ * Also reads CMOS RTC at boot for wall-clock epoch offset. */
 
 #include "timer.h"
 #include "serial.h"
@@ -82,4 +83,71 @@ void timer_sleep_ms(uint32_t ms) {
         while (timer_ms() < deadline)
             __asm__ volatile("sti; hlt");
     }
+}
+
+/* ── CMOS RTC → Unix epoch ────────────────────── */
+
+uint64_t rtc_epoch_sec = 0;
+
+static uint8_t cmos_read(uint8_t reg) {
+    __asm__ volatile("outb %0, $0x70" :: "a"(reg));
+    uint8_t val;
+    __asm__ volatile("inb $0x71, %0" : "=a"(val));
+    return val;
+}
+
+static uint8_t bcd2bin(uint8_t v) { return (v & 0x0F) + (v >> 4) * 10; }
+
+/* Days from 1970-01-01 to year/month/day (Gauss algorithm).
+ * month: 1-12, day: 1-31. Handles leap years correctly. */
+static uint64_t days_since_epoch(int y, int m, int d) {
+    /* Shift March=1 so Feb is month 12 of previous year */
+    if (m <= 2) { y--; m += 12; }
+    m -= 3; /* Mar=0 ... Feb=11 */
+    uint64_t era = (uint64_t)y / 400;
+    int yoe = y - (int)(era * 400);
+    int doy = (153 * m + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (uint64_t)doe - 719468;
+}
+
+void rtc_init(void) {
+    /* Wait for RTC update-in-progress to clear */
+    while (cmos_read(0x0A) & 0x80)
+        ;
+
+    uint8_t sec  = cmos_read(0x00);
+    uint8_t min  = cmos_read(0x02);
+    uint8_t hour = cmos_read(0x04);
+    uint8_t day  = cmos_read(0x07);
+    uint8_t mon  = cmos_read(0x08);
+    uint8_t year = cmos_read(0x09);
+    uint8_t regB = cmos_read(0x0B);
+
+    /* Convert BCD unless register B says binary mode */
+    if (!(regB & 0x04)) {
+        sec  = bcd2bin(sec);
+        min  = bcd2bin(min);
+        hour = bcd2bin(hour);
+        day  = bcd2bin(day);
+        mon  = bcd2bin(mon);
+        year = bcd2bin(year);
+    }
+
+    /* 12-hour → 24-hour */
+    if (!(regB & 0x02) && (hour & 0x80)) {
+        hour = ((hour & 0x7F) % 12) + 12;
+    }
+
+    int full_year = 2000 + (int)year;
+    uint64_t days = days_since_epoch(full_year, (int)mon, (int)day);
+    rtc_epoch_sec = days * 86400 + (uint64_t)hour * 3600
+                  + (uint64_t)min * 60 + (uint64_t)sec;
+
+    serial_puts("RTC: ");
+    char tmp[20]; int ti = 0;
+    uint64_t v = rtc_epoch_sec;
+    do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
+    while (ti--) serial_putchar(tmp[ti]);
+    serial_puts(" epoch sec\n");
 }

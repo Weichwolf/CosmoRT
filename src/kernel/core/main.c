@@ -140,6 +140,7 @@ void kernel_main(struct boot_info *info) {
     /* Interrupts + Timer */
     irq_init();
     timer_init();
+    rtc_init();
     random_init(info);
 
     /* TSS + SYSCALL */
