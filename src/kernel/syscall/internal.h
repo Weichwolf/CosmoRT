@@ -86,6 +86,10 @@ long do_getdents64(int fd, void *buf, size_t count);
 long do_ioctl(int fd, unsigned long request, unsigned long arg);
 long do_fcntl(int fd, int cmd, long arg);
 long do_faccessat(int dirfd, const char *path, int mode, int flags);
+long do_pread64(int fd, void *buf, size_t count, int64_t offset);
+long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset);
+long do_statx(int dirfd, const char *pathname, int flags,
+              unsigned int mask, void *statxbuf);
 
 /* ── Forward declarations: sys_mem.c ── */
 long do_brk(unsigned long addr);

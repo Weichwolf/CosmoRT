@@ -56,6 +56,8 @@ typedef long               ssize_t;
 #define SYS_RT_SIGPROCMASK  14
 #define SYS_RT_SIGRETURN    15
 #define SYS_IOCTL           16
+#define SYS_PREAD64         17
+#define SYS_PWRITE64        18
 #define SYS_READV           19
 #define SYS_WRITEV          20
 #define SYS_ACCESS          21
@@ -196,6 +198,7 @@ typedef long               ssize_t;
 #define SYS_PRLIMIT64       302
 #define SYS_RENAMEAT2        316
 #define SYS_GETRANDOM       318
+#define SYS_STATX           332
 #define SYS_RSEQ            334
 #define SYS_CLONE3           435
 
@@ -232,6 +235,7 @@ typedef long               ssize_t;
 #define EINVAL          22
 #define EMFILE          24
 #define ENOTTY          25
+#define ESPIPE          29
 #define EPIPE           32
 #define ERANGE          34
 #define ENAMETOOLONG    36

@@ -17,6 +17,8 @@
     /* I/O */ \
     X(  0, read,              3, do_read((int)a1, (void *)a2, (size_t)a3)) \
     X(  1, write,             3, do_write((int)a1, (const void *)a2, (size_t)a3)) \
+    X( 17, pread64,           4, do_pread64((int)a1, (void *)a2, (size_t)a3, (int64_t)a4)) \
+    X( 18, pwrite64,          4, do_pwrite64((int)a1, (const void *)a2, (size_t)a3, (int64_t)a4)) \
     X( 20, writev,            3, do_writev((int)a1, (const struct iovec *)a2, (int)a3)) \
     X(  3, close,             1, do_close((int)a1)) \
     /* Memory */ \
@@ -66,6 +68,7 @@
     X(137, statfs,            2, do_statfs((const char *)a1, (void *)a2)) \
     X(138, fstatfs,           2, do_fstatfs((int)a1, (void *)a2)) \
     X(269, faccessat,         4, do_faccessat((int)a1, (const char *)a2, (int)a3, (int)a4)) \
+    X(332, statx,             5, do_statx((int)a1, (const char *)a2, (int)a3, (unsigned int)a4, (void *)a5)) \
     X(267, readlinkat,        4, do_readlinkat((int)a1, (const char *)a2, (char *)a3, (size_t)a4)) \
     /* System info */ \
     X( 63, uname,             1, do_uname((void *)a1)) \

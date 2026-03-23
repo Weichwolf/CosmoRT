@@ -706,6 +706,51 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
     return (long)count;
 }
 
+long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset) {
+    if (!f) return -EBADF;
+
+    if (f->backend == VFS_BACKEND_COSMOFS) {
+        if (f->type != VFS_FILE) return -EISDIR;
+        uint8_t kbuf[4096];
+        size_t total = 0;
+        while (total < count) {
+            size_t chunk = count - total;
+            if (chunk > 4096) chunk = 4096;
+            kmemcpy(kbuf, (const uint8_t *)buf + total, chunk);
+            int rc = cosmofs_write(f->cosmofs_ino, kbuf,
+                                   (size_t)offset + total, chunk);
+            if (rc < 0) return total > 0 ? (long)total : rc;
+            total += (size_t)rc;
+            if ((size_t)rc < chunk) break;
+        }
+        return (long)total;
+    }
+
+    /* ramfs */
+    if (!f->node) return -EBADF;
+    struct vfs_node *node = f->node;
+    if (node->type != VFS_FILE) return -EISDIR;
+
+    size_t end = (size_t)offset + count;
+    if (end > node->capacity) {
+        if (grow_file(node, end) < 0) return -ENOMEM;
+    }
+
+    uint8_t kbuf[4096];
+    size_t done = 0;
+    while (done < count) {
+        size_t chunk = count - done;
+        if (chunk > 4096) chunk = 4096;
+        kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
+        kmemcpy(node->data + offset + done, kbuf, chunk);
+        done += chunk;
+    }
+    if (end > node->size) node->size = end;
+
+    vfs_notify_modify(node);
+    return (long)count;
+}
+
 long vfs_write(int fd, const void *buf, size_t count) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

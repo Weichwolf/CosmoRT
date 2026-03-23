@@ -146,8 +146,10 @@ void deliver_signal(thread_t *t, int signo) {
             stack_rsp = t->sigalt_sp + t->sigalt_size;
     }
     stack_rsp -= 128; /* Skip x86_64 red zone (ABI mandates 128 bytes below RSP) */
-    /* 16-byte align RSP for signal handler entry */
-    uint64_t new_rsp = (stack_rsp - frame_size) & ~0xFULL;
+    /* Align RSP for signal handler entry: handler sees RSP with a fake
+     * return address at [RSP], so RSP ≡ 8 (mod 16) — same as after a call.
+     * Linux: round_down(sp - frame_size, 16) - 8 */
+    uint64_t new_rsp = ((stack_rsp - frame_size) & ~0xFULL) - 8;
 
     /* Verify target stack area is in a writable VMA */
     vma_t *vma = vma_find(p->vma_root, new_rsp);

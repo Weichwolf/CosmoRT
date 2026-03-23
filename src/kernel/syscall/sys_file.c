@@ -931,3 +931,119 @@ long do_fcntl(int fd, int cmd, long arg) {
     default: return -EINVAL;
     }
 }
+
+/* ── SYS_pread64 (17) ────────────────────────────── */
+
+long do_pread64(int fd, void *buf, size_t count, int64_t offset) {
+    if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
+    if (offset < 0) return -EINVAL;
+    process_t *p = proc_current();
+    if (__builtin_expect(!p, 0)) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (__builtin_expect(!fde, 0)) return -EBADF;
+    if (fde->type != FD_FILE) return -ESPIPE;
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    return vfs_pread(f, buf, count, (uint64_t)offset);
+}
+
+/* ── SYS_pwrite64 (18) ───────────────────────────── */
+
+long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
+    if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
+    if (offset < 0) return -EINVAL;
+    process_t *p = proc_current();
+    if (__builtin_expect(!p, 0)) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (__builtin_expect(!fde, 0)) return -EBADF;
+    if (fde->type != FD_FILE) return -ESPIPE;
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    return vfs_pwrite(f, buf, count, (uint64_t)offset);
+}
+
+/* ── SYS_statx (332) ─────────────────────────────── */
+
+struct statx_timestamp {
+    int64_t  tv_sec;
+    uint32_t tv_nsec;
+    int32_t  __reserved;
+};
+
+struct statx {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t __spare0;
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    struct statx_timestamp stx_atime;
+    struct statx_timestamp stx_btime;
+    struct statx_timestamp stx_ctime;
+    struct statx_timestamp stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t stx_mnt_id;
+    uint64_t __spare2[13];
+};
+
+#define STATX_BASIC_STATS 0x7ffU
+
+long do_statx(int dirfd, const char *pathname, int flags,
+              unsigned int mask, void *statxbuf) {
+    (void)mask;
+    if (!user_ok((uint64_t)statxbuf, sizeof(struct statx))) return -EFAULT;
+
+    /* Get k_stat via existing fstatat path */
+    struct k_stat kst;
+    kmemset(&kst, 0, sizeof(kst));
+
+    long r;
+    if (flags & AT_EMPTY_PATH) {
+        /* statx(fd, "", AT_EMPTY_PATH, ...) → fstat */
+        r = vfs_fstat(dirfd, &kst);
+    } else {
+        char kpath[PATH_MAX], rpath[PATH_MAX];
+        int len = resolve_at_path(dirfd, pathname, kpath, PATH_MAX);
+        if (len < 0) return len;
+        resolve_path(kpath, rpath, PATH_MAX);
+        if (flags & AT_SYMLINK_NOFOLLOW)
+            r = vfs_lstat(rpath, &kst);
+        else
+            r = vfs_stat(rpath, &kst);
+    }
+    if (r < 0) return r;
+
+    /* Convert k_stat → statx */
+    struct statx sx;
+    kmemset(&sx, 0, sizeof(sx));
+    sx.stx_mask     = STATX_BASIC_STATS;
+    sx.stx_blksize  = (uint32_t)kst.st_blksize;
+    sx.stx_nlink    = (uint32_t)kst.st_nlink;
+    sx.stx_uid      = kst.st_uid;
+    sx.stx_gid      = kst.st_gid;
+    sx.stx_mode     = (uint16_t)kst.st_mode;
+    sx.stx_ino      = kst.st_ino;
+    sx.stx_size     = (uint64_t)kst.st_size;
+    sx.stx_blocks   = (uint64_t)kst.st_blocks;
+    sx.stx_atime.tv_sec  = kst.st_atime_sec;
+    sx.stx_atime.tv_nsec = (uint32_t)kst.st_atime_nsec;
+    sx.stx_btime.tv_sec  = kst.st_ctime_sec;  /* no btime — use ctime */
+    sx.stx_btime.tv_nsec = (uint32_t)kst.st_ctime_nsec;
+    sx.stx_ctime.tv_sec  = kst.st_ctime_sec;
+    sx.stx_ctime.tv_nsec = (uint32_t)kst.st_ctime_nsec;
+    sx.stx_mtime.tv_sec  = kst.st_mtime_sec;
+    sx.stx_mtime.tv_nsec = (uint32_t)kst.st_mtime_nsec;
+    sx.stx_dev_major = (uint32_t)(kst.st_dev >> 8);
+    sx.stx_dev_minor = (uint32_t)(kst.st_dev & 0xff);
+    sx.stx_rdev_major = (uint32_t)(kst.st_rdev >> 8);
+    sx.stx_rdev_minor = (uint32_t)(kst.st_rdev & 0xff);
+
+    return copy_to_user(statxbuf, &sx, sizeof(sx));
+}

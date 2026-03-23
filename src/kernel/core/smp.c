@@ -51,7 +51,14 @@ static void (*user_entry_fn)(void);
 #define LAPIC_EOI_REG    (0xFEE000B0ULL + PHYS_OFFSET)
 
 static void ap_main(void) {
-    /* Enable SSE */
+    /* Enable SSE: CR0.EM=0 (no x87 emulation), CR0.MP=1 (monitor coprocessor),
+     * CR4.OSFXSR=1 (FXSAVE/FXRSTOR), CR4.OSXMMEXCPT=1 (SIMD exceptions).
+     * Without CR0.EM clear, any SSE instruction faults (#NM) on this core. */
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ULL << 2);  /* clear EM */
+    cr0 |= (1ULL << 1);   /* set MP */
+    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
     uint64_t cr4;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
     cr4 |= (1 << 9) | (1 << 10);

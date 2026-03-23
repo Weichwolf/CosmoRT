@@ -120,6 +120,10 @@ void vfs_mount_cosmofs(void);
  * Returns bytes read or negative errno. */
 long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
 
+/* Write to an open file at a specific offset without changing file position.
+ * Returns bytes written or negative errno. */
+long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset);
+
 /* Increment refcount on a vfs_file (for fork fd duplication) */
 void vfs_file_incref(struct vfs_file *f);
 
