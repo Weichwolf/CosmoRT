@@ -364,8 +364,9 @@ void thread_run(thread_t *t) {
     tss_set_rsp0(t->kstack_top);
     cpu->kernel_rsp = t->kstack_top;
 
-    /* Load thread's FS base (TLS) before entering userspace */
-    if (t->fs_base) {
+    /* Load thread's FS base (TLS) before entering userspace — always,
+     * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
+    {
         uint64_t fs = t->fs_base;
         __asm__ volatile("wrmsr" :: "c"(0xC0000100),
                          "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
