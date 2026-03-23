@@ -32,6 +32,8 @@ typedef struct process {
     int         state;
     uint32_t    pid;
     uint32_t    parent_pid;
+    uint32_t    pgid;           /* Process Group ID */
+    uint32_t    sid;            /* Session ID */
     int         exit_code;
 
     /* Address space */

@@ -704,8 +704,27 @@ long do_access(const char *path) {
     char kpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
-    /* Check ramfs first, then CosmoFS on disk */
+    /* Check ramfs first */
     if (vfs_lookup(kpath)) return 0;
+    /* Check procfs entries (/proc/NAME) */
+    const char *pname = 0;
+    if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
+        kpath[4]=='c' && kpath[5]=='/')
+        pname = kpath + 6;
+    if (pname && procfs_open(pname)) return 0;
+    /* Check device special files and virtual dirs */
+    {
+        static const char *devpaths[] = {
+            "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
+            "/dev", "/proc", 0
+        };
+        for (const char **dp = devpaths; *dp; dp++) {
+            const char *a = kpath, *b = *dp;
+            while (*a && *a == *b) { a++; b++; }
+            if (*a == 0 && *b == 0) return 0;
+        }
+    }
+    /* CosmoFS on disk */
     extern uint64_t cosmofs_walk_path(const char *);
     if (cosmofs_walk_path(kpath)) return 0;
     return -ENOENT;
@@ -768,7 +787,7 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (request == TIOCGPGRP) {
         if (!user_ok(arg, 4)) return -EFAULT;
         process_t *gp = proc_current();
-        int32_t pgid = gp ? (int32_t)gp->pid : 1;
+        int32_t pgid = gp ? (int32_t)gp->pgid : 1;
         kmemcpy((void *)arg, &pgid, 4);
         return 0;
     }

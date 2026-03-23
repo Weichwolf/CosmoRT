@@ -91,26 +91,55 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_SETPGID: {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        /* Simplified: any setpgid succeeds, set pgid = pid if a2 == 0 */
-        (void)a1; (void)a2;
+        int target_pid = (int)a1;
+        int new_pgid   = (int)a2;
+        process_t *target = (target_pid == 0) ? p : proc_find((uint32_t)target_pid);
+        if (!target || target->state != PROC_ALIVE) return -ESRCH;
+        /* Can only setpgid on self or own child */
+        if (target != p && target->parent_pid != p->pid) return -ESRCH;
+        /* Must be in same session */
+        if (target->sid != p->sid) return -EPERM;
+        target->pgid = (new_pgid == 0) ? target->pid : (uint32_t)new_pgid;
         return 0;
     }
     case SYS_GETPGRP: {
         process_t *p = proc_current();
-        return p ? (long)p->pid : 1; /* pgrp = pid (single process group) */
+        return p ? (long)p->pgid : 1;
     }
     case SYS_GETPGID: {
-        /* getpgid(0) = own pgid, getpgid(pid) = pid's pgid */
-        process_t *p = proc_current();
-        return p ? (long)p->pid : 1;
+        int target_pid = (int)a1;
+        process_t *p;
+        if (target_pid == 0) {
+            p = proc_current();
+        } else {
+            p = proc_find((uint32_t)target_pid);
+        }
+        if (!p || p->state == PROC_FREE) return -ESRCH;
+        return (long)p->pgid;
     }
     case SYS_SETSID: {
         process_t *p = proc_current();
-        return p ? (long)p->pid : 1; /* session id = pid */
+        if (!p) return -EFAULT;
+        /* Already a process group leader → EPERM */
+        if (p->pgid == p->pid) {
+            /* Check if any other process shares this pgid (would make us a PG leader).
+             * Simplified: allow setsid always since we're single-user and
+             * the common case is shell pipelines calling setsid(). */
+        }
+        p->sid  = p->pid;
+        p->pgid = p->pid;
+        return (long)p->pid;
     }
     case SYS_GETSID: {
-        process_t *p = proc_current();
-        return p ? (long)p->pid : 1;
+        int target_pid = (int)a1;
+        process_t *p;
+        if (target_pid == 0) {
+            p = proc_current();
+        } else {
+            p = proc_find((uint32_t)target_pid);
+        }
+        if (!p || p->state == PROC_FREE) return -ESRCH;
+        return (long)p->sid;
     }
     case SYS_PRCTL:       return -ENOSYS;
     case SYS_SIGALTSTACK: return 0; /* accept but ignore */

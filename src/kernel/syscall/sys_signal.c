@@ -350,19 +350,8 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
     return 0;
 }
 
-long do_kill(int pid, int sig) {
-    if (sig < 0 || sig >= 64) return -EINVAL;
-    if (sig == 0) return 0; /* check permission only */
-
-    process_t *target = 0;
-    if (pid > 0) {
-        target = proc_find((uint32_t)pid);
-    } else if (pid == 0 || pid == -1) {
-        /* Signal to self or all — just handle self */
-        target = proc_current();
-    }
-    if (!target) return -ESRCH;
-
+/* Send signal to a single process. Returns 0 or negative errno. */
+static long kill_one(process_t *target, int sig) {
     /* Check handler */
     void *handler = target->sig_actions[sig].sa_handler;
     if (handler == SIG_IGN) return 0;
@@ -372,7 +361,7 @@ long do_kill(int pid, int sig) {
         /* SIGCHLD default = ignore */
         if (sig == 17) return 0; /* SIGCHLD */
 
-        /* Fatal signals: terminate entire process group */
+        /* Fatal signals: terminate */
         if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
             if (target == proc_current()) {
                 do_exit_group(128 + sig); /* doesn't return */
@@ -394,8 +383,7 @@ long do_kill(int pid, int sig) {
      * Delivery happens on return to userspace via check_pending_signals. */
     target->sig_pending |= (1ULL << sig);
 
-    /* Wake blocked threads so the signal can be delivered.
-     * Needed for rt_sigsuspend and any blocking syscall. */
+    /* Wake blocked threads so the signal can be delivered. */
     if ((1ULL << sig) & ~target->sig_blocked) {
         extern void sched_add(thread_t *t);
         thread_t *t = target->threads;
@@ -408,6 +396,44 @@ long do_kill(int pid, int sig) {
         }
     }
     return 0;
+}
+
+/* Send signal to all processes in a process group. */
+static long kill_pgrp(uint32_t pgid, int sig) {
+    int found = 0;
+    for (int i = 0; i < PROC_MAX; i++) {
+        process_t *p = &proc_pool[i];
+        if (p->state == PROC_ALIVE && p->pgid == pgid) {
+            kill_one(p, sig);
+            found = 1;
+        }
+    }
+    return found ? 0 : -ESRCH;
+}
+
+long do_kill(int pid, int sig) {
+    if (sig < 0 || sig >= 64) return -EINVAL;
+    if (sig == 0) return 0; /* check permission only */
+
+    if (pid > 0) {
+        /* Signal to specific process */
+        process_t *target = proc_find((uint32_t)pid);
+        if (!target) return -ESRCH;
+        return kill_one(target, sig);
+    } else if (pid == 0) {
+        /* Signal to own process group */
+        process_t *self = proc_current();
+        if (!self) return -ESRCH;
+        return kill_pgrp(self->pgid, sig);
+    } else if (pid == -1) {
+        /* Signal to all processes (except init) — send to self for now */
+        process_t *self = proc_current();
+        if (!self) return -ESRCH;
+        return kill_one(self, sig);
+    } else {
+        /* pid < -1: signal to process group abs(pid) */
+        return kill_pgrp((uint32_t)(-pid), sig);
+    }
 }
 
 /* ── SYS_TGKILL (234) — thread-directed signal ────── */
