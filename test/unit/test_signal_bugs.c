@@ -105,9 +105,10 @@ static void test_sig_alignment(void) {
     puts("  handler RSP=0x"); put_hex(handler_rsp); puts("\n");
     puts("  RSP mod 16=");    put_int((long)mod); puts("\n");
 
-    /* After push rbp, RSP should be ≡ 0 (mod 16).
-     * This means function-entry RSP was ≡ 8 (mod 16). */
-    check_val("handler RSP mod 16 after push rbp", (long)mod, 0);
+    /* Signal handler entry RSP ≡ 8 (mod 16) — same as after a `call`.
+     * [RSP] = sa_restorer (fake return address).
+     * With -O2, no push rbp → we read entry RSP directly. */
+    check_val("handler entry RSP mod 16", (long)mod, 8);
 }
 TEST("sig-bug2-alignment", test_sig_alignment);
 
