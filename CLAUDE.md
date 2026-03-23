@@ -122,6 +122,16 @@ make qemu-disk      # Boot von disk.img (GPT: ESP + CosmoFS)
 make vhdx           # Hyper-V Image
 ```
 
+## Entwicklungsmodell
+
+CosmoRT ist LLM-Agent-only. Kein Mensch schreibt oder liest den Code direkt.
+Claude Code entwickelt, testet, auditiert und refactored autonom.
+Der Mensch gibt Richtung, Architektur und Entscheidungen. Der Agent implementiert.
+
+Konsequenzen:
+- Konsistenz wichtiger als Abstraktion — der Agent lernt aus der Codebase
+- Jede Aenderung muss automatisch testbar sein
+
 ## Regeln
 
 Build:
