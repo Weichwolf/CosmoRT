@@ -250,6 +250,10 @@ typedef long               ssize_t;
 #define MAP_ANONYMOUS        0x20
 #define MAP_FIXED_NOREPLACE  0x100000
 
+/* mremap flags */
+#define MREMAP_MAYMOVE  1
+#define MREMAP_FIXED    2
+
 /* mlockall flags */
 #define MCL_CURRENT     1
 #define MCL_FUTURE      2

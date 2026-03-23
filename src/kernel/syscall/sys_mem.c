@@ -2,6 +2,9 @@
 
 #include "internal.h"
 
+/* Forward declarations */
+static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end);
+
 /* ── SYS_brk (12) ───────────────────────────────── */
 
 /* brk collision detection */
@@ -30,11 +33,10 @@ long do_brk(unsigned long addr) {
             return (long)p->brk_current;
         }
     } else if (new_end < old_end) {
-        /* Shrinking: unmap pages */
-        for (uint64_t va = new_end; va < old_end; va += 4096) {
-            /* Walk page tables to find and free the physical page */
-            /* For now, just clear the PTE — page leak is acceptable */
-        }
+        /* Shrinking: unmap pages and free physical frames */
+        unmap_range(p->pml4, new_end, old_end);
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        tlb_shootdown(virt_to_phys(p->pml4));
     }
 
     /* Update brk VMA */
@@ -427,4 +429,113 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
     }
     /* All other advice: accept but ignore */
     return 0;
+}
+
+/* ── SYS_mremap (25) ────────────────────────────── */
+
+/* Copy mapped pages from old range to new range (both in same address space).
+ * Only copies pages that have PTEs present; unmapped pages stay zero in dst. */
+static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
+                            uint64_t len, int prot) {
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
+    for (uint64_t off = 0; off < len; off += 4096) {
+        uint64_t va = src + off;
+        /* Walk page tables to find source physical page */
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
+        int pti = (va >> 12) & 0x1FF;
+        if (!(pt[pti] & PTE_PRESENT)) continue;
+
+        uint64_t src_phys = pt[pti] & PHYS_MASK;
+        void *src_page = phys_to_virt(src_phys);
+
+        /* Allocate new page, copy content, map at dst */
+        uint64_t *new_page = alloc_page();
+        if (!new_page) continue;
+        kmemcpy(new_page, src_page, 4096);
+        map_user_page(user_pml4, dst + off, virt_to_phys(new_page), prot);
+    }
+}
+
+long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
+               int flags, unsigned long new_addr) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (old_addr & 0xFFF) return -EINVAL;
+
+    old_size = (old_size + 0xFFF) & ~0xFFFULL;
+    new_size = (new_size + 0xFFF) & ~0xFFFULL;
+    if (new_size == 0) return -EINVAL;
+
+    /* Find VMA covering old_addr */
+    vma_t *v = vma_find(p->vma_root, old_addr);
+    if (!v) return -EFAULT;
+    /* old_addr must be VMA start and old_size must match */
+    if (v->start != old_addr) return -EFAULT;
+
+    /* MREMAP_FIXED not supported yet */
+    if (flags & MREMAP_FIXED) {
+        (void)new_addr;
+        return -ENOSYS;
+    }
+
+    if (new_size == old_size) return (long)old_addr;
+
+    if (new_size < old_size) {
+        /* Shrink: unmap tail pages, adjust VMA */
+        uint64_t trim_start = old_addr + new_size;
+        uint64_t trim_end = old_addr + old_size;
+        unmap_range(p->pml4, trim_start, trim_end);
+        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        tlb_shootdown(virt_to_phys(p->pml4));
+        v->end = old_addr + new_size;
+        return (long)old_addr;
+    }
+
+    /* Grow: try to expand in-place */
+    uint64_t grow_start = old_addr + old_size;
+    uint64_t grow_end = old_addr + new_size;
+
+    if (!vma_find_overlap(p->vma_root, grow_start, grow_end)) {
+        /* No overlap — expand VMA in place */
+        v->end = grow_end;
+        return (long)old_addr;
+    }
+
+    /* Can't expand in-place — need MREMAP_MAYMOVE */
+    if (!(flags & MREMAP_MAYMOVE)) return -ENOMEM;
+
+    /* Allocate new region */
+    uint64_t new_va = vma_find_free(p->vma_root, p->mmap_next, new_size);
+    if (!new_va) {
+        new_va = vma_find_free(p->vma_root, USER_MMAP_BASE, new_size);
+        if (!new_va) return -ENOMEM;
+    }
+    p->mmap_next = new_va;
+
+    /* Create new VMA */
+    vma_t *nv = vma_insert(&p->vma_root, new_va, new_va + new_size, v->prot, v->flags);
+    if (!nv) return -ENOMEM;
+
+    /* Copy existing pages to new location */
+    copy_user_pages(p->pml4, new_va, old_addr, old_size, v->prot);
+
+    /* Unmap old region */
+    unmap_range(p->pml4, old_addr, old_addr + old_size);
+    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    tlb_shootdown(virt_to_phys(p->pml4));
+
+    /* Remove old VMA (re-find since tree may have changed) */
+    vma_t *old_v = vma_find(p->vma_root, old_addr);
+    if (old_v && old_v->start == old_addr)
+        vma_remove(&p->vma_root, old_v);
+
+    return (long)new_va;
 }

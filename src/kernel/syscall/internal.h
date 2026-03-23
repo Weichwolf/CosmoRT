@@ -109,6 +109,8 @@ long do_munlock(unsigned long addr, size_t len);
 long do_mlockall(int flags);
 long do_munlockall(void);
 long do_madvise(unsigned long addr, size_t length, int advice);
+long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
+               int flags, unsigned long new_addr);
 
 /* ── Forward declarations: sys_proc.c ── */
 void do_exit(int status);

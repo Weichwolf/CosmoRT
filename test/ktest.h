@@ -74,6 +74,7 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
 #define SYS_setsid          SYS_SETSID
 #define SYS_getsid          SYS_GETSID
 #define SYS_tgkill          SYS_TGKILL
+#define SYS_mremap          SYS_MREMAP
 
 /* ── Additional constants used by tests ─────── */
 

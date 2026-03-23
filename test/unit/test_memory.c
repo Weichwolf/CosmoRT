@@ -34,6 +34,22 @@ static void test_memory(void) {
     check("brk(0) returns current", brk0 > 0);
     long brk1 = sc1(SYS_brk, brk0 + 4096);
     check_val("brk grow", brk1, brk0 + 4096);
+
+    /* brk shrink: pages freed, re-grow gives zeroed pages */
+    if (brk1 > 0) {
+        volatile char *bp = (volatile char *)brk0;
+        bp[0] = 0xCC;
+        bp[4095] = 0xDD;
+        /* Shrink back */
+        long brk2 = sc1(SYS_brk, brk0);
+        check_val("brk shrink", brk2, brk0);
+        /* Grow again — should get fresh zero pages */
+        long brk3 = sc1(SYS_brk, brk0 + 4096);
+        check_val("brk re-grow", brk3, brk0 + 4096);
+        volatile char *bp2 = (volatile char *)brk0;
+        check_val("brk shrink+grow zeroed[0]", (long)(unsigned char)bp2[0], 0);
+        check_val("brk shrink+grow zeroed[4095]", (long)(unsigned char)bp2[4095], 0);
+    }
 }
 
 TEST("memory", test_memory);

@@ -242,29 +242,6 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     /* Bounce user pollfd[] to kernel stack to prevent TOCTOU */
     struct k_pollfd kfds[256];
     kmemcpy(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
-<<<<<<< Updated upstream:src/kernel/net/socket.c
-
-    uint64_t deadline = timer_ms() + (uint64_t)(timeout >= 0 ? timeout : 30000);
-
-    net_poll();
-    int ready = 0;
-    for (int i = 0; i < nfds; i++) {
-        kfds[i].revents = 0;
-        socket_t *s = sock_from_fd(kfds[i].fd);
-        if (!s) {
-            if (kfds[i].events & POLLOUT) kfds[i].revents |= POLLOUT;
-            if (kfds[i].revents) ready++;
-            continue;
-        }
-        if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
-            if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
-                kfds[i].revents |= POLLIN;
-        }
-        if (kfds[i].events & POLLOUT) {
-            if (s->state == SOCK_CONNECTED) kfds[i].revents |= POLLOUT;
-        }
-        if (kfds[i].revents) ready++;
-=======
 
     uint64_t deadline = timer_ms() + (uint64_t)(timeout >= 0 ? timeout : 30000);
     int ready = 0;
@@ -282,7 +259,6 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
                 continue;
             }
             if ((kfds[i].events & POLLIN) && s->state == SOCK_CONNECTED) {
-                /* Check if TCP has buffered data or queue has packets */
                 if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
                     kfds[i].revents |= POLLIN;
             }
@@ -292,13 +268,11 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
-            /* Write back revents to user */
             kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
             return ready;
         }
         if (timeout == 0) return 0;
         __asm__ volatile("sti; hlt");
->>>>>>> Stashed changes:src/kernel/socket.c
     }
     if (ready > 0) {
         kmemcpy(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
