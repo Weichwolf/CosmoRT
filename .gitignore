@@ -5,4 +5,3 @@ src/kernel/ktest_bin.h
 src/kernel/font_atlas.h
 src/kernel/gen/*_bin.h
 src/kernel/gen/font_atlas.h
-fonts/*.ttf
