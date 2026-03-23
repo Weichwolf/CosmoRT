@@ -124,8 +124,30 @@ make vhdx           # Hyper-V Image
 
 ## Regeln
 
+Build:
 - Warnings = Errors (-Werror)
 - make test-hw muss gruen sein
-- Freestanding C11, minimales x86 Assembly
+- Freestanding C11, GNU as fuer Assembly (.S, kein NASM)
+
+ABI:
+- linux.h: exakt Linux x86_64 ABI, keine Abweichungen
+- Jedes Define in linux.h muss im Kernel implementiert UND getestet sein
+- Keine Magic Numbers — benannte Konstanten aus linux.h
+- Keine Stubs (return 0) — korrekt implementieren oder -ENOSYS
+
+Code-Organisation:
+- Bottom-Up: Helpers oben, Caller unten. Keine Forward-Declarations
+- Hot-Path frei von Strings und Error-Output (cold-Funktionen auslagern)
+- __attribute__((hot)) auf Syscall-Dispatch, __attribute__((cold)) auf Panic/Init
+- __builtin_expect auf Fehlerpfade im Hot-Path
+- Legacy-Syscalls delegieren an moderne *at-Varianten (Einzeiler-Wrapper)
+
+Portabilitaet:
+- src/kernel/ hat kein inline-asm — alles ueber arch_*() in src/arch/
+- src/arch/{x86_64,aarch64,riscv64}/ — pro Architektur
 - Treiber: nur include/public/, nie Kernel-Interna
-- linux.h: exakt Linux ABI, keine Abweichungen
+
+Tests:
+- Jeder neue Syscall/Fix bekommt Tests
+- TEST() fuer Unit-Tests, CRASH_TEST() fuer Adversarial-Tests
+- Self-Registering via Linker-Section — kein main.c anfassen
