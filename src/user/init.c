@@ -41,8 +41,8 @@ void _start(void) {
         syscall3(59, (long)"/usr/bin/bash", (long)argv, (long)envp);
     }
 
-    /* Interactive bash */
-    char *argv_i[] = { "/usr/bin/bash", "--norc", "--noprofile", "-i", (char *)0 };
+    /* Interactive bash (no job control — PTY job control incomplete) */
+    char *argv_i[] = { "/usr/bin/bash", "--norc", "--noprofile", "--noediting", "+m", "-i", (char *)0 };
     syscall3(59, (long)"/usr/bin/bash", (long)argv_i, (long)envp);
 
     /* Fallback to sh */

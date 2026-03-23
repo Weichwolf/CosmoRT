@@ -422,27 +422,15 @@ int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
 
     /* Device files */
-    /* /dev/tty → current process's PTY (controlling terminal) */
-    if (kstreq(path, "/dev/tty")) {
-        process_t *p = proc_current();
-        if (!p) return -EFAULT;
-        /* Find the PTY from existing fds (stdin is typically PTY_SLAVE) */
-        for (int i = 0; i < 3; i++) {
-            if (p->fds.entries[i].type == FD_PTY_SLAVE) {
-                int fd = fd_alloc(&p->fds, FD_PTY_SLAVE,
-                                  p->fds.entries[i].obj, flags & 3);
-                return fd < 0 ? -EMFILE : fd;
-            }
-        }
-        return -ENOTTY; /* no controlling terminal */
-    }
     if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||
-        kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random")) {
+        kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random") ||
+        kstreq(path, "/dev/tty")) {
         int devid = 0;
         if (kstreq(path, "/dev/null"))    devid = DEV_NULL;
         if (kstreq(path, "/dev/zero"))    devid = DEV_ZERO;
         if (kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random"))
                                            devid = DEV_URANDOM;
+        if (kstreq(path, "/dev/tty"))     devid = DEV_TTY;
         process_t *p = proc_current();
         if (!p) return -EFAULT;
         int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)devid, flags & 3);
@@ -715,51 +703,6 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
     if (node->data)
         kmemcpy(buf, node->data + offset, count);
 
-    return (long)count;
-}
-
-long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset) {
-    if (!f) return -EBADF;
-
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        if (f->type != VFS_FILE) return -EISDIR;
-        uint8_t kbuf[4096];
-        size_t total = 0;
-        while (total < count) {
-            size_t chunk = count - total;
-            if (chunk > 4096) chunk = 4096;
-            kmemcpy(kbuf, (const uint8_t *)buf + total, chunk);
-            int rc = cosmofs_write(f->cosmofs_ino, kbuf,
-                                   (size_t)offset + total, chunk);
-            if (rc < 0) return total > 0 ? (long)total : rc;
-            total += (size_t)rc;
-            if ((size_t)rc < chunk) break;
-        }
-        return (long)total;
-    }
-
-    /* ramfs */
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
-    if (node->type != VFS_FILE) return -EISDIR;
-
-    size_t end = (size_t)offset + count;
-    if (end > node->capacity) {
-        if (grow_file(node, end) < 0) return -ENOMEM;
-    }
-
-    uint8_t kbuf[4096];
-    size_t done = 0;
-    while (done < count) {
-        size_t chunk = count - done;
-        if (chunk > 4096) chunk = 4096;
-        kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
-        kmemcpy(node->data + offset + done, kbuf, chunk);
-        done += chunk;
-    }
-    if (end > node->size) node->size = end;
-
-    vfs_notify_modify(node);
     return (long)count;
 }
 

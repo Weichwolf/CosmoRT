@@ -895,6 +895,8 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
             pty_t *pt = (pty_t *)fde->obj;
             pgid = (int32_t)pt->fg_pgid;
+            /* If not yet set, return caller's pgid so bash thinks it's foreground */
+            if (pgid == 0) pgid = (int32_t)p->pgid;
         } else {
             pgid = (int32_t)p->pgid;
         }

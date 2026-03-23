@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — pipe, fd_cleanup, fd_poll */
 
 #include "internal.h"
+#include "pty.h"
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
@@ -358,7 +359,26 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     switch (fde->type) {
     case FD_SERIAL:
         if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        /* Serial input available? Check LSR bit 0 */
+        if (interest & EPOLLIN) {
+            extern int serial_data_available(void);
+            if (serial_data_available()) ready |= EPOLLIN;
+        }
         break;
+
+    case FD_PTY_SLAVE:
+    case FD_PTY_MASTER: {
+        int pty_id = (int)(long)fde->obj;
+        extern pty_t *pty_get(int id);
+        pty_t *pt = pty_get(pty_id);
+        if (!pt) { ready |= EPOLLERR; break; }
+        if (interest & EPOLLIN) {
+            int avail = (pt->input_tail - pt->input_head + PTY_BUF_SIZE) % PTY_BUF_SIZE;
+            if (avail > 0) ready |= EPOLLIN;
+        }
+        if (interest & EPOLLOUT) ready |= EPOLLOUT; /* always writable */
+        break;
+    }
 
     case FD_SOCKET: {
         socket_t *s = (socket_t *)fde->obj;

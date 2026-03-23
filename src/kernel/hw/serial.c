@@ -75,6 +75,10 @@ char serial_getchar(void) {
     return (char)port_in8(COM1);
 }
 
+int serial_data_available(void) {
+    return (port_in8(COM1 + 5) & 0x01) ? 1 : 0;
+}
+
 /* ── dmesg read (for procfs) ─────────────────────── */
 
 int serial_dmesg_read(char *buf, int offset, int size) {

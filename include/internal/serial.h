@@ -23,5 +23,6 @@ void serial_putchar_raw(char c);
 void serial_bridge_init(void);
 void serial_bridge_poll(void);           /* call from timer tick */
 void serial_bridge_tx(int vt_id, const char *buf, int len); /* PTY output → serial */
+int serial_data_available(void); /* 1 if RX byte ready on COM1 */
 
 #endif
