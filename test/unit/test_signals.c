@@ -16,8 +16,24 @@ __attribute__((naked)) static void sig_restorer(void) {
     );
 }
 
+/* Linux wait status macros */
+#define WIFEXITED(s)    (((s) & 0x7F) == 0)
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
+#define WIFSIGNALED(s)  (((s) & 0x7F) > 0 && ((s) & 0x7F) < 0x7F)
+#define WTERMSIG(s)     ((s) & 0x7F)
+
+/* Minimal siginfo_t layout (first 16 bytes matter) */
+struct test_siginfo {
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    int32_t _pad0;
+};
+
 static volatile int sig_received = 0;
 static volatile int sig_value = 0;
+static volatile int siginfo_signo = 0;
+static volatile void *siginfo_ptr = 0;
 
 __attribute__((used)) static void test_handler(int sig) {
     sig_received = 1;
@@ -25,9 +41,14 @@ __attribute__((used)) static void test_handler(int sig) {
 }
 
 __attribute__((used)) static void test_handler_siginfo(int sig, void *info, void *uctx) {
-    (void)info; (void)uctx;
+    (void)uctx;
     sig_received = 1;
     sig_value = sig;
+    siginfo_ptr = info;
+    if (info) {
+        struct test_siginfo *si = (struct test_siginfo *)info;
+        siginfo_signo = si->si_signo;
+    }
 }
 
 static void test_signals(void) {
@@ -161,6 +182,67 @@ static void test_signals(void) {
     /* Test 10: tgkill sig 0 (permission check only) */
     r = sc3(SYS_TGKILL, my_pid, my_tid, 0);
     check_val("tgkill sig 0", r, 0);
+
+    /* ── SA_SIGINFO ── */
+
+    /* Test 11: SA_SIGINFO handler receives siginfo_t with correct si_signo */
+    sig_received = 0;
+    sig_value = 0;
+    siginfo_signo = 0;
+    siginfo_ptr = 0;
+    sa.handler = (void *)test_handler_siginfo;
+    sa.flags = SA_RESTORER | SA_SIGINFO;
+    sa.restorer = (void *)sig_restorer;
+    sa.mask = 0;
+    sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
+    sc2(SYS_KILL, sc0(SYS_GETPID), SIGUSR1);
+    check_val("SA_SIGINFO handler ran", sig_received, 1);
+    check_val("SA_SIGINFO sig value", sig_value, SIGUSR1);
+    check("SA_SIGINFO info ptr non-null", siginfo_ptr != 0);
+    check_val("SA_SIGINFO si_signo", siginfo_signo, SIGUSR1);
+
+    /* ── Signal default actions ── */
+
+    /* Test 12: SIGHUP with SIG_DFL → child terminated by signal.
+     * Child resets handler to SIG_DFL (may be SIG_IGN from earlier tests),
+     * then sends itself SIGHUP. */
+    {
+        long pid = sc0(SYS_FORK);
+        if (pid == 0) {
+            /* Reset to SIG_DFL */
+            struct ksigaction dfl;
+            dfl.handler = (void *)0; /* SIG_DFL */
+            dfl.flags = 0; dfl.restorer = 0; dfl.mask = 0;
+            sc4(SYS_RT_SIGACTION, SIGHUP, (long)&dfl, 0, 8);
+            sc2(SYS_KILL, sc0(SYS_GETPID), SIGHUP);
+            sc1(SYS_EXIT_GROUP, 99); /* should not reach */
+            __builtin_unreachable();
+        }
+        check("fork SIGHUP ok", pid > 0);
+        int wstatus = 0;
+        sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+        check("SIGHUP WIFSIGNALED", WIFSIGNALED(wstatus));
+        check_val("SIGHUP WTERMSIG", WTERMSIG(wstatus), SIGHUP);
+    }
+
+    /* Test 13: SIGALRM with SIG_DFL → child terminated by signal */
+    {
+        long pid = sc0(SYS_FORK);
+        if (pid == 0) {
+            struct ksigaction dfl;
+            dfl.handler = (void *)0;
+            dfl.flags = 0; dfl.restorer = 0; dfl.mask = 0;
+            sc4(SYS_RT_SIGACTION, SIGALRM, (long)&dfl, 0, 8);
+            sc2(SYS_KILL, sc0(SYS_GETPID), SIGALRM);
+            sc1(SYS_EXIT_GROUP, 99);
+            __builtin_unreachable();
+        }
+        check("fork SIGALRM ok", pid > 0);
+        int wstatus = 0;
+        sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+        check("SIGALRM WIFSIGNALED", WIFSIGNALED(wstatus));
+        check_val("SIGALRM WTERMSIG", WTERMSIG(wstatus), SIGALRM);
+    }
 }
 
 TEST("signals", test_signals);

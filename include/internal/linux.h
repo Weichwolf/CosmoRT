@@ -236,7 +236,6 @@ typedef long               ssize_t;
 #define ENOTCONN        107
 #define ETIMEDOUT       110
 #define ECONNREFUSED    111
-#define ERESTARTSYS     512   /* internal: restart syscall (never seen by userspace) */
 
 /* ══════════════════════════════════════════════════════════════════
  * prctl constants

@@ -236,8 +236,15 @@ void deliver_signal(thread_t *t, int signo) {
     t->rip = (uint64_t)sa->sa_handler;
     t->rsp = new_rsp;
     t->rdi = (uint64_t)signo;
-    t->rsi = new_rsp + SIGFRAME_OFF_SIGINFO;
-    t->rdx = new_rsp + SIGFRAME_OFF_UCONTEXT;
+    if (sa->sa_flags & SA_SIGINFO) {
+        /* SA_SIGINFO: handler(int sig, siginfo_t *info, void *ucontext) */
+        t->rsi = new_rsp + SIGFRAME_OFF_SIGINFO;
+        t->rdx = new_rsp + SIGFRAME_OFF_UCONTEXT;
+    } else {
+        /* Classic handler(int sig) — rsi/rdx undefined, zero for safety */
+        t->rsi = 0;
+        t->rdx = 0;
+    }
     /* Clear direction flag, keep interrupts enabled */
     t->rflags &= ~(1ULL << 10); /* DF=0 */
     t->rflags |= (1ULL << 9);   /* IF=1 */
@@ -275,21 +282,25 @@ void check_pending_signals(void) {
         if (handler == 1) continue; /* SIG_IGN */
 
         if (handler == 0) {
-            /* SIG_DFL */
-            /* SIGCHLD (17): default is ignore */
-            if (sig == 17) continue;
-            /* Fatal signals: SIGKILL=9, SIGSEGV=11, SIGPIPE=13, SIGTERM=15, SIGABRT=6 */
-            if (sig == 9 || sig == 11 || sig == 13 || sig == 15 || sig == 6) {
+            /* SIG_DFL — POSIX default actions */
+            switch (sig) {
+            /* Ignore */
+            case 17: /* SIGCHLD */
+            case 23: /* SIGURG */
+            case 28: /* SIGWINCH */
+            case 29: /* SIGIO */
+                continue;
+            /* Stop (SIGTSTP, SIGTTIN, SIGTTOU) — ignore for now (no job control) */
+            case 20: case 21: case 22:
+                continue;
+            /* Continue (SIGCONT) — ignore for now (no job control) */
+            case 18:
+                continue;
+            /* Terminate: everything else with SIG_DFL */
+            default:
                 p->exit_signal = sig;
                 do_exit(128 + sig); /* doesn't return */
             }
-            /* RT signals (32-63): default action is terminate */
-            if (sig >= 32) {
-                p->exit_signal = sig;
-                do_exit(128 + sig); /* doesn't return */
-            }
-            /* Others (1-31 not listed above): default ignore */
-            continue;
         }
 
         /* User handler — deliver via thread_t modification */
@@ -425,23 +436,42 @@ static long kill_one(process_t *target, int sig) {
 
     /* SIG_DFL: kill the process for fatal signals */
     if (handler == SIG_DFL) {
-        /* SIGCHLD default = ignore */
-        if (sig == 17) return 0; /* SIGCHLD */
+        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
+        if (sig == 17 || sig == 23 || sig == 28 || sig == 29) return 0;
+        /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
+        if (sig == 20 || sig == 21 || sig == 22) return 0;
+        /* Continue: SIGCONT — ignore for now */
+        if (sig == 18) return 0;
 
-        /* Fatal signals: terminate */
-        if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
-            target->exit_signal = sig;
-            if (target == proc_current()) {
-                do_exit_group(128 + sig); /* doesn't return */
-            }
-            /* Remote kill: mark zombie + kill threads */
-            target->state = PROC_ZOMBIE;
-            target->exit_code = 128 + sig;
+        /* Everything else: terminate */
+        target->exit_signal = sig;
+        if (target == proc_current()) {
+            do_exit_group(128 + sig); /* doesn't return */
+        }
+        /* Remote kill: mark zombie + kill threads */
+        target->state = PROC_ZOMBIE;
+        target->exit_code = 128 + sig;
+        {
             thread_t *t = target->threads;
             while (t) {
                 if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING)
                     t->state = THREAD_DEAD;
                 t = t->proc_next;
+            }
+        }
+        /* Wake parent if blocked in wait4 */
+        if (target->parent_pid) {
+            process_t *parent = proc_find(target->parent_pid);
+            if (parent) {
+                extern void sched_add(thread_t *t);
+                thread_t *pt = parent->threads;
+                while (pt) {
+                    if (pt->state == THREAD_BLOCKED) {
+                        pt->state = THREAD_RUNNING;
+                        sched_add(pt);
+                    }
+                    pt = pt->proc_next;
+                }
             }
         }
         return 0;
@@ -523,19 +553,41 @@ long do_tgkill(int tgid, int tid, int sig) {
     if (handler == SIG_IGN) return 0;
 
     if (handler == SIG_DFL) {
-        if (sig == 17) return 0; /* SIGCHLD: default ignore */
-        if (sig == 6 || sig == 9 || sig == 11 || sig == 13 || sig == 15) {
-            p->exit_signal = sig;
-            if (p == proc_current()) {
-                do_exit_group(128 + sig);
-            }
-            p->state = PROC_ZOMBIE;
-            p->exit_code = 128 + sig;
+        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
+        if (sig == 17 || sig == 23 || sig == 28 || sig == 29) return 0;
+        /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
+        if (sig == 20 || sig == 21 || sig == 22) return 0;
+        /* Continue: SIGCONT — ignore for now */
+        if (sig == 18) return 0;
+
+        /* Everything else: terminate */
+        p->exit_signal = sig;
+        if (p == proc_current()) {
+            do_exit_group(128 + sig);
+        }
+        p->state = PROC_ZOMBIE;
+        p->exit_code = 128 + sig;
+        {
             thread_t *th = p->threads;
             while (th) {
                 if (th->state == THREAD_BLOCKED || th->state == THREAD_RUNNING)
                     th->state = THREAD_DEAD;
                 th = th->proc_next;
+            }
+        }
+        /* Wake parent if blocked in wait4 */
+        if (p->parent_pid) {
+            process_t *parent = proc_find(p->parent_pid);
+            if (parent) {
+                extern void sched_add(thread_t *t);
+                thread_t *pt = parent->threads;
+                while (pt) {
+                    if (pt->state == THREAD_BLOCKED) {
+                        pt->state = THREAD_RUNNING;
+                        sched_add(pt);
+                    }
+                    pt = pt->proc_next;
+                }
             }
         }
         return 0;
