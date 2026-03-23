@@ -3,26 +3,41 @@
 Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
 C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
 
-linux.h = exakt Linux x86_64 ABI (Structs, Syscalls, Errno).
-cosmo.h = CosmoRT-eigen (HW-Primitives, Subsystem-APIs).
-Scheduler, VM, IPC, Treiber-Architektur = CosmoRT-eigen.
+## Public Headers (include/public/)
+
+```
+linux.h      Exakt Linux x86_64 ABI. Nur fuer CosmoPX libc.
+cosmo_rt.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
+cosmo_ui.h   CosmoUI-API: Display, Audio, Input, Power.
+```
+
+Kein Consumer braucht mehr als eine Datei:
+- CosmoPX libc: linux.h → uebersetzt POSIX in Syscalls
+- Treiber: cosmo_rt.h → spricht Hardware
+- CosmoUI: cosmo_ui.h → spricht Kernel-Subsysteme
+- Programme: sehen nur was libc ihnen gibt, nie Header direkt
 
 Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
 
-## Kernel-Subsysteme (cosmo.h)
+## cosmo_rt.h (Treiber)
 
 ```
-5 HW-Primitives    mmio_map, dma_alloc, irq_register, pci_config_read, fw_load
-Display            surface_create/present/destroy (VSync, Multi-Monitor)
-Audio              device_open/submit/capture/close (Multi-Channel, Multi-Device)
-Input              device_read (KEY_*, REL_*, ABS_* — RT-Core, <1ms)
-Network            nic_driver_t + net_nic_register (Packet-Queue)
-Power              state/suspend/shutdown/reboot (ACPI)
+mmio_map, dma_alloc, irq_register, pci_config_read, fw_load
+nic_driver_t + net_nic_register
+blk_driver_t + blk_register
 ```
 
-Alles andere (USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN-Stack)
-ist Userspace. USB-Devices werden durch ihre Klasse an Subsysteme geroutet:
-HID → Input, Audio Class → Audio, Storage → Block.
+## cosmo_ui.h (CosmoUI)
+
+```
+Display    surface_create/present/destroy (VSync, Multi-Monitor)
+Audio      device_open/submit/capture/close (Multi-Channel, Multi-Device)
+Input      device_read (KEY_*, REL_*, ABS_* — RT-Core, <1ms)
+Power      state/suspend/shutdown/reboot (ACPI)
+```
+
+USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN = Userspace.
+USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → Block.
 
 ## Core-Modell: RT + Compute (SMP 2+)
 
