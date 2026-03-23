@@ -374,8 +374,10 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
-        if (pt[pti] & PTE_PRESENT) {
-            uint64_t phys = pt[pti] & PHYS_MASK;
+        uint64_t phys = pt[pti] & PHYS_MASK;
+        if (phys) {
+            /* Update PTE flags — works for both present and not-present
+             * (PROT_NONE sets flags=0, PROT_READ restores PRESENT bit) */
             pt[pti] = phys | new_flags;
             __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
         }
