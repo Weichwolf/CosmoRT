@@ -230,3 +230,42 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
 
     return 0;
 }
+
+/* Find free gap at or above 'start', growing upward.
+ * In-order traversal (lowest→highest), track gap_start. */
+uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size) {
+    uint64_t limit = 0x800000000000ULL; /* user space ceiling */
+    if (!root) {
+        uint64_t addr = (start + 0xFFF) & ~0xFFFULL;
+        return (addr + size <= limit) ? addr : 0;
+    }
+
+    vma_t *stack[64];
+    int sp = 0;
+    vma_t *cur = root;
+    uint64_t gap_start = (start + 0xFFF) & ~0xFFFULL;
+
+    /* In-order: left first, then node, then right */
+    while (cur || sp > 0) {
+        while (cur) {
+            if (sp < 64) stack[sp++] = cur;
+            cur = cur->left;
+        }
+        if (sp > 0) {
+            cur = stack[--sp];
+            /* Gap between gap_start and cur->start */
+            if (cur->start > gap_start && cur->start - gap_start >= size)
+                return gap_start;
+            /* Advance gap_start past this VMA */
+            if (cur->end > gap_start)
+                gap_start = (cur->end + 0xFFF) & ~0xFFFULL;
+            cur = cur->right;
+        }
+    }
+
+    /* Gap after the last (highest) VMA */
+    if (gap_start + size <= limit)
+        return gap_start;
+
+    return 0;
+}

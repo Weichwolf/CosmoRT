@@ -1321,6 +1321,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     tss_set_rsp0(cur->kstack_top);
     percpu_self()->kernel_rsp = cur->kstack_top;
 
+    /* Clear FS_BASE — new process has no TLS yet (libc sets it via arch_prctl) */
+    __asm__ volatile("wrmsr" :: "c"(0xC0000100), "a"(0), "d"(0));
+
+    /* Restore clean FPU state */
+    __asm__ volatile("fxrstor %0" : : "m"(cur->fxsave_area));
+
     proc_enter_ring3(cur);
     /* unreachable */
     return 0;

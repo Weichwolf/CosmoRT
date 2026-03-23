@@ -205,11 +205,18 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             if (ov->start >= vaddr + length) break;
         }
     } else {
-        /* Try hint address first if provided */
+        /* Try hint address first if provided.
+         * If hint overlaps an existing VMA, search upward from hint
+         * for a free region (Linux behavior: hint is a preference,
+         * not a hard requirement). */
         if (addr) {
             uint64_t hint = addr & ~0xFFFULL;
-            if (!vma_find_overlap(p->vma_root, hint, hint + length))
+            if (!vma_find_overlap(p->vma_root, hint, hint + length)) {
                 vaddr = hint;
+            } else {
+                extern uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size);
+                vaddr = vma_find_free_above(p->vma_root, hint, length);
+            }
         }
         if (!vaddr) {
             vaddr = vma_find_free(p->vma_root, p->mmap_next, length);

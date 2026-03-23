@@ -417,6 +417,8 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_hex64(frame->rip);
     serial_puts(" err=");
     serial_hex64(frame->error);
+    serial_puts(" rsp=");
+    serial_hex64(frame->rsp);
 
     if (vector == 14) {
         uint64_t cr2;

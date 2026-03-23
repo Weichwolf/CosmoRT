@@ -839,11 +839,13 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (!fde) return -EBADF;
 
     if (request == TCGETS) {
-        /* Minimal termios: tell isatty() this is a terminal */
+        /* Kernel struct termios: 4×tcflag_t(16) + c_line(1) + c_cc[19] = 36 bytes.
+         * NOT glibc's 60-byte struct (NCCS=32 + c_ispeed/c_ospeed).
+         * Writing 60 bytes would smash the caller's stack canary. */
         if (fde->type == FD_SERIAL || fde->type == FD_PTY_SLAVE ||
             fde->type == FD_PTY_MASTER) {
-            if (!user_ok(arg, 60)) return -EFAULT;
-            kmemset((void *)arg, 0, 60); /* zero-filled termios */
+            if (!user_ok(arg, 36)) return -EFAULT;
+            kmemset((void *)arg, 0, 36);
             return 0;
         }
         return -ENOTTY;
