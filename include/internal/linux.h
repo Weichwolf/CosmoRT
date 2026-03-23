@@ -143,6 +143,18 @@ typedef long               ssize_t;
 #define SYS_MOUNT           165
 #define SYS_SETHOSTNAME     170
 #define SYS_GETTID          186
+#define SYS_SETXATTR         188
+#define SYS_LSETXATTR        189
+#define SYS_FSETXATTR        190
+#define SYS_GETXATTR         191
+#define SYS_LGETXATTR        192
+#define SYS_FGETXATTR        193
+#define SYS_LISTXATTR        194
+#define SYS_LLISTXATTR       195
+#define SYS_FLISTXATTR       196
+#define SYS_REMOVEXATTR      197
+#define SYS_LREMOVEXATTR     198
+#define SYS_FREMOVEXATTR     199
 #define SYS_TIME            201
 #define SYS_FUTEX           202
 #define SYS_SCHED_SETAFFINITY 203
@@ -238,6 +250,7 @@ typedef long               ssize_t;
 #define EISCONN         106
 #define ENOTCONN        107
 #define ETIMEDOUT       110
+#define ENODATA         61
 #define ECONNREFUSED    111
 
 /* ══════════════════════════════════════════════════════════════════

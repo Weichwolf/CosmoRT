@@ -675,14 +675,14 @@ int cosmofs_dir_iterate(uint64_t dir_ino, int offset,
     return btree_iterate(root_block, offset, cb, ctx);
 }
 
-/* ── Attributes (stub) ────────────────────────────── */
+/* ── Attributes (stub — ENODATA = "no attributes") ── */
 
 int cosmofs_attr_set(uint64_t ino, const char *name, const void *val, size_t len) {
     (void)ino; (void)name; (void)val; (void)len;
-    return -ENOSYS;
+    return -ENODATA;
 }
 
 int cosmofs_attr_get(uint64_t ino, const char *name, void *val, size_t len) {
     (void)ino; (void)name; (void)val; (void)len;
-    return -ENOSYS;
+    return -ENODATA;
 }

@@ -1099,7 +1099,7 @@ int vfs_unlink(const char *path) {
         if (ip->type == COSMOFS_TYPE_DIR) return -EISDIR;
         int rc = cosmofs_dir_remove(parent_ino, basename);
         if (rc == 0) {
-            /* TODO: free file data blocks */
+            cosmofs_truncate(child_ino, 0);
             cosmofs_inode_free(child_ino);
             inotify_event(path, IN_DELETE);
         }

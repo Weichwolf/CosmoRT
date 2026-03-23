@@ -393,6 +393,13 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return net_port_attach(kargs.shm_phys, (size_t)kargs.shm_size, kargs.mac);
     }
 
+    /* xattr: return -ENODATA ("no attributes") instead of -ENOSYS */
+    case SYS_SETXATTR:  case SYS_LSETXATTR:  case SYS_FSETXATTR:
+    case SYS_GETXATTR:  case SYS_LGETXATTR:  case SYS_FGETXATTR:
+    case SYS_LISTXATTR: case SYS_LLISTXATTR: case SYS_FLISTXATTR:
+    case SYS_REMOVEXATTR: case SYS_LREMOVEXATTR: case SYS_FREMOVEXATTR:
+        return -ENODATA;
+
     case SYS_COSMO_KEXEC: {
         HW_CAP_CHECK();
         if (!user_ok(a1, (size_t)a2)) return -EFAULT;

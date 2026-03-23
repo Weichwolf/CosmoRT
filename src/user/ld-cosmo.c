@@ -1108,7 +1108,10 @@ void _start(void) {
         if (load_library(needed[i], &libs[lib_count]) == 0) {
             lib_count++;
         } else {
-            puts("ld-cosmo: STUB — library not loaded, continuing\n");
+            puts("ld-cosmo: FATAL — missing library: ");
+            puts(needed[i]);
+            puts("\n");
+            sc1(SYS_exit_group, 127);
         }
     }
 
