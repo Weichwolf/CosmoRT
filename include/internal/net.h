@@ -42,6 +42,7 @@ typedef struct {
 } net_tcp_t;
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port);
+int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms);
 int net_tcp_send(net_tcp_t *c, const void *data, int len);
 int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter);
 void net_tcp_close(net_tcp_t *c);

@@ -146,12 +146,19 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_wr) return -EPIPE;
-    /* Bounce user buffer to kernel to prevent TOCTOU with NIC DMA */
-    uint8_t kbuf[1500];
-    long todo = len > 1500 ? 1500 : len;
-    kmemcpy(kbuf, buf, (size_t)todo);
-    int r = net_tcp_send(&s->tcp, kbuf, (int)todo);
-    return r < 0 ? -EIO : r;
+    /* Bounce user buffer to kernel in MSS-sized chunks */
+    uint8_t kbuf[1460];
+    const uint8_t *ubuf = (const uint8_t *)buf;
+    long total = 0;
+    while (total < len) {
+        int chunk = (int)(len - total);
+        if (chunk > 1460) chunk = 1460;
+        kmemcpy(kbuf, ubuf + total, (size_t)chunk);
+        int r = net_tcp_send(&s->tcp, kbuf, chunk);
+        if (r < 0) return total > 0 ? total : -EIO;
+        total += r;
+    }
+    return total;
 }
 
 /* ── SYS_RECVFROM (45) ───────────────────────────── */
@@ -183,8 +190,16 @@ long socket_write(int fd, const void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s || s->state != SOCK_CONNECTED) return -EBADF;
     if (s->shut_wr) return -EPIPE;
-    int r = net_tcp_send(&s->tcp, buf, (int)count);
-    return r < 0 ? -EIO : r;
+    const uint8_t *p = (const uint8_t *)buf;
+    long total = 0;
+    while (total < count) {
+        int chunk = (int)(count - total);
+        if (chunk > 1460) chunk = 1460;
+        int r = net_tcp_send(&s->tcp, p + total, chunk);
+        if (r < 0) return total > 0 ? total : -EIO;
+        total += r;
+    }
+    return total;
 }
 
 long socket_close(int fd) {
@@ -278,27 +293,68 @@ long do_accept(int fd, void *addr, int *addrlen) {
     if (!ls) return -EBADF;
     if (ls->state != SOCK_LISTENING) return -EINVAL;
 
-    /* TODO: blocking accept with incoming SYN handling.
-     * The TCP state machine in net.c only has client-side (SYN->SYN-ACK->ESTABLISHED).
-     * Full server support requires: receive SYN -> send SYN-ACK -> ESTABLISHED,
-     * which needs net_poll() integration to dispatch incoming SYNs to listening sockets.
-     *
-     * For now: non-blocking check of accept queue. If empty, return -EAGAIN.
-     * When the server path is wired into net_poll(), this will work end-to-end. */
-
+    /* Check accept queue first (pre-queued connections) */
     uint64_t flags;
     spin_lock_irq(&sock_lock, &flags);
-    if (ls->accept_count == 0) {
-        spin_unlock_irq(&sock_lock, flags);
-        return -EAGAIN;
-    }
+    if (ls->accept_count > 0) {
+        accept_conn_t *ac = &ls->accept_q[ls->accept_head];
+        ls->accept_head = (ls->accept_head + 1) % ACCEPT_QUEUE_MAX;
+        ls->accept_count--;
 
-    accept_conn_t *ac = &ls->accept_q[ls->accept_head];
-    ls->accept_head = (ls->accept_head + 1) % ACCEPT_QUEUE_MAX;
-    ls->accept_count--;
+        socket_t *ns = 0;
+        for (int i = 0; i < MAX_SOCKETS; i++) {
+            if (sockets[i].state == SOCK_UNUSED) {
+                for (int j = 0; j < (int)sizeof(socket_t); j++)
+                    ((uint8_t *)&sockets[i])[j] = 0;
+                ns = &sockets[i];
+                break;
+            }
+        }
+        if (!ns) { spin_unlock_irq(&sock_lock, flags); return -EMFILE; }
+
+        kmemcpy(&ns->tcp, &ac->tcp, sizeof(net_tcp_t));
+        ns->state = SOCK_CONNECTED;
+        ns->refcount = 1;
+        ns->local_ip = ls->local_ip;
+        ns->local_port = ls->local_port;
+        ns->remote_ip = ac->remote_ip;
+        ns->remote_port = ac->remote_port;
+        spin_unlock_irq(&sock_lock, flags);
+
+        p = proc_current();
+        if (!p) { ns->state = SOCK_UNUSED; return -EFAULT; }
+        int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
+        if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
+
+        if (addr && addrlen && user_ok((uint64_t)addr, sizeof(struct k_sockaddr_in)) &&
+            user_ok((uint64_t)addrlen, sizeof(int))) {
+            struct k_sockaddr_in sa;
+            for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+            sa.sin_family = 2;
+            sa.sin_port = ac->remote_port;
+            sa.sin_addr = ac->remote_ip;
+            kmemcpy(addr, &sa, sizeof(sa));
+            int len = (int)sizeof(struct k_sockaddr_in);
+            kmemcpy(addrlen, &len, sizeof(int));
+        }
+        return newfd;
+    }
+    spin_unlock_irq(&sock_lock, flags);
+
+    /* No gateway → can only accept on loopback (not wired yet) → EAGAIN */
+    if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
+        return -EAGAIN;
+
+    /* Block: do the server-side TCP handshake (SYN → SYN-ACK → ACK) */
+    uint16_t host_port = bswap16(ls->local_port);
+    net_tcp_t conn;
+    if (net_tcp_accept(&conn, host_port, NET_TCP_TIMEOUT_MS) < 0)
+        return -EAGAIN;
 
     /* Allocate new socket for the accepted connection */
     socket_t *ns = 0;
+    spin_lock_irq(&sock_lock, &flags);
     for (int i = 0; i < MAX_SOCKETS; i++) {
         if (sockets[i].state == SOCK_UNUSED) {
             for (int j = 0; j < (int)sizeof(socket_t); j++)
@@ -307,25 +363,25 @@ long do_accept(int fd, void *addr, int *addrlen) {
             break;
         }
     }
-    if (!ns) {
-        spin_unlock_irq(&sock_lock, flags);
-        return -EMFILE;
-    }
+    if (!ns) { spin_unlock_irq(&sock_lock, flags); return -EMFILE; }
 
-    /* Copy connection state */
-    kmemcpy(&ns->tcp, &ac->tcp, sizeof(net_tcp_t));
+    kmemcpy(&ns->tcp, &conn, sizeof(net_tcp_t));
     ns->state = SOCK_CONNECTED;
     ns->refcount = 1;
     ns->local_ip = ls->local_ip;
     ns->local_port = ls->local_port;
-    ns->remote_ip = ac->remote_ip;
-    ns->remote_port = ac->remote_port;
+    /* Store remote addr in network byte order */
+    ns->remote_ip = (uint32_t)conn.dst_ip[0] |
+                    ((uint32_t)conn.dst_ip[1] << 8) |
+                    ((uint32_t)conn.dst_ip[2] << 16) |
+                    ((uint32_t)conn.dst_ip[3] << 24);
+    ns->remote_port = bswap16(conn.remote_port);
     spin_unlock_irq(&sock_lock, flags);
 
     /* Allocate FD */
     p = proc_current();
     if (!p) { ns->state = SOCK_UNUSED; return -EFAULT; }
-    int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02 /* O_RDWR */);
+    int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
     if (newfd < 0) { ns->state = SOCK_UNUSED; return -EMFILE; }
 
     /* Fill in addr if requested */
@@ -333,9 +389,9 @@ long do_accept(int fd, void *addr, int *addrlen) {
         user_ok((uint64_t)addrlen, sizeof(int))) {
         struct k_sockaddr_in sa;
         for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
-        sa.sin_family = 2; /* AF_INET */
-        sa.sin_port = ac->remote_port;
-        sa.sin_addr = ac->remote_ip;
+        sa.sin_family = 2;
+        sa.sin_port = ns->remote_port;
+        sa.sin_addr = ns->remote_ip;
         kmemcpy(addr, &sa, sizeof(sa));
         int len = (int)sizeof(struct k_sockaddr_in);
         kmemcpy(addrlen, &len, sizeof(int));

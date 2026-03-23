@@ -113,5 +113,18 @@ static void test_tcp_server(void) {
         sc1(SYS_CLOSE, fd1);
         sc1(SYS_CLOSE, fd2);
     }
+
+    /* sendto on unconnected socket -> EBADF (not SOCK_CONNECTED) */
+    fd = sc3(SYS_SOCKET, AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        char buf[4096];
+        for (int i = 0; i < 4096; i++) buf[i] = (char)(i & 0xFF);
+        r = sc6(SYS_SENDTO, fd, (long)buf, 4096, 0, 0, 0);
+        check_val("sendto unconnected -> EBADF", r, -EBADF);
+        sc1(SYS_CLOSE, fd);
+    }
+
+    /* Send >1500 bytes: full test requires connected socket + network.
+     * Testable manually via: qemu -device e1000 -netdev user,hostfwd=tcp::8080-:8080 */
 }
 TEST("tcp_server", test_tcp_server);

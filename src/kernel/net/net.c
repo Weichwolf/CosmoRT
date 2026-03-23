@@ -471,6 +471,62 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     nic_send(pkt, (uint16_t)(34+tt));
 }
 
+int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
+    uint8_t pkt[Q_PKT];
+    uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
+
+    /* Phase 1: wait for SYN on local_port */
+    while (timer_ms() < deadline) {
+        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
+        if (len < 54) { net_idle(); continue; }
+        uint16_t dport = get16(pkt + 36);
+        if (dport != local_port) continue;
+        uint8_t fl = pkt[47];
+        if ((fl & 0x02) && !(fl & 0x10)) break; /* SYN only */
+    }
+    if (timer_ms() >= deadline) return -1;
+
+    /* Extract client info from the SYN packet */
+    mzero(c, sizeof(*c));
+    mcpy(c->dst_mac, pkt + 6, 6);          /* client's MAC (src of SYN) */
+    mcpy(c->dst_ip, pkt + 26, 4);          /* client's IP (src of IP) */
+    c->remote_port = get16(pkt + 34);       /* client's port (host order via get16) */
+    c->local_port = get16(pkt + 36);        /* our port */
+    uint32_t client_isn = get32(pkt + 38);
+    c->ack = client_isn + 1;
+    uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
+    c->seq = rseq;
+    c->rxbuf_pos = c->rxbuf_len = 0;
+
+    /* Send SYN-ACK */
+    send_tcp(c, 0x12, 0, 0);
+    c->state = 4; /* SYN_RECEIVED */
+
+    /* Phase 2: wait for ACK completing the handshake */
+    deadline = timer_ms() + (uint64_t)timeout_ms;
+    while (timer_ms() < deadline) {
+        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
+        if (len < 54) { net_idle(); continue; }
+        if (get16(pkt + 36) != c->local_port) continue;
+        if (get16(pkt + 34) != c->remote_port) continue;
+        uint8_t fl = pkt[47];
+        if (fl & 0x04) { c->state = 0; return -1; } /* RST */
+        if (fl & 0x10) {
+            /* ACK received — verify ack number */
+            uint32_t ack_num = get32(pkt + 42);
+            if (ack_num == c->seq + 1) {
+                c->seq++;
+                c->state = 2; /* ESTABLISHED */
+                serial_puts("tcp: accept connected\n");
+                return 0;
+            }
+        }
+    }
+    c->state = 0;
+    serial_puts("tcp: accept timeout\n");
+    return -1;
+}
+
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     mcpy(c->dst_ip, dst_ip, 4); c->remote_port = port;
     uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
