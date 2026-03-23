@@ -8,6 +8,7 @@ OBJCOPY  = objcopy
 
 SRC      = src
 BUILD    = build
+ARCH_DIR = src/arch/x86_64
 
 EFI_INC  = /usr/include/efi
 EFI_LIB  = /usr/lib
@@ -135,7 +136,7 @@ $(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS):
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
-$(BUILD)/kernel/ap_trampoline.bin: $(SRC)/kernel/ap_trampoline.asm | $(BUILD)/kernel
+$(BUILD)/kernel/ap_trampoline.bin: $(ARCH_DIR)/ap_trampoline.asm | $(BUILD)/kernel
 	$(NASM) -f bin -o $@ $<
 
 $(SRC)/kernel/gen/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin
@@ -154,7 +155,7 @@ $(BUILD)/kernel/core/smp.o: $(SRC)/kernel/core/smp.c $(SRC)/kernel/gen/ap_trampo
 	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── kexec trampoline (64-bit, flat binary → C header) ──
-$(BUILD)/kernel/kexec_tramp.bin: $(SRC)/kernel/kexec_tramp.asm | $(BUILD)/kernel
+$(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/kexec_tramp.asm | $(BUILD)/kernel
 	$(NASM) -f bin -o $@ $<
 
 $(SRC)/kernel/gen/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin
@@ -353,20 +354,20 @@ test-hw: $(SRC)/kernel/gen/ktest_bin.h
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
 	$(CC) $(EFI_CFLAGS) -o $@ $<
 
-# ── Kernel ASM ───────────────────────────────────
-$(BUILD)/kernel/entry.o: $(SRC)/kernel/entry.asm | $(BUILD)/kernel
+# ── Architecture ASM (src/arch/x86_64/) ──────────
+$(BUILD)/kernel/entry.o: $(ARCH_DIR)/entry.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-$(BUILD)/kernel/irq_asm.o: $(SRC)/kernel/irq_asm.asm | $(BUILD)/kernel
+$(BUILD)/kernel/irq_asm.o: $(ARCH_DIR)/irq_asm.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-$(BUILD)/kernel/context.o: $(SRC)/kernel/context.asm | $(BUILD)/kernel
+$(BUILD)/kernel/context.o: $(ARCH_DIR)/context.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-$(BUILD)/kernel/syscall_entry.o: $(SRC)/kernel/syscall_entry.asm | $(BUILD)/kernel
+$(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
-$(BUILD)/kernel/memops.o: $(SRC)/kernel/memops.c | $(BUILD)/kernel
+$(BUILD)/kernel/memops.o: $(SRC)/kernel/mm/memops.c | $(BUILD)/kernel
 	$(CC) $(KCFLAGS) -o $@ $<
 
 # ── Kernel C (subdirectories) ────────────────────
