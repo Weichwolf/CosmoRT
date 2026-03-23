@@ -4,7 +4,7 @@
  * header (plus linux.h). No kernel internals (process.h, sched.h, etc.).
  *
  * 5 core primitives + DMA free + PCI write + driver-safe utilities.
- * Same API works for kernel-mode and future userspace drivers.
+ * All drivers are userspace. Kernel provides these primitives via syscall.
  */
 #ifndef COSMO_RT_H
 #define COSMO_RT_H
@@ -143,16 +143,5 @@ void input_submit_event(const input_event_t *ev);
 void serial_putchar(char c);
 void serial_puts(const char *s);
 void serial_hex64(uint64_t v);
-
-/* ── Power (ACPI) ── */
-typedef struct {
-    int ac_online;
-    int battery_percent;  /* -1 if no battery */
-    int charging;
-} cosmo_power_info_t;
-
-int cosmo_power_state(cosmo_power_info_t *info);
-int cosmo_power_shutdown(void);
-int cosmo_power_reboot(void);
 
 #endif /* COSMO_RT_H */
