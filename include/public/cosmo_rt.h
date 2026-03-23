@@ -144,4 +144,15 @@ void serial_putchar(char c);
 void serial_puts(const char *s);
 void serial_hex64(uint64_t v);
 
+/* ── Power (ACPI) ── */
+typedef struct {
+    int ac_online;
+    int battery_percent;  /* -1 if no battery */
+    int charging;
+} cosmo_power_info_t;
+
+int cosmo_power_state(cosmo_power_info_t *info);
+int cosmo_power_shutdown(void);
+int cosmo_power_reboot(void);
+
 #endif /* COSMO_RT_H */
