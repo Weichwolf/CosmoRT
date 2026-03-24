@@ -3,12 +3,9 @@
 
 #include "timer.h"
 #include "serial.h"
+#include "arch_x86.h"
 
-static inline uint64_t rdtsc(void) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
+static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
 
 uint64_t timer_tsc_per_ms = 0;
 static uint64_t boot_tsc = 0;
@@ -25,22 +22,21 @@ void timer_init(void) {
     #define PIT_10MS (PIT_FREQ / 100) /* 11932 ticks = 10ms */
 
     /* Setup PIT channel 2 for one-shot */
-    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)0xB0), "Nd"((uint16_t)0x43)); /* ch2, lobyte/hibyte, mode 0 */
-    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)(PIT_10MS & 0xFF)), "Nd"((uint16_t)0x42));
-    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)(PIT_10MS >> 8)), "Nd"((uint16_t)0x42));
+    arch_outb(0x43, 0xB0); /* ch2, lobyte/hibyte, mode 0 */
+    arch_outb(0x42, (uint8_t)(PIT_10MS & 0xFF));
+    arch_outb(0x42, (uint8_t)(PIT_10MS >> 8));
 
     /* Wait for PIT to count down by polling port 0x61 bit 5 */
     /* Enable PIT gate */
-    uint8_t gate;
-    __asm__ volatile("inb %1, %0" : "=a"(gate) : "Nd"((uint16_t)0x61));
+    uint8_t gate = arch_inb(0x61);
     gate = (gate & 0xFC) | 0x01; /* enable gate, disable speaker */
-    __asm__ volatile("outb %0, %1" : : "a"(gate), "Nd"((uint16_t)0x61));
+    arch_outb(0x61, gate);
 
     /* Reset flip-flop by writing to gate */
     gate &= 0xFE;
-    __asm__ volatile("outb %0, %1" : : "a"(gate), "Nd"((uint16_t)0x61));
+    arch_outb(0x61, gate);
     gate |= 0x01;
-    __asm__ volatile("outb %0, %1" : : "a"(gate), "Nd"((uint16_t)0x61));
+    arch_outb(0x61, gate);
 
     /* Measure TSC during PIT countdown */
     uint64_t tsc_start = rdtsc();
@@ -48,7 +44,7 @@ void timer_init(void) {
     /* Wait for PIT output (bit 5 of port 0x61 goes high) */
     uint8_t status;
     do {
-        __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x61));
+        status = arch_inb(0x61);
     } while (!(status & 0x20));
 
     uint64_t tsc_end = rdtsc();
@@ -76,12 +72,12 @@ void timer_sleep_ms(uint32_t ms) {
         /* Short sleep: RDTSC busy-wait (accurate, needed for hardware timing) */
         uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
         while (rdtsc() < target)
-            __asm__ volatile("pause");
+            arch_pause();
     } else {
         /* Long sleep: hlt until timer ticks pass (no CPU burn) */
         uint64_t deadline = timer_ms() + ms;
         while (timer_ms() < deadline)
-            __asm__ volatile("sti; hlt");
+            arch_halt();
     }
 }
 
@@ -90,10 +86,8 @@ void timer_sleep_ms(uint32_t ms) {
 uint64_t rtc_epoch_sec = 0;
 
 static uint8_t cmos_read(uint8_t reg) {
-    __asm__ volatile("outb %0, $0x70" :: "a"(reg));
-    uint8_t val;
-    __asm__ volatile("inb $0x71, %0" : "=a"(val));
-    return val;
+    arch_outb(0x70, reg);
+    return arch_inb(0x71);
 }
 
 static uint8_t bcd2bin(uint8_t v) { return (v & 0x0F) + (v >> 4) * 10; }

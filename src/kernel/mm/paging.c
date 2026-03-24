@@ -8,6 +8,7 @@
 #include "paging.h"
 #include "serial.h"
 #include "config.h"
+#include "arch_x86.h"
 #include <stdint.h>
 
 extern uint64_t pml4[];
@@ -66,8 +67,8 @@ void paging_map_2mb(uint64_t phys_addr) {
 
     all_pd[global_pdpt][pd_idx] = aligned | PAGE_MMIO;
 
-    __asm__ volatile("invlpg (%0)" : : "r"(aligned) : "memory");
-    __asm__ volatile("invlpg (%0)" : : "r"(aligned + PHYS_OFFSET) : "memory");
+    arch_invlpg(aligned);
+    arch_invlpg(aligned + PHYS_OFFSET);
 }
 
 void paging_init(struct boot_info *info) {
@@ -180,7 +181,7 @@ void paging_init(struct boot_info *info) {
       all_pd[pi][di] = 0xFEE00000ULL | PAGE_MMIO; }
 
     /* Flush TLB */
-    __asm__ volatile("mov %0, %%cr3" : : "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
 
     serial_puts("Paging: ");
     serial_dec(highest_phys / (1024 * 1024));

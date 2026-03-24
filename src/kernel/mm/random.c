@@ -8,6 +8,7 @@
 #include "random.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "arch_x86.h"
 #include "memops.h"
 
 /* ── ChaCha20 core ─────────────────────────────── */
@@ -59,11 +60,8 @@ static void entropy_mix(uint64_t val) {
 /* ── Init ──────────────────────────────────────── */
 
 void random_init(struct boot_info *info) {
-    uint32_t lo, hi;
-
     /* RDTSC — high resolution, unique per boot */
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    entropy_mix(((uint64_t)hi << 32) | lo);
+    entropy_mix(arch_rdtsc());
 
     /* UEFI memory map (physical addresses vary per boot) */
     entropy_mix(info->mmap_addr);
@@ -75,20 +73,15 @@ void random_init(struct boot_info *info) {
     entropy_mix(timer_tsc_per_ms);
 
     /* Stack address */
-    uint64_t sp;
-    __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
-    entropy_mix(sp);
+    entropy_mix(arch_get_rsp());
 
     /* RSDP address */
     entropy_mix(info->rsdp_addr);
 
     /* RDRAND if available */
     if (memops_has_rdrand) {
-        uint64_t r;
-        __asm__ volatile("rdrand %0" : "=r"(r));
-        entropy_mix(r);
-        __asm__ volatile("rdrand %0" : "=r"(r));
-        entropy_mix(r);
+        entropy_mix(arch_rdrand());
+        entropy_mix(arch_rdrand());
     }
 
     /* ChaCha20 constants: "expand 32-byte k" */
@@ -106,9 +99,11 @@ void random_init(struct boot_info *info) {
     csprng_state[13] = 0;
 
     /* Nonce from another RDTSC sample */
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    csprng_state[14] = lo;
-    csprng_state[15] = hi;
+    {
+        uint64_t tsc = arch_rdtsc();
+        csprng_state[14] = (uint32_t)tsc;
+        csprng_state[15] = (uint32_t)(tsc >> 32);
+    }
 
     rng_initialized = 1;
 
@@ -169,9 +164,7 @@ void random_add_interrupt_entropy(void) {
     if ((++irq_count & 63) != 0) return;
 
     /* RDTSC jitter (always available) */
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    entropy_mix(((uint64_t)hi << 32) | lo);
+    entropy_mix(arch_rdtsc());
 
     /* RDRAND — primary entropy source when available */
     if (memops_has_rdrand) {

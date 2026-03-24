@@ -4,13 +4,11 @@
 #include "serial.h"
 #include "smp.h"
 #include "config.h"
+#include "arch_x86.h"
 
 percpu_t percpu_data[SMP_MAX_CORES];
 
-static inline void wrmsr(uint32_t msr, uint64_t val) {
-    __asm__ volatile("wrmsr" :: "c"(msr),
-                     "a"((uint32_t)val), "d"((uint32_t)(val >> 32)));
-}
+static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
 
 /* IA32_KERNEL_GS_BASE (MSR 0xC0000102): swapped with GS_BASE on swapgs */
 #define MSR_KERNEL_GS_BASE 0xC0000102

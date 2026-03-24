@@ -21,6 +21,7 @@
 #include "net.h"
 #include "cosmo_rt.h"
 #include "random.h"
+#include "arch_x86.h"
 #include "vt.h"
 #include "fb.h"
 #include "input.h"
@@ -128,15 +129,13 @@ void kernel_main(struct boot_info *info) {
 
     /* Enable SSE/SSE2 on BSP (user code uses SSE for string ops) */
     {
-        uint64_t cr0;
-        __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+        uint64_t cr0 = arch_get_cr0();
         cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
         cr0 |=  (1ULL << 1);  /* set CR0.MP (monitor coprocessor) */
-        __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
-        uint64_t cr4;
-        __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+        arch_set_cr0(cr0);
+        uint64_t cr4 = arch_get_cr4();
         cr4 |= (1 << 9) | (1 << 10); /* CR4.OSFXSR + CR4.OSXMMEXCPT */
-        __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+        arch_set_cr4(cr4);
     }
 
     /* Interrupts + Timer */
@@ -307,7 +306,7 @@ void kernel_main(struct boot_info *info) {
                 net_dhcp_send_discover();
                 last_discover = timer_ms();
             }
-            __asm__ volatile("sti; hlt"); /* sleep until next IRQ */
+            arch_halt(); /* sleep until next IRQ */
         }
 
         if (dhcp_ok) {
@@ -399,7 +398,7 @@ void kernel_main(struct boot_info *info) {
     int pid = proc_create_elf(init_bin, init_bin_size);
     if (pid < 0) {
         serial_puts("FATAL: failed to load init\n");
-        __asm__ volatile("cli; hlt");
+        arch_cli_halt();
     }
 
     /* PTY redirect handled by vt_shell for qemu-gui, not here */

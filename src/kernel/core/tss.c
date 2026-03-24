@@ -85,7 +85,7 @@ static void tss_load_for_core(int core) {
 
     /* Load TR with selector 0x30 + core*0x10 */
     uint16_t sel = (uint16_t)(0x30 + core * 0x10);
-    __asm__ volatile("ltr %w0" :: "r"(sel));
+    arch_ltr(sel);
 }
 
 void tss_init(void) {

@@ -11,6 +11,7 @@
 #include "timer.h"
 #include "percpu.h"
 #include "memops.h"
+#include "arch_x86.h"
 
 /* Trampoline binary (assembled from ap_trampoline.asm → flat binary → C header) */
 #include "gen/ap_trampoline_bin.h"
@@ -54,15 +55,13 @@ static void ap_main(void) {
     /* Enable SSE: CR0.EM=0 (no x87 emulation), CR0.MP=1 (monitor coprocessor),
      * CR4.OSFXSR=1 (FXSAVE/FXRSTOR), CR4.OSXMMEXCPT=1 (SIMD exceptions).
      * Without CR0.EM clear, any SSE instruction faults (#NM) on this core. */
-    uint64_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    uint64_t cr0 = arch_get_cr0();
     cr0 &= ~(1ULL << 2);  /* clear EM */
     cr0 |= (1ULL << 1);   /* set MP */
-    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
-    uint64_t cr4;
-    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    arch_set_cr0(cr0);
+    uint64_t cr4 = arch_get_cr4();
     cr4 |= (1 << 9) | (1 << 10);
-    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+    arch_set_cr4(cr4);
 
     /* Initialize this core's LAPIC (reset by INIT IPI) */
     *(volatile uint32_t *)LAPIC_SVR = 0x1FF;         /* enable, spurious=0xFF */
@@ -95,7 +94,7 @@ static void ap_main(void) {
 
     if (user_entry_fn) user_entry_fn();
 
-    for (;;) __asm__ volatile("sti; hlt");
+    for (;;) arch_halt();
 }
 
 /* (icr_wait removed — QEMU TCG leaves delivery-pending stuck) */
@@ -128,8 +127,7 @@ int smp_start_all(void (*entry_fn)(void)) {
     data[2] = ensure_high((uint64_t)(uintptr_t)ap_main);   /* +0x10: entry (direct-map) */
     /* +0x18: kernel GDT pointer (10 bytes: 2-byte limit + 8-byte base) */
     {
-        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gdt_desc;
-        __asm__ volatile("sgdt %0" : "=m"(gdt_desc));
+        arch_desc_t gdt_desc = arch_sgdt();
         uint16_t *gdt_limit = (uint16_t *)phys_to_virt(TRAMP_DATA + 0x18);
         uint64_t *gdt_base  = (uint64_t *)phys_to_virt(TRAMP_DATA + 0x1A);
         *gdt_limit = gdt_desc.limit;
@@ -138,15 +136,14 @@ int smp_start_all(void (*entry_fn)(void)) {
     data[5] = SMP_STACK_SIZE;                               /* +0x28: stack size */
     /* +0x30: kernel IDT pointer (10 bytes: 2-byte limit + 8-byte base) */
     {
-        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idt_desc;
-        __asm__ volatile("sidt %0" : "=m"(idt_desc));
+        arch_desc_t idt_desc = arch_sidt();
         uint16_t *idt_limit = (uint16_t *)phys_to_virt(TRAMP_DATA + 0x30);
         uint64_t *idt_base  = (uint64_t *)phys_to_virt(TRAMP_DATA + 0x32);
         *idt_limit = idt_desc.limit;
         *idt_base  = idt_desc.base;
     }
 
-    __asm__ volatile("mfence" ::: "memory");
+    arch_mfence();
 
     serial_puts("SMP: trampoline at 0x");
     serial_uint(TRAMP_PHYS);
@@ -168,7 +165,7 @@ int smp_start_all(void (*entry_fn)(void)) {
     /* 4. Wait for APs to come alive */
     uint64_t deadline = timer_ms() + 500;
     while (timer_ms() < deadline) {
-        __asm__ volatile("pause");
+        arch_pause();
         int alive = 0;
         for (int i = 0; i < SMP_MAX_CORES; i++)
             if (core_alive[i]) alive++;
