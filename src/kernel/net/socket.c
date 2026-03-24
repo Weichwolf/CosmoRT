@@ -118,11 +118,11 @@ long do_connect(int fd, const void *addr, int addrlen) {
     /* sin_port is big-endian, net_tcp_connect expects host uint16_t */
     uint16_t port = bswap16(k_addr.sin_port);
 
-    /* UDP: just store destination, no handshake */
+    /* UDP: just store destination, no handshake.
+     * Don't change state — bind() may be called after connect() for UDP. */
     if (s->is_dgram) {
         s->remote_ip = k_addr.sin_addr;
         s->remote_port = k_addr.sin_port;
-        s->state = SOCK_CONNECTED;
         return 0;
     }
 
@@ -350,6 +350,9 @@ long do_bind(int fd, const void *addr, int addrlen) {
 
     s->local_ip = k_addr.sin_addr;
     s->local_port = k_addr.sin_port;
+    /* For UDP: also set udp_local_port (host byte order) for sendto/recvfrom */
+    if (s->is_dgram)
+        s->udp_local_port = bswap16(k_addr.sin_port);
     return 0;
 }
 

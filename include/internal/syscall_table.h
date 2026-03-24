@@ -114,8 +114,7 @@
     X( 55, getsockopt,        5, do_getsockopt((int)a1, (int)a2, (int)a3, (void *)a4, (int *)a5)) \
     X( 51, getsockname,       3, do_getsockname((int)a1, (void *)a2, (int *)a3)) \
     X( 52, getpeername,       3, do_getpeername((int)a1, (void *)a2, (int *)a3)) \
-    X( 46, sendmsg,           3, usock_sendmsg((int)a1, (const void *)a2, (int)a3)) \
-    X( 47, recvmsg,           3, usock_recvmsg((int)a1, (void *)a2, (int)a3)) \
+    /* sendmsg(46)/recvmsg(47): inline in dispatch.c (unix vs inet) */ \
     X( 48, shutdown,          2, do_shutdown((int)a1, (int)a2)) \
     X(  7, poll,              3, do_poll((void *)a1, (int)a2, (int)a3)) \
     /* Filesystem mutation */ \

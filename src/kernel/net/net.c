@@ -171,8 +171,7 @@ void net_poll(void) {
         queued = 1;
     }
 
-    /* Wake epoll sleepers when new packets arrive — they may be waiting
-     * for EPOLLIN on TCP/UDP sockets. */
+    /* Wake epoll sleepers when new packets arrive */
     if (queued) {
         extern void epoll_wake_all(void);
         epoll_wake_all();
@@ -829,6 +828,10 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
 
 int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
                  uint16_t src_port, const void *data, int len) {
+    for (int i = 0; i < 4; i++) { serial_putchar('0'+dst_ip[i]/100); serial_putchar('0'+(dst_ip[i]/10)%10); serial_putchar('0'+dst_ip[i]%10); if(i<3) serial_putchar('.'); }
+    serial_puts(":"); serial_hex64(dst_port);
+    serial_puts(" len="); serial_hex64((uint64_t)len);
+    serial_putchar('\n');
     if (!nic || len < 0 || len > 1400) return -1;
 
     uint8_t gw_mac[6];

@@ -176,6 +176,89 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return usock_socketpair((int)a2, (int *)a4);
     }
 
+    /* sendmsg/recvmsg: dispatch to unix socket or inet socket.
+     * For AF_INET: parse msghdr to extract buf/len/addr, delegate to sendto/recvfrom.
+     * struct msghdr { void *name; uint32_t namelen; struct iovec *iov; uint64_t iovlen;
+     *                 void *control; uint64_t controllen; int flags; }; */
+    case 46: /* SYS_SENDMSG */ {
+        process_t *sp = proc_current();
+        if (sp) {
+            fd_entry_t *sfe = fd_get(&sp->fds, (int)a1);
+            if (sfe && sfe->type == FD_SOCKET) {
+                /* Parse msghdr */
+                struct { uint64_t name; uint32_t namelen; uint32_t _pad;
+                         uint64_t iov; uint64_t iovlen;
+                         uint64_t control; uint64_t controllen; int flags; } mh;
+                if (copy_from_user(&mh, (void *)a2, sizeof(mh))) return -EFAULT;
+                /* Get first iovec */
+                struct { uint64_t base; uint64_t len; } iov1 = {0, 0};
+                if (mh.iovlen > 0 && mh.iov)
+                    copy_from_user(&iov1, (void *)mh.iov, sizeof(iov1));
+                return do_sendto((int)a1, (void *)iov1.base, (long)iov1.len,
+                                 (int)a3, (void *)mh.name, (int)mh.namelen);
+            }
+        }
+        return usock_sendmsg((int)a1, (const void *)a2, (int)a3);
+    }
+    case 47: /* SYS_RECVMSG */ {
+        process_t *sp = proc_current();
+        if (sp) {
+            fd_entry_t *sfe = fd_get(&sp->fds, (int)a1);
+            if (sfe && sfe->type == FD_SOCKET) {
+                struct { uint64_t name; uint32_t namelen; uint32_t _pad;
+                         uint64_t iov; uint64_t iovlen;
+                         uint64_t control; uint64_t controllen; int flags; } mh;
+                if (copy_from_user(&mh, (void *)a2, sizeof(mh))) return -EFAULT;
+                struct { uint64_t base; uint64_t len; } iov1 = {0, 0};
+                if (mh.iovlen > 0 && mh.iov)
+                    copy_from_user(&iov1, (void *)mh.iov, sizeof(iov1));
+                return do_recvfrom((int)a1, (void *)iov1.base, (long)iov1.len,
+                                   (int)a3, (void *)mh.name, (int *)(uintptr_t)mh.namelen);
+            }
+        }
+        return usock_recvmsg((int)a1, (void *)a2, (int)a3);
+    }
+
+    /* sendmmsg(307): send multiple messages — iterate and call sendmsg logic */
+    case 307: {
+        /* struct mmsghdr { struct msghdr hdr; unsigned int len; }; — 64 bytes */
+        int fd = (int)a1;
+        uint64_t mmsg_arr = (uint64_t)a2;
+        int vlen = (int)a3;
+        int flags_mm = (int)a4;
+        (void)flags_mm;
+        if (vlen <= 0) return 0;
+        if (vlen > 16) vlen = 16; /* cap */
+
+        process_t *mp = proc_current();
+        if (!mp) return -EFAULT;
+        fd_entry_t *mfe = fd_get(&mp->fds, fd);
+        int sent = 0;
+        for (int mi = 0; mi < vlen; mi++) {
+            /* Each mmsghdr = msghdr(56 bytes) + msg_len(4 bytes) */
+            uint64_t mhdr_addr = mmsg_arr + (uint64_t)mi * 64;
+            struct { uint64_t name; uint32_t namelen; uint32_t _pad;
+                     uint64_t iov; uint64_t iovlen;
+                     uint64_t control; uint64_t controllen; int flags; } mh;
+            if (copy_from_user(&mh, (void *)mhdr_addr, sizeof(mh))) break;
+            struct { uint64_t base; uint64_t len; } iov1 = {0, 0};
+            if (mh.iovlen > 0 && mh.iov)
+                copy_from_user(&iov1, (void *)mh.iov, sizeof(iov1));
+            long r;
+            if (mfe && mfe->type == FD_SOCKET)
+                r = do_sendto(fd, (void *)iov1.base, (long)iov1.len,
+                              0, (void *)mh.name, (int)mh.namelen);
+            else
+                r = usock_sendmsg(fd, (void *)mhdr_addr, 0);
+            if (r < 0) { serial_puts("sendmmsg: err="); serial_hex64((uint64_t)r); serial_putchar('\n'); break; }
+            /* Write msg_len back */
+            uint32_t msg_len = (uint32_t)r;
+            copy_to_user((void *)(mhdr_addr + 56), &msg_len, 4);
+            sent++;
+        }
+        return sent > 0 ? sent : -EFAULT;
+    }
+
     /* futex: user_ok check before dispatch */
     case SYS_FUTEX:
         if (__builtin_expect(!user_ok((uint64_t)a1, 4), 0)) return -EFAULT;
