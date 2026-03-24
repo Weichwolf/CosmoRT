@@ -2,20 +2,15 @@
 
 Stand: 2026-03-24. 509 ktest PASS. SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 laufen (--version).
-DHCP ok. Kernel-DNS + TCP + HTTP zu Internet-Servern ok.
+DHCP ok. Node.js HTTPS zu Internet-Servern ok (Boot-Test 11/12 PASS).
 
 ---
 
-## Netzwerk — Blocker: E1000 RX in Multi-Process
+## Netzwerk
 
-Kernel-Level (single-thread): DNS, TCP, HTTP zu example.com ok.
-Node.js (multi-thread/process): E1000 empfaengt keine Pakete nach DHCP.
-claude update: DNS-Resolution scheitert (c-ares sendmmsg funktioniert,
-aber UDP-Reply kommt nicht zurueck).
-
-### Naechste Schritte
-- [ ] E1000 RX-Ring im Multi-Process-Kontext debuggen
-- [ ] Alternative: virtio-net statt E1000
+- [x] E1000 RX Multi-Process: net_udp_recv while→do-while Fix (non-blocking timeout=0)
+- [x] Node.js HTTPS zu example.com (Boot-Test T4)
+- [ ] c-ares UDP DNS-Resolution (sendmmsg+recvfrom non-blocking, brk-Kollision?)
 - [ ] claude update erfolgreich
 
 ## Interaktive Shell

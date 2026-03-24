@@ -825,10 +825,6 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
 
 int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
                  uint16_t src_port, const void *data, int len) {
-    for (int i = 0; i < 4; i++) { serial_putchar('0'+dst_ip[i]/100); serial_putchar('0'+(dst_ip[i]/10)%10); serial_putchar('0'+dst_ip[i]%10); if(i<3) serial_putchar('.'); }
-    serial_puts(":"); serial_hex64(dst_port);
-    serial_puts(" len="); serial_hex64((uint64_t)len);
-    serial_putchar('\n');
     if (!nic || len < 0 || len > 1400) return -1;
 
     uint8_t gw_mac[6];
@@ -878,7 +874,8 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
     uint8_t pkt[Q_PKT];
     uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
 
-    while (timer_ms() < deadline) {
+    /* Always run at least once (non-blocking callers pass timeout=0) */
+    do {
         net_poll();
         int len = q_pop(&q_udp_sock, pkt, sizeof(pkt));
         if (len < 42) { net_idle(); continue; }
@@ -907,6 +904,6 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
         if (src_port_out) *src_port_out = get16(pkt + udp_off);
 
         return data_len;
-    }
+    } while (timer_ms() < deadline);
     return -1; /* timeout */
 }
