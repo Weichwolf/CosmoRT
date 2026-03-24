@@ -155,8 +155,9 @@ void net_poll(void) {
     if (ip_total < ihl || 14 + ip_total > len) goto out;
 
     uint8_t proto = pkt[23];
-    if (proto == 6)       { q_push(&q_tcp, pkt, len); }
-    else if (proto == 1)  q_push(&q_icmp, pkt, len);
+    int queued = 0;
+    if (proto == 6)       { q_push(&q_tcp, pkt, len); queued = 1; }
+    else if (proto == 1)  { q_push(&q_icmp, pkt, len); queued = 1; }
     else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(pkt+36);
         if (dport == 68)
@@ -167,6 +168,14 @@ void net_poll(void) {
             q_push(&q_udp_dns, pkt, len);
         else
             q_push(&q_udp_sock, pkt, len);
+        queued = 1;
+    }
+
+    /* Wake epoll sleepers when new packets arrive — they may be waiting
+     * for EPOLLIN on TCP/UDP sockets. */
+    if (queued) {
+        extern void epoll_wake_all(void);
+        epoll_wake_all();
     }
 
 out:
