@@ -73,6 +73,7 @@ long do_socket(int domain, int type, int protocol) {
     socket_t *s = sock_alloc();
     if (!s) return -EMFILE;
     s->refcount = 1;
+    s->is_dgram = (base_type == 2); /* SOCK_DGRAM */
 
     process_t *p = proc_current();
     if (!p) { s->state = SOCK_UNUSED; return -EFAULT; }
@@ -101,7 +102,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state == SOCK_CONNECTED) return -EISCONN;
+    if (s->state == SOCK_CONNECTED && !s->is_dgram) return -EISCONN;
     if (s->state == SOCK_LISTENING) return -EISCONN;
 
     /* Copy sockaddr to kernel to prevent TOCTOU */
@@ -116,6 +117,14 @@ long do_connect(int fd, const void *addr, int addrlen) {
     };
     /* sin_port is big-endian, net_tcp_connect expects host uint16_t */
     uint16_t port = bswap16(k_addr.sin_port);
+
+    /* UDP: just store destination, no handshake */
+    if (s->is_dgram) {
+        s->remote_ip = k_addr.sin_addr;
+        s->remote_port = k_addr.sin_port;
+        s->state = SOCK_CONNECTED;
+        return 0;
+    }
 
     /* Zero the tcp struct */
     for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
@@ -136,19 +145,62 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
 long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen) {
-    (void)flags; (void)dest_addr; (void)addrlen;
+    (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
-    if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (!s) return -EBADF;
     if (s->shut_wr) return -EPIPE;
-    /* Bounce user buffer to kernel in MSS-sized chunks */
+
+    /* ── UDP (SOCK_DGRAM) ── */
+    if (s->is_dgram) {
+        /* Determine destination: from dest_addr or stored connect addr */
+        uint32_t dst_ip_be;
+        uint16_t dst_port_be;
+        if (dest_addr && addrlen >= (int)sizeof(struct k_sockaddr_in)) {
+            struct k_sockaddr_in ka;
+            { int r = copy_from_user(&ka, dest_addr, sizeof(ka)); if (r) return r; }
+            dst_ip_be = ka.sin_addr;
+            dst_port_be = ka.sin_port;
+        } else if (s->remote_ip) {
+            dst_ip_be = s->remote_ip;
+            dst_port_be = s->remote_port;
+        } else {
+            return -EDESTADDRREQ;
+        }
+
+        uint8_t dst_ip[4] = {
+            (uint8_t)(dst_ip_be & 0xFF), (uint8_t)((dst_ip_be >> 8) & 0xFF),
+            (uint8_t)((dst_ip_be >> 16) & 0xFF), (uint8_t)((dst_ip_be >> 24) & 0xFF)
+        };
+        uint16_t dst_port = bswap16(dst_port_be);
+
+        /* Assign ephemeral local port if not bound */
+        if (!s->udp_local_port) {
+            extern int random_get(void *, unsigned long);
+            uint16_t rnd;
+            if (random_get(&rnd, sizeof(rnd)) < 0)
+                rnd = (uint16_t)(timer_ms() & 0xFFFF);
+            s->udp_local_port = (uint16_t)(49152 + (rnd & 0x3FFF));
+        }
+
+        /* Bounce user data to kernel buffer */
+        uint8_t kbuf[1400];
+        int slen = (int)len > 1400 ? 1400 : (int)len;
+        { int r = copy_from_user(kbuf, buf, (size_t)slen); if (r) return r; }
+
+        int r = net_udp_send(dst_ip, dst_port, s->udp_local_port, kbuf, slen);
+        return r < 0 ? -EIO : (long)slen;
+    }
+
+    /* ── TCP (SOCK_STREAM) ── */
+    if (s->state != SOCK_CONNECTED) return -EBADF;
     uint8_t kbuf[1460];
     const uint8_t *ubuf = (const uint8_t *)buf;
     long total = 0;
     while (total < len) {
         int chunk = (int)(len - total);
         if (chunk > 1460) chunk = 1460;
-        copy_from_user(kbuf, ubuf + total, (size_t)chunk); /* user_ok checked at entry */
+        copy_from_user(kbuf, ubuf + total, (size_t)chunk);
         int r = net_tcp_send(&s->tcp, kbuf, chunk);
         if (r < 0) return total > 0 ? total : -EIO;
         total += r;
@@ -160,12 +212,40 @@ long do_sendto(int fd, const void *buf, long len, int flags,
 
 long do_recvfrom(int fd, void *buf, long len, int flags,
                  void *src_addr, int *addrlen) {
-    (void)flags; (void)src_addr; (void)addrlen;
+    (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
-    if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (!s) return -EBADF;
     if (s->shut_rd) return 0; /* EOF */
-    /* Bounce buffer to avoid kernel fault on unmapped user pages */
+
+    /* ── UDP (SOCK_DGRAM) ── */
+    if (s->is_dgram) {
+        if (!s->udp_local_port) return -EAGAIN; /* no port assigned */
+        uint8_t kbuf[1400];
+        uint8_t sip[4];
+        uint16_t sport;
+        int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
+                             sip, &sport, NET_TCP_TIMEOUT_MS);
+        if (r < 0) return -EAGAIN;
+        { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
+
+        /* Fill src_addr if provided */
+        if (src_addr && addrlen) {
+            struct k_sockaddr_in sa;
+            for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+            sa.sin_family = 2; /* AF_INET */
+            sa.sin_port = bswap16(sport);
+            sa.sin_addr = (uint32_t)sip[0] | ((uint32_t)sip[1] << 8) |
+                          ((uint32_t)sip[2] << 16) | ((uint32_t)sip[3] << 24);
+            copy_to_user(src_addr, &sa, sizeof(sa));
+            int slen = (int)sizeof(struct k_sockaddr_in);
+            copy_to_user(addrlen, &slen, sizeof(int));
+        }
+        return r;
+    }
+
+    /* ── TCP (SOCK_STREAM) ── */
+    if (s->state != SOCK_CONNECTED) return -EBADF;
     uint8_t kbuf[4096];
     int want = (int)len > 4096 ? 4096 : (int)len;
     int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
@@ -178,8 +258,11 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
 
 long socket_read(int fd, void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
-    if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (!s) return -EBADF;
     if (s->shut_rd) return 0;
+    /* DGRAM: delegate to recvfrom */
+    if (s->is_dgram) return do_recvfrom(fd, buf, count, 0, 0, 0);
+    if (s->state != SOCK_CONNECTED) return -EBADF;
     uint8_t kbuf[4096];
     int want = (int)count > 4096 ? 4096 : (int)count;
     int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
@@ -190,8 +273,11 @@ long socket_read(int fd, void *buf, long count) {
 
 long socket_write(int fd, const void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
-    if (!s || s->state != SOCK_CONNECTED) return -EBADF;
+    if (!s) return -EBADF;
     if (s->shut_wr) return -EPIPE;
+    /* DGRAM: delegate to sendto (uses stored connect addr) */
+    if (s->is_dgram) return do_sendto(fd, buf, count, 0, 0, 0);
+    if (s->state != SOCK_CONNECTED) return -EBADF;
     long total = 0;
     while (total < count) {
         uint8_t kbuf[1460];
@@ -209,7 +295,7 @@ long socket_write(int fd, const void *buf, long count) {
 long socket_close(int fd) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state == SOCK_CONNECTED)
+    if (s->state == SOCK_CONNECTED && !s->is_dgram)
         net_tcp_close(&s->tcp);
     s->state = SOCK_UNUSED;
 
@@ -524,13 +610,13 @@ long do_shutdown(int fd, int how) {
         break;
     case 1 /* SHUT_WR */:
         s->shut_wr = 1;
-        if (s->state == SOCK_CONNECTED)
+        if (s->state == SOCK_CONNECTED && !s->is_dgram)
             net_tcp_close(&s->tcp); /* sends FIN */
         break;
     case 2 /* SHUT_RDWR */:
         s->shut_rd = 1;
         s->shut_wr = 1;
-        if (s->state == SOCK_CONNECTED)
+        if (s->state == SOCK_CONNECTED && !s->is_dgram)
             net_tcp_close(&s->tcp);
         break;
     default:

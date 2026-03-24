@@ -48,6 +48,10 @@ struct socket {
     uint8_t   shut_rd;
     uint8_t   shut_wr;
 
+    /* UDP (SOCK_DGRAM) */
+    uint8_t   is_dgram;
+    uint16_t  udp_local_port; /* host byte order, for net_poll matching */
+
     /* socket options */
     uint32_t  sockflags;
 
