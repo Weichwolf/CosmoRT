@@ -350,7 +350,13 @@ void kernel_main(struct boot_info *info) {
                 serial_puts(".local\n");
             }
         } else {
-            serial_puts("timeout (no network)\n");
+            /* DHCP failed — use static config for QEMU user-mode networking */
+            serial_puts("timeout, fallback static ");
+            net_my_ip[0] = 10; net_my_ip[1] = 0; net_my_ip[2] = 2; net_my_ip[3] = 15;
+            net_gw_ip[0] = 10; net_gw_ip[1] = 0; net_gw_ip[2] = 2; net_gw_ip[3] = 2;
+            net_dns_ip[0] = 10; net_dns_ip[1] = 0; net_dns_ip[2] = 2; net_dns_ip[3] = 3;
+            dhcp_ok = 1;
+            serial_puts("10.0.2.15\n");
         }
     } else {
         serial_puts("net: no NIC (ok for basic boot)\n");
