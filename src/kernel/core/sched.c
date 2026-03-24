@@ -150,6 +150,18 @@ void sched_add(thread_t *t) {
     core_rq[cpu].bitmap |= (1u << prio);
 
     spin_unlock_irq(&core_rq[cpu].lock, flags);
+
+    /* Send wakeup IPI if thread was enqueued on a different core.
+     * This breaks the target core out of hlt immediately instead of
+     * waiting for the next timer tick (~100ms). Critical for latency-
+     * sensitive paths like epoll_wait → recvfrom (c-ares DNS). */
+    int self = percpu_self()->core_id;
+    if (cpu != self && cpu < smp_num_cores()) {
+        volatile uint32_t *icr_hi = (volatile uint32_t *)(0xFEE00310ULL + PHYS_OFFSET);
+        volatile uint32_t *icr_lo = (volatile uint32_t *)(0xFEE00300ULL + PHYS_OFFSET);
+        *icr_hi = ((uint32_t)cpu << 24);
+        *icr_lo = 0x4000 | 0xFD;  /* Fixed delivery, vector 0xFD */
+    }
 }
 
 /* Remove and return highest-priority runnable thread from current core */

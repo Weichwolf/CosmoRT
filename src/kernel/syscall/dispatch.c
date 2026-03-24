@@ -225,8 +225,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                 struct { uint64_t base; uint64_t len; } iov1 = {0, 0};
                 if (mh.iovlen > 0 && mh.iov)
                     copy_from_user(&iov1, (void *)mh.iov, sizeof(iov1));
+                /* Pass src_addr pointer from msghdr. namelen is a value in msghdr,
+                 * but do_recvfrom needs a user-pointer to write back the length.
+                 * Compute the address of namelen within the user msghdr struct. */
+                int *user_namelen_ptr = mh.name ? (int *)((uint64_t)a2 + 8) : 0;
                 return do_recvfrom((int)a1, (void *)iov1.base, (long)iov1.len,
-                                   (int)a3, (void *)mh.name, (int *)(uintptr_t)mh.namelen);
+                                   (int)a3, (void *)mh.name, user_namelen_ptr);
             }
         }
         return usock_recvmsg((int)a1, (void *)a2, (int)a3);

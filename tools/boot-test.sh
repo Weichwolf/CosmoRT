@@ -49,7 +49,8 @@ check "claude --version" node /opt/claude-code/cli.js --version
 
 # ── T4: Network ──
 echo "--- T4: Network ---"
-check "dns" node -e "require('dns').resolve4('example.com',(e,a)=>{process.exit(e?1:0)})"
+X="$(node -e "require('dns').resolve4('example.com',(e,a)=>{console.log(e?'ERR:'+e.code:'OK:'+a[0]);process.exit(e?1:0)})" 2>&1)"
+if [ $? -eq 0 ]; then ok "dns ($X)"; else fail "dns ($X)"; fi
 check "https" node -e "require('https').get('https://example.com',r=>{console.log(r.statusCode);process.exit(r.statusCode===200?0:1)})"
 
 echo "=== Results: $PASS passed, $FAIL failed ==="

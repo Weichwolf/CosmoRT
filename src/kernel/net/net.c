@@ -265,8 +265,6 @@ void net_poll(void) {
     uint8_t pkt[Q_PKT];
     int len = nic_recv(pkt, sizeof(pkt));
     if (len < 14) goto out;
-    { static int rx_cnt; if (rx_cnt++ < 20) {
-    }}
     uint16_t etype = get16(pkt + 12);
     if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
     if (etype != 0x0800 || len < 34) goto out;
@@ -878,7 +876,10 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
     do {
         net_poll();
         int len = q_pop(&q_udp_sock, pkt, sizeof(pkt));
-        if (len < 42) { net_idle(); continue; }
+        if (len < 42) {
+            if (timeout_ms == 0) break; /* non-blocking: don't idle */
+            net_idle(); continue;
+        }
 
         /* Match destination port (in IP+UDP header) */
         uint16_t dport = get16(pkt + 36);

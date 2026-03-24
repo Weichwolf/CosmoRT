@@ -568,6 +568,9 @@ void irq_init(void) {
     /* TLB shootdown IPI vector */
     irq_register(0xFE, tlb_shootdown_handler);
 
+    /* Wakeup IPI (0xFD): no handler needed, just breaks hlt on target core.
+     * The ISR stub runs, irq_dispatch does lapic_eoi, returns → iretq. */
+
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);
     arch_lidt(&idtp);

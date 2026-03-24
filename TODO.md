@@ -8,9 +8,11 @@ DHCP ok. Node.js HTTPS zu Internet-Servern ok (Boot-Test 11/12 PASS).
 
 ## Netzwerk
 
-- [x] E1000 RX Multi-Process Fix (net_udp_recv do-while)
+- [x] E1000 RX Multi-Process Fix (net_udp_recv do-while, non-blocking break)
 - [x] Node.js HTTPS zu example.com
-- [ ] c-ares UDP DNS (scheitert: epoll-Wakeup-Latenz ~100ms, c-ares Timeout?)
+- [x] Wakeup-IPI (sched_add sendet IPI an Ziel-Core, bricht hlt sofort)
+- [x] recvmsg(47): addrlen-Pointer Fix (war Wert statt Pointer)
+- [ ] c-ares UDP DNS (Pakete kommen korrekt an, c-ares meldet ETIMEOUT — libuv-Timing?)
 - [ ] claude update (HTTPS funktioniert, DNS via /etc/hosts, npm ungetestet)
 
 ## Interaktive Shell
