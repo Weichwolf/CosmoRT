@@ -53,7 +53,9 @@ fi
 
 # /etc
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
-./tools/cosmo_cp "$COSMOFS_TMP" --write-string "127.0.0.1 localhost" /etc/hosts
+./tools/cosmo_cp "$COSMOFS_TMP" --write-string "127.0.0.1 localhost
+104.16.9.34 registry.npmjs.org
+104.18.27.120 example.com" /etc/hosts
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
 
 # Boot-test script (init runs /home/.boot if present, else starts bash -i)
