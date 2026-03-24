@@ -11,6 +11,7 @@
 #include "page_alloc.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "arch_x86.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 
@@ -123,7 +124,7 @@ static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
     serial_puts(" rip=");
     serial_hex64(rip);
     serial_puts(" KERNEL PANIC\n");
-    __asm__ volatile("cli; hlt");
+    arch_cli_halt();
     __builtin_unreachable();
 }
 
@@ -197,8 +198,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
     /* Page fault (vector 14): demand paging */
     if (vector == 14) {
-        uint64_t cr2;
-        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        uint64_t cr2 = arch_get_cr2();
         uint64_t error = frame->error;
 
         /* Kernel-mode fault (bit 2 = 0): try demand paging for user addresses */
@@ -284,7 +284,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if (pte & 1) {
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
                         if (map_user_page(p->pml4, page_addr, phys, nx_prot) == 0) {
-                            __asm__ volatile("invlpg (%0)" :: "r"(page_addr) : "memory");
+                            arch_invlpg(page_addr);
                             return; /* resume execution */
                         }
                     }
@@ -355,7 +355,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             /* Use do_exit_group to properly close FDs, wake parent, etc. */
             extern void do_exit_group(int status);
             /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+            arch_set_cr3(virt_to_phys(t->proc->pml4));
             do_exit_group(139); /* SIGSEGV */
             /* do_exit_group calls thread_return_to_kernel internally */
         }
@@ -405,7 +405,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & (1ULL << signo))) {
                 /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
                 if (vector == 14) {
-                    __asm__ volatile("mov %%cr2, %0" : "=r"(t->fault_addr));
+                    t->fault_addr = arch_get_cr2();
                 } else {
                     t->fault_addr = frame->rip;
                 }
@@ -449,8 +449,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_hex64(frame->rsp);
 
     if (vector == 14) {
-        uint64_t cr2;
-        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        uint64_t cr2 = arch_get_cr2();
         serial_puts(" CR2="); serial_hex64(cr2);
     }
 
@@ -462,13 +461,13 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         serial_puts(" killed\n");
         /* Use do_exit_group to properly close FDs, wake parent, etc. */
         extern void do_exit_group(int status);
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(t->proc->pml4));
         t->proc->exit_signal = vector;
         do_exit_group(128 + vector);
     }
 
     serial_puts(" KERNEL PANIC\n");
-    __asm__ volatile("cli; hlt");
+    arch_cli_halt();
 }
 
 __attribute__((cold))
@@ -479,7 +478,7 @@ static void default_exception(int vector) {
     serial_putchar('0' + vector / 10);
     serial_putchar('0' + vector % 10);
     serial_puts(" KERNEL PANIC\n");
-    __asm__ volatile("cli; hlt");
+    arch_cli_halt();
 }
 
 /* ── TLB Shootdown IPI ─────────────────────────────── */
@@ -494,12 +493,12 @@ static void tlb_shootdown_handler(int vector) {
      * pml4==0 (unconditional flush, e.g. from free_address_space). */
     uint64_t target = shootdown_pml4;
     if (target == 0) {
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        arch_flush_tlb();
     } else {
         percpu_t *cpu = percpu_self();
         thread_t *t = cpu->current_thread;
         if (t && t->proc && virt_to_phys(t->proc->pml4) == target)
-            __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+            arch_flush_tlb();
     }
     __sync_fetch_and_add(&shootdown_ack, 1);
     /* EOI handled by irq_dispatch — do NOT double-EOI */
@@ -514,7 +513,7 @@ void tlb_shootdown(uint64_t pml4_phys) {
 
     shootdown_ack = 0;
     shootdown_pml4 = pml4_phys;
-    __asm__ volatile("mfence" ::: "memory");
+    arch_mfence();
 
     /* Send IPI to all other cores: all-excluding-self shorthand, vector 0xFE */
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
@@ -525,7 +524,7 @@ void tlb_shootdown(uint64_t pml4_phys) {
     for (int i = 0; i < 10000000; i++) {
         if (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) >= expected)
             break;
-        __asm__ volatile("pause");
+        arch_pause();
     }
 
     spin_unlock_irq(&shootdown_lock, flags);
@@ -553,7 +552,7 @@ uint64_t irq_get_ticks(void) { return tick_count; }
 
 __attribute__((cold))
 void irq_init(void) {
-    __asm__ volatile("cli");
+    arch_cli();
 
     /* ISR stub addresses are identity-mapped (EFI relocations).
      * Add PHYS_OFFSET so they resolve via direct map in user PML4. */
@@ -571,7 +570,7 @@ void irq_init(void) {
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);
-    __asm__ volatile("lidt %0" : : "m"(idtp));
+    arch_lidt(&idtp);
     serial_puts("IRQ: IDT loaded\n");
 
     for (int i = 0; i < 24; i++) {
@@ -589,5 +588,5 @@ void irq_init(void) {
     lapic_write(LAPIC_TIMER_INIT, 10000000);
     serial_puts("IRQ: Timer started\n");
 
-    __asm__ volatile("sti");
+    arch_sti();
 }

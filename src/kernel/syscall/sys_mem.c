@@ -26,7 +26,7 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
             /* TLB flush for this address */
-            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
+            arch_invlpg(va);
         }
     }
 }
@@ -62,7 +62,7 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
             /* Update PTE flags — works for both present and not-present
              * (PROT_NONE sets flags=0, PROT_READ restores PRESENT bit) */
             pt[pti] = phys | new_flags;
-            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
+            arch_invlpg(va);
         }
     }
 }
@@ -192,7 +192,7 @@ long do_brk(unsigned long addr) {
         if (bv && bv->start == p->brk_base) bv->end = new_end;
         unmap_range(p->pml4, new_end, old_end);
         tlb_shootdown(virt_to_phys(p->pml4));
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        arch_flush_tlb();
     }
 
     /* Update brk VMA (for grow cases — shrink already handled above) */
@@ -443,7 +443,7 @@ long do_munmap(unsigned long addr, size_t length) {
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
     /* TLB flush: local + remote cores sharing this address space */
-    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    arch_flush_tlb();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
@@ -488,7 +488,7 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     update_pte_prot(p->pml4, start, end, prot);
 
     /* TLB flush: local + remote cores sharing this address space */
-    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    arch_flush_tlb();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Update VMA prot flags, splitting if needed */
@@ -548,7 +548,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
             }
             va = v->end;
         }
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        arch_flush_tlb();
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
         spin_unlock_irq(&p->lock, irqf);
@@ -593,7 +593,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
         uint64_t trim_end = old_addr + old_size;
         unmap_range(p->pml4, trim_start, trim_end);
         tlb_shootdown(virt_to_phys(p->pml4));
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+        arch_flush_tlb();
         v->end = old_addr + new_size;
         spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;
@@ -633,7 +633,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
     /* Unmap old region */
     unmap_range(p->pml4, old_addr, old_addr + old_size);
-    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    arch_flush_tlb();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Remove old VMA (re-find since tree may have changed) */

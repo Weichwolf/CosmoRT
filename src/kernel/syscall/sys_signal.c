@@ -199,7 +199,7 @@ void deliver_signal(thread_t *t, int signo) {
      * FXSAVE requires 16-byte aligned operand, so use a temp buffer. */
     {
         sig_fpstate_t _fxbuf __attribute__((aligned(16)));
-        __asm__ volatile("fxsave %0" : "=m"(_fxbuf));
+        arch_fxsave(&_fxbuf);
         kmemcpy(&uc.__fpregs_mem, &_fxbuf, sizeof(sig_fpstate_t));
     }
 
@@ -666,7 +666,7 @@ long do_rt_sigreturn(void) {
     {
         sig_fpstate_t _fxbuf __attribute__((aligned(16)));
         kmemcpy(&_fxbuf, &uc.__fpregs_mem, sizeof(sig_fpstate_t));
-        __asm__ volatile("fxrstor %0" : : "m"(_fxbuf));
+        arch_fxrstor(&_fxbuf);
     }
 
     /* Restore registers from ucontext gregset into syscall frame.
@@ -701,8 +701,7 @@ long do_rt_sigreturn(void) {
         if (fs >= 0x800000000000ULL) fs = 0;
         if (fs) {
             t->fs_base = fs;
-            __asm__ volatile("wrmsr" :: "c"(0xC0000100),
-                             "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+            arch_set_fs_base(fs);
         }
     }
 
@@ -749,7 +748,7 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     extern uint64_t pml4[];
     save_user_state_for_block(t, -EINTR);
     t->state = THREAD_BLOCKED;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
     return -EINTR; /* unreachable */
 }

@@ -8,8 +8,7 @@ long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_FS) {
         thread_t *t = thread_current();
         if (t) t->fs_base = addr;
-        __asm__ volatile("wrmsr" :: "c"(0xC0000100),
-                         "a"((uint32_t)addr), "d"((uint32_t)(addr >> 32)));
+        arch_set_fs_base(addr);
         return 0;
     }
     if (code == ARCH_SET_GS) {
@@ -30,9 +29,7 @@ long do_arch_prctl(int code, unsigned long addr) {
         return 0;
     }
     if (code == ARCH_GET_FS) {
-        uint32_t lo, hi;
-        __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
-        uint64_t val = ((uint64_t)hi << 32) | lo;
+        uint64_t val = arch_get_fs_base();
         int r = copy_to_user((void *)addr, &val, 8);
         if (r) return r;
         return 0;
@@ -92,14 +89,14 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
 
 void do_exit(int status) {
     thread_t *t = thread_current();
-    if (!t) { __asm__ volatile("cli; hlt"); return; }
+    if (!t) { arch_cli_halt(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
 
     /* CLONE_CHILD_CLEARTID: clear tid + futex_wake for pthread_join */
     if (t->clear_child_tid && p) {
         /* Ensure user page tables for user memory access */
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(p->pml4));
         if (!copy_to_user(t->clear_child_tid, &(int){0}, 4)) {
             long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
             (void)wr;
@@ -119,22 +116,22 @@ void do_exit(int status) {
     }
 
     extern uint64_t pml4[];
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
-    __asm__ volatile("cli; hlt");
+    arch_cli_halt();
 }
 
 void do_exit_group(int status) {
     thread_t *t = thread_current();
-    if (!t) { __asm__ volatile("cli; hlt"); return; }
+    if (!t) { arch_cli_halt(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
     if (p) exit_kill_process(t, p, status);
 
     extern uint64_t pml4[];
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
-    __asm__ volatile("cli; hlt");
+    arch_cli_halt();
 }
 
 /* ── SYS_clone (56) ──────────────────────────────── */
@@ -200,13 +197,11 @@ long do_clone(unsigned long flags, void *child_stack,
         t->fs_base = tls;
     } else {
         /* Read live FS_BASE from MSR — cur->fs_base may be stale */
-        uint32_t _lo, _hi;
-        __asm__ volatile("rdmsr" : "=a"(_lo), "=d"(_hi) : "c"(0xC0000100));
-        t->fs_base = ((uint64_t)_hi << 32) | _lo;
+        t->fs_base = arch_get_fs_base();
     }
 
     /* Copy parent FPU/SSE state to child thread */
-    __asm__ volatile("fxsave %0" : "=m"(t->fxsave_area));
+    arch_fxsave(t->fxsave_area);
 
     /* Parent TID (CLONE_PARENT_SETTID) */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
@@ -463,7 +458,7 @@ long do_sched_yield(void) {
     save_user_state_for_block(t, 0); /* saves state, sets rax=0 */
     sched_add(t);                    /* enqueue at tail (FIFO) */
     t->state = THREAD_RUNNING;       /* prevent sched_loop double-add */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t); /* longjmp to sched_loop */
     return 0; /* unreachable */
 }
