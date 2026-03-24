@@ -11,6 +11,7 @@
 #include "config.h"
 #include "percpu.h"
 #include "epoll.h"
+#include "arch_x86.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -672,7 +673,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             return ready;
         }
         if (timeout == 0) return 0;
-        __asm__ volatile("sti; hlt");
+        arch_halt();
     }
     if (ready > 0) {
         copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
@@ -699,7 +700,7 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         extern void epoll_sleeper_add_ext(thread_t *t);
         epoll_sleeper_add_ext(t);
         t->state = THREAD_BLOCKED;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(t);
     }
     return 0; /* unreachable */

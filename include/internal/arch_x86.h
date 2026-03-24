@@ -210,4 +210,22 @@ static inline uint64_t arch_get_rsp(void) {
     return sp;
 }
 
+/* --- Hyper-V hypercall -------------------------------------------- */
+
+static inline uint64_t arch_hyperv_call(uint64_t control, uint64_t input_phys,
+                                         uint64_t output_phys, void *hc_page) {
+    uint64_t result;
+    __asm__ volatile(
+        "mov %1, %%rcx\n\t"
+        "mov %2, %%rdx\n\t"
+        "mov %3, %%r8\n\t"
+        "call *%4\n\t"
+        "mov %%rax, %0"
+        : "=r"(result)
+        : "r"(control), "r"(input_phys), "r"(output_phys), "r"(hc_page)
+        : "rcx", "rdx", "r8", "rax", "memory"
+    );
+    return result;
+}
+
 #endif

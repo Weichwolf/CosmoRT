@@ -12,6 +12,7 @@
 #include "memops.h"
 #include "syscall.h"
 #include "cosmo_rt.h"
+#include "arch_x86.h"
 
 /* ── Pool ─────────────────────────────────────── */
 
@@ -377,7 +378,7 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
     t->rip -= 2;       /* back to `syscall` instruction (0F 05) */
     t->rax = SYS_READ; /* re-execute on wakeup */
     t->state = THREAD_BLOCKED;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
     return -EAGAIN; /* unreachable */
 }

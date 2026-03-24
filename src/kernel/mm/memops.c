@@ -1,6 +1,7 @@
 /* CosmoRT Memory Operations */
 
 #include "memops.h"
+#include "arch_x86.h"
 
 int memops_has_erms   = 0;
 int memops_has_avx2   = 0;
@@ -8,17 +9,15 @@ int memops_has_rdrand = 0;
 
 void memops_init(void) {
     /* CPUID feature detection for random.c (RDRAND) */
-    unsigned int eax, ebx, ecx, edx;
+    uint32_t eax, ebx, ecx, edx;
 
     /* CPUID leaf 7: ERMS (bit 9), AVX2 (bit 5) */
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                     : "a"(7), "c"(0));
+    arch_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
     if (ebx & (1u << 9)) memops_has_erms = 1;
     /* AVX2 detection skipped — not used in C path */
 
     /* CPUID leaf 1: RDRAND (bit 30 of ECX) */
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                     : "a"(1), "c"(0));
+    arch_cpuid(1, &eax, &ebx, &ecx, &edx);
     if (ecx & (1u << 30)) memops_has_rdrand = 1;
 }
 

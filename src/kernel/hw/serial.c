@@ -7,18 +7,12 @@
 #include "serial.h"
 #include "spinlock.h"
 #include <stdint.h>
+#include "arch_x86.h"
 
 #define COM1 0x3F8
 
-static inline void port_out8(uint16_t port, uint8_t val) {
-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline uint8_t port_in8(uint16_t port) {
-    uint8_t val;
-    __asm__ volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
-    return val;
-}
+static inline void port_out8(uint16_t port, uint8_t val) { arch_outb(port, val); }
+static inline uint8_t port_in8(uint16_t port) { return arch_inb(port); }
 
 /* ── dmesg ring buffer ─────────────────────────────── */
 

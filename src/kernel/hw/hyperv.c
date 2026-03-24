@@ -13,18 +13,12 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "memops.h"
+#include "arch_x86.h"
 
 /* ---- MSR helpers ---- */
 
-static inline uint64_t rdmsr(uint32_t msr) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-static inline void wrmsr(uint32_t msr, uint64_t val) {
-    __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)val), "d"((uint32_t)(val >> 32)));
-}
+static inline uint64_t rdmsr(uint32_t msr) { return arch_rdmsr(msr); }
+static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
 
 /* ---- State ---- */
 
@@ -48,7 +42,7 @@ void hyperv_set_vmbus_evt_handler(void (*fn)(void)) { vmbus_evt_handler = fn; }
 
 int hyperv_detect(void) {
     uint32_t eax, ebx, ecx, edx;
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x40000000));
+    arch_cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
     /* "Microsoft Hv" = ebx:ecx:edx = 7263694D:666F736F:76482074 */
     return (ebx == 0x7263694D && ecx == 0x666F736F && edx == 0x76482074);
 }
@@ -147,20 +141,7 @@ void hyperv_synic_init(void) {
 /* ---- Hypercall ---- */
 
 static uint64_t do_hypercall(uint64_t control, uint64_t input_phys, uint64_t output_phys) {
-    uint64_t result;
-    /* The hypercall page contains executable code placed by the hypervisor.
-     * We call it with: rcx=control, rdx=input_phys, r8=output_phys */
-    __asm__ volatile(
-        "mov %1, %%rcx\n\t"
-        "mov %2, %%rdx\n\t"
-        "mov %3, %%r8\n\t"
-        "call *%4\n\t"
-        "mov %%rax, %0"
-        : "=r"(result)
-        : "r"(control), "r"(input_phys), "r"(output_phys), "r"(hc_page)
-        : "rcx", "rdx", "r8", "rax", "memory"
-    );
-    return result;
+    return arch_hyperv_call(control, input_phys, output_phys, hc_page);
 }
 
 uint64_t hyperv_post_message(uint32_t conn_id, uint32_t msg_type,
@@ -218,7 +199,7 @@ int hyperv_msg_recv(int sint, void *buf, size_t bufsize) {
     /* Clear the slot and signal EOM if more messages pending */
     int pending = slot->flags & 1;
     slot->type = HV_MESSAGE_NONE;
-    __asm__ volatile("mfence" ::: "memory");
+    arch_mfence();
 
     if (pending)
         wrmsr(HV_X64_MSR_EOM, 0);
@@ -237,18 +218,12 @@ uint64_t hyperv_tsc_time_ns(void) {
 
     do {
         seq = tsc_page->sequence;
-        __asm__ volatile("mfence" ::: "memory");
+        arch_mfence();
         if (seq == 0) return 0;  /* TSC page not yet valid */
         scale = tsc_page->tsc_scale;
         offset = tsc_page->tsc_offset;
-        __asm__ volatile("rdtsc" : "=A"(tsc));
-        /* Full 64-bit read */
-        {
-            uint32_t lo, hi;
-            __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-            tsc = ((uint64_t)hi << 32) | lo;
-        }
-        __asm__ volatile("mfence" ::: "memory");
+        tsc = arch_rdtsc();
+        arch_mfence();
     } while (tsc_page->sequence != seq);
 
     /* result = (tsc * scale) >> 64 + offset, in 100ns units */

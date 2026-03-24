@@ -337,7 +337,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return cosmo_pci_config_write((int)a1, (int)a2, (int)a3, (int)a4, (uint32_t)a5);
     case SYS_COSMO_FW_LOAD: {
         HW_CAP_CHECK();
-        if (!user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
+        if (!user_ok(a1, 1) || !user_ok(a2, 8) || !user_ok(a3, 8)) return -EFAULT;
         return cosmo_fw_load((const char *)a1, (void **)a2, (size_t *)a3);
     }
     case SYS_COSMO_NIC_ATTACH: {

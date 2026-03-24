@@ -9,6 +9,7 @@
 #include "spinlock.h"
 #include "process.h"
 #include "percpu.h"
+#include "arch_x86.h"
 
 /* Registered NIC driver (set by driver init, e.g., e1000_init) */
 static const nic_driver_t *nic;
@@ -27,14 +28,12 @@ void net_nic_register(const nic_driver_t *driver) {
 /* NIC access macros */
 #define nic_recv(buf, bufsize)    (nic->recv((buf), (bufsize)))
 #define nic_get_mac(mac)          (nic->get_mac((mac)))
-/* nic_send is a function (defined after queues for loopback support) */
-static void nic_send(const uint8_t *data, uint16_t len);
 
 /* Idle: enable IRQs and halt until timer IRQ fires.
  * Timer IRQ fires → e1000d IRQ handler polls NIC → packets arrive
  * in ring buffer. Then we resume and net_poll reads them. */
 static inline void net_idle(void) {
-    __asm__ volatile("sti; hlt");
+    arch_halt();
 }
 
 /* Network state */
@@ -125,74 +124,6 @@ static void nic_send(const uint8_t *data, uint16_t len) {
         return;
     }
     if (nic) nic->send(data, len);
-}
-
-/* ── IP Checksum ──────────────────────────────────── */
-
-/* Forward declaration */
-static void mdns_handle(const uint8_t *pkt, int len);
-
-/* ── Central Packet Dispatcher ─────────────────────── */
-
-static volatile int net_poll_active;
-
-void net_poll(void) {
-    if (!nic) return;
-    /* Reentrancy guard: timer IRQ can fire during net_poll */
-    if (__sync_lock_test_and_set(&net_poll_active, 1)) return;
-
-    uint8_t pkt[Q_PKT];
-    int len = nic_recv(pkt, sizeof(pkt));
-    if (len < 14) goto out;
-    { static int rx_cnt; if (rx_cnt++ < 20) {
-    }}
-    uint16_t etype = get16(pkt + 12);
-    if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
-    if (etype != 0x0800 || len < 34) goto out;
-
-    int ihl = (pkt[14] & 0x0F) * 4;
-    if (ihl < 20 || 14 + ihl > len) goto out;
-    /* IP checksum skipped — QEMU may use NIC checksum offloading */
-    int ip_total = get16(pkt + 16);
-    if (ip_total < ihl || 14 + ip_total > len) goto out;
-
-    uint8_t proto = pkt[23];
-    int queued = 0;
-    if (proto == 6)       { q_push(&q_tcp, pkt, len); queued = 1; }
-    else if (proto == 1)  { q_push(&q_icmp, pkt, len); queued = 1; }
-    else if (proto == 17 && len >= 42) {
-        uint16_t dport = get16(pkt+36);
-        if (dport == 68)
-            q_push(&q_udp_dhcp, pkt, len);
-        else if (dport == 5353)
-            mdns_handle(pkt, len);
-        else if (dns_local_port && dport == dns_local_port)
-            q_push(&q_udp_dns, pkt, len);
-        else {
-            q_push(&q_udp_sock, pkt, len);
-        }
-        queued = 1;
-    }
-
-    /* Wake epoll sleepers when new packets arrive */
-    if (queued) {
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
-    }
-
-out:
-    __sync_lock_release(&net_poll_active);
-}
-
-/* poll_n removed: E1000 is IRQ-driven, net_poll() called from IRQ handler.
- * Callers use net_idle() (sti;hlt) to sleep until next interrupt. */
-
-/* ── Init ──────────────────────────────────────────── */
-
-int net_init(void) {
-    if (!nic) return -1;  /* no NIC driver registered */
-    nic_get_mac(net_my_mac);
-    return 0;
 }
 
 /* ── mDNS ──────────────────────────────────────────── */
@@ -322,6 +253,69 @@ static void mdns_handle(const uint8_t *pkt, int len) {
     }
 }
 
+/* ── Central Packet Dispatcher ─────────────────────── */
+
+static volatile int net_poll_active;
+
+void net_poll(void) {
+    if (!nic) return;
+    /* Reentrancy guard: timer IRQ can fire during net_poll */
+    if (__sync_lock_test_and_set(&net_poll_active, 1)) return;
+
+    uint8_t pkt[Q_PKT];
+    int len = nic_recv(pkt, sizeof(pkt));
+    if (len < 14) goto out;
+    { static int rx_cnt; if (rx_cnt++ < 20) {
+    }}
+    uint16_t etype = get16(pkt + 12);
+    if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
+    if (etype != 0x0800 || len < 34) goto out;
+
+    int ihl = (pkt[14] & 0x0F) * 4;
+    if (ihl < 20 || 14 + ihl > len) goto out;
+    /* IP checksum skipped — QEMU may use NIC checksum offloading */
+    int ip_total = get16(pkt + 16);
+    if (ip_total < ihl || 14 + ip_total > len) goto out;
+
+    uint8_t proto = pkt[23];
+    int queued = 0;
+    if (proto == 6)       { q_push(&q_tcp, pkt, len); queued = 1; }
+    else if (proto == 1)  { q_push(&q_icmp, pkt, len); queued = 1; }
+    else if (proto == 17 && len >= 42) {
+        uint16_t dport = get16(pkt+36);
+        if (dport == 68)
+            q_push(&q_udp_dhcp, pkt, len);
+        else if (dport == 5353)
+            mdns_handle(pkt, len);
+        else if (dns_local_port && dport == dns_local_port)
+            q_push(&q_udp_dns, pkt, len);
+        else {
+            q_push(&q_udp_sock, pkt, len);
+        }
+        queued = 1;
+    }
+
+    /* Wake epoll sleepers when new packets arrive */
+    if (queued) {
+        extern void epoll_wake_all(void);
+        epoll_wake_all();
+    }
+
+out:
+    __sync_lock_release(&net_poll_active);
+}
+
+/* poll_n removed: E1000 is IRQ-driven, net_poll() called from IRQ handler.
+ * Callers use net_idle() (sti;hlt) to sleep until next interrupt. */
+
+/* ── Init ──────────────────────────────────────────── */
+
+int net_init(void) {
+    if (!nic) return -1;  /* no NIC driver registered */
+    nic_get_mac(net_my_mac);
+    return 0;
+}
+
 /* ── DHCP ──────────────────────────────────────────── */
 static uint32_t dhcp_saved_xid;
 
@@ -357,7 +351,7 @@ int net_dhcp(void) {
         for (int i = 0; i < 100; i++) {
             net_poll();
             if (net_dhcp_check()) return 0;
-            for (volatile int j = 0; j < 10000; j++) __asm__ volatile("pause");
+            for (volatile int j = 0; j < 10000; j++) arch_pause();
         }
         /* Re-send discover every ~500ms in case first was lost */
         net_dhcp_send_discover();

@@ -12,6 +12,7 @@
 #include "page_alloc.h"
 #include "memops.h"
 #include "cosmofs.h"
+#include "arch_x86.h"
 
 /* CSPRNG for ASLR base address selection */
 static uint64_t elf_aslr_rand(void) {
@@ -19,9 +20,7 @@ static uint64_t elf_aslr_rand(void) {
     extern int random_get(void *buf, size_t len);
     if (random_get(&r, sizeof(r)) == 0) return r;
     /* Fallback to RDTSC if CSPRNG not yet initialized */
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+    return arch_rdtsc();
 }
 
 /* Map PT_LOAD segments from an ELF into user address space.

@@ -23,6 +23,7 @@
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
+#include "arch_x86.h"
 
 /* ── Epoll internals ─────────────────────────────── */
 
@@ -382,7 +383,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         t->wake_at = infinite ? 0 : deadline;
         epoll_sleeper_add(t);
         t->state = THREAD_BLOCKED;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(t);
     }
     return 0; /* unreachable */
@@ -680,7 +681,8 @@ void inotify_event(const char *path, uint32_t mask) {
 
     for (int i = 0; i < INOTIFY_POOL_MAX; i++) {
         inotify_t *ino = &inotify_pool[i];
-        /* Quick check: skip unallocated (watch_count == 0 and next_wd == 0) */
+        /* Skip entries with no active watches (lockless pre-check) */
+        if (ino->watch_count == 0) continue;
         uint64_t flags;
         spin_lock_irq(&ino->lock, &flags);
         for (int w = 0; w < ino->watch_count; w++) {

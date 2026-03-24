@@ -18,6 +18,7 @@
 #include "slab.h"
 #include "serial.h"
 #include "config.h"
+#include "arch_x86.h"
 
 extern void sched_add(thread_t *t);
 
@@ -142,7 +143,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val) {
     t->state = THREAD_BLOCKED;
 
     /* Switch to kernel page tables and return to scheduler */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
 
     /* Unreachable — thread resumes via proc_enter_ring3 when woken */
@@ -241,7 +242,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
         save_user_state_for_block(self, 0);
         self->state = THREAD_BLOCKED;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(self);
     }
 

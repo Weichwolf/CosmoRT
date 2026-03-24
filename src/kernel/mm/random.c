@@ -169,9 +169,7 @@ void random_add_interrupt_entropy(void) {
     /* RDRAND — primary entropy source when available */
     if (memops_has_rdrand) {
         uint64_t r;
-        int ok = 0;
-        __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-        if (ok) entropy_mix(r);
+        if (arch_rdrand_checked(&r)) entropy_mix(r);
     }
 
     /* Re-key CSPRNG with fresh entropy — under lock to avoid race with random_get */
