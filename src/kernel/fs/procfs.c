@@ -452,25 +452,77 @@ static int procfs_nettest(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     if (offset > 0) return 0; /* only on first read */
 
+    extern int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
+                            uint16_t src_port, const void *data, int len);
+    extern int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
+                            uint8_t *src_ip, uint16_t *src_port, int timeout_ms);
     extern int net_http_get(const uint8_t *dst_ip, uint16_t port,
                             const char *path, char *response, int maxlen);
 
     char tmp[512];
     int pos = 0;
 
-    /* Test: HTTP GET to QEMU gateway (10.0.2.2:80) */
-    uint8_t gw[] = {10, 0, 2, 2};
-    pos = append_str(tmp, pos, 512, "HTTP GET 10.0.2.2:80/ ...\n");
-    char resp[256];
-    int r = net_http_get(gw, 80, "/", resp, 256);
-    pos = append_str(tmp, pos, 512, "result=");
-    pos = append_int(tmp, pos, 512, (long)r);
+    /* Test 1: UDP DNS query to 10.0.2.3:53 */
+    uint8_t dns_ip[] = {10, 0, 2, 3};
+    /* Minimal DNS query for example.com A record */
+    uint8_t dns_q[] = {
+        0x00, 0x01, /* ID */
+        0x01, 0x00, /* Flags: standard query, recursion desired */
+        0x00, 0x01, /* Questions: 1 */
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* Answers/Auth/Additional: 0 */
+        /* QNAME: example.com */
+        7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0,
+        0x00, 0x01, /* QTYPE: A */
+        0x00, 0x01  /* QCLASS: IN */
+    };
+    uint16_t dns_lport = 55555;
+    pos = append_str(tmp, pos, 512, "UDP DNS 10.0.2.3:53...");
+    int sr = net_udp_send(dns_ip, 53, dns_lport, dns_q, (int)sizeof(dns_q));
+    pos = append_str(tmp, pos, 512, "send=");
+    pos = append_int(tmp, pos, 512, (long)sr);
+
+    /* Wait for reply */
+    uint8_t dns_resp[512];
+    uint8_t sip[4]; uint16_t sport;
+    int rr = net_udp_recv(dns_lport, dns_resp, 512, sip, &sport, 5000);
+    pos = append_str(tmp, pos, 512, " recv=");
+    pos = append_int(tmp, pos, 512, (long)rr);
+    if (rr > 0) {
+        pos = append_str(tmp, pos, 512, " OK\n");
+    } else {
+        pos = append_str(tmp, pos, 512, " TIMEOUT\n");
+    }
+
+    /* Test 2: Kernel DNS resolver */
+    extern int net_dns_resolve(const char *, uint8_t *);
+    uint8_t resolved_ip[4] = {0};
+    pos = append_str(tmp, pos, 512, "DNS example.com...");
+    int dr = net_dns_resolve("example.com", resolved_ip);
+    if (dr == 0) {
+        for (int i = 0; i < 4; i++) {
+            pos = append_int(tmp, pos, 512, resolved_ip[i]);
+            if (i < 3) tmp[pos++] = '.';
+        }
+    } else {
+        pos = append_str(tmp, pos, 512, "FAIL");
+    }
     pos = append_str(tmp, pos, 512, "\n");
-    if (r > 0) {
-        int show = r > 100 ? 100 : r;
-        for (int i = 0; i < show && pos < 500; i++)
-            tmp[pos++] = resp[i];
-        tmp[pos++] = '\n';
+
+    /* Test 3: HTTP GET to example.com:80 */
+    if (resolved_ip[0]) {
+        extern int net_http_get(const uint8_t *, uint16_t, const char *, char *, int);
+        pos = append_str(tmp, pos, 512, "HTTP GET...");
+        char resp[128];
+        int tr = net_http_get(resolved_ip, 80, "/", resp, 128);
+        pos = append_str(tmp, pos, 512, "result=");
+        pos = append_int(tmp, pos, 512, (long)tr);
+        if (tr > 0) {
+            pos = append_str(tmp, pos, 512, " [");
+            int show = tr > 60 ? 60 : tr;
+            for (int i = 0; i < show && pos < 490; i++) tmp[pos++] = resp[i];
+            pos = append_str(tmp, pos, 512, "]");
+        }
+        pos = append_str(tmp, pos, 512, "\n");
     }
 
     int out = 0;

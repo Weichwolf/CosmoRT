@@ -778,6 +778,7 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
+        net_poll();
         int len = q_pop(&q_udp_dns, reply, sizeof(reply));
         if (len < 42 + 12) { net_idle(); continue; }
 

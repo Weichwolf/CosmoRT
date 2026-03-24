@@ -382,13 +382,27 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     case FD_SOCKET: {
         socket_t *s = (socket_t *)fde->obj;
         if (!s) { ready |= EPOLLERR; break; }
-        if ((interest & EPOLLIN) && s->state == SOCK_CONNECTED) {
-            extern pkt_queue_t q_tcp;
-            if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
-                ready |= EPOLLIN;
+        if (s->is_dgram) {
+            /* UDP: check if packets available in global UDP queue */
+            if (interest & EPOLLIN) {
+                extern pkt_queue_t q_udp_sock;
+                /* Poll NIC to check for fresh packets */
+                net_poll();
+                if (q_udp_sock.count > 0)
+                    ready |= EPOLLIN;
+            }
+            if (interest & EPOLLOUT)
+                ready |= EPOLLOUT; /* UDP always writable */
+        } else {
+            /* TCP */
+            if ((interest & EPOLLIN) && s->state == SOCK_CONNECTED) {
+                extern pkt_queue_t q_tcp;
+                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
+                    ready |= EPOLLIN;
+            }
+            if ((interest & EPOLLOUT) && s->state == SOCK_CONNECTED)
+                ready |= EPOLLOUT;
         }
-        if ((interest & EPOLLOUT) && s->state == SOCK_CONNECTED)
-            ready |= EPOLLOUT;
         break;
     }
 
