@@ -83,7 +83,7 @@ struct e1000_rx_desc {
 /* ── DMA Buffers ───────────────────────────────────── */
 
 #define NUM_TX_DESC 8
-#define NUM_RX_DESC 8
+#define NUM_RX_DESC 32
 #define BUF_SIZE    2048
 
 /* Virtual pointers for kernel access */
