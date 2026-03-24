@@ -262,6 +262,18 @@ void epoll_wake_all(void) {
 /* Check timed-out sleepers. Called from timer IRQ (sched_preempt). */
 void epoll_check_timeouts(void) {
     uint64_t now = timer_ms();
+
+    /* Also wake sleepers if any timerfd has expired — the timerfd
+     * may be registered in their epoll set but the sleeper doesn't
+     * know until they re-scan. */
+    int need_wake = 0;
+    extern int timerfd_any_expired(void);
+    if (timerfd_any_expired()) need_wake = 1;
+    /* Also wake if NIC has queued packets */
+    extern pkt_queue_t q_tcp, q_udp_sock;
+    if (q_tcp.count > 0 || q_udp_sock.count > 0) need_wake = 1;
+    if (need_wake) epoll_wake_all();
+
     uint64_t irqf;
     spin_lock_irq(&epoll_sleepers.lock, &irqf);
 
@@ -544,6 +556,16 @@ long do_timerfd_settime(int fd, int tfd_flags,
     }
 
     spin_unlock_irq(&tfd->lock, irqf);
+    return 0;
+}
+
+/* Check if any timerfd has expired — used by epoll_check_timeouts */
+int timerfd_any_expired(void) {
+    uint64_t now = timer_ms();
+    for (int i = 0; i < TIMERFD_POOL_MAX; i++) {
+        timerfd_t *t = &timerfd_pool[i];
+        if (t->armed && now >= t->expire_ms) return 1;
+    }
     return 0;
 }
 
