@@ -8,10 +8,10 @@ DHCP ok. Node.js HTTPS zu Internet-Servern ok (Boot-Test 11/12 PASS).
 
 ## Netzwerk
 
-- [x] E1000 RX Multi-Process: net_udp_recv while→do-while Fix (non-blocking timeout=0)
-- [x] Node.js HTTPS zu example.com (Boot-Test T4)
-- [ ] c-ares UDP DNS-Resolution (sendmmsg+recvfrom non-blocking, brk-Kollision?)
-- [ ] claude update erfolgreich
+- [x] E1000 RX Multi-Process Fix (net_udp_recv do-while)
+- [x] Node.js HTTPS zu example.com
+- [ ] c-ares UDP DNS (scheitert: epoll-Wakeup-Latenz ~100ms, c-ares Timeout?)
+- [ ] claude update (HTTPS funktioniert, DNS via /etc/hosts, npm ungetestet)
 
 ## Interaktive Shell
 
