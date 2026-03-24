@@ -2,7 +2,7 @@
 
 Stand: 2026-03-24. 509 ktest PASS. SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 laufen (--version).
-DHCP ok. Node.js HTTPS zu Internet-Servern ok (Boot-Test 11/12 PASS).
+DHCP ok. Node.js DNS + HTTPS ok (Boot-Test 12/12 PASS).
 
 ---
 
@@ -12,8 +12,9 @@ DHCP ok. Node.js HTTPS zu Internet-Servern ok (Boot-Test 11/12 PASS).
 - [x] Node.js HTTPS zu example.com
 - [x] Wakeup-IPI (sched_add sendet IPI an Ziel-Core, bricht hlt sofort)
 - [x] recvmsg(47): addrlen-Pointer Fix (war Wert statt Pointer)
-- [ ] c-ares UDP DNS (Pakete kommen korrekt an, c-ares meldet ETIMEOUT — libuv-Timing?)
-- [ ] claude update (HTTPS funktioniert, DNS via /etc/hosts, npm ungetestet)
+- [x] dns.lookup via /etc/hosts (getaddrinfo, nsswitch: files dns)
+- [ ] c-ares UDP DNS (Pakete korrekt, c-ares ETIMEOUT — libuv-Integration?)
+- [ ] claude update (HTTPS+DNS funktionieren, npm ungetestet)
 
 ## Interaktive Shell
 
