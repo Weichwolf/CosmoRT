@@ -1,39 +1,25 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-24. 509 ktest PASS. SMP 2. RT+Compute Core-Modell.
-Node.js v22.14.0 + Claude Code 2.1.81 laufen (--version).
-DHCP ok. Node.js DNS + HTTPS ok (Boot-Test 12/12 PASS).
+Stand: 2026-03-24. 509 ktest PASS, 12/12 Boot-Test PASS.
+SMP 2. RT+Compute Core-Modell.
+Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
+DHCP, DNS (lookup), HTTPS ok.
 
 ---
 
-## Netzwerk
+## claude update
 
-- [x] E1000 RX Multi-Process Fix (net_udp_recv do-while, non-blocking break)
-- [x] Node.js HTTPS zu example.com
-- [x] Wakeup-IPI (sched_add sendet IPI an Ziel-Core, bricht hlt sofort)
-- [x] recvmsg(47): addrlen-Pointer Fix (war Wert statt Pointer)
-- [x] dns.lookup via /etc/hosts (getaddrinfo, nsswitch: files dns)
-- [ ] c-ares UDP DNS (Pakete korrekt, c-ares ETIMEOUT — libuv-Integration?)
-- [ ] claude update (HTTPS+DNS funktionieren, npm ungetestet)
+- [x] npm --version funktioniert (10.9.2, ~60s Startup)
+- [x] getcwd: Return-Wert war Pointer statt Laenge (musl-Inkompatibilitaet)
+- [x] INODE_COUNT 1024→8192 (npm hat 2778 Dateien)
+- [ ] bash crasht nach npm-Exit (SEGFAULT pid=1, Memory-Pressure?)
+- [ ] npm install -g (HTTPS zu registry.npmjs.org, Dateisystem-Schreibzugriffe)
+- [ ] claude update erfolgreich
 
-## Interaktive Shell
+## Bekannte Einschraenkungen
 
-- [ ] Ctrl-C (SIGINT an Foreground-Prozessgruppe via PTY)
-- [ ] Dynamic Linker: cat/coreutils crashen (RIP=0x0, ld-cosmo.so)
-- [ ] Job Control (bash ohne +m Flag — TIOCSPGRP, SIGTSTP/SIGCONT)
-
-## Boot
-
-- [ ] GPT-Image Boot (Kernel hat keinen Partitions-Support)
-
-## Audit — erledigt
-
-- [x] SYS_COSMO_FW_LOAD: Input-Pointer (name) validiert
-- [x] SYS_COSMO_NIC_ATTACH: sizeof(kargs) (war bereits korrekt)
-- [x] inotify_event: Lockless pre-check auf watch_count==0
-
-## Refactoring (TD) — erledigt
-
-- [x] TD7: arch_x86.h komplett — alle Kernel-.c ohne inline-asm
-- [x] TD8: Cold-Path Strings extrahiert
-- [x] TD9: Bottom-Up Sortierung komplett — alle Dateien geprueft, net.c mDNS-Block reorderiert
+- c-ares UDP DNS: Kernel liefert korrekte Pakete, c-ares ETIMEOUT
+- Ctrl-C (SIGINT an Foreground-Prozessgruppe via PTY)
+- Dynamic Linker: cat/coreutils crashen (RIP=0x0, ld-cosmo.so)
+- Job Control (bash ohne +m Flag)
+- GPT-Image Boot (Kernel hat keinen Partitions-Support)
