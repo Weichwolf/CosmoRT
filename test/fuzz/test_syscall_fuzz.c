@@ -131,6 +131,10 @@ static const uint64_t nr_all[] = {
 static void fuzz_round(uint64_t seed) {
     rng_state = seed;
 
+    /* Close all inherited FDs so we don't block on serial I/O */
+    for (int fd = 0; fd < 16; fd++)
+        sc1(SYS_CLOSE, fd);
+
     /* Scratch buffer — valid pointer for ptr_gen */
     long buf = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
     if (buf < 0) sc1(SYS_EXIT_GROUP, 99);
