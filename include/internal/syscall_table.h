@@ -75,6 +75,8 @@
     X(318, getrandom,         3, do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3)) \
     X(302, prlimit64,         4, do_prlimit64((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
     X( 99, sysinfo,           1, do_sysinfo((void *)a1)) \
+    X(115, getgroups,         2, (long)0) /* single-user: no supplementary groups */ \
+    X(116, setgroups,         2, (long)0) /* single-user: noop */ \
     X( 98, getrusage,         2, do_getrusage((int)a1, (void *)a2)) \
     X(100, times,             1, do_times((void *)a1)) \
     /* Timers / clocks */ \
