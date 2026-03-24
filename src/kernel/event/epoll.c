@@ -373,11 +373,9 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
      * This is simpler and more reliable than the block/wakeup mechanism
      * because it works regardless of IRQ delivery timing. */
     while (infinite || timer_ms() < deadline) {
-        /* Active poll: check NIC for packets, pause briefly */
-        for (int pi = 0; pi < 100; pi++) {
-            net_poll();
-            __asm__ volatile("pause");
-        }
+        /* Brief pause + NIC poll */
+        for (volatile int d = 0; d < 50000; d++) __asm__ volatile("pause");
+        net_poll();
 
         spin_lock_irq(&ep->lock, &irqf);
         nready = 0;

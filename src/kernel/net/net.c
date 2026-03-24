@@ -34,7 +34,10 @@ static void nic_send(const uint8_t *data, uint16_t len);
  * Timer IRQ fires → e1000d IRQ handler polls NIC → packets arrive
  * in ring buffer. Then we resume and net_poll reads them. */
 static inline void net_idle(void) {
-    __asm__ volatile("sti; hlt");
+    /* Brief pause + poll — don't use hlt (blocks entire core in kernel mode).
+     * The poll allows NIC packet reception in the same kernel context. */
+    for (volatile int i = 0; i < 50000; i++) __asm__ volatile("pause");
+    net_poll();
 }
 
 /* Network state */
