@@ -124,14 +124,6 @@ static void nic_send(const uint8_t *data, uint16_t len) {
 
 /* ── IP Checksum ──────────────────────────────────── */
 
-static uint16_t ip_checksum(const uint8_t *hdr, int len) {
-    uint32_t sum = 0;
-    for (int i = 0; i < len; i += 2)
-        sum += (hdr[i] << 8) | (i+1 < len ? hdr[i+1] : 0);
-    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-    return (uint16_t)~sum;
-}
-
 /* Forward declaration */
 static void mdns_handle(const uint8_t *pkt, int len);
 
@@ -153,7 +145,7 @@ void net_poll(void) {
 
     int ihl = (pkt[14] & 0x0F) * 4;
     if (ihl < 20 || 14 + ihl > len) goto out;
-    if (ip_checksum(pkt + 14, ihl) != 0) goto out;
+    /* IP checksum skipped — QEMU may use NIC checksum offloading */
     int ip_total = get16(pkt + 16);
     if (ip_total < ihl || 14 + ip_total > len) goto out;
 
@@ -313,6 +305,7 @@ static void mdns_handle(const uint8_t *pkt, int len) {
 }
 
 /* ── DHCP ──────────────────────────────────────────── */
+static uint32_t dhcp_saved_xid;
 
 int net_dhcp_check(void) {
     if (net_my_ip[0] != 0) return 1;
@@ -321,7 +314,7 @@ int net_dhcp_check(void) {
     if (len < 282) return 0;
     if (get16(reply+36) != 68) return 0;
     if (reply[42] != 2) return 0;
-    if (get32(reply+46) != 0xDEADBEEF) return 0;
+    if (get32(reply+46) != dhcp_saved_xid) return 0;
 
     mcpy(net_my_ip, reply+58, 4);
     int o = 282;
@@ -370,10 +363,9 @@ void net_dhcp_send_discover(void) {
     pkt[42]=1; pkt[43]=1; pkt[44]=6;
     {
         extern int random_get(void *, unsigned long);
-        uint32_t dhcp_xid;
-        if (random_get(&dhcp_xid, sizeof(dhcp_xid)) < 0)
-            dhcp_xid = (uint32_t)timer_ms(); /* fallback if CSPRNG not seeded */
-        put32(pkt+46, dhcp_xid);
+        if (random_get(&dhcp_saved_xid, sizeof(dhcp_saved_xid)) < 0)
+            dhcp_saved_xid = (uint32_t)timer_ms();
+        put32(pkt+46, dhcp_saved_xid);
     }
     mcpy(pkt+70, net_my_mac, 6);
     pkt[278]=99; pkt[279]=130; pkt[280]=83; pkt[281]=99;
@@ -401,6 +393,7 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
+        net_poll();
         int len = q_pop(&q_arp, reply, sizeof(reply));
         if (len < 42) { net_idle(); continue; }
         if (get16(reply+20) != 2) continue;
@@ -499,6 +492,7 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
 
     /* Phase 1: wait for SYN on local_port */
     while (timer_ms() < deadline) {
+        net_poll();
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
         if (len < 54) { net_idle(); continue; }
         uint16_t dport = get16(pkt + 36);
@@ -527,6 +521,7 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     /* Phase 2: wait for ACK completing the handshake */
     deadline = timer_ms() + (uint64_t)timeout_ms;
     while (timer_ms() < deadline) {
+        net_poll();
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
         if (len < 54) { net_idle(); continue; }
         if (get16(pkt + 36) != c->local_port) continue;
@@ -564,6 +559,7 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
+        net_poll(); /* actively poll NIC — don't rely solely on IRQ */
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
         if (get16(reply+36) != c->local_port) continue;

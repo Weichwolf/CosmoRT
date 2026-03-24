@@ -87,8 +87,8 @@ struct e1000_rx_desc {
 #define BUF_SIZE    2048
 
 /* Virtual pointers for kernel access */
-static struct e1000_tx_desc *tx_descs;
-static struct e1000_rx_desc *rx_descs;
+static volatile struct e1000_tx_desc *tx_descs;
+static volatile struct e1000_rx_desc *rx_descs;
 static uint8_t (*tx_bufs)[BUF_SIZE];
 static uint8_t (*rx_bufs)[BUF_SIZE];
 
