@@ -1,63 +1,64 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-24. 509 ktest PASS, 14/14 Boot-Test PASS.
+Stand: 2026-03-24. 509 ktest PASS, 14/15 Boot-Test PASS.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
 
 ---
 
-## Phase 1 — Remote-Exploits (ein Paket reicht)
+## Phase 1 — Remote-Exploits — erledigt
 
-- [ ] #5 net.c:635 — TCP plen negativ → 4GB mcpy (1-Zeiler Fix)
-- [ ] #1 net.c:794 — DNS Response Parsing Buffer OOB
-- [ ] #9 net.c:797 — DNS Name Parsing ri2 += 4 ohne Bounds-Check
-- [ ] #19 socket.c:187 — sendto kein MTU-Check
+- [x] #5 TCP plen bounds-check
+- [x] #1 DNS Response Parsing OOB
+- [x] #9 DNS Name Parsing ri2 bounds
+- [x] #19 sendto MTU guard
 
-## Phase 2 — Local Priv-Esc (crafted ELF)
+## Phase 2 — ELF Loader — erledigt
 
-- [ ] #6 process.c:304 — ELF phoff nicht gegen elf_len validiert
-- [ ] #2 elf.c:58 — ELF Loader Integer Overflow (vaddr + p_filesz wraps)
+- [x] #6 phoff validation
+- [x] #2 vaddr+filesz overflow check
 
-## Phase 3 — Kernel-Stability (Crashes/Corruption)
+## Phase 3 — Stability — erledigt
 
-- [ ] #3 vma.c:154 — AVL-Tree Remove Use-After-Free
-- [ ] #7 page_alloc.c:89 — Buddy Double-Free
-- [ ] #4 futex.c:205 — Futex PI Use-After-Free
-- [ ] #11 sys_signal.c:134 — Signal Frame RSP Underflow
-- [ ] #12 epoll.c:283 — Epoll Sleeper NULL-Deref
-- [ ] #15 page_alloc.c:131 — order_for_pages() Shift UB
-- [ ] #16 sys_file.c:961 — pread64 fde->obj NULL-Deref
+- [x] #3 AVL-Tree Remove UAF
+- [x] #7 Buddy Double-Free guard
+- [x] #4 Futex PI lock
+- [x] #11 Signal Frame RSP underflow
+- [x] #12 Epoll Sleeper NULL check
+- [x] #15 Shift UB (1ULL)
+- [x] #16 pread64 NULL check
 
-## Phase 4 — claude update (Feature-Blocker)
+## Phase 4 — claude update
 
-- [x] npm --version funktioniert (10.9.2)
-- [x] getcwd: Return-Wert Pointer→Laenge (musl-Compat)
-- [x] INODE_COUNT 1024→8192
-- [x] HTTPS zu registry.npmjs.org PASS
-- [ ] bash crasht nach npm-Exit (SEGFAULT pid=1, SIGCHLD-Handler?)
+- [x] npm --version (10.9.2)
+- [x] getcwd Pointer→Laenge
+- [x] INODE_COUNT 8192
+- [x] HTTPS registry.npmjs.org
+- [x] SIGCHLD-Delivery (bash ueberlebt npm-Exit)
+- [ ] npm crasht bei Exit (SIGSEGV in V8 GC — Output korrekt)
 - [ ] npm install -g
 - [ ] claude update erfolgreich
 
-## Phase 5 — Races/Hardening
+## Phase 5 — Races/Hardening — erledigt
 
-- [ ] #8 sched.c:239 — RT Migration Deadlock
-- [ ] #10 sys_mem.c:387 — mmap VMA Race
-- [ ] #13 vfs.c:234 — Symlink Recursion Stack Exhaustion
-- [ ] #17 sys_proc.c:256 — clone3 uargs nicht pre-validiert
-- [ ] #18 sys_proc.c:316 — prctl PR_SET_NAME TOCTOU
-- [ ] #20 vfs.c:664 — File Offset uint64 Overflow
-- [ ] #21 sys_mem.c:397 — mmap file_off Overflow
-- [ ] #22 pty.c:163 — PTY Line Buffer Bounds
-- [ ] #14 e1000.c:160 — E1000 BAR nicht validiert
+- [x] #8 sched migration deadlock
+- [x] #10 mmap VMA race
+- [x] #13 symlink iterativ
+- [x] #17 clone3 validation
+- [x] #18 prctl TOCTOU
+- [x] #20 file offset overflow
+- [x] #21 mmap file_off overflow
+- [x] #22 PTY line buffer bounds
+- [x] #14 E1000 BAR validation
 
-## Phase 6 — Low-Prio Hardening
+## Phase 6 — Low-Prio — erledigt
 
-- [ ] #23 sched.c:46 — count_rt_threads() ohne Lock
-- [ ] #24 dispatch.c:8 — copy_path_from_user Pointer Overflow
-- [ ] #25 sys_file.c:69 — do_write buf+pos Pointer Overflow
-- [ ] #26 sys_file.c:293 — readv TOCTOU
-- [ ] #27 sys_file.c:570 — utimensat hardcoded 32 Bytes
+- [x] #23 count_rt_threads docs
+- [x] #24 copy_path_from_user overflow
+- [x] #25 do_write overflow
+- [x] #26 readv iovec copy
+- [x] #27 utimensat sizeof
 
 ## Phase 7 — Einschraenkungen
 
