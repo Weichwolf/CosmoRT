@@ -387,6 +387,17 @@ void thread_run(thread_t *t) {
     tss_set_rsp0(t->kstack_top);
     cpu->kernel_rsp = t->kstack_top;
 
+    /* Kernel-level yield resume: thread yielded from inside a syscall
+     * (e.g., net_idle in TCP connect). Kernel call stack is intact on
+     * kstack. longjmp back to the kernel_yield_jmpbuf to resume.
+     * Enable IRQs — kernel_longjmp doesn't restore RFLAGS. */
+    if (t->in_kernel_yield) {
+        t->in_kernel_yield = 0;
+        __asm__ volatile("sti");
+        extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+        kernel_longjmp(t->kernel_yield_jmpbuf, 1);
+    }
+
     /* Load thread's FS base (TLS) before entering userspace — always,
      * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
     {

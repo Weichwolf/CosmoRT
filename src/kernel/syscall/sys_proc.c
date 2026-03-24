@@ -453,14 +453,16 @@ long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
 }
 
 long do_sched_yield(void) {
-    /* Real yield: block briefly, re-enqueue, let other threads (e1000d) run.
-     * save_user_state_for_block stores return value in rax. On resume,
-     * the thread returns from the syscall with rax=0 (success). */
+    /* Real yield: save user state, enqueue at tail, longjmp to sched_loop.
+     * sched_pick returns the next thread (FIFO round-robin), so other
+     * threads (e1000d, shell) get CPU time before we run again. */
     thread_t *t = thread_current();
     if (!t) return 0;
     extern uint64_t pml4[];
+    extern void sched_add(thread_t *t);
     save_user_state_for_block(t, 0); /* saves state, sets rax=0 */
-    t->state = THREAD_RUNNABLE;
+    sched_add(t);                    /* enqueue at tail (FIFO) */
+    t->state = THREAD_RUNNING;       /* prevent sched_loop double-add */
     __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
     thread_return_to_kernel(t); /* longjmp to sched_loop */
     return 0; /* unreachable */

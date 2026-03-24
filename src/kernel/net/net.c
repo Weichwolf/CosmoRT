@@ -7,6 +7,8 @@
 #include "serial.h"
 #include "timer.h"
 #include "spinlock.h"
+#include "process.h"
+#include "percpu.h"
 
 /* Registered NIC driver (set by driver init, e.g., e1000_init) */
 static const nic_driver_t *nic;
@@ -28,12 +30,11 @@ void net_nic_register(const nic_driver_t *driver) {
 /* nic_send is a function (defined after queues for loopback support) */
 static void nic_send(const uint8_t *data, uint16_t len);
 
-/* Idle: yield CPU to let userspace NIC driver process packets.
- * When NIC runs in Ring 3 (e1000d), it needs scheduler time to
- * receive packets and push them to the net_port ring buffer. */
+/* Idle: enable IRQs and halt until timer IRQ fires.
+ * Timer IRQ fires → e1000d IRQ handler polls NIC → packets arrive
+ * in ring buffer. Then we resume and net_poll reads them. */
 static inline void net_idle(void) {
-    extern long do_sched_yield(void);
-    do_sched_yield(); /* give e1000d a chance to run */
+    __asm__ volatile("sti; hlt");
 }
 
 /* Network state */

@@ -82,6 +82,10 @@ typedef struct thread {
     /* ── Kernel context (setjmp buffer) ── */
     uint64_t jmpbuf[8];
 
+    /* ── Kernel-level yield: resume in-kernel call chain (e.g., net_idle) ── */
+    uint64_t kernel_yield_jmpbuf[8];
+    int      in_kernel_yield;   /* 1 = resume via kernel_yield_jmpbuf */
+
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
 
