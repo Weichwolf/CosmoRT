@@ -42,6 +42,23 @@ void save_user_state_for_block(thread_t *t, long return_value) {
     __asm__ volatile("fxsave %0" : "=m"(t->fxsave_area));
 }
 
+/* ── Cold-path error helpers (keep strings out of hot dispatch) ── */
+
+__attribute__((cold))
+static void dispatch_unhandled(long num, int pid) {
+    serial_puts("syscall: unhandled #");
+    serial_hex64((uint64_t)num);
+    if (pid >= 0) { serial_puts(" pid="); serial_putchar('0' + (pid % 10)); }
+    serial_putchar('\n');
+}
+
+__attribute__((cold))
+static void sendmmsg_error(long err) {
+    serial_puts("sendmmsg: err=");
+    serial_hex64((uint64_t)err);
+    serial_putchar('\n');
+}
+
 /* ── Dispatcher ──────────────────────────────────── */
 
 __attribute__((hot))
@@ -250,14 +267,12 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
                               0, (void *)mh.name, (int)mh.namelen);
             else
                 r = usock_sendmsg(fd, (void *)mhdr_addr, 0);
-            if (r < 0) { serial_puts("sendmmsg: err="); serial_hex64((uint64_t)r); serial_putchar('\n'); break; }
+            if (__builtin_expect(r < 0, 0)) { sendmmsg_error(r); break; }
             /* Write msg_len back */
             uint32_t msg_len = (uint32_t)r;
             copy_to_user((void *)(mhdr_addr + 56), &msg_len, 4);
             sent++;
         }
-        serial_putchar('0'+sent);
-        serial_putchar('\n');
         return sent > 0 ? sent : -EFAULT;
     }
 
@@ -399,10 +414,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
 
     default: {
         process_t *dp = proc_current();
-        serial_puts("syscall: unhandled #");
-        serial_hex64((uint64_t)num);
-        if (dp) { serial_puts(" pid="); serial_putchar('0' + (dp->pid % 10)); }
-        serial_putchar('\n');
+        dispatch_unhandled(num, dp ? (int)dp->pid : -1);
         return -ENOSYS;
     }
     }

@@ -112,6 +112,36 @@ typedef struct {
 /* Forward declaration */
 static void default_exception_with_frame(int vector, irq_frame_t *frame);
 
+/* ── Cold-path error helpers (keep strings out of hot IRQ dispatch) ── */
+
+__attribute__((cold, noreturn))
+static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
+    serial_puts("\nPAGE FAULT in kernel CR2=");
+    serial_hex64(cr2);
+    serial_puts(" err=");
+    serial_hex64(error);
+    serial_puts(" rip=");
+    serial_hex64(rip);
+    serial_puts(" KERNEL PANIC\n");
+    __asm__ volatile("cli; hlt");
+    __builtin_unreachable();
+}
+
+__attribute__((cold))
+static void segfault_log(uint64_t cr2, uint64_t rip, uint64_t error, int pid) {
+    serial_puts("\nSEGFAULT CR2=");
+    serial_hex64(cr2);
+    serial_puts(" RIP=");
+    serial_hex64(rip);
+    serial_puts(" err=");
+    serial_hex64(error);
+    if (pid >= 0) {
+        serial_puts(" pid=");
+        serial_putchar('0' + (pid % 10));
+        serial_puts(" killed\n");
+    }
+}
+
 /* ── Handlers ──────────────────────────────────────── */
 
 #define MAX_HANDLERS 256
@@ -224,14 +254,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     return; /* IRET will resume at setjmp return */
                 }
             }
-            serial_puts("\nPAGE FAULT in kernel CR2=");
-            serial_hex64(cr2);
-            serial_puts(" err=");
-            serial_hex64(error);
-            serial_puts(" rip=");
-            serial_hex64(frame->rip);
-            serial_puts(" KERNEL PANIC\n");
-            __asm__ volatile("cli; hlt");
+            pf_kernel_panic(cr2, error, frame->rip);
         }
 
         /* User-mode page fault — try demand paging */
@@ -327,16 +350,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             }
         }
 
-        serial_puts("\nSEGFAULT CR2=");
-        serial_hex64(cr2);
-        serial_puts(" RIP=");
-        serial_hex64(frame->rip);
-        serial_puts(" err=");
-        serial_hex64(error);
+        segfault_log(cr2, frame->rip, error, (t && t->proc) ? (int)t->proc->pid : -1);
         if (t && t->proc) {
-            serial_puts(" pid=");
-            serial_putchar('0' + (t->proc->pid % 10));
-            serial_puts(" killed\n");
             /* Use do_exit_group to properly close FDs, wake parent, etc. */
             extern void do_exit_group(int status);
             /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
@@ -344,8 +359,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             do_exit_group(139); /* SIGSEGV */
             /* do_exit_group calls thread_return_to_kernel internally */
         }
-        serial_puts(" KERNEL PANIC\n");
-        __asm__ volatile("cli; hlt");
+        pf_kernel_panic(cr2, error, frame->rip);
     }
 
     /* Other CPU exceptions (0-31, except 14 handled above): use frame-aware handler */

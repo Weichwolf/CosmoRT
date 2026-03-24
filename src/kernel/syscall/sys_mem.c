@@ -5,6 +5,28 @@
 /* Forward declarations */
 static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end);
 
+/* ── Cold-path error helpers (keep strings out of hot brk/mmap) ── */
+
+__attribute__((cold))
+static void brk_collision_error(uint64_t addr, uint64_t ov_start, uint64_t ov_end) {
+    serial_puts("brk: ENOMEM collision 0x");
+    serial_hex64(addr);
+    serial_puts(" vs VMA [0x");
+    serial_hex64(ov_start);
+    serial_puts(",0x");
+    serial_hex64(ov_end);
+    serial_puts(")\n");
+}
+
+__attribute__((cold))
+static void mmap_enomem_error(uint64_t length, uint64_t hint) {
+    serial_puts("mmap: ENOMEM len=0x");
+    serial_hex64(length);
+    serial_puts(" hint=0x");
+    serial_hex64(hint);
+    serial_putchar('\n');
+}
+
 /* ── SYS_brk (12) ───────────────────────────────── */
 
 /* brk collision detection */
@@ -33,13 +55,7 @@ long do_brk(unsigned long addr) {
             long ret = (long)p->brk_current;
             uint64_t ov_start = overlap->start, ov_end = overlap->end;
             spin_unlock_irq(&p->lock, flags);
-            serial_puts("brk: ENOMEM collision 0x");
-            serial_hex64(addr);
-            serial_puts(" vs VMA [0x");
-            serial_hex64(ov_start);
-            serial_puts(",0x");
-            serial_hex64(ov_end);
-            serial_puts(")\n");
+            brk_collision_error(addr, ov_start, ov_end);
             return ret;
         }
     } else if (new_end < old_end) {
@@ -257,11 +273,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 vaddr = vma_find_free(p->vma_root, USER_MMAP_BASE, length);
                 if (!vaddr) {
                     spin_unlock_irq(&p->lock, irqf);
-                    serial_puts("mmap: ENOMEM len=0x");
-                    serial_hex64(length);
-                    serial_puts(" hint=0x");
-                    serial_hex64(addr);
-                    serial_putchar('\n');
+                    mmap_enomem_error(length, addr);
                     return -ENOMEM;
                 }
             }
