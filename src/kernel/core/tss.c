@@ -8,6 +8,7 @@
 #include "serial.h"
 #include "config.h"
 #include "smp.h"
+#include "arch_x86.h"
 
 /* TSS with I/O Permission Bitmap */
 #define IOPB_SIZE 8193
@@ -47,15 +48,8 @@ void tss_set_rsp0(uint64_t rsp0) {
         per_core_tss[core].rsp0 = rsp0;
 }
 
-static inline void wrmsr(uint32_t msr, uint64_t val) {
-    __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)val), "d"((uint32_t)(val >> 32)));
-}
-
-static inline uint64_t rdmsr(uint32_t msr) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-    return ((uint64_t)hi << 32) | lo;
-}
+static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
+static inline uint64_t rdmsr(uint32_t msr) { return arch_rdmsr(msr); }
 
 /* Write TSS descriptor into GDT and load TR for a specific core */
 static void tss_load_for_core(int core) {

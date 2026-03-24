@@ -279,7 +279,7 @@ long do_read(int fd, void *buf, size_t count) {
                 t->rip -= 2;   /* rewind to `syscall` insn (0F 05) */
                 t->rax = 0;    /* SYS_read — re-execute on wakeup */
                 t->state = THREAD_BLOCKED;
-                __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+                arch_set_cr3(virt_to_phys(pml4));
                 thread_return_to_kernel(t);
             }
         }

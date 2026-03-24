@@ -131,7 +131,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
     t->rip -= 2;       /* back to `syscall` instruction (0F 05) */
     t->rax = SYS_READ; /* syscall number for read */
     t->state = THREAD_BLOCKED;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
     return -EAGAIN; /* unreachable */
 }
@@ -175,7 +175,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
     t->rip -= 2;
     t->rax = SYS_WRITE;
     t->state = THREAD_BLOCKED;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(t);
     return -EAGAIN; /* unreachable */
 }
