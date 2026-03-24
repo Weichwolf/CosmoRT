@@ -62,8 +62,8 @@ DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
 
 ## Phase 7 — Einschraenkungen
 
+- [x] Ctrl-C (SIGINT via PTY — war bereits implementiert)
 - [ ] c-ares UDP DNS (c-ares ETIMEOUT trotz korrekter Pakete)
-- [ ] Ctrl-C (SIGINT an Foreground-Prozessgruppe via PTY)
 - [ ] Job Control (bash ohne +m Flag)
 - [ ] Dynamic Linker (cat/coreutils crashen, ld-cosmo.so)
 - [ ] GPT-Image Boot
