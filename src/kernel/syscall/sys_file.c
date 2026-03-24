@@ -415,7 +415,7 @@ long do_getcwd(char *buf, size_t size) {
     if (!user_ok((uint64_t)buf, size)) return -EFAULT;
     int r = vfs_getcwd(buf, size);
     if (r < 0) return r;
-    return (long)(uint64_t)buf; /* Linux returns pointer */
+    return (long)(r + 1); /* Linux returns string length including NUL */
 }
 
 long do_chdir(const char *path) {

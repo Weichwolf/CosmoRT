@@ -47,6 +47,13 @@ fi
 # Node.js
 [ -f "$BREW/bin/node" ] && ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/bin/node" /usr/bin/node
 
+# npm
+if [ -d "$BREW/lib/node_modules/npm" ]; then
+    ./tools/cosmo_cp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/npm" /usr/lib/node_modules/npm
+    ./tools/cosmo_cp "$COSMOFS_TMP" --write-string '#!/usr/bin/node
+require("/usr/lib/node_modules/npm/bin/npm-cli.js")' /usr/bin/npm
+fi
+
 # Claude Code
 [ -d "$BREW/lib/node_modules/@anthropic-ai/claude-code" ] && \
     ./tools/cosmo_cp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/@anthropic-ai/claude-code" /opt/claude-code

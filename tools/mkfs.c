@@ -29,8 +29,8 @@
 /* Journal size: 64 blocks = 256KB */
 #define JOURNAL_BLOCKS 64
 
-/* Inode table: enough for 1024 inodes = 64 blocks */
-#define INODE_COUNT  1024
+/* Inode table: 8192 inodes = 512 blocks (npm alone needs ~3000 files) */
+#define INODE_COUNT  8192
 #define INODE_BLOCKS (INODE_COUNT / INODES_PER_BLK)
 
 struct cosmofs_super {
