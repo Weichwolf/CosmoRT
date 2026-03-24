@@ -365,23 +365,57 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
     spin_unlock_irq(&ep->lock, irqf);
 
-    if (nready > 0) return nready;
+    if (nready > 0) { ct->wake_at = 0; return nready; }
     if (timeout == 0) return 0;
-    if (!infinite && timer_ms() >= deadline) return 0;
+    if (!infinite && timer_ms() >= deadline) { ct->wake_at = 0; return 0; }
 
-    /* No events ready — block until woken by epoll_wake_all or timeout. */
-    {
+    /* No events ready — poll with sti;hlt until events arrive or timeout.
+     * This is simpler and more reliable than the block/wakeup mechanism
+     * because it works regardless of IRQ delivery timing. */
+    while (infinite || timer_ms() < deadline) {
+        /* Active poll: check NIC for packets, pause briefly */
+        for (int pi = 0; pi < 100; pi++) {
+            net_poll();
+            __asm__ volatile("pause");
+        }
+
+        spin_lock_irq(&ep->lock, &irqf);
+        nready = 0;
+        for (int i = 0; i < ep->count && nready < maxevents; i++) {
+            epoll_entry_t *ent = &ep->entries[i];
+            uint32_t interest = ent->events & ~EPOLLET;
+            uint32_t r = fd_poll_readiness(ent->fd, interest);
+            if (r) {
+                struct epoll_event ev;
+                ev.events = r & interest;
+                ev.events |= r & (EPOLLHUP | EPOLLERR);
+                if (ev.events) {
+                    if (ent->events & EPOLLET) {
+                        uint32_t new_bits = ev.events & ~ent->et_last;
+                        if (!new_bits) continue;
+                        ent->et_last = ev.events;
+                    }
+                    ev.data = ent->data;
+                    copy_to_user(&events[nready], &ev, sizeof(ev));
+                    nready++;
+                }
+            }
+        }
+        spin_unlock_irq(&ep->lock, irqf);
+        if (nready > 0) { ct->wake_at = 0; return nready; }
+    }
+    ct->wake_at = 0;
+    return 0;
+
+    /* Old block path — disabled in favor of polling above */
+    if (0) {
         extern uint64_t pml4[];
-
         thread_t *t = thread_current();
         if (!t) return -EFAULT;
-
         save_user_state_for_block(t, 0);
-        t->rip -= 2;              /* back to `syscall` instruction */
-        t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
-        t->wake_at = infinite ? 0 : deadline; /* 0 = no timeout */
-
-        /* Register as sleeper, then block. */
+        t->rip -= 2;
+        t->rax = SYS_EPOLL_PWAIT;
+        t->wake_at = infinite ? 0 : deadline;
         epoll_sleeper_add(t);
         t->state = THREAD_BLOCKED;
         __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");

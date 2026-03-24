@@ -83,7 +83,7 @@ struct e1000_rx_desc {
 /* ── DMA Buffers ───────────────────────────────────── */
 
 #define NUM_TX_DESC 8
-#define NUM_RX_DESC 32
+#define NUM_RX_DESC 8
 #define BUF_SIZE    2048
 
 /* Virtual pointers for kernel access */
@@ -123,7 +123,11 @@ static void e1000_irq_handler(void *ctx) {
     (void)ctx;
     e1000_read(E1000_ICR); /* read + auto-clear interrupt cause */
     extern void net_poll(void);
-    net_poll();
+    /* Drain all pending packets (not just one) */
+    for (int i = 0; i < 16; i++) {
+        net_poll();
+        if (!(rx_descs[rx_cur].status & E1000_RXD_STAT_DD)) break;
+    }
 }
 
 /* ── Init ──────────────────────────────────────────── */
@@ -288,7 +292,12 @@ int e1000_init(void) {
     cosmo_pci_config_read(found_bus, found_dev, 0, 0x3C, &irq_reg);
     int irq_line = (int)(irq_reg & 0xFF);
     cosmo_irq_register(irq_line, e1000_irq_handler, 0);
-    e1000_write(E1000_IMS, 0x84); /* RXT0 + LSC (RX timer + link status) */
+    /* Set RX interrupt delay to 0 for immediate notification */
+    e1000_write(0x2820, 0);  /* RDTR = 0 (receive delay timer) */
+    e1000_write(0x282C, 0);  /* RADV = 0 (receive absolute delay) */
+    /* Enable: RXT0 (bit 7) + RXO (bit 6) + RXDMT0 (bit 4) + LSC (bit 2) */
+    e1000_write(E1000_IMS, 0xD4);
+    e1000_read(E1000_ICR); /* clear pending */
 
     serial_puts("e1000: IRQ ");
     serial_putchar('0' + (irq_line / 10));
@@ -311,7 +320,7 @@ int e1000_send(const void *data, uint16_t len) {
     for (int w = 0; w < 1000; w++) {
         if (tx_descs[tx_cur].status & E1000_TXD_STAT_DD) break;
         __asm__ volatile("pause");
-        if (w == 999) { serial_puts("e1000: TX prev timeout\n"); return -1; }
+        if (w == 999) { serial_puts("e1000: TX timeout\n"); return -1; }
     }
 
     /* Copy data to TX buffer */
