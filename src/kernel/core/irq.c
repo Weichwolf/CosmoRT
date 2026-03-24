@@ -529,6 +529,8 @@ static void timer_handler(int vector) {
     /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
+    /* NIC polling moved to E1000 IRQ handler — not safe in timer context
+     * due to reentrancy with spinlocks in net_poll/epoll_wake_all. */
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

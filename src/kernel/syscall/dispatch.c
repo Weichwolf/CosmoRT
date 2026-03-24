@@ -256,7 +256,6 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
             copy_to_user((void *)(mhdr_addr + 56), &msg_len, 4);
             sent++;
         }
-        serial_puts("sendmmsg: sent=");
         serial_putchar('0'+sent);
         serial_putchar('\n');
         return sent > 0 ? sent : -EFAULT;

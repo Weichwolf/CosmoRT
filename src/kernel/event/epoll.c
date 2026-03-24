@@ -309,10 +309,22 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
-    uint64_t deadline = (timeout < 0)  ? 0  /* infinite: no deadline */
-                      : (timeout == 0) ? 0
-                      : (timer_ms() + (uint64_t)timeout);
-    int infinite = (timeout < 0);
+    /* Use absolute deadline to avoid timeout reset on re-execute.
+     * On first call: compute deadline. On re-execute after wakeup:
+     * check if the saved wake_at has passed. */
+    thread_t *ct = thread_current();
+    uint64_t deadline;
+    int infinite;
+    if (ct && ct->wake_at && timeout > 0) {
+        /* Re-execute: use previously saved deadline */
+        deadline = ct->wake_at;
+        infinite = 0;
+    } else {
+        deadline = (timeout < 0)  ? 0
+                 : (timeout == 0) ? 0
+                 : (timer_ms() + (uint64_t)timeout);
+        infinite = (timeout < 0);
+    }
 
     net_poll();
 

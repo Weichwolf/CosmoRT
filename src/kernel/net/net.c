@@ -144,6 +144,8 @@ void net_poll(void) {
     uint8_t pkt[Q_PKT];
     int len = nic_recv(pkt, sizeof(pkt));
     if (len < 14) goto out;
+    { static int rx_cnt; if (rx_cnt++ < 20) {
+    }}
     uint16_t etype = get16(pkt + 12);
     if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
     if (etype != 0x0800 || len < 34) goto out;
@@ -166,8 +168,9 @@ void net_poll(void) {
             mdns_handle(pkt, len);
         else if (dns_local_port && dport == dns_local_port)
             q_push(&q_udp_dns, pkt, len);
-        else
+        else {
             q_push(&q_udp_sock, pkt, len);
+        }
         queued = 1;
     }
 
