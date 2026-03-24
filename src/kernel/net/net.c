@@ -796,14 +796,18 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
         int rdns_len = len - 42;
         while (ri2 < rdns_len && rdns[ri2] != 0) {
             if ((rdns[ri2] & 0xC0) == 0xC0) { ri2 += 2; break; }
-            ri2 += rdns[ri2] + 1;
+            int lbl = rdns[ri2] + 1;
+            if (ri2 + lbl > rdns_len) break;
+            ri2 += lbl;
         }
         if (ri2 < rdns_len && rdns[ri2] == 0) ri2++;
+        if (ri2 + 4 > rdns_len) continue;
         ri2 += 4;
 
         for (int a = 0; a < ancount && ri2 + 12 <= rdns_len; a++) {
-            if ((rdns[ri2] & 0xC0) == 0xC0) ri2 += 2;
-            else { while (ri2 < rdns_len && rdns[ri2]) ri2 += rdns[ri2]+1; ri2++; }
+            if ((rdns[ri2] & 0xC0) == 0xC0) { ri2 += 2; if (ri2 > rdns_len) break; }
+            else { while (ri2 < rdns_len && rdns[ri2]) { int l = rdns[ri2]+1; if (ri2+l > rdns_len) break; ri2 += l; } if (ri2 >= rdns_len) break; ri2++; }
+            if (ri2 + 10 > rdns_len) break;
             uint16_t rtype = get16(rdns+ri2); ri2 += 2;
             ri2 += 2; ri2 += 4;
             uint16_t rdlen = get16(rdns+ri2); ri2 += 2;

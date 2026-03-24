@@ -6,6 +6,9 @@
 #include "process.h"
 #include "thread.h"
 
+_Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
+               "PTY_LINE_MAX must match line_buf array size");
+
 extern void sched_add(thread_t *t);
 
 /* SIGINT, SIGQUIT — from linux.h (via process.h chain) */

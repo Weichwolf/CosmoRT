@@ -155,15 +155,19 @@ static vma_t *remove_node(vma_t *root, vma_t *target, vma_t **removed) {
         *removed = root;
         if (!root->left) return root->right;
         if (!root->right) return root->left;
-        /* Two children: replace with in-order successor */
+        /* Two children: replace with in-order successor.
+         * Detach successor from tree BEFORE marking it as removed,
+         * so rebalancing during detach never touches the freed node. */
         vma_t *succ = min_node(root->right);
-        /* Copy data from successor */
+        /* Copy data from successor into root */
         root->start = succ->start;
         root->end = succ->end;
         root->prot = succ->prot;
         root->flags = succ->flags;
-        *removed = succ;
+        /* Detach successor from subtree (rebalancing happens here) */
         root->right = remove_node(root->right, succ, &(vma_t *){0});
+        /* Now mark successor as the node to free */
+        *removed = succ;
     } else {
         /* Same start but different node — search both subtrees */
         root->right = remove_node(root->right, target, removed);

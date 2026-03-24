@@ -184,9 +184,12 @@ long do_sendto(int fd, const void *buf, long len, int flags,
             s->udp_local_port = (uint16_t)(49152 + (rnd & 0x3FFF));
         }
 
+        /* MTU guard: IP(20) + UDP(8) + payload ≤ 1500 */
+        if (len > 1472) return -EMSGSIZE;
+
         /* Bounce user data to kernel buffer */
-        uint8_t kbuf[1400];
-        int slen = (int)len > 1400 ? 1400 : (int)len;
+        uint8_t kbuf[1472];
+        int slen = (int)len;
         { int r = copy_from_user(kbuf, buf, (size_t)slen); if (r) return r; }
 
         int r = net_udp_send(dst_ip, dst_port, s->udp_local_port, kbuf, slen);

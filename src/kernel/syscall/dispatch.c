@@ -6,9 +6,8 @@
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
 int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
-    if (__builtin_expect(!user_ok((uint64_t)upath, 1), 0)) return -EFAULT;
+    if (__builtin_expect(!user_ok((uint64_t)upath, max), 0)) return -EFAULT;
     for (size_t i = 0; i < max; i++) {
-        if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
         kbuf[i] = upath[i];
         if (kbuf[i] == '\0') return (int)i;
     }

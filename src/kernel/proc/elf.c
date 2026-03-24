@@ -43,6 +43,9 @@ static uint64_t elf_map_segments(const void *data, size_t len,
 
         uint64_t vaddr = ph->p_vaddr + base;
 
+        if (ph->p_filesz > len || vaddr + ph->p_filesz < vaddr)
+            return 0;
+
         int seg_prot = 0;
         if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
         if (ph->p_flags & PF_W) seg_prot |= PROT_WRITE;
@@ -101,6 +104,9 @@ static uint64_t elf_map_segments_inode(uint64_t ino, uint64_t file_size,
         if (ph->p_memsz == 0) continue;
 
         uint64_t vaddr = ph->p_vaddr + base;
+
+        if (ph->p_filesz > file_size || vaddr + ph->p_filesz < vaddr)
+            return 0;
 
         int seg_prot = 0;
         if (ph->p_flags & PF_R) seg_prot |= PROT_READ;

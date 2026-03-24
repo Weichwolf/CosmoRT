@@ -145,6 +145,12 @@ void deliver_signal(thread_t *t, int signo) {
         if (t->rsp < t->sigalt_sp || t->rsp >= t->sigalt_sp + t->sigalt_size)
             stack_rsp = t->sigalt_sp + t->sigalt_size;
     }
+    /* Guard against RSP underflow (stack_rsp too small for red zone + frame) */
+    if (stack_rsp < 128 + frame_size + 8) {
+        p->exit_signal = signo;
+        do_exit(128 + signo);
+        return;
+    }
     stack_rsp -= 128; /* Skip x86_64 red zone (ABI mandates 128 bytes below RSP) */
     /* Align RSP for signal handler entry: handler sees RSP with a fake
      * return address at [RSP], so RSP ≡ 8 (mod 16) — same as after a call.

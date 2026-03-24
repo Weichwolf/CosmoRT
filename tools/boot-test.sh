@@ -57,6 +57,10 @@ check "https" node -e "require('https').get('https://example.com',r=>{console.lo
 # ── T5: npm ──
 echo "--- T5: npm ---"
 check "process.cwd()" node -e 'console.log(process.cwd())'
+X="$(node /usr/lib/node_modules/npm/bin/npm-cli.js --version 2>/dev/null)"
+X="${X%%$'\n'*}"  # first line only
+X="${X%%$'\r'*}"  # strip CR
+if [[ "$X" == [0-9]* ]]; then ok "npm $X"; else fail "npm ($X)"; fi
 check "https registry" node -e 'require("https").get("https://registry.npmjs.org/@anthropic-ai/claude-code/latest",function(r){console.log(r.statusCode);process.exit(r.statusCode===200?0:1)}).on("error",function(e){console.log(e.message);process.exit(1)})'
 
 echo "=== Results: $PASS passed, $FAIL failed ==="

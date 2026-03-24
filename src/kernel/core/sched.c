@@ -42,7 +42,9 @@ static int count_isolated(void) {
 }
 
 /* Approximate RT thread count from per-core bitmaps + running threads.
- * Lock-free: reads are atomic word-sized. Fine for a heuristic. */
+ * Racy: a thread migrating between cores during iteration may be counted
+ * twice or missed. Acceptable — callers use this as a heuristic for load
+ * balancing, not for correctness. */
 static int count_rt_threads(void) {
     int count = 0, ncores = smp_num_cores();
     for (int c = 0; c < ncores; c++) {
@@ -210,6 +212,9 @@ static void migrate_rt_to_isolated(void) {
     for (int c = 0; c < ncores; c++) {
         if (core_isolated[c]) continue; /* skip isolated — RT already there */
 
+        /* Collect threads to migrate while holding lock, enqueue after release */
+        thread_t *migrate_list = 0;
+
         uint64_t flags;
         spin_lock_irq(&core_rq[c].lock, &flags);
 
@@ -229,22 +234,13 @@ static void migrate_rt_to_isolated(void) {
                     }
                     thread_t *migrating = t;
                     t = t->rq_next;
-                    migrating->rq_next = 0;
 
-                    /* Pin to isolated core and enqueue */
+                    /* Pin to isolated core, collect into local list */
                     int target = iso[rr % niso];
                     rr++;
                     migrating->cpu_affinity = target;
-
-                    spin_unlock_irq(&core_rq[c].lock, flags);
-
-                    /* Enqueue on target (sched_add handles locking) */
-                    sched_add(migrating);
-
-                    spin_lock_irq(&core_rq[c].lock, &flags);
-                    /* Restart scan from head — queue may have changed */
-                    prev = &core_rq[c].rq[p].head;
-                    t = *prev;
+                    migrating->rq_next = migrate_list;
+                    migrate_list = migrating;
                     continue;
                 }
                 prev = &t->rq_next;
@@ -253,6 +249,14 @@ static void migrate_rt_to_isolated(void) {
         }
 
         spin_unlock_irq(&core_rq[c].lock, flags);
+
+        /* Enqueue collected threads without holding source lock */
+        while (migrate_list) {
+            thread_t *next = migrate_list->rq_next;
+            migrate_list->rq_next = 0;
+            sched_add(migrate_list);
+            migrate_list = next;
+        }
     }
 }
 

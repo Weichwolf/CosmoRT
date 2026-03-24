@@ -84,6 +84,9 @@ static void buddy_free_order(void *ptr, int order) {
     uint64_t pfn = phys >> PAGE_SHIFT;
     uint64_t npages = 1ULL << order;
 
+    /* Double-free guard: if first page already free, bail out */
+    if (!bm_test(pfn)) return;
+
     /* Clear bitmap */
     for (uint64_t i = 0; i < npages; i++) bm_clear(pfn + i);
     alloc_count -= npages;
@@ -128,7 +131,7 @@ static void buddy_free_order(void *ptr, int order) {
 
 static int order_for_pages(int n) {
     int order = 0;
-    while ((1U << order) < (unsigned)n) order++;
+    while ((1ULL << order) < (unsigned)n) order++;
     return order;
 }
 

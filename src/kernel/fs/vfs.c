@@ -225,20 +225,27 @@ void vfs_init(void) {
 
 /* ── Path lookup ─────────────────────────────────── */
 
-#define SYMLOOP_MAX 8
+#define SYMLOOP_MAX 4
 
-/* Internal lookup with symlink-follow depth tracking.
+/* Iterative path lookup with symlink resolution.
  * follow_last: if 0, don't follow symlink on the final path component
  *              (needed for readlink/lstat semantics).
  * err: set to -ELOOP when symlink depth exceeds SYMLOOP_MAX. */
 static struct vfs_node *vfs_lookup_impl(const char *path, int depth,
                                         int follow_last, int *err) {
+    /* Single path buffer on stack — no recursion */
+    char buf[512];
+    int blen = kstrlen(path);
+    if (blen >= (int)sizeof(buf)) return 0;
+    for (int i = 0; i <= blen; i++) buf[i] = path[i];
+
+restart:
     if (depth > SYMLOOP_MAX) { if (err) *err = -ELOOP; return 0; }
-    if (!path || !path[0]) return 0;
-    if (path[0] == '/' && path[1] == 0) return root_node;
+    if (!buf[0]) return 0;
+    if (buf[0] == '/' && buf[1] == 0) return root_node;
 
     struct vfs_node *cur = root_node;
-    const char *p = path;
+    const char *p = buf;
     if (*p == '/') p++;
 
     while (*p) {
@@ -275,20 +282,35 @@ static struct vfs_node *vfs_lookup_impl(const char *path, int depth,
         if (found->type == VFS_SYMLINK && (follow_last || !is_last)) {
             const char *target = found->symlink_target;
             if (!target[0]) return 0;
+            depth++;
+
+            int tlen = kstrlen(target);
+            int rlen = kstrlen(p);
+            if (tlen + 1 + rlen >= (int)sizeof(buf)) return 0;
 
             if (target[0] == '/') {
-                char resolved[512];
-                int tlen = kstrlen(target);
-                int rlen = kstrlen(p);
-                if (tlen + 1 + rlen >= 511) return 0;
-                for (int i = 0; i < tlen; i++) resolved[i] = target[i];
-                if (rlen > 0 && resolved[tlen - 1] != '/') resolved[tlen++] = '/';
-                for (int i = 0; i < rlen; i++) resolved[tlen + i] = p[i];
-                resolved[tlen + rlen] = 0;
-                return vfs_lookup_impl(resolved, depth + 1, follow_last, err);
+                /* Absolute symlink: build "target/remaining" in buf */
+                /* Move remaining path to end of buf first to avoid overlap */
+                for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
+                for (int i = 0; i < tlen; i++) buf[i] = target[i];
+                int off = tlen;
+                if (rlen > 0 && buf[off - 1] != '/') buf[off++] = '/';
+                for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
+                buf[off + rlen] = 0;
+            } else {
+                /* Relative symlink: resolve from parent of current component */
+                /* Build path: (path up to parent) + target + "/" + remaining */
+                int prefix_len = (int)(start - buf);
+                /* Move remaining to temp area at end of buf */
+                for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
+                /* Copy target after prefix */
+                for (int i = 0; i < tlen; i++) buf[prefix_len + i] = target[i];
+                int off = prefix_len + tlen;
+                if (rlen > 0 && buf[off - 1] != '/') buf[off++] = '/';
+                for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
+                buf[off + rlen] = 0;
             }
-            /* Relative symlink target */
-            return vfs_lookup_impl(target, depth + 1, follow_last, err);
+            goto restart;
         }
 
         cur = found;
@@ -661,6 +683,7 @@ long vfs_read(int fd, void *buf, size_t count) {
             total += (size_t)rc;
             if ((size_t)rc < chunk) break;
         }
+        if (f->offset > UINT64_MAX - (uint64_t)total) return -EINVAL;
         f->offset += (uint64_t)total;
         return (long)total;
     }
@@ -688,6 +711,7 @@ long vfs_read(int fd, void *buf, size_t count) {
         }
     }
 
+    if (f->offset > UINT64_MAX - (uint64_t)count) return -EINVAL;
     f->offset += count;
     return (long)count;
 }

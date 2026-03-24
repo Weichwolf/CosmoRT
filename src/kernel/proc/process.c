@@ -306,6 +306,8 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
         uint64_t phoff = *(const uint64_t *)(data + 32);
         uint16_t phentsize = *(const uint16_t *)(data + 54);
         uint16_t phnum = *(const uint16_t *)(data + 56);
+        if (phoff + (uint64_t)phnum * phentsize > elf_len)
+            goto fail_elf;
         for (int i = 0; i < phnum; i++) {
             const uint8_t *ph = data + phoff + (uint64_t)i * phentsize;
             uint32_t p_type = *(const uint32_t *)ph;

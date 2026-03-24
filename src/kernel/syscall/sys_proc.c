@@ -71,10 +71,13 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     vma_free_tree(p->vma_root);
     p->vma_root = 0;
 
-    /* Wake parent if blocked in wait4 */
+    /* Send SIGCHLD to parent + wake if blocked in wait4 */
     if (p->parent_pid) {
         process_t *parent = proc_find(p->parent_pid);
         if (parent) {
+            /* SIGCHLD delivery (Linux ABI) */
+            __sync_fetch_and_or(&parent->sig_pending, 1ULL << SIGCHLD);
+
             thread_t *pt = parent->threads;
             while (pt) {
                 if (pt->state == THREAD_BLOCKED) {
@@ -254,11 +257,21 @@ struct clone_args {
 };
 
 long do_clone3(void *uargs, size_t size) {
+    /* Minimum: must include at least up to exit_signal (first 5 fields = 40 bytes) */
+    if (size < __builtin_offsetof(struct clone_args, stack)) return -EINVAL;
+    if (size > 256) return -EINVAL;
+    if (!user_ok((uint64_t)uargs, size)) return -EFAULT;
+
     struct clone_args kargs;
     kmemset(&kargs, 0, sizeof(kargs));
     size_t copy = size > sizeof(kargs) ? sizeof(kargs) : size;
     int r = copy_from_user(&kargs, uargs, copy);
     if (r) return r;
+
+    /* Validate copied args */
+    if (kargs.exit_signal > 64) return -EINVAL;
+    if (kargs.stack && !user_ok(kargs.stack, kargs.stack_size)) return -EFAULT;
+    if (kargs.stack && kargs.stack_size == 0) return -EINVAL;
 
     /* Map clone3 flags to clone flags */
     unsigned long flags = (unsigned long)kargs.flags;
@@ -310,12 +323,12 @@ long do_prctl(int option, unsigned long a2, unsigned long a3,
         return 0; /* no-op: single-user, not critical */
 
     case PR_SET_NAME: {
-        if (!user_ok(a2, 1)) return -EFAULT;
-        const char *uname = (const char *)a2;
-        int i = 0;
-        while (i < 15 && (uint64_t)(uname + i) < 0x800000000000ULL && uname[i])
-            { p->comm[i] = uname[i]; i++; }
-        p->comm[i] = '\0';
+        char kname[16];
+        if (!user_ok(a2, 16)) return -EFAULT;
+        int r = copy_from_user(kname, (void *)a2, 16);
+        if (r) return r;
+        kname[15] = '\0';
+        for (int i = 0; i < 16; i++) p->comm[i] = kname[i];
         return 0;
     }
 

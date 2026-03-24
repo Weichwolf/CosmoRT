@@ -1,10 +1,10 @@
 ---
 active: true
-iteration: 13
+iteration: 1
 session_id: 
 max_iterations: 0
 completion_promise: "kräuteraal"
-started_at: "2026-03-24T06:09:43Z"
+started_at: "2026-03-24T20:14:33Z"
 ---
 
-TODO.md lesen und alle offenen phasen 1 bis 3 umsetzen. nach jedem punkt testen, abhaken, committen. wenn phase 1 bis 3 abgeschlossen sind Refactoring TD 7 bis 9 umsetzen.
+TODO.md lesen und alle offenen taks in phase 1 bis 7 umsetzen. nach jedem task testen, bei bedarf fixen, abhaken, committen. verwende background agents für task delegation.

@@ -199,11 +199,6 @@ static long futex_lock_pi(uint32_t *uaddr) {
     if (old == 0)
         return 0; /* acquired */
 
-    /* Contended: boost owner, then spin-yield */
-    uint32_t owner_tid = old & FUTEX_TID_MASK;
-    thread_t *owner = thread_find_by_tid((int)owner_tid);
-    pi_boost(owner, self->priority);
-
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 
@@ -214,6 +209,12 @@ static long futex_lock_pi(uint32_t *uaddr) {
         int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
         uint64_t flags;
         spin_lock_irq(&futex_hash[bucket].lock, &flags);
+
+        /* Boost owner under lock so it can't be freed between find and boost */
+        uint32_t owner_tid = old & FUTEX_TID_MASK;
+        thread_t *owner = thread_find_by_tid((int)owner_tid);
+        if (owner)
+            pi_boost(owner, self->priority);
 
         /* Re-check before blocking — lock may have been released */
         old = __sync_val_compare_and_swap(uaddr, 0, tid);

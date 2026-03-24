@@ -57,6 +57,7 @@ static int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
 
 __attribute__((hot))
 long do_write(int fd, const void *buf, size_t count) {
+    if (__builtin_expect(!count, 0)) return 0;
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
@@ -293,6 +294,8 @@ long do_read(int fd, void *buf, size_t count) {
 long do_readv(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
     if (iovcnt > 64) return -EINVAL; /* kernel stack limit */
+    /* Copy iovec array to kernel stack to prevent TOCTOU on iov_base/iov_len.
+     * Buffer contents are still user memory — do_read validates via user_ok. */
     struct iovec kiov[64];
     { int r = copy_from_user(kiov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;
@@ -576,7 +579,7 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
 
     int64_t ktimes[4];
     if (utimes) {
-        int r = copy_from_user(ktimes, utimes, 32); /* 2 × struct timespec = 2 × 16 bytes */
+        int r = copy_from_user(ktimes, utimes, 2 * sizeof(struct k_timespec));
         if (r) return r;
     }
 
@@ -966,6 +969,7 @@ long do_pread64(int fd, void *buf, size_t count, int64_t offset) {
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type != FD_FILE) return -ESPIPE;
+    if (__builtin_expect(!fde->obj, 0)) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     return vfs_pread(f, buf, count, (uint64_t)offset);
 }

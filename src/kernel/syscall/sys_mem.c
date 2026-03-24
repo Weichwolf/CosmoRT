@@ -400,6 +400,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 page_free(pg);
                 return -ENOMEM;
             }
+            if (file_off > UINT64_MAX - 4096) break; /* overflow guard */
             file_off += 4096;
         }
         /* Re-acquire lock and verify VMA wasn't torn down by concurrent munmap */
@@ -407,6 +408,8 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         vma_t *check = vma_find(p->vma_root, saved_vaddr);
         if (!check || check->start > saved_vaddr ||
             check->end < saved_vaddr + saved_length) {
+            /* VMA was torn down — unmap pages we just mapped to prevent leak */
+            unmap_range(p->pml4, saved_vaddr, saved_vaddr + saved_length);
             spin_unlock_irq(&p->lock, irqf);
             return -ENOMEM;
         }

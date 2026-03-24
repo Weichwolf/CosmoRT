@@ -160,6 +160,10 @@ int e1000_init(void) {
     /* Get BAR0 (MMIO base) */
     uint32_t bar0;
     cosmo_pci_config_read(found_bus, found_dev, 0, 0x10, &bar0);
+    if ((bar0 & 0x01) != 0) {
+        serial_puts("e1000: BAR0 is I/O, expected MMIO\n");
+        return -1;
+    }
     uint64_t mmio_phys = bar0 & 0xFFFFFFF0ULL;
 
     /* Check if 64-bit BAR */
@@ -167,6 +171,14 @@ int e1000_init(void) {
         uint32_t bar1;
         cosmo_pci_config_read(found_bus, found_dev, 0, 0x14, &bar1);
         mmio_phys |= ((uint64_t)bar1 << 32);
+    }
+
+    /* Validate BAR: must be above 1MB (not in conventional RAM or kernel text),
+     * and must not be zero or wrap around */
+    if (mmio_phys < 0x100000ULL || mmio_phys == 0 ||
+        mmio_phys > 0xFFFFFFFFFULL /* above 64GB = suspicious */) {
+        serial_puts("e1000: BAR0 address invalid\n");
+        return -1;
     }
 
     /* Register BAR range and map MMIO into kernel address space */

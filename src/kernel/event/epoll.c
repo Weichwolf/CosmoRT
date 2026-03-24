@@ -281,6 +281,10 @@ void epoll_check_timeouts(void) {
     extern void sched_add(thread_t *ts);
     for (int i = 0; i < epoll_sleepers.count; ) {
         thread_t *t = epoll_sleepers.threads[i];
+        if (!t) { /* Race: another CPU removed the thread */
+            epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
+            continue;
+        }
         if (t->wake_at && now >= t->wake_at) {
             /* Remove from list (swap with last) */
             epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
