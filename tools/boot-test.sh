@@ -57,8 +57,7 @@ check "https" node -e "require('https').get('https://example.com',r=>{console.lo
 # ── T5: npm ──
 echo "--- T5: npm ---"
 check "process.cwd()" node -e 'console.log(process.cwd())'
-# npm --version: works (10.9.2) but bash crashes after npm exit (SIGCHLD handler)
-# npm registry: HTTPS hangs (second TCP connection issue — kernel net stack limitation)
+check "https registry" node -e 'require("https").get("https://registry.npmjs.org/@anthropic-ai/claude-code/latest",function(r){console.log(r.statusCode);process.exit(r.statusCode===200?0:1)}).on("error",function(e){console.log(e.message);process.exit(1)})'
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -eq 0 ]; then

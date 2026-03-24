@@ -1,25 +1,31 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-24. 509 ktest PASS, 12/12 Boot-Test PASS.
+Stand: 2026-03-24. 509 ktest PASS, 14/14 Boot-Test PASS.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
-DHCP, DNS (lookup), HTTPS ok.
+DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
 
 ---
 
 ## claude update
 
-- [x] npm --version funktioniert (10.9.2, ~60s Startup)
-- [x] getcwd: Return-Wert war Pointer statt Laenge (musl-Inkompatibilitaet)
-- [x] INODE_COUNT 1024→8192 (npm hat 2778 Dateien)
-- [ ] bash crasht nach npm-Exit (SEGFAULT pid=1, Memory-Pressure?)
-- [ ] npm install -g (HTTPS zu registry.npmjs.org, Dateisystem-Schreibzugriffe)
+- [x] npm --version funktioniert (10.9.2)
+- [x] getcwd: Return-Wert Pointer→Laenge (musl-Compat)
+- [x] INODE_COUNT 1024→8192
+- [x] HTTPS zu registry.npmjs.org PASS
+- [ ] bash crasht nach npm-Exit (SEGFAULT pid=1, SIGCHLD-Handler?)
+- [ ] npm install -g (braucht funktionierenden bash-Subprocess)
 - [ ] claude update erfolgreich
+
+## Audit (27 Bugs, siehe Audit-Report)
+
+Top-3 Prioritaet:
+- [ ] DNS Parsing Buffer-OOB (Remote-Exploit)
+- [ ] TCP plen negativ → 4GB mcpy (Remote-Crash)
+- [ ] ELF Loader Integer-Overflow (Local Priv-Esc)
 
 ## Bekannte Einschraenkungen
 
 - c-ares UDP DNS: Kernel liefert korrekte Pakete, c-ares ETIMEOUT
-- Ctrl-C (SIGINT an Foreground-Prozessgruppe via PTY)
-- Dynamic Linker: cat/coreutils crashen (RIP=0x0, ld-cosmo.so)
-- Job Control (bash ohne +m Flag)
-- GPT-Image Boot (Kernel hat keinen Partitions-Support)
+- Ctrl-C, Job Control, Dynamic Linker (cat/coreutils)
+- GPT-Image Boot
