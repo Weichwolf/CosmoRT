@@ -13,6 +13,8 @@
 #include "page_alloc.h"
 #include "paging.h"
 #include "irq.h"
+#include "process.h"
+#include "vma.h"
 #include "serial.h"
 #include "spinlock.h"
 #include "memops.h"
@@ -48,14 +50,32 @@ int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
         if (!found) return -1;
     }
 
-    /* Round to 2MB boundary for paging_map_2mb */
+    /* Map into user address space if called from a userspace driver */
+    process_t *p = proc_current();
+    if (p && p->is_driver) {
+        /* Map MMIO pages into process's user address space */
+        uint64_t user_va = p->mmap_next;
+        size_t aligned_len = (len + 4095) & ~4095ULL;
+        for (uint64_t off = 0; off < aligned_len; off += 4096) {
+            /* Map device-memory page: RW, no-cache (PTE_PCD|PTE_PWT) */
+            extern int map_user_page(uint64_t *pml4, uint64_t va, uint64_t pa, int prot);
+            map_user_page(p->pml4, user_va + off, phys + off,
+                          PROT_READ | PROT_WRITE);
+        }
+        /* Mark pages as uncacheable by setting PCD in PTEs */
+        /* TODO: set PTE_PCD for MMIO pages */
+        vma_insert(&p->vma_root, user_va, user_va + aligned_len,
+                   PROT_READ | PROT_WRITE, MAP_PRIVATE);
+        p->mmap_next = user_va + aligned_len;
+        *virt = (void *)user_va;
+        return 0;
+    }
+
+    /* Kernel-only path: ensure 2MB mapping in direct map */
     uint64_t start = phys & ~0x1FFFFFULL;
     uint64_t end = (phys + len + 0x1FFFFF) & ~0x1FFFFFULL;
-
     for (uint64_t addr = start; addr < end; addr += 0x200000)
         paging_map_2mb(addr);
-
-    /* Return direct-map address */
     *virt = (void *)(phys + PHYS_OFFSET);
     return 0;
 }
@@ -69,8 +89,26 @@ int cosmo_dma_alloc(size_t len, void **virt, uint64_t *phys) {
     void *v = pages_alloc(npages);
     if (!v) return -1;
 
-    *virt = v;
-    *phys = virt_to_phys(v);
+    uint64_t pa = virt_to_phys(v);
+    *phys = pa;
+
+    /* Map into user address space if called from a userspace driver */
+    process_t *p = proc_current();
+    if (p && p->is_driver) {
+        uint64_t user_va = p->mmap_next;
+        size_t aligned_len = (size_t)npages * 4096;
+        for (int i = 0; i < npages; i++) {
+            extern int map_user_page(uint64_t *pml4, uint64_t va, uint64_t pa, int prot);
+            map_user_page(p->pml4, user_va + (uint64_t)i * 4096,
+                          pa + (uint64_t)i * 4096, PROT_READ | PROT_WRITE);
+        }
+        vma_insert(&p->vma_root, user_va, user_va + aligned_len,
+                   PROT_READ | PROT_WRITE, MAP_PRIVATE);
+        p->mmap_next = user_va + aligned_len;
+        *virt = (void *)user_va;
+    } else {
+        *virt = v;
+    }
     return 0;
 }
 

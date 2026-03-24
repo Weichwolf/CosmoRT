@@ -446,6 +446,39 @@ static int procfs_loadavg(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/nettest — kernel-level TCP connect test ──── */
+
+static int procfs_nettest(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    if (offset > 0) return 0; /* only on first read */
+
+    extern int net_http_get(const uint8_t *dst_ip, uint16_t port,
+                            const char *path, char *response, int maxlen);
+
+    char tmp[512];
+    int pos = 0;
+
+    /* Test: HTTP GET to QEMU gateway (10.0.2.2:80) */
+    uint8_t gw[] = {10, 0, 2, 2};
+    pos = append_str(tmp, pos, 512, "HTTP GET 10.0.2.2:80/ ...\n");
+    char resp[256];
+    int r = net_http_get(gw, 80, "/", resp, 256);
+    pos = append_str(tmp, pos, 512, "result=");
+    pos = append_int(tmp, pos, 512, (long)r);
+    pos = append_str(tmp, pos, 512, "\n");
+    if (r > 0) {
+        int show = r > 100 ? 100 : r;
+        for (int i = 0; i < show && pos < 500; i++)
+            tmp[pos++] = resp[i];
+        tmp[pos++] = '\n';
+    }
+
+    int out = 0;
+    for (int i = 0; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
 /* ── /proc/version ─────────────────────────────────── */
 
 static int procfs_version(char *buf, int size, int offset, void *ctx) {
@@ -476,5 +509,6 @@ void procfs_init(void) {
     procfs_register("uptime", procfs_uptime, 0);
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
-    serial_puts("procfs: init (13 entries)\n");
+    procfs_register("nettest", procfs_nettest, 0);
+    serial_puts("procfs: init (14 entries)\n");
 }

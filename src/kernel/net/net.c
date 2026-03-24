@@ -28,9 +28,12 @@ void net_nic_register(const nic_driver_t *driver) {
 /* nic_send is a function (defined after queues for loopback support) */
 static void nic_send(const uint8_t *data, uint16_t len);
 
-/* Idle: sti+hlt to wait for interrupt (saves power, wakes on any IRQ) */
+/* Idle: yield CPU to let userspace NIC driver process packets.
+ * When NIC runs in Ring 3 (e1000d), it needs scheduler time to
+ * receive packets and push them to the net_port ring buffer. */
 static inline void net_idle(void) {
-    __asm__ volatile("sti; hlt");
+    extern long do_sched_yield(void);
+    do_sched_yield(); /* give e1000d a chance to run */
 }
 
 /* Network state */
@@ -140,16 +143,6 @@ void net_poll(void) {
     uint8_t pkt[Q_PKT];
     int len = nic_recv(pkt, sizeof(pkt));
     if (len < 14) goto out;
-    if (net_my_ip[0]) {
-            serial_puts("RX ");
-            serial_hex64(get16(pkt+12)); /* etype */
-            serial_putchar(' ');
-            serial_hex64((uint64_t)len);
-            if (get16(pkt+12) == 0x0800 && len >= 34)
-                { serial_puts(" proto="); serial_putchar('0'+pkt[23]/10); serial_putchar('0'+pkt[23]%10); }
-            serial_putchar('\n');
-        }
-    }
     uint16_t etype = get16(pkt + 12);
     if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
     if (etype != 0x0800 || len < 34) goto out;

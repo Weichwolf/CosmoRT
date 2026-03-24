@@ -338,6 +338,27 @@ fail_slab:
     return -1;
 }
 
+/* Create process from a VFS file path (reads file into memory, loads as ELF).
+ * Used for userspace drivers like e1000d that are registered in /bin/. */
+int proc_create_from_vfs(const char *path) {
+    extern int vfs_read_file(const char *, uint8_t **, size_t *);
+    uint8_t *data = 0;
+    size_t size = 0;
+    if (vfs_read_file(path, &data, &size) < 0 || !data) return -1;
+
+    int pid = proc_create_elf(data, size);
+
+    /* Mark as driver (gets HW access permissions) */
+    if (pid > 0) {
+        process_t *p = proc_find((uint32_t)pid);
+        if (p) p->is_driver = 1;
+    }
+
+    int npages = (int)((size + 4095) / 4096);
+    pages_free(data, npages);
+    return pid;
+}
+
 /* ── Context switching ──────────────────────────── */
 
 extern int kernel_setjmp(uint64_t buf[8]);

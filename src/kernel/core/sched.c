@@ -426,6 +426,20 @@ void sched_init(void) {
 static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 
 /* Scheduler loop — runs on each core (BSP + APs) */
+/* Run one scheduler iteration — pick and run one thread, then return.
+ * Used during boot to let userspace drivers initialize before entering
+ * the full scheduler loop. */
+void sched_loop_once(void) {
+    thread_t *next = sched_pick();
+    if (next) {
+        thread_run(next);
+        if (next->state == THREAD_RUNNABLE)
+            sched_add(next);
+    } else {
+        __asm__ volatile("sti; hlt"); /* idle until IRQ */
+    }
+}
+
 void sched_loop(void) {
     int core = percpu_self()->core_id;
     extern void tss_set_rsp0(uint64_t rsp0);

@@ -453,7 +453,17 @@ long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
 }
 
 long do_sched_yield(void) {
-    return 0;  /* hint only — timer preemption handles actual switching */
+    /* Real yield: block briefly, re-enqueue, let other threads (e1000d) run.
+     * save_user_state_for_block stores return value in rax. On resume,
+     * the thread returns from the syscall with rax=0 (success). */
+    thread_t *t = thread_current();
+    if (!t) return 0;
+    extern uint64_t pml4[];
+    save_user_state_for_block(t, 0); /* saves state, sets rax=0 */
+    t->state = THREAD_RUNNABLE;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    thread_return_to_kernel(t); /* longjmp to sched_loop */
+    return 0; /* unreachable */
 }
 
 /* ── SYS_sched_setscheduler (144) / getscheduler (145) ── */

@@ -263,7 +263,38 @@ void kernel_main(struct boot_info *info) {
             hv_utils_init();    /* heartbeat, shutdown, timesync */
         }
     } else {
-        e1000_init();        /* registers with net stack if found */
+        /* Prefer userspace NIC driver (e1000d) over kernel driver.
+         * e1000d runs in Ring 3, uses cosmo_rt.h HW primitives.
+         * e1000d runs in Ring 3, uses cosmo_rt.h HW primitives. */
+        extern int proc_create_from_vfs(const char *path);
+        extern int net_port_active(void);
+        extern void sched_loop_once(void);
+        serial_puts("e1000d: loading from /bin/e1000d...\n");
+        int e1000d_pid = proc_create_from_vfs("/bin/e1000d");
+        serial_puts("e1000d: pid=");
+        serial_hex64((uint64_t)e1000d_pid);
+        serial_putchar('\n');
+        if (e1000d_pid > 0) {
+            serial_puts("e1000d: started pid=");
+            serial_putchar('0' + (e1000d_pid % 10));
+            serial_putchar('\n');
+            /* Wait up to 5s for driver to attach via cosmo_nic_attach.
+             * Run scheduler aggressively to let e1000d complete init. */
+            uint64_t drv_deadline = timer_ms() + 5000;
+            while (timer_ms() < drv_deadline) {
+                for (int k = 0; k < 100; k++) {
+                    sched_loop_once();
+                    if (net_port_active()) break;
+                }
+                if (net_port_active()) break;
+            }
+            if (!net_port_active()) {
+                serial_puts("e1000d: attach timeout, falling back to kernel driver\n");
+                e1000_init();
+            }
+        } else {
+            e1000_init();    /* fallback: kernel E1000 driver */
+        }
         virtio_net_init();   /* alternative NIC, registers if found */
         virtio_gpu_init();   /* 2D framebuffer if found */
         virtio_input_init();

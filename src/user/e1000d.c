@@ -300,8 +300,15 @@ static int e1000d_init(void) {
     }
 
     /* Map MMIO via syscall */
+    puts("e1000d: mapping MMIO at 0x");
+    put_hex(mmio_phys);
+    puts("\n");
     void *mmio_virt;
-    if (cosmo_mmio_map(mmio_phys, 0x20000, &mmio_virt) < 0) {
+    long mmio_ret = cosmo_mmio_map(mmio_phys, 0x20000, &mmio_virt);
+    puts("e1000d: MMIO map ret=");
+    put_hex((uint64_t)mmio_ret);
+    puts("\n");
+    if (mmio_ret < 0) {
         puts("e1000d: MMIO map failed\n");
         return -1;
     }
@@ -318,6 +325,7 @@ static int e1000d_init(void) {
     size_t buf_size = (NUM_TX_DESC + NUM_RX_DESC) * BUF_SIZE;
     size_t total = desc_size + 256 + buf_size;
 
+    puts("e1000d: DMA alloc...\n");
     if (cosmo_dma_alloc((long)total, &dma_virt, &dma_phys_base) < 0) {
         puts("e1000d: DMA alloc failed\n");
         return -1;
@@ -331,9 +339,11 @@ static int e1000d_init(void) {
     tx_bufs = (uint8_t (*)[BUF_SIZE])p; p += NUM_TX_DESC * BUF_SIZE;
     rx_bufs = (uint8_t (*)[BUF_SIZE])p;
 
+    puts("e1000d: reset...\n");
     /* Reset */
     e1000_write(E1000_CTRL, e1000_read(E1000_CTRL) | E1000_CTRL_RST);
-    for (volatile int i = 0; i < 1000000; i++);
+    /* Short delay after reset — QEMU E1000 resets instantly */
+    for (volatile int i = 0; i < 10000; i++);
 
     /* Re-enable bus mastering after reset */
     cosmo_pci_read(found_bus, found_dev, 0, 0x04, &cmd);
@@ -347,6 +357,7 @@ static int e1000d_init(void) {
     /* Set link up */
     e1000_write(E1000_CTRL, e1000_read(E1000_CTRL) | E1000_CTRL_SLU | E1000_CTRL_ASDE);
 
+    puts("e1000d: reading MAC...\n");
     /* Read MAC */
     read_mac();
 
