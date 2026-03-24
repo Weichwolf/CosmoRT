@@ -19,6 +19,7 @@
 #include "syscall.h"
 #include "irq.h"
 #include "socket.h"
+#include "arch_x86.h"
 
 /* Page table flags */
 #define PTE_PRESENT (1ULL << 0)
@@ -208,14 +209,54 @@ static uint64_t aslr_rand(void) {
     uint64_t r;
     extern int random_get(void *buf, size_t len);
     if (random_get(&r, sizeof(r)) == 0) return r;
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+    return arch_rdtsc();
 }
 
-/* Forward declarations */
-void vma_free_tree(vma_t *node);
-void free_address_space(uint64_t *user_pml4);
+/* ── Free address space ──────────────────────────── */
+
+/* Free all user pages and page table pages under a PML4 */
+void free_address_space(uint64_t *user_pml4) {
+    if (!user_pml4) return;
+
+    /* Flush TLB on other cores that may have this PML4 cached */
+    tlb_shootdown(virt_to_phys(user_pml4));
+
+    /* Walk lower half only (PML4[0..255] = user space) */
+    for (int i = 0; i < 256; i++) {
+        if (!(user_pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[i] & PTE_ADDR_MASK);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT)) continue;
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
+
+                for (int l = 0; l < 512; l++) {
+                    if (pt[l] & PTE_PRESENT) {
+                        page_free(phys_to_virt(pt[l] & PTE_ADDR_MASK));
+                    }
+                }
+                page_free(pt); /* free PT page */
+            }
+            page_free(pd); /* free PD page */
+        }
+        page_free(pdpt); /* free PDPT page */
+    }
+    page_free(user_pml4); /* free PML4 page */
+}
+
+/* Free all VMAs in a tree */
+void vma_free_tree(vma_t *node) {
+    if (!node) return;
+    vma_free_tree(node->left);
+    vma_free_tree(node->right);
+    vma_free(node);
+}
+
+/* ── Process creation ───────────────────────────── */
 
 int proc_create_elf(const void *elf_data, size_t elf_len) {
     process_t *p = proc_alloc();
@@ -374,13 +415,13 @@ void thread_run(thread_t *t) {
 
     if (kernel_setjmp(t->jmpbuf) != 0) {
         /* Returned via longjmp — thread yielded/exited/preempted */
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         cpu->current_thread = 0;
         return;
     }
 
     /* Load process page tables */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(t->proc->pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(t->proc->pml4));
 
     /* Set kernel stack for interrupts/syscalls */
     extern void tss_set_rsp0(uint64_t rsp0);
@@ -393,28 +434,24 @@ void thread_run(thread_t *t) {
      * Enable IRQs — kernel_longjmp doesn't restore RFLAGS. */
     if (t->in_kernel_yield) {
         t->in_kernel_yield = 0;
-        __asm__ volatile("sti");
+        arch_sti();
         extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
         kernel_longjmp(t->kernel_yield_jmpbuf, 1);
     }
 
     /* Load thread's FS base (TLS) before entering userspace — always,
      * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
-    {
-        uint64_t fs = t->fs_base;
-        __asm__ volatile("wrmsr" :: "c"(0xC0000100),
-                         "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
-    }
+    arch_set_fs_base(t->fs_base);
 
     /* Restore FPU/SSE state */
-    __asm__ volatile("fxrstor %0" : : "m"(t->fxsave_area));
+    arch_fxrstor(t->fxsave_area);
 
     /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
     proc_enter_ring3(t);
 }
 
 void thread_return_to_kernel(thread_t *t) {
-    __asm__ volatile("sti");
+    arch_sti();
     kernel_longjmp(t->jmpbuf, 1);
 }
 
@@ -528,50 +565,6 @@ static int copy_address_space(process_t *child, process_t *parent) {
     };
     vma_walk(parent->vma_root, copy_one_vma, &ctx);
     return ctx.err ? -1 : 0;
-}
-
-/* ── Free address space ──────────────────────────── */
-
-/* Free all user pages and page table pages under a PML4 */
-void free_address_space(uint64_t *user_pml4) {
-    if (!user_pml4) return;
-
-    /* Flush TLB on other cores that may have this PML4 cached */
-    tlb_shootdown(virt_to_phys(user_pml4));
-
-    /* Walk lower half only (PML4[0..255] = user space) */
-    for (int i = 0; i < 256; i++) {
-        if (!(user_pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[i] & PTE_ADDR_MASK);
-
-        for (int j = 0; j < 512; j++) {
-            if (!(pdpt[j] & PTE_PRESENT)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
-
-            for (int k = 0; k < 512; k++) {
-                if (!(pd[k] & PTE_PRESENT)) continue;
-                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
-
-                for (int l = 0; l < 512; l++) {
-                    if (pt[l] & PTE_PRESENT) {
-                        page_free(phys_to_virt(pt[l] & PTE_ADDR_MASK));
-                    }
-                }
-                page_free(pt); /* free PT page */
-            }
-            page_free(pd); /* free PD page */
-        }
-        page_free(pdpt); /* free PDPT page */
-    }
-    page_free(user_pml4); /* free PML4 page */
-}
-
-/* Free all VMAs in a tree */
-void vma_free_tree(vma_t *node) {
-    if (!node) return;
-    vma_free_tree(node->left);
-    vma_free_tree(node->right);
-    vma_free(node);
 }
 
 /* Clear PTEs for shared VMAs without freeing physical pages (owner frees them).
@@ -1069,7 +1062,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
     /* Switch to kernel PML4 before freeing current address space
      * (we're currently running with p->pml4 in CR3) */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
 
     /* Free current address space */
     uint64_t exec_irqf;
@@ -1086,7 +1079,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         if (interp_buf) pages_free(interp_buf, interp_pages);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(cur);
         return -ENOMEM;
     }
@@ -1114,7 +1107,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            arch_set_cr3(virt_to_phys(pml4));
             thread_return_to_kernel(cur);
             return -ENOEXEC;
         }
@@ -1159,7 +1152,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            arch_set_cr3(virt_to_phys(pml4));
             thread_return_to_kernel(cur);
             return -ENOMEM;
         }
@@ -1179,7 +1172,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             if (interp_buf) pages_free(interp_buf, interp_pages);
             p->state = PROC_ZOMBIE;
             cur->state = THREAD_DEAD;
-            __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+            arch_set_cr3(virt_to_phys(pml4));
             thread_return_to_kernel(cur);
             return -ENOEXEC;
         }
@@ -1234,7 +1227,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                     uint8_t rand_buf[16];
                     if (random_get(rand_buf, 16) != 0) {
                         /* Fallback: use RDTSC */
-                        uint64_t t; __asm__ volatile("rdtsc" : "=A"(t));
+                        uint64_t t = arch_rdtsc();
                         kmemcpy(rand_buf, &t, 8);
                         kmemcpy(rand_buf + 8, &t, 8);
                     }
@@ -1359,17 +1352,17 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     *(uint32_t *)(cur->fxsave_area + 24) = 0x1F80; /* MXCSR: all exceptions masked */
 
     /* Load new page tables and jump to userspace */
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(p->pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(p->pml4));
 
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(cur->kstack_top);
     percpu_self()->kernel_rsp = cur->kstack_top;
 
     /* Clear FS_BASE — new process has no TLS yet (libc sets it via arch_prctl) */
-    __asm__ volatile("wrmsr" :: "c"(0xC0000100), "a"(0), "d"(0));
+    arch_set_fs_base(0);
 
     /* Restore clean FPU state */
-    __asm__ volatile("fxrstor %0" : : "m"(cur->fxsave_area));
+    arch_fxrstor(cur->fxsave_area);
 
     proc_enter_ring3(cur);
     /* unreachable */
@@ -1433,7 +1426,7 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         cur->rip -= 2;       /* back to `syscall` instruction (0F 05) */
         cur->rax = 61;       /* SYS_WAIT4 — re-execute on wakeup */
         cur->state = THREAD_BLOCKED;
-        __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+        arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(cur);
         return 0; /* unreachable */
     }

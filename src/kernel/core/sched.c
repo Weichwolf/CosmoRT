@@ -16,9 +16,7 @@
 #include "spinlock.h"
 #include "config.h"
 #include "smp.h"
-
-/* Forward declarations */
-void sched_add(thread_t *t);
+#include "arch_x86.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
 static uint8_t core_isolated[SMP_MAX_CORES];
@@ -33,19 +31,7 @@ static struct {
     uint32_t   bitmap;  /* bit N set = rq[N] non-empty */
 } core_rq[SMP_MAX_CORES];
 
-/* Mark a core as isolated (RT-only). SCHED_OTHER threads are redirected to BSP. */
-__attribute__((cold))
-void sched_isolate_core(int core_id) {
-    if (core_id >= 0 && core_id < SMP_MAX_CORES)
-        core_isolated[core_id] = 1;
-}
-
-/* Un-isolate a core — allow SCHED_OTHER threads again. */
-__attribute__((cold))
-void sched_unisolate_core(int core_id) {
-    if (core_id >= 0 && core_id < SMP_MAX_CORES)
-        core_isolated[core_id] = 0;
-}
+/* ── Static leaf helpers ─────────────────────────── */
 
 /* Count isolated cores (excluding core 0 which is never isolated). */
 static int count_isolated(void) {
@@ -99,6 +85,102 @@ static int find_isolated_core(void) {
         if (core_isolated[c]) return c;
     return -1;
 }
+
+/* ── Public isolation API ────────────────────────── */
+
+/* Mark a core as isolated (RT-only). SCHED_OTHER threads are redirected to BSP. */
+__attribute__((cold))
+void sched_isolate_core(int core_id) {
+    if (core_id >= 0 && core_id < SMP_MAX_CORES)
+        core_isolated[core_id] = 1;
+}
+
+/* Un-isolate a core — allow SCHED_OTHER threads again. */
+__attribute__((cold))
+void sched_unisolate_core(int core_id) {
+    if (core_id >= 0 && core_id < SMP_MAX_CORES)
+        core_isolated[core_id] = 0;
+}
+
+/* ── Core scheduling: sched_add, sched_pick ──────── */
+
+/* Add thread to appropriate core's queue.
+ * cpu_affinity >= 0: that core. Otherwise: current core (cache locality).
+ * SCHED_OTHER threads are redirected away from isolated cores. */
+__attribute__((hot))
+void sched_add(thread_t *t) {
+    int prio = t->priority;
+    if (prio < 0) prio = 0;
+    if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
+
+    int cpu = t->cpu_affinity;
+    int ncores = smp_num_cores();
+
+    if (cpu < 0 || cpu >= SMP_MAX_CORES) {
+        if (ncores == 2) {
+            /* 2-core: Core 0 = RT (IRQ handler), Core 1 = Compute.
+             * RT threads → Core 0, SCHED_OTHER → Core 1. */
+            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
+                cpu = 0;
+            else
+                cpu = 1;
+        } else {
+            /* Round-robin across cores */
+            static volatile int next_cpu = 0;
+            cpu = __sync_fetch_and_add(&next_cpu, 1) % ncores;
+        }
+    }
+
+    /* Isolated core (4+ cores): only RT threads may run */
+    if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER)
+        cpu = (ncores == 2) ? 1 : 0;
+
+    t->state = THREAD_RUNNABLE;
+    t->rq_next = 0;
+
+    uint64_t flags;
+    spin_lock_irq(&core_rq[cpu].lock, &flags);
+
+    if (core_rq[cpu].rq[prio].tail) {
+        core_rq[cpu].rq[prio].tail->rq_next = t;
+    } else {
+        core_rq[cpu].rq[prio].head = t;
+    }
+    core_rq[cpu].rq[prio].tail = t;
+    core_rq[cpu].bitmap |= (1u << prio);
+
+    spin_unlock_irq(&core_rq[cpu].lock, flags);
+}
+
+/* Remove and return highest-priority runnable thread from current core */
+__attribute__((hot))
+thread_t *sched_pick(void) {
+    int cpu = percpu_self()->core_id;
+
+    uint64_t flags;
+    spin_lock_irq(&core_rq[cpu].lock, &flags);
+
+    thread_t *t = 0;
+
+    if (core_rq[cpu].bitmap) {
+        int prio = 31 - __builtin_clz(core_rq[cpu].bitmap);
+
+        t = core_rq[cpu].rq[prio].head;
+        if (t) {
+            core_rq[cpu].rq[prio].head = t->rq_next;
+            if (!core_rq[cpu].rq[prio].head) {
+                core_rq[cpu].rq[prio].tail = 0;
+                core_rq[cpu].bitmap &= ~(1u << prio);
+            }
+            t->rq_next = 0;
+        }
+    }
+
+    spin_unlock_irq(&core_rq[cpu].lock, flags);
+    return t;
+}
+
+/* ── RT migration + rebalance (call sched_add) ───── */
 
 /* Migrate RT threads with cpu_affinity == -1 to isolated cores (round-robin).
  * Only migrates threads found in run queues (not currently running). */
@@ -221,81 +303,7 @@ static void sched_rebalance(void) {
         migrate_rt_to_isolated();
 }
 
-/* Add thread to appropriate core's queue.
- * cpu_affinity >= 0: that core. Otherwise: current core (cache locality).
- * SCHED_OTHER threads are redirected away from isolated cores. */
-__attribute__((hot))
-void sched_add(thread_t *t) {
-    int prio = t->priority;
-    if (prio < 0) prio = 0;
-    if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
-
-    int cpu = t->cpu_affinity;
-    int ncores = smp_num_cores();
-
-    if (cpu < 0 || cpu >= SMP_MAX_CORES) {
-        if (ncores == 2) {
-            /* 2-core: Core 0 = RT (IRQ handler), Core 1 = Compute.
-             * RT threads → Core 0, SCHED_OTHER → Core 1. */
-            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
-                cpu = 0;
-            else
-                cpu = 1;
-        } else {
-            /* Round-robin across cores */
-            static volatile int next_cpu = 0;
-            cpu = __sync_fetch_and_add(&next_cpu, 1) % ncores;
-        }
-    }
-
-    /* Isolated core (4+ cores): only RT threads may run */
-    if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER)
-        cpu = (ncores == 2) ? 1 : 0;
-
-    t->state = THREAD_RUNNABLE;
-    t->rq_next = 0;
-
-    uint64_t flags;
-    spin_lock_irq(&core_rq[cpu].lock, &flags);
-
-    if (core_rq[cpu].rq[prio].tail) {
-        core_rq[cpu].rq[prio].tail->rq_next = t;
-    } else {
-        core_rq[cpu].rq[prio].head = t;
-    }
-    core_rq[cpu].rq[prio].tail = t;
-    core_rq[cpu].bitmap |= (1u << prio);
-
-    spin_unlock_irq(&core_rq[cpu].lock, flags);
-}
-
-/* Remove and return highest-priority runnable thread from current core */
-__attribute__((hot))
-thread_t *sched_pick(void) {
-    int cpu = percpu_self()->core_id;
-
-    uint64_t flags;
-    spin_lock_irq(&core_rq[cpu].lock, &flags);
-
-    thread_t *t = 0;
-
-    if (core_rq[cpu].bitmap) {
-        int prio = 31 - __builtin_clz(core_rq[cpu].bitmap);
-
-        t = core_rq[cpu].rq[prio].head;
-        if (t) {
-            core_rq[cpu].rq[prio].head = t->rq_next;
-            if (!core_rq[cpu].rq[prio].head) {
-                core_rq[cpu].rq[prio].tail = 0;
-                core_rq[cpu].bitmap &= ~(1u << prio);
-            }
-            t->rq_next = 0;
-        }
-    }
-
-    spin_unlock_irq(&core_rq[cpu].lock, flags);
-    return t;
-}
+/* ── Timer preemption ────────────────────────────── */
 
 /* Timer preemption: called from IRQ handler.
  * Saves current thread, picks next, restores into frame.
@@ -366,14 +374,10 @@ void sched_preempt(void *frame_ptr) {
     cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
 
     /* Save current FS base (TLS) */
-    {
-        uint32_t fs_lo, fs_hi;
-        __asm__ volatile("rdmsr" : "=a"(fs_lo), "=d"(fs_hi) : "c"(0xC0000100));
-        cur->fs_base = ((uint64_t)fs_hi << 32) | fs_lo;
-    }
+    cur->fs_base = arch_get_fs_base();
 
     /* Save FPU/SSE state */
-    __asm__ volatile("fxsave %0" : "=m"(cur->fxsave_area));
+    arch_fxsave(cur->fxsave_area);
 
     /* Preemption: longjmp back to sched_loop (via thread_run's setjmp).
      * sched_loop re-enqueues this thread and picks the next one via
@@ -386,20 +390,17 @@ void sched_preempt(void *frame_ptr) {
     /* Send LAPIC EOI before longjmp — we're skipping the ISR exit path */
     extern void lapic_eoi(void);
     lapic_eoi();
-    {
-        /* Restore: GS_BASE = percpu (already is), KERNEL_GS_BASE = percpu.
-         * After proc_enter_ring3 IRET, user gets percpu in GS_BASE (harmless).
-         * Next ISR swapgs: GS_BASE←KERNEL_GS_BASE(percpu), correct. */
-        uint64_t percpu_addr = (uint64_t)(uintptr_t)cpu;
-        __asm__ volatile("wrmsr" :: "c"(0xC0000102),  /* IA32_KERNEL_GS_BASE */
-                         "a"((uint32_t)percpu_addr),
-                         "d"((uint32_t)(percpu_addr >> 32)));
-    }
+    /* Restore: GS_BASE = percpu (already is), KERNEL_GS_BASE = percpu.
+     * After proc_enter_ring3 IRET, user gets percpu in GS_BASE (harmless).
+     * Next ISR swapgs: GS_BASE←KERNEL_GS_BASE(percpu), correct. */
+    arch_set_kernel_gs_base((uint64_t)(uintptr_t)cpu);
     extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
     extern uint64_t pml4[];
-    __asm__ volatile("mov %0, %%cr3" :: "r"(virt_to_phys(pml4)) : "memory");
+    arch_set_cr3(virt_to_phys(pml4));
     kernel_longjmp(cur->jmpbuf, 1);
 }
+
+/* ── Init + scheduler loops (top-level callers) ──── */
 
 /* Scheduler init */
 __attribute__((cold))
@@ -425,7 +426,6 @@ void sched_init(void) {
 /* Per-core ISR stack for idle HLT */
 static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 
-/* Scheduler loop — runs on each core (BSP + APs) */
 /* Run one scheduler iteration — pick and run one thread, then return.
  * Used during boot to let userspace drivers initialize before entering
  * the full scheduler loop. */
@@ -436,7 +436,7 @@ void sched_loop_once(void) {
         if (next->state == THREAD_RUNNABLE)
             sched_add(next);
     } else {
-        __asm__ volatile("sti; hlt"); /* idle until IRQ */
+        arch_halt(); /* idle until IRQ */
     }
 }
 
@@ -456,7 +456,7 @@ void sched_loop(void) {
                 (idle_stacks[core] + sizeof(idle_stacks[core]));
             tss_set_rsp0(idle_top);
             percpu_self()->kernel_rsp = idle_top;
-            __asm__ volatile("sti; hlt");
+            arch_halt();
         }
     }
 }

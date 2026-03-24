@@ -2,8 +2,101 @@
 
 #include "internal.h"
 
-/* Forward declarations */
-static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end);
+/* ── Static page-table helpers (callees first) ──── */
+
+static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
+    /* PTE physical address mask: bits 12..51 (strips NX, available bits) */
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
+    for (uint64_t va = start; va < end; va += 4096) {
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
+
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
+
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
+
+        int pti = (va >> 12) & 0x1FF;
+        if (pt[pti] & PTE_PRESENT) {
+            uint64_t phys = pt[pti] & 0x000FFFFFFFFFF000ULL; /* bits 12..51 */
+            pt[pti] = 0;
+            page_free(phys_to_virt(phys));
+            /* TLB flush for this address */
+            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
+        }
+    }
+}
+
+static uint64_t prot_to_pte_flags(int prot) {
+    /* PROT_NONE → not present (no access at all) */
+    if (!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return 0;
+    uint64_t flags = PTE_PRESENT | PTE_USER;
+    if (prot & PROT_WRITE) flags |= PTE_WRITE;
+    if (!(prot & PROT_EXEC)) flags |= PTE_NX;
+    return flags;
+}
+
+static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
+    uint64_t new_flags = prot_to_pte_flags(prot);
+    for (uint64_t va = start; va < end; va += 4096) {
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
+
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
+
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
+
+        int pti = (va >> 12) & 0x1FF;
+        uint64_t phys = pt[pti] & PHYS_MASK;
+        if (phys) {
+            /* Update PTE flags — works for both present and not-present
+             * (PROT_NONE sets flags=0, PROT_READ restores PRESENT bit) */
+            pt[pti] = phys | new_flags;
+            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
+        }
+    }
+}
+
+/* Copy mapped pages from old range to new range (both in same address space).
+ * Only copies pages that have PTEs present; unmapped pages stay zero in dst. */
+static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
+                            uint64_t len, int prot) {
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
+    for (uint64_t off = 0; off < len; off += 4096) {
+        uint64_t va = src + off;
+        /* Walk page tables to find source physical page */
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
+        int pti = (va >> 12) & 0x1FF;
+        if (!(pt[pti] & PTE_PRESENT)) continue;
+
+        uint64_t src_phys = pt[pti] & PHYS_MASK;
+        void *src_page = phys_to_virt(src_phys);
+
+        /* Allocate new page, copy content, map at dst */
+        uint64_t *new_page = alloc_page();
+        if (!new_page) continue;
+        kmemcpy(new_page, src_page, 4096);
+        map_user_page(user_pml4, dst + off, virt_to_phys(new_page), prot);
+    }
+}
 
 /* ── Cold-path error helpers (keep strings out of hot brk/mmap) ── */
 
@@ -27,9 +120,43 @@ static void mmap_enomem_error(uint64_t length, uint64_t hint) {
     serial_putchar('\n');
 }
 
-/* ── SYS_brk (12) ───────────────────────────────── */
+/* ── Pre-fault helper: allocate + map all pages in range ── */
 
-/* brk collision detection */
+void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
+    for (uint64_t va = start; va < end; va += 4096) {
+        /* Check if already mapped */
+        int pml4i = (va >> 39) & 0x1FF;
+        int mapped = 0;
+        if (user_pml4[pml4i] & PTE_PRESENT) {
+            uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
+            int pdpti = (va >> 30) & 0x1FF;
+            if (pdpt[pdpti] & PTE_PRESENT) {
+                uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+                int pdi = (va >> 21) & 0x1FF;
+                if (pd[pdi] & PTE_PRESENT) {
+                    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+                    int pti = (va >> 12) & 0x1FF;
+                    if (pt[pti] & PTE_PRESENT) mapped = 1;
+                }
+            }
+        }
+        if (!mapped) {
+            uint64_t *page = alloc_page();
+            if (page)
+                map_user_page(user_pml4, va, virt_to_phys(page), prot);
+        }
+    }
+}
+
+void vma_walk_prefault(vma_t *node, uint64_t *pml4) {
+    if (!node) return;
+    vma_walk_prefault(node->left, pml4);
+    prefault_range(pml4, node->start, node->end, node->prot);
+    node->flags |= VMA_LOCKED;
+    vma_walk_prefault(node->right, pml4);
+}
+
+/* ── SYS_brk (12) ───────────────────────────────── */
 
 __attribute__((hot))
 long do_brk(unsigned long addr) {
@@ -84,43 +211,7 @@ long do_brk(unsigned long addr) {
     return (long)addr;
 }
 
-/* ── Pre-fault helper: allocate + map all pages in range ── */
-
-void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
-    for (uint64_t va = start; va < end; va += 4096) {
-        /* Check if already mapped */
-        int pml4i = (va >> 39) & 0x1FF;
-        int mapped = 0;
-        if (user_pml4[pml4i] & PTE_PRESENT) {
-            uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
-            int pdpti = (va >> 30) & 0x1FF;
-            if (pdpt[pdpti] & PTE_PRESENT) {
-                uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
-                int pdi = (va >> 21) & 0x1FF;
-                if (pd[pdi] & PTE_PRESENT) {
-                    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
-                    int pti = (va >> 12) & 0x1FF;
-                    if (pt[pti] & PTE_PRESENT) mapped = 1;
-                }
-            }
-        }
-        if (!mapped) {
-            uint64_t *page = alloc_page();
-            if (page)
-                map_user_page(user_pml4, va, virt_to_phys(page), prot);
-        }
-    }
-}
-
 /* ── SYS_mlockall (151) / SYS_munlockall (152) ──── */
-
-void vma_walk_prefault(vma_t *node, uint64_t *pml4) {
-    if (!node) return;
-    vma_walk_prefault(node->left, pml4);
-    prefault_range(pml4, node->start, node->end, node->prot);
-    node->flags |= VMA_LOCKED;
-    vma_walk_prefault(node->right, pml4);
-}
 
 long do_mlockall(int flags) {
     process_t *p = proc_current();
@@ -331,71 +422,6 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     return (long)vaddr;
 }
 
-/* ── Page table walk helpers for unmap/mprotect ──── */
-
-static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
-    /* PTE physical address mask: bits 12..51 (strips NX, available bits) */
-    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
-    for (uint64_t va = start; va < end; va += 4096) {
-        int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
-
-        int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
-
-        int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
-
-        int pti = (va >> 12) & 0x1FF;
-        if (pt[pti] & PTE_PRESENT) {
-            uint64_t phys = pt[pti] & 0x000FFFFFFFFFF000ULL; /* bits 12..51 */
-            pt[pti] = 0;
-            page_free(phys_to_virt(phys));
-            /* TLB flush for this address */
-            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
-        }
-    }
-}
-
-static uint64_t prot_to_pte_flags(int prot) {
-    /* PROT_NONE → not present (no access at all) */
-    if (!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return 0;
-    uint64_t flags = PTE_PRESENT | PTE_USER;
-    if (prot & PROT_WRITE) flags |= PTE_WRITE;
-    if (!(prot & PROT_EXEC)) flags |= PTE_NX;
-    return flags;
-}
-
-static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
-    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
-    uint64_t new_flags = prot_to_pte_flags(prot);
-    for (uint64_t va = start; va < end; va += 4096) {
-        int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
-
-        int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
-
-        int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
-
-        int pti = (va >> 12) & 0x1FF;
-        uint64_t phys = pt[pti] & PHYS_MASK;
-        if (phys) {
-            /* Update PTE flags — works for both present and not-present
-             * (PROT_NONE sets flags=0, PROT_READ restores PRESENT bit) */
-            pt[pti] = phys | new_flags;
-            __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
-        }
-    }
-}
-
 /* ── SYS_munmap (11) / SYS_mprotect (10) ────────── */
 
 __attribute__((hot))
@@ -532,37 +558,6 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
 }
 
 /* ── SYS_mremap (25) ────────────────────────────── */
-
-/* Copy mapped pages from old range to new range (both in same address space).
- * Only copies pages that have PTEs present; unmapped pages stay zero in dst. */
-static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
-                            uint64_t len, int prot) {
-    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
-    for (uint64_t off = 0; off < len; off += 4096) {
-        uint64_t va = src + off;
-        /* Walk page tables to find source physical page */
-        int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
-        int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
-        int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
-        int pti = (va >> 12) & 0x1FF;
-        if (!(pt[pti] & PTE_PRESENT)) continue;
-
-        uint64_t src_phys = pt[pti] & PHYS_MASK;
-        void *src_page = phys_to_virt(src_phys);
-
-        /* Allocate new page, copy content, map at dst */
-        uint64_t *new_page = alloc_page();
-        if (!new_page) continue;
-        kmemcpy(new_page, src_page, 4096);
-        map_user_page(user_pml4, dst + off, virt_to_phys(new_page), prot);
-    }
-}
 
 long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
                int flags, unsigned long new_addr) {
