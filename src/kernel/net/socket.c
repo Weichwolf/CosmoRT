@@ -220,12 +220,19 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
 
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
-        if (!s->udp_local_port) return -EAGAIN; /* no port assigned */
+        if (!s->udp_local_port) return -EAGAIN;
+        /* Check non-blocking: O_NONBLOCK on fd or MSG_DONTWAIT */
+        int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+        net_poll(); /* ensure latest packets are queued */
         uint8_t kbuf[1400];
         uint8_t sip[4];
         uint16_t sport;
+        int timeout = nonblock ? 0 : NET_TCP_TIMEOUT_MS;
         int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
-                             sip, &sport, NET_TCP_TIMEOUT_MS);
+                             sip, &sport, timeout);
         if (r < 0) return -EAGAIN;
         { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
 
