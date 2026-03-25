@@ -162,6 +162,50 @@ RT-Core darf nie blockieren, nie Spinlock halten der Compute-Core gehoert.
 - [ ] test/net/test_net_tls.c — HTTPS via Node.js
 - [ ] test/net/test_net_npm_registry.c — HTTPS GET registry.npmjs.org
 
+## Skalierung — Statische Arrays → Slab/Free-List/Hash
+
+Problem: Statische Arrays mit O(n) Suche und festen Limits. Bei 1000+ Connections
+unbenutzbar.
+
+### Skal-A: Socket Pool (HOCH)
+
+- [ ] sockets[] (socket.c): Slab-Allokation statt static socket_t[64]
+- [ ] Free-List fuer O(1) Allokation/Freigabe
+- [ ] NET_MAX_SOCKETS erhoehen oder eliminieren (Slab-Limit)
+- [ ] sock_alloc/sock_free anpassen
+- [ ] test: 128+ gleichzeitige Sockets
+
+### Skal-B: TCP Hash-Tabelle (HOCH)
+
+- [ ] tcp_hash[]: Chaining statt 1-Slot-per-Bucket (Kollision ueberschreibt!)
+- [ ] Linked-List pro Bucket oder Open Addressing
+- [ ] Hash-Tabelle vergroessern (256+ Buckets)
+- [ ] NET_TCP_MAX erhoehen (32 → 256+)
+- [ ] test: 64+ gleichzeitige TCP-Connections ohne Kollision
+
+### Skal-C: UDP Socket-Tabelle (MITTEL)
+
+- [ ] udp_socks[]: Hash-Tabelle (Port → Socket) statt lineares Array[16]
+- [ ] NET_UDP_MAX erhoehen oder dynamisch
+- [ ] test: 32+ gleichzeitige UDP-Sockets
+
+### Skal-D: ARP Cache (MITTEL)
+
+- [ ] arp_cache[]: Hash-Tabelle (IP → MAC) statt lineares Array[16]
+- [ ] test: 32+ ARP-Eintraege ohne Performance-Degradation
+
+### Skal-E: Timer-Wheel Pool (MITTEL)
+
+- [ ] tw.entries[]: Free-List oder Bitmap statt O(n) lineare Suche
+- [ ] TW_MAX_TIMERS erhoehen (64 → 256+)
+- [ ] test: 128+ aktive Timer
+
+### Skal-F: FD-Tabelle (NIEDRIG)
+
+- [ ] fd_table.entries[]: Free-List Index fuer O(1) fd_alloc
+- [ ] FD_MAX erhoehen (256 → 1024) oder dynamisch
+- [ ] test: 512+ offene FDs pro Prozess
+
 ## MM — Copy-on-Write fork()
 
 Problem: fork() deep-copied jede Seite (process.c:544-548). Node.js Worker-fork
