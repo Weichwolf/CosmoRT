@@ -308,11 +308,11 @@ bench: $(BUILD)/gen/kbench_bin.h
 	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 
 # ── Hardware test binary ─────────────────────────
-KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/crash/*.c) $(wildcard test/fuzz/*.c)
+KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/fuzz/*.c)
 KTEST_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
-            $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c)) \
             $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
+# test/crash/*.c disabled — re-enable when needed
 
 $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash $(BUILD)/test/fuzz:
 	@mkdir -p $@

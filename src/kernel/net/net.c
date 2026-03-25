@@ -684,10 +684,6 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
             break;
         }
     }
-    /* total=0 + connection still open = timeout, not EOF.
-     * Return -EAGAIN so the caller retries instead of treating as close. */
-    if (total == 0 && c->state == 2 && !c->got_rst && !c->got_fin)
-        return -11; /* EAGAIN */
     return total;
 }
 
