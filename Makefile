@@ -328,12 +328,16 @@ bench: $(BUILD)/gen/kbench_bin.h
 	@sed -n '/Kernel Benchmark/,/Benchmark Complete/p' /tmp/cosmo-serial.log
 	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 
-# ── Hardware test binary ─────────────────────────
-KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/unit/net/*.c)
-KTEST_OBJ = $(BUILD)/test/main.o \
+# ── Hardware test binaries ────────────────────────
+KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
             $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c))
-# test/crash/*.c test/fuzz/*.c disabled
+
+KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
+            $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
+
+KTEST_FUZZ_OBJ = $(BUILD)/test/main.o \
+            $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
 
 $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/crash $(BUILD)/test/fuzz:
 	@mkdir -p $@
@@ -353,24 +357,20 @@ $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
 $(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
-$(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_OBJ)
+$(BUILD)/user/ktest: $(KTEST_UNIT_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_UNIT_OBJ)
 
-$(BUILD)/gen/ktest_bin.h: $(BUILD)/user/ktest | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated ktest binary (%d bytes) */' % len(data)); \
-	print('static const unsigned char ktest_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long ktest_bin_size = %d;' % len(data))" > $@
-	@echo "ktest_bin.h: $$(wc -c < $<) bytes"
+$(BUILD)/user/ktest-crash: $(KTEST_CRASH_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_CRASH_OBJ)
 
-# Build + boot with hardware test
-test-hw: $(BUILD)/gen/ktest_bin.h
+$(BUILD)/user/ktest-fuzz: $(KTEST_FUZZ_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_FUZZ_OBJ)
+
+# Generic: embed ELF as init_bin.h, rebuild kernel, boot in QEMU
+define run_test_binary
+	@python3 -c "data=open('$(1)','rb').read(); print('/* Auto-generated test binary (%d bytes) */' % len(data)); print('static const unsigned char ktest_bin[] = {'); lines=[', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; print(',\n'.join('    '+l for l in lines)); print('};'); print('static const unsigned long ktest_bin_size = %d;' % len(data))" > $(BUILD)/gen/ktest_bin.h
+	@echo "test binary: $$(wc -c < $(1)) bytes"
 	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
-	$(MAKE) all
 	@sed 's/ktest_bin/init_bin/g; s/ktest_bin_size/init_bin_size/g' \
 	  $(BUILD)/gen/ktest_bin.h > $(BUILD)/gen/init_bin.h
 	@rm -f $(BUILD)/kernel/core/main.o
@@ -383,9 +383,24 @@ test-hw: $(BUILD)/gen/ktest_bin.h
 	  -display none -no-reboot \
 	  -device e1000,netdev=net0 \
 	  -netdev user,id=net0 || true
-	@echo "=== Hardware Test Results ==="
-	@sed -n '/Hardware Test/,/PASSED\|failed/p' /tmp/cosmo-serial.log
+	@echo "=== Test Results ==="
+	@grep -E "=== |FAIL" /tmp/cosmo-serial.log || true
 	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
+endef
+
+test-hw: $(BUILD)/user/ktest
+	$(MAKE) all
+	$(call run_test_binary,$(BUILD)/user/ktest)
+
+test-crash: $(BUILD)/user/ktest-crash
+	$(MAKE) all
+	$(call run_test_binary,$(BUILD)/user/ktest-crash)
+
+test-fuzz: $(BUILD)/user/ktest-fuzz
+	$(MAKE) all
+	$(call run_test_binary,$(BUILD)/user/ktest-fuzz)
+
+test-all: test-hw test-crash test-fuzz
 
 # ── Bootloader (EFI) ────────────────────────────
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
