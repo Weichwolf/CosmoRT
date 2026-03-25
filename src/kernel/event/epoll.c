@@ -331,8 +331,6 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         infinite = (timeout < 0);
     }
 
-    net_poll();
-
     /* Scan entries under lock. EPOLLET state must be updated atomically. */
     uint64_t irqf;
     spin_lock_irq(&ep->lock, &irqf);

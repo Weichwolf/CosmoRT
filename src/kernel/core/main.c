@@ -297,7 +297,6 @@ void kernel_main(struct boot_info *info) {
         uint64_t last_discover = timer_ms();
         int dhcp_ok = 0;
         while (timer_ms() < dhcp_deadline) {
-            net_poll();
             if (net_dhcp_check()) {
                 dhcp_ok = 1;
                 break;

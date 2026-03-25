@@ -346,14 +346,10 @@ int net_dhcp(void) {
     net_dhcp_send_discover();
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
-        /* Active polling: don't rely solely on IRQs (shared IRQ may not fire) */
-        for (int i = 0; i < 100; i++) {
-            net_poll();
-            if (net_dhcp_check()) return 0;
-            for (volatile int j = 0; j < 10000; j++) arch_pause();
-        }
+        if (net_dhcp_check()) return 0;
         /* Re-send discover every ~500ms in case first was lost */
         net_dhcp_send_discover();
+        net_idle();
     }
     return -1;
 }
@@ -404,7 +400,6 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
-        net_poll();
         int len = q_pop(&q_arp, reply, sizeof(reply));
         if (len < 42) { net_idle(); continue; }
         if (get16(reply+20) != 2) continue;
@@ -503,7 +498,6 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
 
     /* Phase 1: wait for SYN on local_port */
     while (timer_ms() < deadline) {
-        net_poll();
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
         if (len < 54) { net_idle(); continue; }
         uint16_t dport = get16(pkt + 36);
@@ -539,7 +533,6 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     /* Phase 2: wait for ACK completing the handshake */
     deadline = timer_ms() + (uint64_t)timeout_ms;
     while (timer_ms() < deadline) {
-        net_poll();
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
         if (len < 54) { net_idle(); continue; }
         if (get16(pkt + 36) != c->local_port) continue;
@@ -593,7 +586,6 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
-        net_poll(); /* actively poll NIC — don't rely solely on IRQ */
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
         if (get16(reply+36) != c->local_port) continue;
@@ -642,7 +634,7 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
 
         uint8_t reply[Q_PKT];
         int len = q_pop(&q_tcp, reply, sizeof(reply));
-        if (len < 54) { net_poll(); net_idle(); continue; }
+        if (len < 54) { net_idle(); continue; }
         if (get16(reply+36) != c->local_port) continue;
         if (get16(reply+34) != c->remote_port) continue;
 
@@ -804,7 +796,6 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
     while (timer_ms() < deadline) {
-        net_poll();
         int len = q_pop(&q_udp_dns, reply, sizeof(reply));
         if (len < 42 + 12) { net_idle(); continue; }
 
@@ -901,7 +892,6 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
 
     /* Always run at least once (non-blocking callers pass timeout=0) */
     do {
-        net_poll();
         int len = q_pop(&q_udp_sock, pkt, sizeof(pkt));
         if (len < 42) {
             if (timeout_ms == 0) break; /* non-blocking: don't idle */

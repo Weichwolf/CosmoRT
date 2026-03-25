@@ -230,7 +230,6 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         { process_t *rp = proc_current();
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        net_poll(); /* ensure latest packets are queued */
         uint8_t kbuf[1400];
         uint8_t sip[4];
         uint16_t sport;
@@ -656,7 +655,6 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     int ready = 0;
 
     while (infinite || timer_ms() < deadline) {
-        net_poll();
         ready = 0;
         for (int i = 0; i < nfds; i++) {
             kfds[i].revents = 0;
