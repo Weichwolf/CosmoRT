@@ -333,6 +333,9 @@ void page_free(void *page) {
         return; /* still shared */
     }
     __atomic_store_n(&page_refcounts[pfn], 0, __ATOMIC_RELEASE);
+    /* Notify dedup engine: remove hash from table */
+    extern void dedup_on_page_free(uint64_t phys);
+    dedup_on_page_free(pfn << PAGE_SHIFT);
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(page, 0);
@@ -377,6 +380,7 @@ void pages_free(void *base, int n) {
 
 int page_alloc_total(void) { return (int)total_pages; }
 int page_alloc_free(void)  { return (int)(total_pages - alloc_count); }
+uint64_t page_alloc_max_pfn(void) { return max_pfn; }
 
 /* ── Page refcount API (COW support) ─────────────── */
 

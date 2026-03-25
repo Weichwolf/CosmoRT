@@ -84,11 +84,13 @@ static int test_handler_3(int max_work) { return test_handler(3, max_work); }
 static int test_handler_4(int max_work) { return test_handler(4, max_work); }
 static int test_handler_5(int max_work) { return test_handler(5, max_work); }
 static int test_handler_6(int max_work) { return test_handler(6, max_work); }
+static int test_handler_7(int max_work) { return test_handler(7, max_work); }
+static int test_handler_8(int max_work) { return test_handler(8, max_work); }
 
 static rt_poll_fn test_handlers[RT_PRIO_COUNT] = {
     test_handler_0, test_handler_1, test_handler_2,
     test_handler_3, test_handler_4, test_handler_5,
-    test_handler_6
+    test_handler_6, test_handler_7, test_handler_8
 };
 
 /* Saved real handlers for restore */

@@ -66,7 +66,8 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/paging.o \
             $(BUILD)/kernel/mm/vma.o \
             $(BUILD)/kernel/mm/slab.o \
-            $(BUILD)/kernel/mm/random.o
+            $(BUILD)/kernel/mm/random.o \
+            $(BUILD)/kernel/mm/dedup.o
 
 KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/elf.o

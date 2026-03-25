@@ -30,6 +30,7 @@ void pages_free(void *base, int n);
 /* Stats */
 int page_alloc_total(void);
 int page_alloc_free(void);
+uint64_t page_alloc_max_pfn(void);
 
 /* Page refcount (COW support).
  * phys = physical address of 4KB page (page-aligned). */

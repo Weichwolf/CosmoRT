@@ -148,6 +148,8 @@ void kernel_main(struct boot_info *info) {
     rt_poll_init();
     extern void rt_hash_init(void);
     rt_hash_init();
+    extern void dedup_init(void);
+    dedup_init();
     random_init(info);
 
     /* TSS + SYSCALL */

@@ -16,6 +16,8 @@ enum rt_prio {
     RT_PRIO_VSYNC   = 4,  /* Display VSync, DMA completion */
     RT_PRIO_TIMER   = 5,  /* Timer wheel */
     RT_PRIO_HASH    = 6,  /* Background hashing (idle work) */
+    RT_PRIO_AGE     = 7,  /* Page-age sampling (Accessed-bit scan) */
+    RT_PRIO_DEDUP   = 8,  /* RAM dedup scan+merge (lowest priority) */
     RT_PRIO_COUNT
 };
 
