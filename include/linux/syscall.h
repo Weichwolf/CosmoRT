@@ -28,6 +28,7 @@
 #define SYS_PIPE            22
 #define SYS_SCHED_YIELD     24
 #define SYS_MREMAP          25
+#define SYS_MSYNC           26
 #define SYS_MADVISE         28
 #define SYS_DUP             32
 #define SYS_DUP2            33
@@ -38,6 +39,7 @@
 #define SYS_SOCKET          41
 #define SYS_CONNECT         42
 #define SYS_ACCEPT          43
+#define SYS_SENDFILE        40
 #define SYS_SENDTO          44
 #define SYS_RECVFROM        45
 #define SYS_SENDMSG         46
@@ -75,6 +77,7 @@
 #define SYS_CHMOD           90
 #define SYS_FCHMOD          91
 #define SYS_FCHOWN          93
+#define SYS_LCHOWN          94
 #define SYS_GETTIMEOFDAY    96
 #define SYS_GETRLIMIT       97
 #define SYS_GETRUSAGE       98
@@ -100,12 +103,15 @@
 #define SYS_SCHED_GETPARAM    143
 #define SYS_SCHED_SETSCHEDULER 144
 #define SYS_SCHED_GETSCHEDULER 145
+#define SYS_SCHED_GET_PRIORITY_MAX 146
+#define SYS_SCHED_GET_PRIORITY_MIN 147
 #define SYS_MLOCK             149
 #define SYS_MUNLOCK           150
 #define SYS_MLOCKALL          151
 #define SYS_MUNLOCKALL        152
 #define SYS_PRCTL             157
 #define SYS_ARCH_PRCTL      158
+#define SYS_SETRLIMIT       160
 #define SYS_MOUNT           165
 #define SYS_SETHOSTNAME     170
 #define SYS_GETTID          186
@@ -127,6 +133,7 @@
 #define SYS_SCHED_GETAFFINITY 204
 #define SYS_GETDENTS64      217
 #define SYS_SET_TID_ADDRESS  218
+#define SYS_FADVISE64       221
 #define SYS_CLOCK_GETTIME   228
 #define SYS_CLOCK_GETRES    229
 #define SYS_CLOCK_NANOSLEEP 230
@@ -146,6 +153,8 @@
 #define SYS_READLINKAT       267
 #define SYS_FCHMODAT         268
 #define SYS_FACCESSAT        269
+#define SYS_PSELECT6        270
+#define SYS_PPOLL           271
 #define SYS_SET_ROBUST_LIST 273
 #define SYS_UTIMENSAT        280
 #define SYS_EPOLL_PWAIT     281
@@ -159,7 +168,12 @@
 #define SYS_DUP3             292
 #define SYS_PIPE2            293
 #define SYS_INOTIFY_INIT1  294
+#define SYS_PREADV          295
+#define SYS_PWRITEV         296
+#define SYS_RECVMMSG        299
 #define SYS_PRLIMIT64       302
+#define SYS_SENDMMSG        307
+#define SYS_GETCPU          309
 #define SYS_RENAMEAT2        316
 #define SYS_GETRANDOM       318
 #define SYS_STATX           332
