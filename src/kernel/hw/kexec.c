@@ -22,7 +22,7 @@
 #include "elf.h"
 #include "page_alloc.h"
 #include "boot_info.h"
-#include "arch_x86.h"
+#include "arch.h"
 #include "bcache.h"
 #include "journal.h"
 #include "syscall.h"

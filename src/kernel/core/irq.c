@@ -11,7 +11,7 @@
 #include "page_alloc.h"
 #include "smp.h"
 #include "spinlock.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 

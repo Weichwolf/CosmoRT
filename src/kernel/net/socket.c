@@ -11,7 +11,7 @@
 #include "config.h"
 #include "percpu.h"
 #include "epoll.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {

@@ -18,7 +18,7 @@
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* ── Epoll internals ─────────────────────────────── */
 

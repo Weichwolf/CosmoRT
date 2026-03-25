@@ -3,7 +3,7 @@
 
 #include "timer.h"
 #include "serial.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
 

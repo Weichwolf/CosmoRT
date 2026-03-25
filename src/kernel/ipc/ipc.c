@@ -10,7 +10,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "thread.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 extern void sched_add(thread_t *t);
 

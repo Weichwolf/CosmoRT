@@ -3,7 +3,7 @@
 #define NET_UTIL_H
 
 #include <stdint.h>
-#include "arch_x86.h"
+#include "arch.h"
 
 static inline void mcpy(void *d, const void *s, int n) {
     uint8_t *dd = d; const uint8_t *ss = s;

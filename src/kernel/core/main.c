@@ -21,7 +21,7 @@
 #include "net.h"
 #include "cosmo_rt.h"
 #include "random.h"
-#include "arch_x86.h"
+#include "arch.h"
 #include "vt.h"
 #include "fb.h"
 #include "input.h"

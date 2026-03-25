@@ -11,7 +11,7 @@
 #include "timer.h"
 #include "percpu.h"
 #include "memops.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* Trampoline binary (assembled from ap_trampoline.asm → flat binary → C header) */
 #include "gen/ap_trampoline_bin.h"

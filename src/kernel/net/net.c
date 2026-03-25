@@ -9,7 +9,7 @@
 #include "spinlock.h"
 #include "process.h"
 #include "percpu.h"
-#include "arch_x86.h"
+#include "arch.h"
 #include "page_alloc.h"
 
 /* Registered NIC driver (set by driver init, e.g., e1000_init) */

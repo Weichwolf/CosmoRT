@@ -19,7 +19,7 @@
 #include "syscall.h"
 #include "irq.h"
 #include "socket.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* Page table flags */
 #define PTE_PRESENT (1ULL << 0)

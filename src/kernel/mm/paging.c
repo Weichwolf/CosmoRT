@@ -8,7 +8,7 @@
 #include "paging.h"
 #include "serial.h"
 #include "config.h"
-#include "arch_x86.h"
+#include "arch.h"
 #include <stdint.h>
 
 extern uint64_t pml4[];

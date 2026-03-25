@@ -16,7 +16,7 @@
 #include "spinlock.h"
 #include "config.h"
 #include "smp.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
 static uint8_t core_isolated[SMP_MAX_CORES];

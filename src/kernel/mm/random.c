@@ -8,7 +8,7 @@
 #include "random.h"
 #include "serial.h"
 #include "spinlock.h"
-#include "arch_x86.h"
+#include "arch.h"
 #include "memops.h"
 
 /* ── ChaCha20 core ─────────────────────────────── */

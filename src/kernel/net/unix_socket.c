@@ -12,7 +12,7 @@
 #include "memops.h"
 #include "syscall.h"
 #include "cosmo_rt.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* ── Pool ─────────────────────────────────────── */
 

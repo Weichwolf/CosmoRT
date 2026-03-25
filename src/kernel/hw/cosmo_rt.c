@@ -18,7 +18,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "memops.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* ── MMIO Mapping ────────────────────────────────── */
 

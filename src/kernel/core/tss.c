@@ -8,7 +8,7 @@
 #include "serial.h"
 #include "config.h"
 #include "smp.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* TSS with I/O Permission Bitmap */
 #define IOPB_SIZE 8193

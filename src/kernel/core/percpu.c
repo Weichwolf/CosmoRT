@@ -4,7 +4,7 @@
 #include "serial.h"
 #include "smp.h"
 #include "config.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 percpu_t percpu_data[SMP_MAX_CORES];
 

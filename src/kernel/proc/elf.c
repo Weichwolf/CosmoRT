@@ -12,7 +12,7 @@
 #include "page_alloc.h"
 #include "memops.h"
 #include "cosmofs.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* CSPRNG for ASLR base address selection */
 static uint64_t elf_aslr_rand(void) {

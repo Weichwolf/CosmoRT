@@ -7,7 +7,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include <stdint.h>
-#include "arch_x86.h"
+#include "arch.h"
 
 #define COM1 0x3F8
 

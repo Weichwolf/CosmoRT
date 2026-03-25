@@ -3,8 +3,8 @@
  * All inline assembly lives here. src/kernel/ .c files must not
  * contain __asm__ — they call arch_*() instead.
  */
-#ifndef ARCH_X86_H
-#define ARCH_X86_H
+#ifndef COSMO_ARCH_X86_64_H
+#define COSMO_ARCH_X86_64_H
 
 #include <stdint.h>
 

@@ -25,7 +25,7 @@
 #include "cosmofs.h"
 #include "pty.h"
 #include "vt.h"
-#include "arch_x86.h"
+#include "arch.h"
 
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
