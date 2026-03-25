@@ -31,7 +31,7 @@ make tools/mkfs tools/cosmo_cp 2>/dev/null || {
 ./tools/mkfs "$COSMOFS_TMP" "$FS_MB"
 
 # Directories
-for d in usr usr/bin usr/lib home home/.npm tmp etc opt opt/claude-code dev; do
+for d in usr usr/bin usr/lib usr/local usr/local/ssl home home/.npm tmp etc etc/ssl opt opt/claude-code dev; do
     ./tools/cosmo_cp "$COSMOFS_TMP" --mkdir "/$d"
 done
 
@@ -65,6 +65,12 @@ fi
 104.18.27.120 example.com
 160.79.104.10 api.anthropic.com" /etc/hosts
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
+
+# TLS CA certificate bundle (Mozilla root CAs, required for HTTPS)
+[ -f "$BREW/ssl/cert.pem" ] && \
+    ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /etc/ssl/cert.pem
+[ -f "$BREW/ssl/cert.pem" ] && \
+    ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /usr/local/ssl/cert.pem
 
 # Boot-test script (init runs /home/.boot if present, else starts bash -i)
 if [ -z "$COSMO_INTERACTIVE" ] && [ -f tools/boot-test.sh ]; then

@@ -273,9 +273,16 @@ long socket_read(int fd, void *buf, long count) {
     /* DGRAM: delegate to recvfrom */
     if (s->is_dgram) return do_recvfrom(fd, buf, count, 0, 0, 0);
     if (s->state != SOCK_CONNECTED) return -EBADF;
+    /* Check non-blocking */
+    int nonblock = 0;
+    { process_t *rp = proc_current();
+      if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                 if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
     uint8_t kbuf[4096];
     int want = (int)count > 4096 ? 4096 : (int)count;
-    int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
+    int timeout = nonblock ? 0 : NET_TCP_TIMEOUT_MS;
+    int r = net_tcp_recv(&s->tcp, kbuf, want, timeout);
+    if (r == 0 && nonblock) return -EAGAIN; /* no data, non-blocking */
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
     if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;

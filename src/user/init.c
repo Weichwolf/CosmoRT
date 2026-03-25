@@ -31,6 +31,8 @@ void _start(void) {
         "PS1=cosmo:\\w$ ",
         "npm_config_cache=/tmp/.npm-cache",
         "NODE_OPTIONS=--max-old-space-size=512",
+        "SSL_CERT_FILE=/etc/ssl/cert.pem",
+        "NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem",
         (char *)0
     };
 

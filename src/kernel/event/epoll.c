@@ -270,9 +270,8 @@ void epoll_check_timeouts(void) {
     int need_wake = 0;
     extern int timerfd_any_expired(void);
     if (timerfd_any_expired()) need_wake = 1;
-    /* Also wake if NIC has queued packets */
-    extern pkt_queue_t q_tcp, q_udp_sock;
-    if (q_tcp.count > 0 || q_udp_sock.count > 0) need_wake = 1;
+    /* NIC packet wakeup removed — IRQ handler calls epoll_wake_all directly.
+     * Timer-based wakeup caused spurious EPOLLIN on wrong sockets. */
     if (need_wake) epoll_wake_all();
 
     uint64_t irqf;
