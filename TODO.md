@@ -1,24 +1,24 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 509 ktest PASS, 15/15 Boot-Test PASS.
+Stand: 2026-03-25. 422 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
 Audit: 27/27 Security-Fixes erledigt.
 
-Netzwerk-Stack v2 Architektur: siehe NETWORK.md
+Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 
 ---
 
 ## Net Phase 0 — Quick-Fixes (npm unblockieren)
 
-- [ ] NET_QUEUE_SIZE 16→128
-- [ ] NET_TCP_RXBUF 4096→65536
-- [ ] NET_TCP_TIMEOUT_MS 5000→30000
-- [ ] TCP recv: timeout → -EAGAIN statt 0 (EOF)
-- [ ] TCP recv: non-matching Pakete re-queuen statt droppen
-- [ ] flock(73) Stub
-- [ ] MAX_SOCKETS 16→64
+- [x] NET_QUEUE_SIZE 16→128
+- [x] NET_TCP_RXBUF 4096→65536
+- [x] NET_TCP_TIMEOUT_MS 5000→30000
+- [x] TCP recv: timeout → -EAGAIN statt 0 (EOF)
+- [x] TCP recv: non-matching Pakete re-queuen statt droppen
+- [x] flock(73) Stub
+- [x] MAX_SOCKETS 16→64
 - [ ] test: npm install -g funktioniert
 - [ ] test: claude update funktioniert
 

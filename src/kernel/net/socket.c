@@ -259,6 +259,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     uint8_t kbuf[4096];
     int want = (int)len > 4096 ? 4096 : (int)len;
     int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
+    if (r == -EAGAIN) return -EAGAIN;
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
     if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;
@@ -282,7 +283,7 @@ long socket_read(int fd, void *buf, long count) {
     int want = (int)count > 4096 ? 4096 : (int)count;
     int timeout = nonblock ? 0 : NET_TCP_TIMEOUT_MS;
     int r = net_tcp_recv(&s->tcp, kbuf, want, timeout);
-    if (r == 0 && nonblock) return -EAGAIN; /* no data, non-blocking */
+    if (r == -EAGAIN) return -EAGAIN; /* timeout or non-blocking, no data */
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
     if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;

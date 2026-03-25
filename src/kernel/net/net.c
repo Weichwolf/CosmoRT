@@ -635,8 +635,13 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
         uint8_t reply[Q_PKT];
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
-        if (get16(reply+36) != c->local_port) continue;
-        if (get16(reply+34) != c->remote_port) continue;
+        /* Non-matching packets: re-queue instead of drop */
+        if (get16(reply+36) != c->local_port ||
+            get16(reply+34) != c->remote_port) {
+            q_push(&q_tcp, reply, len);
+            net_idle();
+            continue;
+        }
 
         uint8_t flags = reply[47];
         int doff = (reply[46]>>4)*4;
@@ -684,6 +689,9 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
             break;
         }
     }
+    /* Timeout with no data → EAGAIN (not EOF).
+     * EOF (0) only on FIN/RST or explicit shutdown. */
+    if (total == 0 && !c->got_fin && !c->got_rst) return -11; /* -EAGAIN */
     return total;
 }
 
