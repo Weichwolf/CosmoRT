@@ -81,7 +81,6 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 - [x] rt_channel_pop(ch, buf, len) — Consumer-Seite, non-blocking
 - [x] rt_core_id(int index) — welcher physische Core ist RT-Core N
 - [x] rt_is_current_rt() — true auf RT-Core(s), false auf Compute
-- [ ] Assertions: Push/Pop Richtung validieren (RT→Compute oder Compute→RT je nach Channel)
 - [x] test: rt_channel push/pop Roundtrip
 - [x] test: rt_channel wrap-around bei vollem Buffer
 - [x] test: rt_is_current_rt() korrekt auf beiden Core-Typen
