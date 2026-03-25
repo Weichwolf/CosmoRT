@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 477 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 509 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -74,17 +74,17 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ### RT/Compute-A: Grundprimitives
 
-- [ ] arch.h: arch_store_release, arch_load_acquire, arch_wmb, arch_rmb
-- [ ] arch.h: arch_dma_sync_for_device, arch_dma_sync_for_cpu (x86: No-Op, ARM64: Cache-Ops)
-- [ ] rt_channel_t: SPSC Lock-free Ringbuffer (atomic head/tail via arch_store_release/load_acquire)
-- [ ] rt_channel_push(ch, msg, len) — Producer-Seite, non-blocking
-- [ ] rt_channel_pop(ch, buf, len) — Consumer-Seite, non-blocking
-- [ ] rt_core_id(int index) — welcher physische Core ist RT-Core N
-- [ ] rt_is_current_rt() — true auf RT-Core(s), false auf Compute
+- [x] arch.h: arch_store_release, arch_load_acquire, arch_wmb, arch_rmb
+- [x] arch.h: arch_dma_sync_for_device, arch_dma_sync_for_cpu (x86: No-Op, ARM64: Cache-Ops)
+- [x] rt_channel_t: SPSC Lock-free Ringbuffer (atomic head/tail via arch_store_release/load_acquire)
+- [x] rt_channel_push(ch, msg, len) — Producer-Seite, non-blocking
+- [x] rt_channel_pop(ch, buf, len) — Consumer-Seite, non-blocking
+- [x] rt_core_id(int index) — welcher physische Core ist RT-Core N
+- [x] rt_is_current_rt() — true auf RT-Core(s), false auf Compute
 - [ ] Assertions: Push/Pop Richtung validieren (RT→Compute oder Compute→RT je nach Channel)
-- [ ] test: rt_channel push/pop Roundtrip
-- [ ] test: rt_channel wrap-around bei vollem Buffer
-- [ ] test: rt_is_current_rt() korrekt auf beiden Core-Typen
+- [x] test: rt_channel push/pop Roundtrip
+- [x] test: rt_channel wrap-around bei vollem Buffer
+- [x] test: rt_is_current_rt() korrekt auf beiden Core-Typen
 
 ### RT/Compute-B: IPI + Wake
 
