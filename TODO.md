@@ -51,6 +51,88 @@ Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 - [ ] mDNS → dns.c
 - [ ] DHCP-Client → dhcp.c
 
+## RT/Compute Schnittstelle — include/internal/rt.h
+
+Problem: Keine saubere Abstraktion zwischen RT-Core und Compute-Cores.
+Kommunikation laeuft ueber globale Queues mit Spinlocks.
+RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
+
+### RT/Compute-A: Grundprimitives
+
+- [ ] arch.h: arch_store_release, arch_load_acquire, arch_wmb, arch_rmb
+- [ ] arch.h: arch_dma_sync_for_device, arch_dma_sync_for_cpu (x86: No-Op, ARM64: Cache-Ops)
+- [ ] rt_channel_t: SPSC Lock-free Ringbuffer (atomic head/tail via arch_store_release/load_acquire)
+- [ ] rt_channel_push(ch, msg, len) — Producer-Seite, non-blocking
+- [ ] rt_channel_pop(ch, buf, len) — Consumer-Seite, non-blocking
+- [ ] rt_core_id(int index) — welcher physische Core ist RT-Core N
+- [ ] rt_is_current_rt() — true auf RT-Core(s), false auf Compute
+- [ ] Assertions: Push/Pop Richtung validieren (RT→Compute oder Compute→RT je nach Channel)
+- [ ] test: rt_channel push/pop Roundtrip
+- [ ] test: rt_channel wrap-around bei vollem Buffer
+- [ ] test: rt_is_current_rt() korrekt auf beiden Core-Typen
+
+### RT/Compute-B: IPI + Wake
+
+- [ ] rt_wake(int core_id) — IPI an Ziel-Core senden
+- [ ] sched_wake(thread_t *t) — markiert Thread runnable, sendet IPI falls anderer Core
+- [ ] IPI-Handler auf Compute-Core: Scheduler-Reschedule ausloesen
+- [ ] test: rt_wake IPI kommt an
+- [ ] test: sched_wake weckt schlafenden Thread auf anderem Core
+
+### RT/Compute-C: TX-Ring (Compute→RT fuer Netzwerk-TX)
+
+- [ ] tx_ring_t pro NIC: SPSC, Compute=Producer, RT=Consumer
+- [ ] send() Syscall: TCP-Paket bauen → tx_ring_push
+- [ ] net_poll() auf RT-Core: tx_ring_drain() → nic->send()
+- [ ] Doorbell-Flag (atomic): Compute setzt nach Push, RT prueft im IRQ-Return-Path
+- [ ] test: TX-Ring Durchsatz (Pakete/s)
+
+### RT/Compute-D: Timer-Wheel (RT-Core owned)
+
+- [ ] timer_wheel_t auf RT-Core: 1ms Granularitaet, 256 Slots
+- [ ] rt_timer_request(sock, action, timeout_ms) — Compute postet in Timer-Request-Ring
+- [ ] RT-Core: Timer-Wheel tick → faellige Timer feuern → Aktion direkt ausfuehren
+- [ ] Timer-Actions: TCP Retransmit, Keepalive, DHCP Renewal (alle Netzwerk-Sends)
+- [ ] test: Timer feuert nach Deadline
+- [ ] test: Timer-Cancel vor Deadline
+
+### RT/Compute-E: Prioritaeten auf RT-Core
+
+- [ ] rt_poll() prueft in statischer Prio-Reihenfolge:
+      P0 Audio (<5ms) → P1 Input/HID (<1ms) → P2 Net-RX (max 64 pkt) →
+      P3 Net-TX (max 64 pkt) → P4 VSync/DMA → P5 Timer-Wheel
+- [ ] Bounded Work: Netzwerk max N Pakete pro Durchlauf, dann Prio-Check
+- [ ] Handler returniert "more_work" Flag → naechste Runde nach Prio-Pruefung
+- [ ] test: Audio-Callback unterbricht Netzwerk-Burst
+
+### RT/Compute-F: Skalierung (Abstraktion, nicht Implementierung)
+
+- [ ] RT_CORE_COUNT=1 (spaeter: 2 fuer IRQ-Split)
+- [ ] rt.h abstrahiert ueber Core-Count, hardcoded Core 0 nirgends
+- [ ] Escape-Hatches dokumentiert: Multi-RT, NIC-Offload, Protocol-auf-Compute
+
+## Net Phase E0 — Polling eliminieren (Sleep/Wake statt Busy-Wait)
+
+Problem: net_tcp_recv pollt q_tcp in Busy-Wait-Loop mit timer_ms() Deadline.
+Verschwendet CPU, blockiert Compute-Core, 30s Timeout bei leerem accept.
+
+Architektur: RT-Core (IRQ) → Lock-free Ringbuffer → IPI → Compute-Core (Wake).
+RT-Core darf nie blockieren, nie Spinlock halten der Compute-Core gehoert.
+
+- [ ] Lock-free Ringbuffer fuer rxring (atomic head/tail, kein Spinlock)
+- [ ] IPI-basiertes Wake: RT-Core schreibt Ringbuffer, sendet IPI an Ziel-Compute-Core
+- [ ] sched_wake(thread_t *t) — markiert Thread runnable, sendet IPI falls anderer Core
+- [ ] sock_waitq: Thread-ID + Timeout pro Socket (kein wait_queue Spinlock auf RT-Core)
+- [ ] tcp_input() auf RT-Core: rxring_push (lock-free) → sched_wake via IPI
+- [ ] net_tcp_recv auf Compute-Core: Ringbuffer leer → Thread suspendieren, Timeout setzen
+- [ ] net_tcp_accept: keine pending SYN → Thread suspendieren bis SYN-Wakeup
+- [ ] net_tcp_connect: nach SYN → Thread suspendieren bis SYN-ACK-Wakeup
+- [ ] udp recv analog: Queue leer → Thread suspendieren
+- [ ] q_tcp eliminieren — alle Pakete direkt in Per-Socket Ringbuffer via tcp_input
+- [ ] net_idle() Aufrufe in TCP/UDP entfernen
+- [ ] test: recv blockt bis IRQ Daten liefert (kein Polling)
+- [ ] test: accept blockt bis SYN kommt (kein Timeout-Polling)
+
 ## Net Phase E — Robustheit
 
 - [ ] Out-of-Order Segment Buffering
