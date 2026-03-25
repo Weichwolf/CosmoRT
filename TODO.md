@@ -229,7 +229,6 @@ Font ist Userspace-Daten, nicht Kernel-Code.
 - [ ] Font in ramfs einbetten: /lib/fonts/default.font
 - [ ] fb_init(): laedt Font aus ramfs statt aus eingebettetem Header
 - [ ] Abhaengigkeit: ramfs muss vor fb_init() verfuegbar sein (Boot-Reihenfolge pruefen)
-- [ ] Fallback: minimaler 7x13 ASCII-Font (128 Glyphen) bleibt embedded fuer Panic/Early-Boot
 
 ## MM — Copy-on-Write fork()
 
