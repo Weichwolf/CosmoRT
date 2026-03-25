@@ -266,17 +266,11 @@ Font ist Userspace-Daten, nicht Kernel-Code.
 
 ## MM — Copy-on-Write fork()
 
-Problem: fork() deep-copied jede Seite (process.c:544-548). Node.js Worker-fork
-bei 500MB Heap = 500MB kopiert, auch wenn Child nur 2MB aendert.
-
-- [ ] COW-Bit im PTE: fork markiert alle User-Pages read-only in beiden Prozessen
-- [ ] Page-Fault-Handler: Schreibzugriff auf COW-Page → neue Page allozieren, kopieren, PTE writable
-- [ ] Refcount pro physische Page (page_alloc.h): fork incrementiert, munmap/exit decrementiert
-- [ ] fork() wird O(Page-Tables) statt O(Speicher): nur PTEs kopieren, nicht Daten
-- [ ] COW-sichere Kernel-Zugriffe: copy_from_user darf COW-Pages nicht triggern
-- [ ] test: fork + child write → eigene Page, parent unveraendert
-- [ ] test: fork ohne write → keine neuen Pages alloziert
-- [ ] test: exit nach fork → refcount korrekt decrementiert
+- [x] PTE_COW (Bit 9): fork markiert User-Pages read-only + COW
+- [x] Page-Fault-Handler: COW-Fault → neue Page bei refcount>1, PTE-Fix bei refcount==1
+- [x] page_incref/page_decref/page_refcount (atomic, SMP-safe)
+- [x] fork() O(Page-Tables) statt O(Speicher)
+- [x] test: fork+write, fork-no-write, exit-refcount, multi-fork (16 Tests)
 
 ## MM — MADV_FREE (V8 Heap Management)
 
