@@ -11,6 +11,9 @@
 /* nic_driver_t, net_nic_register — from cosmo.h (public driver API) */
 #include "cosmo_rt.h"
 
+/* TCP types and API */
+#include "tcp.h"
+
 /* Initialize network state. Requires a NIC to be registered first.
  * Returns 0 on success, -1 if no NIC registered. */
 int net_init(void);
@@ -25,29 +28,6 @@ int net_ping(const uint8_t *dst_ip);
 
 /* ARP */
 int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out);
-
-/* TCP */
-typedef struct {
-    uint8_t  dst_ip[4];
-    uint8_t  dst_mac[6];
-    uint16_t local_port;
-    uint16_t remote_port;
-    uint32_t seq;
-    uint32_t ack;
-    int      state;
-    int      got_rst;    /* set when peer sends RST → ECONNRESET */
-    int      got_fin;    /* set when peer sends FIN → EOF */
-    uint8_t  *rxbuf;       /* dynamically allocated, NET_TCP_RXBUF bytes */
-    int      rxbuf_size;   /* allocated size (0 if not allocated) */
-    int      rxbuf_pos;
-    int      rxbuf_len;
-} net_tcp_t;
-
-int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port);
-int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms);
-int net_tcp_send(net_tcp_t *c, const void *data, int len);
-int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter);
-void net_tcp_close(net_tcp_t *c);
 
 /* HTTP */
 int net_http_get(const uint8_t *dst_ip, uint16_t port,
@@ -69,6 +49,13 @@ void net_poll(void);
 
 /* mDNS hostname (e.g., "cosmo-3456") — set after DHCP */
 void net_set_hostname(const char *name);
+
+/* Raw send — used by tcp.c */
+void net_send_raw(const uint8_t *data, uint16_t len);
+
+/* IP header build — used by tcp.c */
+void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
+                      const uint8_t *dst_ip, uint8_t proto, uint16_t plen);
 
 /* Queue type — each queue has its own spinlock.
  *
@@ -95,6 +82,10 @@ typedef struct {
 static inline int q_count(const pkt_queue_t *q) {
     return __atomic_load_n(&q->count, __ATOMIC_ACQUIRE);
 }
+
+/* Queue operations (defined in net.c) */
+void q_push(pkt_queue_t *q, const uint8_t *pkt, int len);
+int  q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize);
 
 extern pkt_queue_t q_tcp;
 extern pkt_queue_t q_udp_sock;

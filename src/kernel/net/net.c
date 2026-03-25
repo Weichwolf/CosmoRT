@@ -1,9 +1,9 @@
-/* CosmoRT Network Stack — IP/UDP/TCP/DHCP/ARP/DNS
- * NIC-agnostic: uses registered nic_driver_t for send/recv/get_mac.
- * Adapted from llmos net.c.
+/* CosmoRT Network Stack — IP/UDP/DHCP/ARP/DNS + Dispatch
+ * TCP lives in tcp.c. NIC-agnostic: uses registered nic_driver_t.
  */
 
 #include "net.h"
+#include "net_util.h"
 #include "serial.h"
 #include "timer.h"
 #include "spinlock.h"
@@ -30,42 +30,12 @@ void net_nic_register(const nic_driver_t *driver) {
 #define nic_recv(buf, bufsize)    (nic->recv((buf), (bufsize)))
 #define nic_get_mac(mac)          (nic->get_mac((mac)))
 
-/* Idle: enable IRQs and halt until timer IRQ fires.
- * Timer IRQ fires → e1000d IRQ handler polls NIC → packets arrive
- * in ring buffer. Then we resume and net_poll reads them. */
-static inline void net_idle(void) {
-    arch_halt();
-}
-
 /* Network state */
 net_state_t net_state = {{0}, {0}, {0}, {0}};
 
 /* mDNS hostname: "cosmo-XXXX" (set after DHCP, max 15 chars) */
 static char mdns_hostname[16];
 static int  mdns_hostname_len;
-
-/* ── Helpers ───────────────────────────────────────── */
-
-static void mcpy(void *d, const void *s, int n) {
-    uint8_t *dd = d; const uint8_t *ss = s;
-    while (n--) *dd++ = *ss++;
-}
-static void mzero(void *d, int n) { uint8_t *dd = d; while (n--) *dd++ = 0; }
-static void put16(uint8_t *p, uint16_t v) { p[0] = v >> 8; p[1] = v; }
-static void put32(uint8_t *p, uint32_t v) { p[0]=v>>24; p[1]=v>>16; p[2]=v>>8; p[3]=v; }
-static uint16_t get16(const uint8_t *p) { return (uint16_t)((p[0]<<8)|p[1]); }
-static uint32_t get32(const uint8_t *p) { return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3]; }
-
-static uint16_t ip_cksum(const uint8_t *d, int len) {
-    uint32_t sum = 0;
-    for (int i = 0; i < len; i += 2) {
-        uint16_t w = (uint16_t)(d[i] << 8);
-        if (i+1 < len) w |= d[i+1];
-        sum += w;
-    }
-    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-    return (uint16_t)~sum;
-}
 
 /* ── Packet Queues ─────────────────────────────────── */
 
@@ -77,7 +47,7 @@ pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 static uint16_t dns_local_port = 0;
 
-static void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
+void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
     uint64_t flags;
     spin_lock_irq(&q->lock, &flags);
     if (q->count < Q_SIZE) {
@@ -90,7 +60,7 @@ static void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
     spin_unlock_irq(&q->lock, flags);
 }
 
-static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
+int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     uint64_t flags;
     spin_lock_irq(&q->lock, &flags);
     if (q->count == 0) {
@@ -106,7 +76,7 @@ static int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     return l;
 }
 
-/* ── Loopback NIC Send ────────────────────────────── */
+/* ── NIC Send (with Loopback) ─────────────────────── */
 
 static void nic_send(const uint8_t *data, uint16_t len) {
     /* Loopback: dst IP 127.x.x.x → feed directly into RX queues */
@@ -125,6 +95,20 @@ static void nic_send(const uint8_t *data, uint16_t len) {
         return;
     }
     if (nic) nic->send(data, len);
+}
+
+/* Public wrappers for tcp.c */
+void net_send_raw(const uint8_t *data, uint16_t len) { nic_send(data, len); }
+
+void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
+                       const uint8_t *dst_ip, uint8_t proto, uint16_t plen) {
+    mcpy(pkt, dst_mac, 6); mcpy(pkt + 6, net_my_mac, 6); put16(pkt + 12, 0x0800);
+    pkt[14] = 0x45; pkt[15] = 0; put16(pkt + 16, 20 + plen);
+    put16(pkt + 18, 0); put16(pkt + 20, 0x4000);
+    pkt[22] = 64; pkt[23] = proto; pkt[24] = 0; pkt[25] = 0;
+    mcpy(pkt + 26, net_my_ip, 4); mcpy(pkt + 30, dst_ip, 4);
+    uint16_t ic = ip_cksum(pkt + 14, 20);
+    pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
 }
 
 /* ── mDNS ──────────────────────────────────────────── */
@@ -448,272 +432,6 @@ int net_ping(const uint8_t *dst_ip) {
         return reply[22];
     }
     return -1;
-}
-
-/* ── TCP ───────────────────────────────────────────── */
-
-static int net_random(void *buf, int len) {
-    extern int random_get(void *, unsigned long);
-    return random_get(buf, (unsigned long)len);
-}
-
-static void build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
-                          const uint8_t *dst_ip, uint8_t proto, uint16_t plen) {
-    mcpy(pkt, dst_mac, 6); mcpy(pkt+6, net_my_mac, 6); put16(pkt+12, 0x0800);
-    pkt[14]=0x45; pkt[15]=0; put16(pkt+16, 20+plen);
-    put16(pkt+18, 0); put16(pkt+20, 0x4000);
-    pkt[22]=64; pkt[23]=proto; pkt[24]=0; pkt[25]=0;
-    mcpy(pkt+26, net_my_ip, 4); mcpy(pkt+30, dst_ip, 4);
-    uint16_t ic = ip_cksum(pkt+14, 20); pkt[24]=(uint8_t)(ic>>8); pkt[25]=(uint8_t)ic;
-}
-
-static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip, const uint8_t *tcp, int tlen) {
-    uint32_t sum = 0;
-    for (int i=0;i<4;i+=2) sum += (uint32_t)((sip[i]<<8)|sip[i+1]);
-    for (int i=0;i<4;i+=2) sum += (uint32_t)((dip[i]<<8)|dip[i+1]);
-    sum += 6; sum += (uint32_t)tlen;
-    for (int i=0;i<tlen;i+=2) { uint16_t w=(uint16_t)(tcp[i]<<8); if(i+1<tlen) w|=tcp[i+1]; sum+=w; }
-    while (sum>>16) sum = (sum&0xFFFF)+(sum>>16);
-    return (uint16_t)~sum;
-}
-
-static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
-    uint8_t pkt[1536]; int thdr=20, tt=thdr+dlen;
-    mzero(pkt, 54+dlen);
-    build_ip_hdr(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt);
-    uint8_t *t = pkt+34;
-    put16(t, c->local_port); put16(t+2, c->remote_port);
-    put32(t+4, c->seq); put32(t+8, c->ack);
-    t[12]=(uint8_t)((thdr/4)<<4); t[13]=flags;
-    put16(t+14, 8192); put16(t+16, 0); put16(t+18, 0);
-    if (dlen>0 && data) mcpy(t+thdr, data, dlen);
-    uint16_t ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
-    t[16]=(uint8_t)(ck>>8); t[17]=(uint8_t)ck;
-    nic_send(pkt, (uint16_t)(34+tt));
-}
-
-int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
-    uint8_t pkt[Q_PKT];
-    uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
-
-    /* Phase 1: wait for SYN on local_port */
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) { net_idle(); continue; }
-        uint16_t dport = get16(pkt + 36);
-        if (dport != local_port) continue;
-        uint8_t fl = pkt[47];
-        if ((fl & 0x02) && !(fl & 0x10)) break; /* SYN only */
-    }
-    if (timer_ms() >= deadline) return -1;
-
-    /* Extract client info from the SYN packet */
-    mzero(c, sizeof(*c));
-    mcpy(c->dst_mac, pkt + 6, 6);          /* client's MAC (src of SYN) */
-    mcpy(c->dst_ip, pkt + 26, 4);          /* client's IP (src of IP) */
-    c->remote_port = get16(pkt + 34);       /* client's port (host order via get16) */
-    c->local_port = get16(pkt + 36);        /* our port */
-    uint32_t client_isn = get32(pkt + 38);
-    c->ack = client_isn + 1;
-    uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
-    c->seq = rseq;
-    c->rxbuf_pos = c->rxbuf_len = 0;
-    /* Allocate receive buffer */
-    if (!c->rxbuf) {
-        int npages = (NET_TCP_RXBUF + 4095) / 4096;
-        c->rxbuf = (uint8_t *)pages_alloc(npages);
-        if (!c->rxbuf) return -ENOMEM;
-        c->rxbuf_size = npages * 4096;
-    }
-
-    /* Send SYN-ACK */
-    send_tcp(c, 0x12, 0, 0);
-    c->state = 4; /* SYN_RECEIVED */
-
-    /* Phase 2: wait for ACK completing the handshake */
-    deadline = timer_ms() + (uint64_t)timeout_ms;
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) { net_idle(); continue; }
-        if (get16(pkt + 36) != c->local_port) continue;
-        if (get16(pkt + 34) != c->remote_port) continue;
-        uint8_t fl = pkt[47];
-        if (fl & 0x04) { c->state = 0; return -1; } /* RST */
-        if (fl & 0x10) {
-            /* ACK received — verify ack number */
-            uint32_t ack_num = get32(pkt + 42);
-            if (ack_num == c->seq + 1) {
-                c->seq++;
-                c->state = 2; /* ESTABLISHED */
-                serial_puts("tcp: accept connected\n");
-                return 0;
-            }
-        }
-    }
-    c->state = 0;
-    serial_puts("tcp: accept timeout\n");
-    return -1;
-}
-
-int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
-    mcpy(c->dst_ip, dst_ip, 4); c->remote_port = port;
-    uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
-    uint16_t rport; net_random(&rport, (int)sizeof(rport));
-    c->local_port = (uint16_t)((rport % 16384) + 49152);
-    c->seq = rseq; c->ack = 0; c->state = 0;
-    c->rxbuf_pos = c->rxbuf_len = 0;
-    /* Allocate receive buffer on demand */
-    if (!c->rxbuf) {
-        int npages = (NET_TCP_RXBUF + 4095) / 4096;
-        c->rxbuf = (uint8_t *)pages_alloc(npages);
-        if (!c->rxbuf) return -ENOMEM;
-        c->rxbuf_size = npages * 4096;
-    }
-    serial_puts("tcp: dst=");
-    for (int i = 0; i < 4; i++) {
-        uint8_t b = dst_ip[i];
-        if (b >= 100) serial_putchar('0' + b/100);
-        if (b >= 10)  serial_putchar('0' + (b/10)%10);
-        serial_putchar('0' + b%10);
-        if (i < 3) serial_putchar('.');
-    }
-    serial_puts(" port="); serial_hex64(port);
-    serial_puts("\ntcp: ARP\n");
-    if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
-    serial_puts("tcp: SYN\n");
-    send_tcp(c, 0x02, 0, 0); c->state = 1;
-
-    uint8_t reply[Q_PKT];
-    uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_tcp, reply, sizeof(reply));
-        if (len < 54) { net_idle(); continue; }
-        if (get16(reply+36) != c->local_port) continue;
-        if (get16(reply+34) != c->remote_port) continue;
-        uint8_t fl = reply[47];
-        if ((fl & 0x12) == 0x12) {
-            c->ack = get32(reply+38) + 1; c->seq++;
-            send_tcp(c, 0x10, 0, 0); c->state = 2;
-            serial_puts("tcp: connected\n");
-            return 0;
-        }
-        if (fl & 0x04) { serial_puts("tcp: RST\n"); return -1; }
-    }
-    serial_puts("tcp: timeout\n");
-    return -1;
-}
-
-int net_tcp_send(net_tcp_t *c, const void *data, int len) {
-    if (c->state != 2) return -1;
-    const uint8_t *p = data; int sent = 0;
-    while (sent < len) {
-        int ch = len-sent; if (ch>1400) ch=1400;
-        send_tcp(c, 0x18, p+sent, ch); c->seq += (uint32_t)ch; sent += ch;
-    }
-    return sent;
-}
-
-int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
-    if (c->state != 2 || !c->rxbuf) return -1;
-    int total = 0;
-    uint64_t last_data_ms = timer_ms();
-    uint64_t timeout_ms = (uint64_t)timeout_iter;
-
-    /* Drain internal buffer first */
-    if (c->rxbuf_pos < c->rxbuf_len) {
-        int avail = c->rxbuf_len - c->rxbuf_pos;
-        int cp = avail > bufsize ? bufsize : avail;
-        mcpy(buf, c->rxbuf + c->rxbuf_pos, cp);
-        c->rxbuf_pos += cp;
-        total += cp;
-        if (total >= bufsize) return total;
-    }
-
-    while (total < bufsize) {
-        if (timer_ms() - last_data_ms > timeout_ms) break;
-
-        uint8_t reply[Q_PKT];
-        int len = q_pop(&q_tcp, reply, sizeof(reply));
-        if (len < 54) { net_idle(); continue; }
-        /* Non-matching packets: re-queue instead of drop */
-        if (get16(reply+36) != c->local_port ||
-            get16(reply+34) != c->remote_port) {
-            q_push(&q_tcp, reply, len);
-            net_idle();
-            continue;
-        }
-
-        uint8_t flags = reply[47];
-        int doff = (reply[46]>>4)*4;
-        if (doff < 20) doff = 20;
-        int ip_total = get16(reply+16);
-        if (ip_total < 20 + doff) continue;
-        int plen = ip_total - 20 - doff;
-        if (14 + 20 + doff + plen > len) plen = len - 14 - 20 - doff;
-        if (plen < 0) continue;
-        uint32_t tseq = get32(reply+38);
-
-        /* RST from peer → connection reset */
-        if (flags & 0x04) {
-            c->state = 0;
-            c->got_rst = 1;
-            break;
-        }
-
-        if (plen > 0) {
-            if (tseq != c->ack) { send_tcp(c, 0x10, 0, 0); continue; }
-            c->ack = tseq + (uint32_t)plen;
-            uint8_t *payload = reply + 14 + 20 + doff;
-
-            int cp = plen; if (total + cp > bufsize) cp = bufsize - total;
-            mcpy((uint8_t*)buf + total, payload, cp);
-            total += cp;
-
-            if (cp < plen) {
-                int remain = plen - cp;
-                if (remain > c->rxbuf_size) remain = c->rxbuf_size;
-                mcpy(c->rxbuf, payload + cp, remain);
-                c->rxbuf_pos = 0;
-                c->rxbuf_len = remain;
-            }
-
-            send_tcp(c, 0x10, 0, 0);
-            last_data_ms = timer_ms();
-        }
-
-        if (flags & 0x01) { /* FIN */
-            if (plen == 0 && tseq != c->ack) continue;
-            c->got_fin = 1;
-            c->ack++;
-            send_tcp(c, 0x11, 0, 0); c->state = 3;
-            break;
-        }
-    }
-    /* Timeout with no data → EAGAIN (not EOF).
-     * EOF (0) only on FIN/RST or explicit shutdown. */
-    if (total == 0 && !c->got_fin && !c->got_rst) return -11; /* -EAGAIN */
-    return total;
-}
-
-void net_tcp_close(net_tcp_t *c) {
-    if (c->state == 2) {
-        send_tcp(c, 0x11, 0, 0); c->seq++; c->state = 3;
-        uint8_t reply[Q_PKT];
-        uint64_t deadline = timer_ms() + 2000;
-        while (timer_ms() < deadline) {
-            int len = q_pop(&q_tcp, reply, sizeof(reply));
-            if (len >= 54 && (reply[47] & 0x10)) break;
-            net_idle();
-        }
-    }
-    c->state = 0;
-    /* Free receive buffer */
-    if (c->rxbuf) {
-        int npages = (c->rxbuf_size + 4095) / 4096;
-        pages_free(c->rxbuf, npages);
-        c->rxbuf = 0;
-        c->rxbuf_size = 0;
-    }
 }
 
 /* ── HTTP GET ──────────────────────────────────────── */

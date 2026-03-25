@@ -38,9 +38,11 @@ static inline uint64_t ensure_high(uint64_t addr) {
 /* Network */
 #define NET_PKT_SIZE       1536    /* max packet size (MTU + headers) */
 #define NET_QUEUE_SIZE     128     /* packets per queue */
-#define NET_TCP_RXBUF      65536   /* TCP receive buffer per socket (allocated on connect) */
+#define NET_TCP_RXBUF      65536   /* TCP receive buffer per socket (power of 2, allocated on connect) */
 #define NET_TCP_TIMEOUT_MS 30000   /* TCP connect/recv timeout (TLS handshake needs time) */
 #define NET_DHCP_RETRY_MS  3000    /* DHCP retry interval */
 #define NET_MAX_SOCKETS    64      /* max simultaneous inet sockets */
+#define NET_TCP_INIT_RTO_MS 1000   /* initial retransmit timeout */
+#define NET_TCP_MAX_RTO_MS  60000  /* max retransmit timeout */
 
 #endif

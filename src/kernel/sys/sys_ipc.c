@@ -395,7 +395,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             /* TCP */
             if ((interest & EPOLLIN) && s->state == SOCK_CONNECTED) {
                 extern pkt_queue_t q_tcp;
-                if (s->tcp.rxbuf_pos < s->tcp.rxbuf_len || q_tcp.count > 0)
+                if (rxring_used(&s->tcp.rx) > 0 || q_tcp.count > 0)
                     ready |= EPOLLIN;
             }
             if ((interest & EPOLLOUT) && s->state == SOCK_CONNECTED)
