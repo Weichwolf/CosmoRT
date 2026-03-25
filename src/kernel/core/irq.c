@@ -546,6 +546,11 @@ static void timer_handler(int vector) {
      * But TX ring drain is lock-free and safe in timer context. */
     extern void net_tx_drain(void);
     net_tx_drain();
+    /* Timer wheel: drain requests from Compute-Cores, advance wheel */
+    extern void timer_wheel_drain_requests(void);
+    extern void timer_wheel_tick(void);
+    timer_wheel_drain_requests();
+    timer_wheel_tick();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

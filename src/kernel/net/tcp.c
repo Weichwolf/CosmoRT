@@ -484,3 +484,14 @@ void net_tcp_close(net_tcp_t *c) {
     rxring_destroy(&c->rx);
     c->state = TCP_CLOSED;
 }
+
+/* ── TCP Retransmit (called from Timer Wheel on RT-Core) ── */
+
+void net_tcp_retransmit(void *conn) {
+    net_tcp_t *c = (net_tcp_t *)conn;
+    if (!c || c->state != TCP_ESTABLISHED) return;
+
+    /* No retransmit buffer yet — send duplicate ACK to probe.
+     * Full retransmit with saved segments is Phase E work. */
+    send_tcp(c, 0x10, 0, 0);
+}

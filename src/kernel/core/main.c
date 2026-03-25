@@ -142,6 +142,8 @@ void kernel_main(struct boot_info *info) {
     irq_init();
     timer_init();
     rtc_init();
+    extern void timer_wheel_init(void);
+    timer_wheel_init();
     random_init(info);
 
     /* TSS + SYSCALL */
