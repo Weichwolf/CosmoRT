@@ -122,6 +122,49 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 - [ ] rt.h abstrahiert ueber Core-Count, hardcoded Core 0 nirgends
 - [ ] Escape-Hatches dokumentiert: Multi-RT, NIC-Offload, Protocol-auf-Compute
 
+### RT/Compute-G: SIMD Hash-Engine (RT-Core Idle Background-Optimizer)
+
+RT-Core ist >98% idle. Nutze die Idle-Zeit fuer Background-Hashing mit
+SSE2/SHA-NI. Kein fxsave noetig — RT-Core hat keinen Userspace-FPU-State.
+
+Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
+
+#### G1: SIMD SHA-256 auf RT-Core
+
+- [ ] src/arch/x86_64/sha256_sse.asm: SHA-256 mit SSE2 (Fallback) + SHA-NI (wenn verfuegbar)
+- [ ] CPUID-Check fuer SHA-NI Support (Zen+, Goldmont+)
+- [ ] Eigene CFLAGS (-msse2/-msha) fuer Hash-Datei, nicht global
+- [ ] rt_poll P7 (niedrigste): hash_poll() verarbeitet Jobs im Idle
+- [ ] rt_hash_request(addr, len, callback) — Compute postet Hash-Job via rt_channel
+- [ ] test: SHA-256 korrekt (Testvektoren aus NIST)
+- [ ] test: Hash-Durchsatz (Bytes/s)
+
+#### G2: RAM-Dedup (KSM auf RT-Core)
+
+- [ ] Page-Scanner: iteriert anonyme User-Pages im Idle
+- [ ] Hash pro Page → Lookup in Merge-Tabelle
+- [ ] Match: memcmp zur Sicherheit → COW-Merge (beide PTEs read-only, page_decref)
+- [ ] Kein Match: Hash in Tabelle eintragen
+- [ ] Scan-Rate begrenzt (max N Pages pro rt_poll Durchlauf)
+- [ ] Statistik: /proc/ksm (pages_shared, pages_merged)
+- [ ] test: zwei Prozesse mit identischen Pages → nach Merge nur 1 physische Page
+
+#### G3: CosmoFS Block-Dedup (Write-Path Offload)
+
+- [ ] write() → COW-Append (sofort, kein Hash) → Hash-Job an RT-Core
+- [ ] RT-Core: SHA-256 → Dedup-Tabelle Lookup
+- [ ] Duplikat: neuen Block freigeben, Pointer auf existierenden
+- [ ] Unique: Hash in Dedup-Tabelle eintragen
+- [ ] Write-Latenz: ~0.5µs statt ~5µs (Hash aus Hot-Path entfernt)
+- [ ] test: zwei identische Dateien schreiben → nur 1 Block auf Disk
+
+#### G4: Cloud-Sync Hash-Readiness
+
+- [ ] RT-Core berechnet Hashes aller CosmoFS-Blocks im Idle vor
+- [ ] Sync-Start: Hash-Diff sofort verfuegbar, kein Warten auf Berechnung
+- [ ] Dirty-Tracking: nur geaenderte Blocks neu hashen
+- [ ] Abhaengigkeit: CosmoFS v2 (COW + Content-Addressing)
+
 ## Net Phase E0 — Polling eliminieren (Sleep/Wake statt Busy-Wait)
 
 - [x] wait_thread Feld in net_tcp_t und udp_sock_t
