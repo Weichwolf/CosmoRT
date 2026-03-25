@@ -31,6 +31,11 @@ static uint64_t *buddy_bitmap;
 static uint64_t bitmap_qwords;
 static uint64_t max_pfn;
 
+/* Refcount array: one uint16_t per page frame (COW support).
+ * 0 = free/untracked, 1 = single owner, >1 = shared (COW).
+ * Placed right after buddy_bitmap in the same UEFI region. */
+static uint16_t *page_refcounts;
+
 /* Stats */
 static uint64_t total_pages;
 static uint64_t alloc_count;
@@ -213,9 +218,12 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
     /* Bitmap size: one bit per PFN, rounded up to 8 bytes */
     bitmap_qwords = (max_pfn + 63) / 64;
     uint64_t bitmap_bytes = bitmap_qwords * 8;
-    uint64_t bitmap_pages = (bitmap_bytes + PAGE_SIZE - 1) >> PAGE_SHIFT;
+    /* Refcount array: uint16_t per PFN, page-aligned */
+    uint64_t refcount_bytes = max_pfn * sizeof(uint16_t);
+    uint64_t metadata_bytes = bitmap_bytes + refcount_bytes;
+    uint64_t bitmap_pages = (metadata_bytes + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
-    /* Pass 2: find first region large enough for bitmap */
+    /* Pass 2: find first region large enough for bitmap + refcounts */
     buddy_bitmap = (uint64_t *)0;
     uint64_t bitmap_phys = 0;
     for (uint64_t i = 0; i < count; i++) {
@@ -228,7 +236,7 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         uint64_t end = phys + region_size;
         if (end > DIRECT_MAP_MAX) end = DIRECT_MAP_MAX;
         if (end <= phys) continue;
-        if (end - phys >= bitmap_bytes) {
+        if (end - phys >= metadata_bytes) {
             bitmap_phys = phys;
             buddy_bitmap = (uint64_t *)phys_to_virt(phys);
             break;
@@ -240,9 +248,13 @@ void page_alloc_add_uefi_regions(void *mmap_virt, uint64_t mmap_size,
         return;
     }
 
+    /* Refcount array follows bitmap */
+    page_refcounts = (uint16_t *)((uint8_t *)buddy_bitmap + bitmap_bytes);
+
     /* Mark all pages as allocated (set all bits).
      * Pass 3 clears bits for usable regions as they are added. */
     kmemset(buddy_bitmap, 0xFF, bitmap_bytes);
+    kmemset(page_refcounts, 0, refcount_bytes);
 
     /* Init free lists */
     for (int o = 0; o <= MAX_ORDER; o++) free_lists[o] = (struct free_block *)0;
@@ -301,14 +313,26 @@ void *page_alloc(void) {
     spin_lock_irq(&buddy_lock, &flags);
     void *p = buddy_alloc_order(0);
     spin_unlock_irq(&buddy_lock, flags);
-    if (p) page_zero(p);
+    if (p) {
+        page_zero(p);
+        uint64_t pfn = virt_to_phys(p) >> PAGE_SHIFT;
+        if (pfn < max_pfn)
+            __atomic_store_n(&page_refcounts[pfn], 1, __ATOMIC_RELAXED);
+    }
     return p;
 }
 
 void page_free(void *page) {
     if (!page) return;
     uint64_t pfn = virt_to_phys(page) >> PAGE_SHIFT;
-    if (pfn >= max_pfn) return; /* not tracked by buddy — ignore */
+    if (pfn >= max_pfn) return;
+    /* Decrement refcount; only free if it reaches 0 */
+    uint16_t old = __atomic_load_n(&page_refcounts[pfn], __ATOMIC_ACQUIRE);
+    if (old > 1) {
+        __atomic_fetch_sub(&page_refcounts[pfn], 1, __ATOMIC_ACQ_REL);
+        return; /* still shared */
+    }
+    __atomic_store_n(&page_refcounts[pfn], 0, __ATOMIC_RELEASE);
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(page, 0);
@@ -326,13 +350,25 @@ void *pages_alloc(int n) {
     spin_lock_irq(&buddy_lock, &flags);
     void *p = buddy_alloc_order(order);
     spin_unlock_irq(&buddy_lock, flags);
-    if (p) pages_zero(p, 1U << order);
+    if (p) {
+        pages_zero(p, 1U << order);
+        /* Set refcount=1 for each page in the allocation */
+        uint64_t pfn = virt_to_phys(p) >> PAGE_SHIFT;
+        uint64_t npages = 1ULL << order;
+        for (uint64_t i = 0; i < npages && pfn + i < max_pfn; i++)
+            __atomic_store_n(&page_refcounts[pfn + i], 1, __ATOMIC_RELAXED);
+    }
     return p;
 }
 
 void pages_free(void *base, int n) {
     if (!base || n <= 0) return;
     int order = order_for_pages(n);
+    /* For multi-page frees, clear refcounts */
+    uint64_t pfn = virt_to_phys(base) >> PAGE_SHIFT;
+    uint64_t npages = 1ULL << order;
+    for (uint64_t i = 0; i < npages && pfn + i < max_pfn; i++)
+        __atomic_store_n(&page_refcounts[pfn + i], 0, __ATOMIC_RELAXED);
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(base, order);
@@ -341,3 +377,24 @@ void pages_free(void *base, int n) {
 
 int page_alloc_total(void) { return (int)total_pages; }
 int page_alloc_free(void)  { return (int)(total_pages - alloc_count); }
+
+/* ── Page refcount API (COW support) ─────────────── */
+
+void page_incref(uint64_t phys) {
+    uint64_t pfn = phys >> PAGE_SHIFT;
+    if (pfn >= max_pfn) return;
+    __atomic_fetch_add(&page_refcounts[pfn], 1, __ATOMIC_ACQ_REL);
+}
+
+int page_decref(uint64_t phys) {
+    uint64_t pfn = phys >> PAGE_SHIFT;
+    if (pfn >= max_pfn) return 0;
+    uint16_t old = __atomic_fetch_sub(&page_refcounts[pfn], 1, __ATOMIC_ACQ_REL);
+    return (int)(old - 1);
+}
+
+int page_refcount(uint64_t phys) {
+    uint64_t pfn = phys >> PAGE_SHIFT;
+    if (pfn >= max_pfn) return 0;
+    return (int)__atomic_load_n(&page_refcounts[pfn], __ATOMIC_ACQUIRE);
+}

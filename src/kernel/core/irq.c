@@ -12,6 +12,7 @@
 #include "core/smp.h"
 #include "spinlock.h"
 #include "arch/arch.h"
+#include "memops.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 
@@ -216,6 +217,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         vma_t *kvma = vma_find(kp->vma_root, cr2);
                         int kprot = kvma ? kvma->prot : 0;
                         int knp = kvma && !(error & 1);
+                        int kcow = kvma && (error & 1) && (error & 2) && (kprot & PROT_WRITE);
                         spin_unlock_irq(&kp->lock, kflags);
                         if (knp) {
                             uint64_t kpage_addr = cr2 & ~0xFFFULL;
@@ -226,6 +228,35 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                     return; /* resume kernel code */
                                 }
                                 page_free(kpage);
+                            }
+                        }
+                        /* Kernel write to COW user page */
+                        if (kcow) {
+                            uint64_t kpage_addr = cr2 & ~0xFFFULL;
+                            extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
+                            uint64_t kpte = read_pte_pub(kp->pml4, kpage_addr);
+                            #define PTE_COW_K (1ULL << 9)
+                            if ((kpte & PTE_COW_K) && (kpte & 1)) {
+                                uint64_t old_phys = kpte & 0x000FFFFFFFFFF000ULL;
+                                int krc = page_refcount(old_phys);
+                                if (krc <= 1) {
+                                    if (map_user_page(kp->pml4, kpage_addr, old_phys, kprot) == 0) {
+                                        arch_invlpg(kpage_addr);
+                                        return;
+                                    }
+                                } else {
+                                    uint64_t *knew = alloc_page();
+                                    if (knew) {
+                                        kmemcpy(knew, phys_to_virt(old_phys), 4096);
+                                        if (map_user_page(kp->pml4, kpage_addr,
+                                                          virt_to_phys(knew), kprot) == 0) {
+                                            arch_invlpg(kpage_addr);
+                                            page_free(phys_to_virt(old_phys));
+                                            return;
+                                        }
+                                        page_free(knew);
+                                    }
+                                }
                             }
                         }
                     }
@@ -271,6 +302,52 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 if ((error & 1) && (error & 2) && !(vma->prot & PROT_WRITE)) {
                     /* Write to read-only VMA → kill */
                     spin_unlock_irq(&p->lock, vma_flags);
+                    goto kill_process;
+                }
+                /* COW fault: write to present page with COW bit in writable VMA */
+                if ((error & 1) && (error & 2) && (vma->prot & PROT_WRITE)) {
+                    int cow_prot = vma->prot;
+                    spin_unlock_irq(&p->lock, vma_flags);
+                    uint64_t page_addr = cr2 & ~0xFFFULL;
+                    extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
+                    uint64_t pte = read_pte_pub(p->pml4, page_addr);
+                    #define PTE_COW_IRQ (1ULL << 9)
+                    /* Write to writable VMA but page not COW: re-map with correct prot.
+                     * This handles mprotect race (PTE stale after VMA prot change). */
+                    if ((pte & 1) && !(pte & PTE_COW_IRQ)) {
+                        uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
+                        if (map_user_page(p->pml4, page_addr, phys, cow_prot) == 0) {
+                            arch_invlpg(page_addr);
+                            return;
+                        }
+                        goto kill_process;
+                    }
+                    if ((pte & PTE_COW_IRQ) && (pte & 1)) {
+                        uint64_t old_phys = pte & 0x000FFFFFFFFFF000ULL;
+                        int rc = page_refcount(old_phys);
+                        if (rc <= 1) {
+                            /* Last reference: just restore write + remove COW */
+                            if (map_user_page(p->pml4, page_addr, old_phys, cow_prot) == 0) {
+                                arch_invlpg(page_addr);
+                                return;
+                            }
+                        } else {
+                            /* Shared: copy page, release our ref on old */
+                            uint64_t *new_page = alloc_page();
+                            if (new_page) {
+                                kmemcpy(new_page, phys_to_virt(old_phys), 4096);
+                                if (map_user_page(p->pml4, page_addr,
+                                                  virt_to_phys(new_page), cow_prot) == 0) {
+                                    arch_invlpg(page_addr);
+                                    /* page_free handles refcount: decrements and
+                                     * only returns to buddy when count reaches 0 */
+                                    page_free(phys_to_virt(old_phys));
+                                    return;
+                                }
+                                page_free(new_page);
+                            }
+                        }
+                    }
                     goto kill_process;
                 }
                 /* NX violation: page present + instruction fetch, but VMA allows exec.

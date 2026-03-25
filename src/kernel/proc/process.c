@@ -26,6 +26,7 @@
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
 #define PTE_PS      (1ULL << 7)
+#define PTE_COW     (1ULL << 9)   /* Copy-on-Write: shared read-only, OS-available bit */
 #define PTE_NX      (1ULL << 63)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
@@ -214,7 +215,9 @@ static uint64_t aslr_rand(void) {
 
 /* ── Free address space ──────────────────────────── */
 
-/* Free all user pages and page table pages under a PML4 */
+/* Free all user pages and page table pages under a PML4.
+ * User data pages use page_free (respects refcount for COW).
+ * Page table structure pages (PT/PD/PDPT/PML4) are always single-owner. */
 void free_address_space(uint64_t *user_pml4) {
     if (!user_pml4) return;
 
@@ -236,6 +239,7 @@ void free_address_space(uint64_t *user_pml4) {
 
                 for (int l = 0; l < 512; l++) {
                     if (pt[l] & PTE_PRESENT) {
+                        /* page_free handles refcount: shared COW pages survive */
                         page_free(phys_to_virt(pt[l] & PTE_ADDR_MASK));
                     }
                 }
@@ -515,7 +519,29 @@ static void vma_walk(vma_t *node, void (*fn)(vma_t *, void *), void *ctx) {
     vma_walk(node->right, fn, ctx);
 }
 
-/* Copy a single VMA's pages from parent to child */
+/* Write a raw PTE value into the page table at a given virtual address.
+ * Allocates intermediate levels as needed. Returns 0 on success. */
+static int write_pte_raw(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) {
+    if (vaddr >= 0x800000000000ULL) return -1;
+    uint64_t *pdpt = get_or_alloc_level(user_pml4, (vaddr >> 39) & 0x1FF);
+    if (!pdpt) return -1;
+    uint64_t *pd = get_or_alloc_level(pdpt, (vaddr >> 30) & 0x1FF);
+    if (!pd) return -1;
+    uint64_t *pt = get_or_alloc_level(pd, (vaddr >> 21) & 0x1FF);
+    if (!pt) return -1;
+    pt[(vaddr >> 12) & 0x1FF] = pte_val;
+    return 0;
+}
+
+/* Set PTE for a virtual address in-place (must already be mapped). */
+static void set_pte_inplace(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) {
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[(vaddr >> 39) & 0x1FF] & PTE_ADDR_MASK);
+    uint64_t *pd   = (uint64_t *)phys_to_virt(pdpt[(vaddr >> 30) & 0x1FF] & PTE_ADDR_MASK);
+    uint64_t *pt   = (uint64_t *)phys_to_virt(pd[(vaddr >> 21) & 0x1FF] & PTE_ADDR_MASK);
+    pt[(vaddr >> 12) & 0x1FF] = pte_val;
+}
+
+/* Copy a single VMA's pages from parent to child (COW for private, share for shared) */
 struct copy_ctx { uint64_t *src_pml4; uint64_t *dst_pml4; vma_t **dst_root; int err; };
 
 static void copy_one_vma(vma_t *v, void *arg) {
@@ -537,17 +563,28 @@ static void copy_one_vma(vma_t *v, void *arg) {
 
         if (shared) {
             /* Map same physical page into child — writes visible in both */
+            page_incref(src_phys);
             if (map_user_page(ctx->dst_pml4, va, src_phys, v->prot) < 0) {
+                page_decref(src_phys);
                 ctx->err = 1;
                 return;
             }
         } else {
-            /* Private: deep-copy page */
-            uint64_t *new_page = alloc_page();
-            if (!new_page) { ctx->err = 1; return; }
-            kmemcpy(new_page, phys_to_virt(src_phys), 4096);
-            if (map_user_page(ctx->dst_pml4, va, virt_to_phys(new_page), v->prot) < 0) {
-                page_free(new_page);
+            /* Private: COW — share page read-only in both processes */
+            uint64_t cow_pte = (pte & ~PTE_WRITE) | PTE_COW;
+            /* If page was writable, mark both parent and child as COW read-only */
+            if (pte & PTE_WRITE) {
+                set_pte_inplace(ctx->src_pml4, va, cow_pte);
+            } else {
+                /* Already read-only: just copy PTE, set COW if VMA is writable */
+                if (v->prot & PROT_WRITE)
+                    cow_pte = (pte & ~PTE_WRITE) | PTE_COW;
+                else
+                    cow_pte = pte; /* truly read-only, no COW needed */
+            }
+            page_incref(src_phys);
+            if (write_pte_raw(ctx->dst_pml4, va, cow_pte) < 0) {
+                page_decref(src_phys);
                 ctx->err = 1;
                 return;
             }
@@ -566,6 +603,11 @@ static int copy_address_space(process_t *child, process_t *parent) {
         .err = 0
     };
     vma_walk(parent->vma_root, copy_one_vma, &ctx);
+
+    /* Parent PTEs were modified (WRITE removed, COW set) — flush TLB */
+    arch_flush_tlb();
+    tlb_shootdown(virt_to_phys(parent->pml4));
+
     return ctx.err ? -1 : 0;
 }
 

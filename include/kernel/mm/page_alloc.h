@@ -31,4 +31,10 @@ void pages_free(void *base, int n);
 int page_alloc_total(void);
 int page_alloc_free(void);
 
+/* Page refcount (COW support).
+ * phys = physical address of 4KB page (page-aligned). */
+void page_incref(uint64_t phys);     /* refcount++ (atomic) */
+int  page_decref(uint64_t phys);     /* refcount--, returns new count */
+int  page_refcount(uint64_t phys);   /* current refcount */
+
 #endif
