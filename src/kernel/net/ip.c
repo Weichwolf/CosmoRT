@@ -5,6 +5,7 @@
 #include "net/ip.h"
 #include "net/net.h"
 #include "net/net_util.h"
+#include "core/rt.h"
 
 /* NIC driver access (defined in net.c) */
 extern const nic_driver_t *net_nic_get(void);
@@ -38,8 +39,15 @@ void ip_send_raw(const uint8_t *data, uint16_t len) {
         loopback_inject(data, len);
         return;
     }
-    const nic_driver_t *n = net_nic_get();
-    if (n) n->send(data, len);
+
+    /* RT-Core: send directly. Compute-Core: push into TX ring. */
+    if (rt_is_current_rt()) {
+        const nic_driver_t *n = net_nic_get();
+        if (n) n->send(data, len);
+    } else {
+        rt_channel_t *tx = net_tx_channel();
+        if (tx) rt_channel_push(tx, data, (uint32_t)len);
+    }
 }
 
 /* ── IP Header Build ───────────────────────────────── */

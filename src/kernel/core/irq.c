@@ -542,8 +542,10 @@ static void timer_handler(int vector) {
     /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
-    /* NIC polling moved to E1000 IRQ handler — not safe in timer context
-     * due to reentrancy with spinlocks in net_poll/epoll_wake_all. */
+    /* Full net_poll not safe here (reentrancy with spinlocks in epoll_wake_all).
+     * But TX ring drain is lock-free and safe in timer context. */
+    extern void net_tx_drain(void);
+    net_tx_drain();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

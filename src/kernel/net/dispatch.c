@@ -5,6 +5,7 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "net/arp.h"
+#include "core/rt.h"
 
 /* Forward declarations */
 extern void tcp_input(const uint8_t *pkt, int len);
@@ -16,6 +17,23 @@ extern const nic_driver_t *net_nic_get(void);
 /* DNS local port (defined in dns.c, set by DNS resolver) */
 extern uint16_t dns_local_port;
 
+/* ── TX Ring Drain (Compute→RT) ────────────────────── */
+
+static void tx_ring_drain_impl(const nic_driver_t *n) {
+    rt_channel_t *tx = net_tx_channel();
+    if (!tx) return;
+    uint8_t frame[NET_PKT_SIZE];
+    int len;
+    while ((len = rt_channel_pop(tx, frame, sizeof(frame))) > 0)
+        n->send(frame, (uint16_t)len);
+}
+
+/* Called from timer IRQ — drain TX ring without full net_poll */
+void net_tx_drain(void) {
+    const nic_driver_t *n = net_nic_get();
+    if (n) tx_ring_drain_impl(n);
+}
+
 /* ── Central Packet Dispatcher ─────────────────────── */
 
 static volatile int net_poll_active;
@@ -25,6 +43,9 @@ void net_poll(void) {
     if (!n) return;
     /* Reentrancy guard: timer IRQ can fire during net_poll */
     if (__sync_lock_test_and_set(&net_poll_active, 1)) return;
+
+    /* Drain TX ring first — Compute-Cores may have queued frames */
+    tx_ring_drain_impl(n);
 
     uint8_t pkt[Q_PKT];
     int len = n->recv(pkt, sizeof(pkt));

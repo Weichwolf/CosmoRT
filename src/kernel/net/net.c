@@ -4,6 +4,7 @@
 
 #include "net/net.h"
 #include "net/net_util.h"
+#include "core/rt.h"
 #include "hw/serial.h"
 
 /* ── NIC Registration ──────────────────────────────── */
@@ -63,10 +64,23 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     return l;
 }
 
+/* ── TX Ring (Compute→RT) ──────────────────────────── */
+
+static uint8_t tx_ring_buf[NET_TX_RING_SIZE]
+    __attribute__((aligned(64)));
+static rt_channel_t tx_ring;
+static int tx_ring_ready;
+
+rt_channel_t *net_tx_channel(void) {
+    return tx_ring_ready ? &tx_ring : 0;
+}
+
 /* ── Init ──────────────────────────────────────────── */
 
 int net_init(void) {
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
+    rt_channel_init(&tx_ring, tx_ring_buf, NET_TX_RING_SIZE);
+    tx_ring_ready = 1;
     return 0;
 }
