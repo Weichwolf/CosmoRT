@@ -74,9 +74,19 @@
     X( 63, uname,             1, do_uname((void *)a1)) \
     X(318, getrandom,         3, do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3)) \
     X(302, prlimit64,         4, do_prlimit64((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
+        X( 95, umask,             1, (long)0022) /* single-user: return default, ignore new */ \
     X( 99, sysinfo,           1, do_sysinfo((void *)a1)) \
-    X(115, getgroups,         2, (long)0) /* single-user: no supplementary groups */ \
-    X(116, setgroups,         2, (long)0) /* single-user: noop */ \
+    X(115, getgroups,         2, (long)0) \
+    X(116, setgroups,         2, (long)0) \
+    /* Stubs for npm/node compatibility */ \
+    X( 26, msync,             3, (long)0) /* no-op: pages always coherent */ \
+    X( 40, sendfile,          4, (long)-ENOSYS) /* TODO: implement if needed */ \
+    X( 94, lchown,            3, (long)0) /* single-user: noop */ \
+    X(146, sched_get_priority_max, 1, (long)31) \
+    X(147, sched_get_priority_min, 1, (long)0) \
+    X(160, setrlimit,         2, (long)0) /* noop: no enforcement */ \
+    X(221, fadvise64,         4, (long)0) /* no-op: no page cache hints */ \
+    X(309, getcpu,            3, do_getcpu((unsigned *)a1, (unsigned *)a2)) \
     X( 98, getrusage,         2, do_getrusage((int)a1, (void *)a2)) \
     X(100, times,             1, do_times((void *)a1)) \
     /* Timers / clocks */ \

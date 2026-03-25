@@ -411,6 +411,55 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return ret > 0 ? ret : 0;
     }
 
+    /* ppoll(271): poll + timespec timeout + sigmask (ignore sigmask) */
+    case 271: {
+        int timeout_ms = -1;
+        if (a3) { /* timespec *tmo */
+            struct { long sec; long nsec; } ts;
+            if (user_ok(a3, 16) && !copy_from_user(&ts, (void *)a3, 16))
+                timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
+        }
+        return do_poll((void *)a1, (int)a2, timeout_ms);
+    }
+
+    /* preadv(295) / pwritev(296): readv/writev + file offset */
+    case 295: { /* preadv(fd, iov, iovcnt, offset_lo, offset_hi) */
+        /* For now: ignore offset, delegate to readv (files have internal offset) */
+        return do_readv((int)a1, (const struct iovec *)a2, (int)a3);
+    }
+    case 296: { /* pwritev */
+        return do_writev((int)a1, (const struct iovec *)a2, (int)a3);
+    }
+
+    /* recvmmsg(299): receive multiple messages — iterate and call recvmsg */
+    case 299: {
+        int fd = (int)a1;
+        uint64_t mmsg_arr = (uint64_t)a2;
+        int vlen = (int)a3;
+        if (vlen <= 0 || vlen > 1024) return -EINVAL;
+        int received = 0;
+        for (int i = 0; i < vlen; i++) {
+            uint64_t mhdr_addr = mmsg_arr + (uint64_t)i * 64;
+            if (!user_ok(mhdr_addr, 64)) break;
+            /* Parse msghdr: same as recvmsg case 47 */
+            struct { uint64_t name; uint32_t namelen; uint32_t _pad;
+                     uint64_t iov; uint64_t iovlen;
+                     uint64_t control; uint64_t controllen; int flags; } mh;
+            if (copy_from_user(&mh, (void *)mhdr_addr, sizeof(mh))) break;
+            struct { uint64_t base; uint64_t len; } iov1 = {0, 0};
+            if (mh.iovlen > 0 && mh.iov)
+                copy_from_user(&iov1, (void *)mh.iov, sizeof(iov1));
+            int *user_namelen_ptr = mh.name ? (int *)((uint64_t)mhdr_addr + 8) : 0;
+            long r = do_recvfrom(fd, (void *)iov1.base, (long)iov1.len,
+                                 (int)a4, (void *)mh.name, user_namelen_ptr);
+            if (r < 0) { if (received == 0) return r; break; }
+            uint32_t msg_len = (uint32_t)r;
+            copy_to_user((void *)(mhdr_addr + 56), &msg_len, 4);
+            received++;
+        }
+        return received;
+    }
+
     default: {
         process_t *dp = proc_current();
         dispatch_unhandled(num, dp ? (int)dp->pid : -1);

@@ -66,6 +66,7 @@ long do_fstat(int fd, struct k_stat *buf);
 long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags);
 long do_dup3(int oldfd, int newfd, int flags);
 long do_getcwd(char *buf, size_t size);
+long do_getcpu(unsigned *cpu, unsigned *node);
 long do_chdir(const char *path);
 long do_mkdirat(int dirfd, const char *path, int mode);
 long do_unlinkat(int dirfd, const char *path, int flags);

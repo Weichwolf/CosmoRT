@@ -671,3 +671,16 @@ long do_times(void *buf_) {
     { int r = copy_to_user(buf, &ktms, sizeof(ktms)); if (r) return r; }
     return (long)ticks;
 }
+
+/* ── SYS_getcpu (309) ────────────────────────────── */
+
+long do_getcpu(unsigned *cpu_ptr, unsigned *node_ptr) {
+    unsigned c = (unsigned)percpu_self()->core_id;
+    if (cpu_ptr && user_ok((uint64_t)cpu_ptr, 4))
+        copy_to_user(cpu_ptr, &c, 4);
+    if (node_ptr && user_ok((uint64_t)node_ptr, 4)) {
+        unsigned zero = 0;
+        copy_to_user(node_ptr, &zero, 4);
+    }
+    return 0;
+}
