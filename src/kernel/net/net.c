@@ -1,9 +1,12 @@
-/* CosmoRT Network Stack — IP/UDP/DHCP/ARP/DNS + Dispatch
- * TCP lives in tcp.c. NIC-agnostic: uses registered nic_driver_t.
+/* CosmoRT Network Stack — NIC registration, DHCP, DNS, mDNS, Ping, HTTP
+ * TCP lives in tcp.c, UDP in udp.c, dispatch in dispatch.c,
+ * ARP in arp.c, IP in ip.c.
  */
 
 #include "net.h"
 #include "net_util.h"
+#include "ip.h"
+#include "arp.h"
 #include "serial.h"
 #include "timer.h"
 #include "spinlock.h"
@@ -12,7 +15,8 @@
 #include "arch.h"
 #include "page_alloc.h"
 
-/* Registered NIC driver (set by driver init, e.g., e1000_init) */
+/* ── NIC Registration ──────────────────────────────── */
+
 static const nic_driver_t *nic;
 
 void net_nic_register(const nic_driver_t *driver) {
@@ -26,9 +30,7 @@ void net_nic_register(const nic_driver_t *driver) {
     }
 }
 
-/* NIC access macros */
-#define nic_recv(buf, bufsize)    (nic->recv((buf), (bufsize)))
-#define nic_get_mac(mac)          (nic->get_mac((mac)))
+const nic_driver_t *net_nic_get(void) { return nic; }
 
 /* Network state */
 net_state_t net_state = {{0}, {0}, {0}, {0}};
@@ -44,7 +46,7 @@ pkt_queue_t q_udp_dhcp = PKT_QUEUE_INIT;
 pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
 pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
-static uint16_t dns_local_port = 0;
+uint16_t dns_local_port = 0;
 
 void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
     uint64_t flags;
@@ -75,42 +77,6 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     return l;
 }
 
-/* ── NIC Send (with Loopback) ─────────────────────── */
-
-static void nic_send(const uint8_t *data, uint16_t len) {
-    /* Loopback: dst IP 127.x.x.x → feed directly into RX queues */
-    if (len >= 34 && data[12] == 0x08 && data[13] == 0x00 && data[30] == 127) {
-        uint8_t lo[1600];
-        if (len > 1600) return;
-        for (int i = 0; i < len; i++) lo[i] = data[i];
-        uint8_t proto = lo[23];
-        if (proto == 6)       q_push(&q_tcp, lo, len);
-        else if (proto == 1)  q_push(&q_icmp, lo, len);
-        else if (proto == 17) {
-            uint16_t dport = get16(lo + 36);
-            if (dport == 68) q_push(&q_udp_dhcp, lo, len);
-            else if (!udp_input(lo, len))
-                q_push(&q_udp_dns, lo, len);
-        }
-        return;
-    }
-    if (nic) nic->send(data, len);
-}
-
-/* Public wrappers for tcp.c */
-void net_send_raw(const uint8_t *data, uint16_t len) { nic_send(data, len); }
-
-void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
-                       const uint8_t *dst_ip, uint8_t proto, uint16_t plen) {
-    mcpy(pkt, dst_mac, 6); mcpy(pkt + 6, net_my_mac, 6); put16(pkt + 12, 0x0800);
-    pkt[14] = 0x45; pkt[15] = 0; put16(pkt + 16, 20 + plen);
-    put16(pkt + 18, 0); put16(pkt + 20, 0x4000);
-    pkt[22] = 64; pkt[23] = proto; pkt[24] = 0; pkt[25] = 0;
-    mcpy(pkt + 26, net_my_ip, 4); mcpy(pkt + 30, dst_ip, 4);
-    uint16_t ic = ip_cksum(pkt + 14, 20);
-    pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
-}
-
 /* ── mDNS ──────────────────────────────────────────── */
 
 void net_set_hostname(const char *name) {
@@ -124,7 +90,6 @@ void net_set_hostname(const char *name) {
  * qname starts at dns+offset, returns 1 if match. */
 static int mdns_name_match(const uint8_t *dns, int offset, int dns_len) {
     if (!mdns_hostname_len || offset >= dns_len) return 0;
-    /* Expect: <len>cosmo-XXXX<5>local<0> */
     int pos = offset;
     if (pos >= dns_len) return 0;
     int label1_len = dns[pos++];
@@ -132,7 +97,6 @@ static int mdns_name_match(const uint8_t *dns, int offset, int dns_len) {
     if (pos + label1_len > dns_len) return 0;
     for (int i = 0; i < label1_len; i++) {
         char c = (char)dns[pos + i];
-        /* Case-insensitive compare */
         if (c >= 'A' && c <= 'Z') c += 32;
         char h = mdns_hostname[i];
         if (h >= 'A' && h <= 'Z') h += 32;
@@ -140,7 +104,6 @@ static int mdns_name_match(const uint8_t *dns, int offset, int dns_len) {
     }
     pos += label1_len;
     if (pos >= dns_len) return 0;
-    /* "local" label */
     if (dns[pos] != 5) return 0;
     pos++;
     if (pos + 5 > dns_len) return 0;
@@ -155,30 +118,26 @@ static int mdns_name_match(const uint8_t *dns, int offset, int dns_len) {
     return 1;
 }
 
-/* Send mDNS response: our hostname → our IP */
+/* Send mDNS response: our hostname -> our IP */
 static void mdns_respond(const uint8_t *src_mac, const uint8_t *src_ip) {
-    if (net_my_ip[0] == 0) return;  /* no IP yet */
+    if (net_my_ip[0] == 0) return;
 
-    /* Build: Ethernet + IP + UDP + DNS response */
     uint8_t pkt[256];
     mzero(pkt, sizeof(pkt));
 
-    /* Ethernet: reply to sender */
     mcpy(pkt, src_mac, 6);
     mcpy(pkt + 6, net_my_mac, 6);
     put16(pkt + 12, 0x0800);
 
-    /* Build DNS answer first to know length */
     uint8_t *dns = pkt + 42;
     put16(dns, 0);            /* ID = 0 (mDNS) */
     put16(dns + 2, 0x8400);   /* QR=1, AA=1 */
-    put16(dns + 4, 0);        /* QDCOUNT = 0 */
+    put16(dns + 4, 0);
     put16(dns + 6, 1);        /* ANCOUNT = 1 */
-    put16(dns + 8, 0);        /* NSCOUNT = 0 */
-    put16(dns + 10, 0);       /* ARCOUNT = 0 */
+    put16(dns + 8, 0);
+    put16(dns + 10, 0);
 
     int pos = 12;
-    /* Name: <len>hostname<5>local<0> */
     dns[pos++] = (uint8_t)mdns_hostname_len;
     for (int i = 0; i < mdns_hostname_len; i++)
         dns[pos++] = (uint8_t)mdns_hostname[i];
@@ -202,100 +161,44 @@ static void mdns_respond(const uint8_t *src_mac, const uint8_t *src_ip) {
     int udp_len = 8 + dns_len;
     int ip_len = 20 + udp_len;
 
-    /* IP header */
     pkt[14] = 0x45;
     put16(pkt + 16, (uint16_t)ip_len);
-    pkt[22] = 64;  /* TTL */
-    pkt[23] = 17;  /* UDP */
+    pkt[22] = 64;
+    pkt[23] = 17;
     mcpy(pkt + 26, net_my_ip, 4);
     mcpy(pkt + 30, src_ip, 4);
     uint16_t ic = ip_cksum(pkt + 14, 20);
     pkt[24] = (uint8_t)(ic >> 8);
     pkt[25] = (uint8_t)ic;
 
-    /* UDP header */
-    put16(pkt + 34, 5353);     /* src port */
-    put16(pkt + 36, 5353);     /* dst port */
+    put16(pkt + 34, 5353);
+    put16(pkt + 36, 5353);
     put16(pkt + 38, (uint16_t)udp_len);
 
-    nic_send(pkt, (uint16_t)(14 + ip_len));
+    ip_send_raw(pkt, (uint16_t)(14 + ip_len));
 }
 
 /* Handle incoming mDNS query packet (full Ethernet frame) */
-static void mdns_handle(const uint8_t *pkt, int len) {
+void mdns_handle(const uint8_t *pkt, int len) {
     if (!mdns_hostname_len) return;
-    if (len < 42 + 12) return;  /* too short for DNS header */
+    if (len < 42 + 12) return;
     const uint8_t *dns = pkt + 42;
     int dns_len = len - 42;
     uint16_t flags = get16(dns + 2);
-    if (flags & 0x8000) return;  /* response, not query */
+    if (flags & 0x8000) return;
     int qdcount = get16(dns + 4);
     if (qdcount < 1) return;
 
-    /* Check first question */
     if (mdns_name_match(dns, 12, dns_len)) {
-        mdns_respond(pkt + 6, pkt + 26);  /* src MAC, src IP */
+        mdns_respond(pkt + 6, pkt + 26);
     }
 }
-
-/* ── Central Packet Dispatcher ─────────────────────── */
-
-static volatile int net_poll_active;
-
-void net_poll(void) {
-    if (!nic) return;
-    /* Reentrancy guard: timer IRQ can fire during net_poll */
-    if (__sync_lock_test_and_set(&net_poll_active, 1)) return;
-
-    uint8_t pkt[Q_PKT];
-    int len = nic_recv(pkt, sizeof(pkt));
-    if (len < 14) goto out;
-    uint16_t etype = get16(pkt + 12);
-    if (etype == 0x0806) { if (len >= 42) q_push(&q_arp, pkt, len); goto out; }
-    if (etype != 0x0800 || len < 34) goto out;
-
-    int ihl = (pkt[14] & 0x0F) * 4;
-    if (ihl < 20 || 14 + ihl > len) goto out;
-    /* IP checksum skipped — QEMU may use NIC checksum offloading */
-    int ip_total = get16(pkt + 16);
-    if (ip_total < ihl || 14 + ip_total > len) goto out;
-
-    uint8_t proto = pkt[23];
-    int queued = 0;
-    if (proto == 6)       { q_push(&q_tcp, pkt, len); queued = 1; }
-    else if (proto == 1)  { q_push(&q_icmp, pkt, len); queued = 1; }
-    else if (proto == 17 && len >= 42) {
-        uint16_t dport = get16(pkt+36);
-        if (dport == 68)
-            q_push(&q_udp_dhcp, pkt, len);
-        else if (dport == 5353)
-            mdns_handle(pkt, len);
-        else if (dns_local_port && dport == dns_local_port)
-            q_push(&q_udp_dns, pkt, len);
-        else {
-            udp_input(pkt, len);
-        }
-        queued = 1;
-    }
-
-    /* Wake epoll sleepers when new packets arrive */
-    if (queued) {
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
-    }
-
-out:
-    __sync_lock_release(&net_poll_active);
-}
-
-/* poll_n removed: E1000 is IRQ-driven, net_poll() called from IRQ handler.
- * Callers use net_idle() (sti;hlt) to sleep until next interrupt. */
 
 /* ── Init ──────────────────────────────────────────── */
 
 int net_init(void) {
-    if (!nic) return -1;  /* no NIC driver registered */
-    nic_get_mac(net_my_mac);
+    if (!nic) return -1;
+    nic->get_mac(net_my_mac);
     return 0;
 }
 
@@ -331,7 +234,6 @@ int net_dhcp(void) {
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
         if (net_dhcp_check()) return 0;
-        /* Re-send discover every ~500ms in case first was lost */
         net_dhcp_send_discover();
         net_idle();
     }
@@ -363,43 +265,7 @@ void net_dhcp_send_discover(void) {
     pkt[282]=53; pkt[283]=1; pkt[284]=1;
     pkt[285]=55; pkt[286]=3; pkt[287]=1; pkt[288]=3; pkt[289]=6;
     pkt[290]=255;
-    nic_send(pkt, 590);
-}
-
-/* ── ARP ───────────────────────────────────────────── */
-
-int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
-    uint8_t pkt[42];
-    mzero(pkt, 42);
-    for (int i = 0; i < 6; i++) pkt[i] = 0xFF;
-    mcpy(pkt+6, net_my_mac, 6);
-    put16(pkt+12, 0x0806);
-    put16(pkt+14, 1); put16(pkt+16, 0x0800);
-    pkt[18]=6; pkt[19]=4; put16(pkt+20, 1);
-    mcpy(pkt+22, net_my_mac, 6);
-    mcpy(pkt+28, net_my_ip, 4);
-    mcpy(pkt+38, ip, 4);
-    nic_send(pkt, 42);
-
-    uint8_t reply[Q_PKT];
-    uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_arp, reply, sizeof(reply));
-        if (len < 42) { net_idle(); continue; }
-        if (get16(reply+20) != 2) continue;
-        if (reply[22]==0xFF && reply[23]==0xFF && reply[24]==0xFF &&
-            reply[25]==0xFF && reply[26]==0xFF && reply[27]==0xFF) continue;
-        if (reply[22]==0 && reply[23]==0 && reply[24]==0 &&
-            reply[25]==0 && reply[26]==0 && reply[27]==0) continue;
-        if (reply[38]!=net_my_ip[0] || reply[39]!=net_my_ip[1] ||
-            reply[40]!=net_my_ip[2] || reply[41]!=net_my_ip[3]) continue;
-        if (reply[28]==ip[0] && reply[29]==ip[1] &&
-            reply[30]==ip[2] && reply[31]==ip[3]) {
-            mcpy(mac_out, reply+22, 6);
-            return 0;
-        }
-    }
-    return -1;
+    ip_send_raw(pkt, 590);
 }
 
 /* ── Ping ──────────────────────────────────────────── */
@@ -420,7 +286,7 @@ int net_ping(const uint8_t *dst_ip) {
     for (int i = 0; i < 56; i++) pkt[42+i] = (uint8_t)i;
     uint16_t ick = ip_cksum(pkt+34, 64);
     pkt[36]=(uint8_t)(ick>>8); pkt[37]=(uint8_t)ick;
-    nic_send(pkt, 98);
+    ip_send_raw(pkt, 98);
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
@@ -517,7 +383,7 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     uint16_t ic = ip_cksum(pkt+14, 20);
     pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
 
-    nic_send(pkt, (uint16_t)(14 + ip_len));
+    ip_send_raw(pkt, (uint16_t)(14 + ip_len));
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
@@ -562,4 +428,3 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     dns_local_port = 0;
     return -1;
 }
-

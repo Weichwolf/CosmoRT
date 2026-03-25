@@ -392,9 +392,22 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms) {
     int got = rxring_pop(&c->rx, buf, bufsize);
     if (got > 0) return got;
 
-    /* Poll for incoming packets (not yet dispatched via tcp_input) */
+    /* Poll for incoming data — dispatcher puts packets into ringbuffer
+     * via tcp_input() for registered connections, or into q_tcp for
+     * unregistered ones (handshake phase). Check both paths. */
     while (total < bufsize) {
         if (timer_ms() - last_data_ms > tmo) break;
+
+        /* Check ringbuffer first — tcp_input() deposits data here */
+        int rn = rxring_pop(&c->rx, (uint8_t *)buf + total, bufsize - total);
+        if (rn > 0) {
+            total += rn;
+            last_data_ms = timer_ms();
+            continue;
+        }
+
+        /* Check FIN/RST set by tcp_input() while we were waiting */
+        if (c->got_fin || c->got_rst) break;
 
         uint8_t reply[Q_PKT];
         int len = q_pop(&q_tcp, reply, sizeof(reply));
@@ -465,11 +478,10 @@ void net_tcp_close(net_tcp_t *c) {
         c->snd_nxt++;
         c->state = TCP_FIN_WAIT1;
 
-        uint8_t reply[Q_PKT];
+        /* tcp_input() handles ACK/FIN and advances state directly */
         uint64_t deadline = timer_ms() + 2000;
         while (timer_ms() < deadline) {
-            int len = q_pop(&q_tcp, reply, sizeof(reply));
-            if (len >= 54 && (reply[47] & 0x10)) break;
+            if (c->state >= TCP_TIME_WAIT || c->state == TCP_CLOSED) break;
             net_idle();
         }
         c->state = TCP_CLOSED;
@@ -478,11 +490,9 @@ void net_tcp_close(net_tcp_t *c) {
         c->snd_nxt++;
         c->state = TCP_LAST_ACK;
 
-        uint8_t reply[Q_PKT];
         uint64_t deadline = timer_ms() + 2000;
         while (timer_ms() < deadline) {
-            int len = q_pop(&q_tcp, reply, sizeof(reply));
-            if (len >= 54 && (reply[47] & 0x10)) break;
+            if (c->state == TCP_CLOSED) break;
             net_idle();
         }
         c->state = TCP_CLOSED;

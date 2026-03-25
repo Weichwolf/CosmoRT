@@ -18,6 +18,9 @@
  * Returns 0 on success, -1 if no NIC registered. */
 int net_init(void);
 
+/* NIC driver accessor (used by dispatch.c, ip.c) */
+const nic_driver_t *net_nic_get(void);
+
 /* DHCP */
 void net_dhcp_send_discover(void);
 int net_dhcp_check(void);
@@ -25,9 +28,6 @@ int net_dhcp(void);
 
 /* Ping */
 int net_ping(const uint8_t *dst_ip);
-
-/* ARP */
-int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out);
 
 /* HTTP */
 int net_http_get(const uint8_t *dst_ip, uint16_t port,
@@ -43,10 +43,13 @@ void net_poll(void);
 /* mDNS hostname (e.g., "cosmo-3456") — set after DHCP */
 void net_set_hostname(const char *name);
 
-/* Raw send — used by tcp.c */
+/* mDNS query handler (called from dispatch.c) */
+void mdns_handle(const uint8_t *pkt, int len);
+
+/* Raw send — compat wrapper, prefer ip_send_raw() */
 void net_send_raw(const uint8_t *data, uint16_t len);
 
-/* IP header build — used by tcp.c */
+/* IP header build — compat wrapper, prefer ip_build_header() */
 void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
                       const uint8_t *dst_ip, uint8_t proto, uint16_t plen);
 
@@ -81,6 +84,10 @@ void q_push(pkt_queue_t *q, const uint8_t *pkt, int len);
 int  q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize);
 
 extern pkt_queue_t q_tcp;
+extern pkt_queue_t q_udp_dhcp;
+extern pkt_queue_t q_udp_dns;
+extern pkt_queue_t q_arp;
+extern pkt_queue_t q_icmp;
 
 /* UDP types and API (needs pkt_queue_t) */
 #include "udp.h"

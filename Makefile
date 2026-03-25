@@ -94,6 +94,9 @@ KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/procfs.o
 
 KERN_NET  = $(BUILD)/kernel/net/net.o \
+            $(BUILD)/kernel/net/dispatch.o \
+            $(BUILD)/kernel/net/arp.o \
+            $(BUILD)/kernel/net/ip.o \
             $(BUILD)/kernel/net/tcp.o \
             $(BUILD)/kernel/net/udp.o \
             $(BUILD)/kernel/net/socket.o \
