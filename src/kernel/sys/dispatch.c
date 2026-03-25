@@ -54,7 +54,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     switch (num) {
 
     /* ── X-Macro generated cases ── */
-#define X_DISPATCH(nr, name, nargs, handler) case nr: return handler;
+#define X_DISPATCH(nr, name, handler) case nr: return handler;
     SYSCALL_TABLE(X_DISPATCH)
 #undef X_DISPATCH
 
