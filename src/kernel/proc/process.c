@@ -26,8 +26,10 @@
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
 #define PTE_PS      (1ULL << 7)
-#define PTE_COW     (1ULL << 9)   /* Copy-on-Write: shared read-only, OS-available bit */
-#define PTE_NX      (1ULL << 63)
+#define PTE_COW      (1ULL << 9)   /* Copy-on-Write: shared read-only, OS-available bit */
+#define PTE_DIRTY    (1ULL << 6)
+#define PTE_LAZYFREE (1ULL << 10)  /* MADV_FREE: reclaimable if clean */
+#define PTE_NX       (1ULL << 63)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 /* Convert PROT_* flags to x86 PTE flags (leaf entry only) */
@@ -511,6 +513,70 @@ static uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
     return read_pte_pub(user_pml4, va);
 }
 
+/* ── LAZYFREE reclaim — called by page_alloc on OOM ── */
+
+/* Reclaim up to 'count' clean LAZYFREE pages across all processes.
+ * Returns number of pages actually freed. Caller must NOT hold buddy_lock. */
+int lazyfree_reclaim(int count) {
+    int freed = 0;
+    for (int pid = 1; pid < PID_TABLE_MAX && freed < count; pid++) {
+        process_t *p = pid_table[pid];
+        if (!p || !p->pml4) continue;
+        uint64_t irqf;
+        if (!spin_trylock_irq(&p->lock, &irqf)) continue;
+
+        /* Walk all VMAs looking for anonymous writable regions */
+        vma_t *stack[64];
+        int sp = 0;
+        vma_t *cur = p->vma_root;
+        while ((cur || sp > 0) && freed < count) {
+            while (cur) {
+                if (sp < 64) stack[sp++] = cur;
+                cur = cur->left;
+            }
+            if (sp <= 0) break;
+            cur = stack[--sp];
+            vma_t *v = cur;
+            cur = cur->right;
+            if (!(v->flags & MAP_ANONYMOUS) || !(v->prot & PROT_WRITE))
+                continue;
+            /* Scan pages in this VMA */
+            for (uint64_t va = v->start; va < v->end && freed < count; va += 4096) {
+                int pml4i = (va >> 39) & 0x1FF;
+                if (!(p->pml4[pml4i] & PTE_PRESENT)) {
+                    va = (va | ((1ULL << 39) - 1));
+                    continue;
+                }
+                uint64_t *pdpt = (uint64_t *)phys_to_virt(p->pml4[pml4i] & PTE_ADDR_MASK);
+                int pdpti = (va >> 30) & 0x1FF;
+                if (!(pdpt[pdpti] & PTE_PRESENT)) {
+                    va = (va | ((1ULL << 30) - 1));
+                    continue;
+                }
+                uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+                int pdi = (va >> 21) & 0x1FF;
+                if (!(pd[pdi] & PTE_PRESENT)) {
+                    va = (va | ((1ULL << 21) - 1));
+                    continue;
+                }
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+                int pti = (va >> 12) & 0x1FF;
+                uint64_t pte = pt[pti];
+                /* Reclaimable: present + LAZYFREE + NOT dirty */
+                if ((pte & PTE_PRESENT) && (pte & PTE_LAZYFREE) && !(pte & PTE_DIRTY)) {
+                    uint64_t phys = pte & PTE_ADDR_MASK;
+                    pt[pti] = 0;
+                    arch_invlpg(va);
+                    page_free(phys_to_virt(phys));
+                    freed++;
+                }
+            }
+        }
+        spin_unlock_irq(&p->lock, irqf);
+    }
+    return freed;
+}
+
 /* Walk VMA tree, calling fn(vma, ctx) for each node */
 static void vma_walk(vma_t *node, void (*fn)(vma_t *, void *), void *ctx) {
     if (!node) return;
@@ -570,17 +636,18 @@ static void copy_one_vma(vma_t *v, void *arg) {
                 return;
             }
         } else {
-            /* Private: COW — share page read-only in both processes */
-            uint64_t cow_pte = (pte & ~PTE_WRITE) | PTE_COW;
+            /* Private: COW — share page read-only in both processes.
+             * Strip LAZYFREE: COW semantics take precedence. */
+            uint64_t cow_pte = (pte & ~(PTE_WRITE | PTE_LAZYFREE)) | PTE_COW;
             /* If page was writable, mark both parent and child as COW read-only */
             if (pte & PTE_WRITE) {
                 set_pte_inplace(ctx->src_pml4, va, cow_pte);
             } else {
                 /* Already read-only: just copy PTE, set COW if VMA is writable */
                 if (v->prot & PROT_WRITE)
-                    cow_pte = (pte & ~PTE_WRITE) | PTE_COW;
+                    cow_pte = (pte & ~(PTE_WRITE | PTE_LAZYFREE)) | PTE_COW;
                 else
-                    cow_pte = pte; /* truly read-only, no COW needed */
+                    cow_pte = pte & ~PTE_LAZYFREE; /* truly read-only, no COW needed */
             }
             page_incref(src_phys);
             if (write_pte_raw(ctx->dst_pml4, va, cow_pte) < 0) {

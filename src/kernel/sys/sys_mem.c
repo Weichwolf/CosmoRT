@@ -577,7 +577,39 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
 
 /* ── SYS_madvise (28) ───────────────────────────── */
 
-#define MADV_DONTNEED 4
+/* Mark pages as LAZYFREE: set PTE_LAZYFREE, clear Dirty bit.
+ * Pages remain mapped and accessible. On next write, CPU sets Dirty,
+ * which protects the page from reclaim. */
+static void mark_lazyfree_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
+    const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
+    for (uint64_t va = start; va < end; ) {
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 39) - 1)) + 1;
+            continue;
+        }
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 30) - 1)) + 1;
+            continue;
+        }
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 21) - 1)) + 1;
+            continue;
+        }
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
+        int pti = (va >> 12) & 0x1FF;
+        if (pt[pti] & PTE_PRESENT) {
+            /* Set LAZYFREE, clear Dirty (so reclaim knows page is untouched) */
+            pt[pti] = (pt[pti] | PTE_LAZYFREE) & ~PTE_DIRTY;
+            arch_invlpg(va);
+        }
+        va += 4096;
+    }
+}
 
 long do_madvise(unsigned long addr, size_t length, int advice) {
     if (addr & 0xFFF) return -EINVAL;
@@ -585,16 +617,22 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
     if (length == 0) return 0;
     if (addr + length < addr || addr + length > 0x800000000000ULL) return -EINVAL;
 
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    uint64_t start = addr;
+    uint64_t end = addr + length;
+
     if (advice == MADV_DONTNEED) {
         /* Drop anonymous pages — next access gets fresh zeros.
          * Only unmap pages in MAP_ANONYMOUS VMAs. File-backed or
          * ELF-loaded pages must not be zeroed (data loss). */
-        process_t *p = proc_current();
-        if (!p) return -EFAULT;
-        uint64_t start = addr;
-        uint64_t end = addr + length;
         uint64_t irqf;
         spin_lock_irq(&p->lock, &irqf);
+        /* Verify range is within a valid VMA */
+        if (!vma_find_overlap(p->vma_root, start, end)) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -ENOMEM;
+        }
         for (uint64_t va = start; va < end; ) {
             vma_t *v = vma_find_overlap(p->vma_root, va, end);
             if (!v) break;
@@ -610,7 +648,41 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
         spin_unlock_irq(&p->lock, irqf);
+        return 0;
     }
+
+    if (advice == MADV_FREE) {
+        /* Lazy reclaim: mark pages as reclaimable but keep them mapped.
+         * Pages stay until memory pressure triggers reclaim.
+         * Re-write before reclaim clears LAZYFREE (CPU sets Dirty). */
+        uint64_t irqf;
+        spin_lock_irq(&p->lock, &irqf);
+        /* Verify range is within a valid writable anonymous VMA */
+        int valid = 0;
+        for (uint64_t va = start; va < end; ) {
+            vma_t *v = vma_find_overlap(p->vma_root, va, end);
+            if (!v) break;
+            if (v->start > va) va = v->start;
+            if ((v->flags & MAP_ANONYMOUS) && (v->prot & PROT_WRITE)) {
+                uint64_t ustart = va > v->start ? va : v->start;
+                uint64_t uend = end < v->end ? end : v->end;
+                mark_lazyfree_range(p->pml4, ustart, uend);
+                valid = 1;
+            }
+            va = v->end;
+        }
+        if (!valid && !vma_find_overlap(p->vma_root, start, end)) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -ENOMEM;
+        }
+        /* TLB flush to ensure Dirty bit is cleared in all TLBs */
+        arch_flush_tlb();
+        extern void tlb_shootdown(uint64_t pml4_phys);
+        tlb_shootdown(virt_to_phys(p->pml4));
+        spin_unlock_irq(&p->lock, irqf);
+        return 0;
+    }
+
     /* All other advice: accept but ignore */
     return 0;
 }

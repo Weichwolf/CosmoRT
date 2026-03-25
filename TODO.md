@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 614 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 638 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -274,16 +274,12 @@ Font ist Userspace-Daten, nicht Kernel-Code.
 
 ## MM — MADV_FREE (V8 Heap Management)
 
-Problem: V8 gibt Heap-Seiten mit madvise(MADV_FREE) zurueck. Kernel darf sie bei
-Speicherdruck recyclen, Prozess behaelt den VA-Range. Aktuell nur MADV_DONTNEED
-(zerstoert sofort), V8 braucht lazy reclaim.
-
-- [ ] VMA-Flag VM_LAZYFREE: Seiten als reclaimable markieren statt sofort freigeben
-- [ ] Page-Reclaim: unter Speicherdruck LAZYFREE-Seiten zuerst freigeben
-- [ ] Dirty-Check: LAZYFREE-Seite die erneut beschrieben wird verliert LAZYFREE-Status
-- [ ] MADV_FREE in do_madvise (sys_mem.c) implementieren
-- [ ] test: madvise(MADV_FREE) + erneuter Zugriff → Seite noch da (kein Druck)
-- [ ] test: madvise(MADV_FREE) + Speicherdruck → Seite weg, erneuter Zugriff → Zero-Page
+- [x] PTE_LAZYFREE (Bit 10): MADV_FREE markiert Pages, loescht Dirty-Bit
+- [x] Erneuter Write → CPU setzt Dirty → Page gerettet (automatisch)
+- [x] page_alloc() OOM → lazyfree_reclaim(): LAZYFREE+clean Pages freigeben
+- [x] Demand-Paging: freigegebene Page → Zero-Page bei naechstem Zugriff
+- [x] Fork: LAZYFREE-Bit gestrippt (COW hat Vorrang)
+- [x] 24 Tests: basic, rewrite, multi-range, large, stress, fork, mprotect
 
 ## MM — Transparent Huge Pages (2MB)
 

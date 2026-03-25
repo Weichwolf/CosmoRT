@@ -21,6 +21,11 @@
 #define MREMAP_MAYMOVE  1
 #define MREMAP_FIXED    2
 
+/* madvise advice values */
+#define MADV_NORMAL     0
+#define MADV_DONTNEED   4
+#define MADV_FREE       8
+
 /* mlockall flags */
 #define MCL_CURRENT     1
 #define MCL_FUTURE      2

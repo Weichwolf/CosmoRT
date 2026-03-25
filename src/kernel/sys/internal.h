@@ -47,7 +47,11 @@ typedef struct {
 #define PTE_PRESENT (1ULL << 0)
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
-#define PTE_NX      (1ULL << 63)
+#define PTE_NX       (1ULL << 63)
+#define PTE_COW      (1ULL << 9)
+#define PTE_LAZYFREE (1ULL << 10)
+#define PTE_DIRTY    (1ULL << 6)
+#define PTE_ACCESSED (1ULL << 5)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 /* iovec for readv/writev (POSIX: iov_base is void*, not const void*) */

@@ -313,6 +313,16 @@ void *page_alloc(void) {
     spin_lock_irq(&buddy_lock, &flags);
     void *p = buddy_alloc_order(0);
     spin_unlock_irq(&buddy_lock, flags);
+    if (!p) {
+        /* OOM: try reclaiming LAZYFREE pages */
+        extern int lazyfree_reclaim(int count);
+        int reclaimed = lazyfree_reclaim(16);
+        if (reclaimed > 0) {
+            spin_lock_irq(&buddy_lock, &flags);
+            p = buddy_alloc_order(0);
+            spin_unlock_irq(&buddy_lock, flags);
+        }
+    }
     if (p) {
         page_zero(p);
         uint64_t pfn = virt_to_phys(p) >> PAGE_SHIFT;
