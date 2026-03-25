@@ -336,19 +336,7 @@ void kernel_main(struct boot_info *info) {
                     if (i < 3) serial_putchar('.');
                 }
             }
-            /* mDNS hostname: cosmo-XXXX where XXXX = last 4 hex of MAC */
-            {
-                char hn[] = "cosmo-0000";
-                const char *hex = "0123456789abcdef";
-                hn[6] = hex[net_my_mac[4] >> 4];
-                hn[7] = hex[net_my_mac[4] & 0xF];
-                hn[8] = hex[net_my_mac[5] >> 4];
-                hn[9] = hex[net_my_mac[5] & 0xF];
-                net_set_hostname(hn);
-                serial_puts("\nnet: hostname ");
-                serial_puts(hn);
-                serial_puts(".local\n");
-            }
+            serial_putchar('\n');
         } else {
             /* DHCP failed — use static config for QEMU user-mode networking */
             serial_puts("timeout, fallback static ");

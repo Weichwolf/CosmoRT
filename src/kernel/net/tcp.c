@@ -5,7 +5,6 @@
 #include "tcp.h"
 #include "net.h"
 #include "net_util.h"
-#include "serial.h"
 #include "timer.h"
 #include "page_alloc.h"
 
@@ -287,13 +286,11 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
                 c->snd_una = c->snd_nxt;
                 c->state = TCP_ESTABLISHED;
                 tcp_register(c);
-                serial_puts("tcp: accept connected\n");
                 return 0;
             }
         }
     }
     c->state = TCP_CLOSED;
-    serial_puts("tcp: accept timeout\n");
     return -1;
 }
 
@@ -315,20 +312,8 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->rcv_wnd = 8192;
     c->state = TCP_CLOSED;
 
-    serial_puts("tcp: dst=");
-    for (int i = 0; i < 4; i++) {
-        uint8_t b = dst_ip[i];
-        if (b >= 100) serial_putchar('0' + b / 100);
-        if (b >= 10)  serial_putchar('0' + (b / 10) % 10);
-        serial_putchar('0' + b % 10);
-        if (i < 3) serial_putchar('.');
-    }
-    serial_puts(" port=");
-    serial_hex64(port);
-    serial_puts("\ntcp: ARP\n");
     if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
 
-    serial_puts("tcp: SYN\n");
     send_tcp(c, 0x02, 0, 0);
     c->state = TCP_SYN_SENT;
 
@@ -347,12 +332,10 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
             send_tcp(c, 0x10, 0, 0);
             c->state = TCP_ESTABLISHED;
             tcp_register(c);
-            serial_puts("tcp: connected\n");
             return 0;
         }
-        if (fl & 0x04) { serial_puts("tcp: RST\n"); return -1; }
+        if (fl & 0x04) return -1;
     }
-    serial_puts("tcp: timeout\n");
     return -1;
 }
 

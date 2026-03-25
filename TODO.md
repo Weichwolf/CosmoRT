@@ -51,20 +51,20 @@ Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 
 ### D1: Kernel-Module extrahieren (bleiben im Kernel, eigene Dateien)
 
-- [ ] DNS-Resolver net.c → src/kernel/net/dns.c (Kernel braucht DNS fuer Boot)
-- [ ] DHCP-Client net.c → src/kernel/net/dhcp.c (Kernel braucht DHCP fuer Boot)
+- [x] DNS-Resolver net.c → src/kernel/net/dns.c (Kernel braucht DNS fuer Boot)
+- [x] DHCP-Client net.c → src/kernel/net/dhcp.c (Kernel braucht DHCP fuer Boot)
 
 ### D2: In Userspace verschieben (raus aus dem Kernel)
 
-- [ ] net_http_get() → entfernen (Userspace: curl/wget/Node.js)
-- [ ] net_ping() → entfernen (Userspace: /bin/ping ueber Raw-Socket)
-- [ ] mDNS (net_set_hostname, mdns_respond, mdns_handle) → entfernen (Userspace-Daemon)
-- [ ] procfs_nettest() → entfernen (Userspace-Integrationstests)
+- [x] net_http_get() → entfernt (Userspace: curl/wget/Node.js)
+- [x] net_ping() → entfernt (Userspace: /bin/ping ueber Raw-Socket)
+- [x] mDNS (net_set_hostname, mdns_respond, mdns_handle) → entfernt (Userspace-Daemon)
+- [x] procfs_nettest() → entfernt (Userspace-Integrationstests)
 
 ### D3: Debug-Code aufräumen
 
-- [ ] serial_puts Debug-Ausgaben in tcp.c hinter #ifdef NET_DEBUG oder entfernen
-- [ ] IP-Adress-Formatierung in tcp.c → cold-path Helper oder entfernen
+- [x] serial_puts Debug-Ausgaben in tcp.c entfernt (8 Stellen)
+- [x] IP-Adress-Formatierung in tcp.c entfernt
 
 ## RT/Compute Schnittstelle — include/internal/rt.h
 

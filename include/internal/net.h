@@ -21,30 +21,14 @@ int net_init(void);
 /* NIC driver accessor (used by dispatch.c, ip.c) */
 const nic_driver_t *net_nic_get(void);
 
-/* DHCP */
-void net_dhcp_send_discover(void);
-int net_dhcp_check(void);
-int net_dhcp(void);
+/* DHCP (dhcp.c) */
+#include "dhcp.h"
 
-/* Ping */
-int net_ping(const uint8_t *dst_ip);
-
-/* HTTP */
-int net_http_get(const uint8_t *dst_ip, uint16_t port,
-                 const char *host, const char *path,
-                 char *response, int resp_size);
-
-/* DNS */
-int net_dns_resolve(const char *hostname, uint8_t ip_out[4]);
+/* DNS (dns.c) */
+#include "dns.h"
 
 /* Polling — call from idle loop and timer interrupt */
 void net_poll(void);
-
-/* mDNS hostname (e.g., "cosmo-3456") — set after DHCP */
-void net_set_hostname(const char *name);
-
-/* mDNS query handler (called from dispatch.c) */
-void mdns_handle(const uint8_t *pkt, int len);
 
 /* Raw send — compat wrapper, prefer ip_send_raw() */
 void net_send_raw(const uint8_t *data, uint16_t len);

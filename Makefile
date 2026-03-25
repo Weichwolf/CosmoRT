@@ -99,6 +99,8 @@ KERN_NET  = $(BUILD)/kernel/net/net.o \
             $(BUILD)/kernel/net/ip.o \
             $(BUILD)/kernel/net/tcp.o \
             $(BUILD)/kernel/net/udp.o \
+            $(BUILD)/kernel/net/dns.o \
+            $(BUILD)/kernel/net/dhcp.o \
             $(BUILD)/kernel/net/socket.o \
             $(BUILD)/kernel/net/unix_socket.o
 

@@ -13,11 +13,8 @@ extern int  udp_input(const uint8_t *pkt, int len);
 /* NIC driver access (defined in net.c) */
 extern const nic_driver_t *net_nic_get(void);
 
-/* DNS local port (defined in net.c, set by DNS resolver) */
+/* DNS local port (defined in dns.c, set by DNS resolver) */
 extern uint16_t dns_local_port;
-
-/* mDNS handler (defined in net.c) */
-extern void mdns_handle(const uint8_t *pkt, int len);
 
 /* ── Central Packet Dispatcher ─────────────────────── */
 
@@ -49,8 +46,6 @@ void net_poll(void) {
         uint16_t dport = get16(pkt + 36);
         if (dport == 68)
             q_push(&q_udp_dhcp, pkt, len);
-        else if (dport == 5353)
-            mdns_handle(pkt, len);
         else if (dns_local_port && dport == dns_local_port)
             q_push(&q_udp_dns, pkt, len);
         else {
