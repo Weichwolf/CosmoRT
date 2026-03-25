@@ -7,17 +7,27 @@
 static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
     /* PTE physical address mask: bits 12..51 (strips NX, available bits) */
     const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
-    for (uint64_t va = start; va < end; va += 4096) {
+    for (uint64_t va = start; va < end; ) {
         int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) {
+            /* Skip to next 512GB boundary */
+            va = (va | ((1ULL << 39) - 1)) + 1;
+            continue;
+        }
         uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
 
         int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 30) - 1)) + 1;
+            continue;
+        }
         uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
 
         int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        if (!(pd[pdi] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 21) - 1)) + 1;
+            continue;
+        }
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
@@ -25,9 +35,9 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
             uint64_t phys = pt[pti] & 0x000FFFFFFFFFF000ULL; /* bits 12..51 */
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
-            /* TLB flush for this address */
             arch_invlpg(va);
         }
+        va += 4096;
     }
 }
 
@@ -43,27 +53,35 @@ static uint64_t prot_to_pte_flags(int prot) {
 static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot) {
     const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
     uint64_t new_flags = prot_to_pte_flags(prot);
-    for (uint64_t va = start; va < end; va += 4096) {
+    for (uint64_t va = start; va < end; ) {
         int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 39) - 1)) + 1;
+            continue;
+        }
         uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
 
         int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 30) - 1)) + 1;
+            continue;
+        }
         uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
 
         int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        if (!(pd[pdi] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 21) - 1)) + 1;
+            continue;
+        }
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
         uint64_t phys = pt[pti] & PHYS_MASK;
         if (phys) {
-            /* Update PTE flags — works for both present and not-present
-             * (PROT_NONE sets flags=0, PROT_READ restores PRESENT bit) */
             pt[pti] = phys | new_flags;
             arch_invlpg(va);
         }
+        va += 4096;
     }
 }
 
@@ -72,29 +90,42 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
 static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
                             uint64_t len, int prot) {
     const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
-    for (uint64_t off = 0; off < len; off += 4096) {
+    for (uint64_t off = 0; off < len; ) {
         uint64_t va = src + off;
         /* Walk page tables to find source physical page */
         int pml4i = (va >> 39) & 0x1FF;
-        if (!(user_pml4[pml4i] & PTE_PRESENT)) continue;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) {
+            uint64_t next = ((va | ((1ULL << 39) - 1)) + 1) - src;
+            off = (next > off) ? next : len;
+            continue;
+        }
         uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PHYS_MASK);
         int pdpti = (va >> 30) & 0x1FF;
-        if (!(pdpt[pdpti] & PTE_PRESENT)) continue;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) {
+            uint64_t next = ((va | ((1ULL << 30) - 1)) + 1) - src;
+            off = (next > off) ? next : len;
+            continue;
+        }
         uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
         int pdi = (va >> 21) & 0x1FF;
-        if (!(pd[pdi] & PTE_PRESENT)) continue;
+        if (!(pd[pdi] & PTE_PRESENT)) {
+            uint64_t next = ((va | ((1ULL << 21) - 1)) + 1) - src;
+            off = (next > off) ? next : len;
+            continue;
+        }
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
         int pti = (va >> 12) & 0x1FF;
-        if (!(pt[pti] & PTE_PRESENT)) continue;
+        if (!(pt[pti] & PTE_PRESENT)) { off += 4096; continue; }
 
         uint64_t src_phys = pt[pti] & PHYS_MASK;
         void *src_page = phys_to_virt(src_phys);
 
         /* Allocate new page, copy content, map at dst */
         uint64_t *new_page = alloc_page();
-        if (!new_page) continue;
+        if (!new_page) { off += 4096; continue; }
         kmemcpy(new_page, src_page, 4096);
         map_user_page(user_pml4, dst + off, virt_to_phys(new_page), prot);
+        off += 4096;
     }
 }
 
@@ -246,14 +277,19 @@ long do_mlock(unsigned long addr, size_t len) {
     if (!p) return -EFAULT;
     addr &= ~0xFFFULL;
     len = (len + 0xFFF) & ~0xFFFULL;
+    if (len == 0) return 0;
+    /* Overflow / kernel range check */
+    if (addr + len < addr || addr + len > 0x800000000000ULL) return -ENOMEM;
     uint64_t irqf;
+    uint64_t mlock_end = addr + len;
     spin_lock_irq(&p->lock, &irqf);
-    for (uint64_t va = addr; va < addr + len; ) {
-        vma_t *v = vma_find(p->vma_root, va);
-        if (!v) { va += 4096; continue; }
+    for (uint64_t va = addr; va < mlock_end; ) {
+        vma_t *v = vma_find_overlap(p->vma_root, va, mlock_end);
+        if (!v) break;
+        if (v->start > va) va = v->start;
         v->flags |= VMA_LOCKED;
-        uint64_t end = v->end < addr + len ? v->end : addr + len;
-        prefault_range(p->pml4, va, end, v->prot);
+        uint64_t ve = v->end < mlock_end ? v->end : mlock_end;
+        prefault_range(p->pml4, va, ve, v->prot);
         va = v->end;
     }
     spin_unlock_irq(&p->lock, irqf);
@@ -265,11 +301,15 @@ long do_munlock(unsigned long addr, size_t len) {
     if (!p) return -EFAULT;
     addr &= ~0xFFFULL;
     len = (len + 0xFFF) & ~0xFFFULL;
+    if (len == 0) return 0;
+    if (addr + len < addr || addr + len > 0x800000000000ULL) return -ENOMEM;
+    uint64_t munlock_end = addr + len;
     uint64_t irqf;
     spin_lock_irq(&p->lock, &irqf);
-    for (uint64_t va = addr; va < addr + len; ) {
-        vma_t *v = vma_find(p->vma_root, va);
-        if (!v) { va += 4096; continue; }
+    for (uint64_t va = addr; va < munlock_end; ) {
+        vma_t *v = vma_find_overlap(p->vma_root, va, munlock_end);
+        if (!v) break;
+        if (v->start > va) va = v->start;
         v->flags &= ~VMA_LOCKED;
         va = v->end;
     }
@@ -487,6 +527,8 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     if (addr >= 0x800000000000ULL) return -ENOMEM;
 
     len = (len + 0xFFF) & ~0xFFFULL;
+    if (len == 0) return 0;
+    if (addr + len < addr || addr + len > 0x800000000000ULL) return -ENOMEM;
     uint64_t start = addr;
     uint64_t end = addr + len;
 
@@ -502,8 +544,12 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
 
     /* Update VMA prot flags, splitting if needed */
     for (uint64_t probe = start; probe < end; ) {
-        vma_t *v = vma_find(p->vma_root, probe);
-        if (!v) { probe += 4096; continue; }
+        vma_t *v = vma_find_overlap(p->vma_root, probe, end);
+        if (!v) break; /* no more VMAs in range */
+
+        /* Advance probe past any gap before this VMA */
+        if (v->start > probe)
+            probe = v->start;
 
         if (v->start < start) {
             /* Split: left part keeps old prot */
@@ -536,6 +582,8 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
 long do_madvise(unsigned long addr, size_t length, int advice) {
     if (addr & 0xFFF) return -EINVAL;
     length = (length + 0xFFF) & ~0xFFFULL;
+    if (length == 0) return 0;
+    if (addr + length < addr || addr + length > 0x800000000000ULL) return -EINVAL;
 
     if (advice == MADV_DONTNEED) {
         /* Drop anonymous pages — next access gets fresh zeros.
@@ -548,8 +596,9 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         uint64_t irqf;
         spin_lock_irq(&p->lock, &irqf);
         for (uint64_t va = start; va < end; ) {
-            vma_t *v = vma_find(p->vma_root, va);
-            if (!v) { va += 4096; continue; }
+            vma_t *v = vma_find_overlap(p->vma_root, va, end);
+            if (!v) break;
+            if (v->start > va) va = v->start;
             if (v->flags & MAP_ANONYMOUS) {
                 uint64_t ustart = va > v->start ? va : v->start;
                 uint64_t uend = end < v->end ? end : v->end;

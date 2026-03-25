@@ -465,6 +465,21 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
 
+    /* Kernel-mode exception during syscall with fault_recover armed:
+     * the kernel faulted on user-supplied data (e.g. fxrstor with garbage).
+     * Recover via longjmp → sys_handler returns -EFAULT. */
+    if (!(frame->cs & 3) && cpu->fault_recover) {
+        cpu->fault_recover = 0;
+        uint64_t *jb = cpu->fault_jmpbuf;
+        frame->rbx = jb[0]; frame->rbp = jb[1];
+        frame->r12 = jb[2]; frame->r13 = jb[3];
+        frame->r14 = jb[4]; frame->r15 = jb[5];
+        frame->rsp = jb[6] + 8;
+        frame->rip = jb[7];
+        frame->rax = 1;
+        return;
+    }
+
     /* User-mode exception: try to deliver as signal before killing.
      * Map: GPF(13), Page Fault(14) → SIGSEGV(11);
      *      INT3(3) → SIGTRAP(5); FPE(0,16,19) → SIGFPE(8) */

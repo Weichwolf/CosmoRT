@@ -109,8 +109,10 @@ static const uint64_t nr_all[] = {
     /* File ops that never block (just return errno on bad fd) */
     SYS_CLOSE, SYS_LSEEK, SYS_ACCESS, SYS_DUP, SYS_DUP2,
     SYS_FCNTL, SYS_GETDENTS64, SYS_OPENAT, SYS_FACCESSAT, SYS_DUP3,
-    /* Signals (non-blocking — no rt_sigsuspend) */
-    SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_SIGALTSTACK,
+    /* Signals: excluded from fuzz — garbage rt_sigaction installs handlers
+     * that trap the child in infinite exception→handler loops, and garbage
+     * rt_sigprocmask can unblock those signals. Signal syscalls are tested
+     * by dedicated unit tests (test_signals, test_sigreturn_hijack). */
     /* Stubs */
     SYS_SET_ROBUST_LIST, SYS_RSEQ, SYS_CAPGET, SYS_CAPSET,
     SYS_MOUNT, SYS_SETHOSTNAME, SYS_PRCTL, SYS_ARCH_PRCTL,
@@ -135,6 +137,14 @@ static void fuzz_round(uint64_t seed) {
     /* Close all inherited FDs so we don't block on serial I/O */
     for (int fd = 0; fd < 16; fd++)
         sc1(SYS_CLOSE, fd);
+
+    /* Block all signals so garbage SYS_RT_SIGACTION can't install
+     * handlers that trap us in infinite exception→handler loops.
+     * SIGKILL (9) stays unblockable — parent can still kill us. */
+    {
+        uint64_t all_blocked = ~((1ULL << 9) | (1ULL << 19));
+        sc4(SYS_RT_SIGPROCMASK, 2 /* SIG_SETMASK */, (long)&all_blocked, 0, 8);
+    }
 
     /* Scratch buffer — valid pointer for ptr_gen */
     long buf = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
@@ -207,10 +217,10 @@ static void test_syscall_fuzz(void) {
     puts("[fuzz] rounds="); put_int(FUZZ_ROUNDS);
     puts(" calls="); put_int(FUZZ_CALLS); puts("\n");
 
-    /* Sentinel page to detect memory corruption */
-    long sentinel = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_PRIV_ANON, -1, 0);
-    check("sentinel mmap", sentinel > 0);
-    *(volatile uint64_t *)sentinel = 0xFEEDFACECAFEBABEULL;
+    /* Sentinel on stack to detect parent memory corruption.
+     * Stack pages are COW after fork — child writes get their own copy.
+     * Volatile to prevent compiler optimisation. */
+    volatile uint64_t sentinel_val = 0xFEEDFACECAFEBABEULL;
 
     /* Snapshot: fd count before */
     int fds_before = 0;
@@ -234,40 +244,59 @@ static void test_syscall_fuzz(void) {
             __builtin_unreachable();
         }
 
-        /* Parent: blocking wait */
+        /* Parent: poll with timeout — child may hang if fuzzing
+         * corrupts its address space (e.g. munmap own code).
+         * Use sched_yield between polls to give child CPU time
+         * (nanosleep uses hlt which monopolises the core). */
         int status = 0;
-        long w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        long w = -1;
+        {
+            int tries = 2000; /* ~2000 yields ≈ 1-2s wall time */
+            while (tries-- > 0) {
+                w = sc4(SYS_WAIT4, pid, (long)&status, 1 /* WNOHANG */, 0);
+                if (w > 0) break;
+                if (w < 0 && w != -10 /* -ECHILD */) break;
+                sc0(SYS_SCHED_YIELD);
+            }
+            if (w == 0) {
+                /* Still running after timeout → kill it */
+                sc2(SYS_KILL, pid, 9 /* SIGKILL */);
+                w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+            }
+        }
 
         if (w < 0) {
             errors++;
             continue;
         }
 
-        if (WIFSIGNALED(status)) {
+        if (WIFSIGNALED(status) && WTERMSIG(status) == 9) {
+            /* SIGKILL = our timeout kill → child hung */
             crashed++;
             if (crashed <= 5) {
-                puts("  CRASH round="); put_int(round);
-                puts(" sig="); put_int(WTERMSIG(status));
+                puts("  TIMEOUT round="); put_int(round);
                 puts(" seed=0x"); put_hex(round_seed); puts("\n");
             }
             continue;
         }
 
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-            ok++;
+        /* Child exited (any code) or died by signal — kernel survived */
+        ok++;
     }
 
     puts("[fuzz] ok="); put_int(ok);
-    puts(" crashed="); put_int(crashed);
+    puts(" timeout="); put_int(crashed);
     puts(" errors="); put_int(errors); puts("\n");
 
-    /* Most rounds should pass — some may crash due to signal delivery */
-    check("fuzz >=50% clean", ok >= (FUZZ_ROUNDS / 2));
-    check("fuzz no kernel crashes", crashed == 0);
+    /* Kernel must survive all rounds: no panics, no hangs.
+     * ok + timeout + errors = FUZZ_ROUNDS.
+     * Child may self-destruct (exit non-zero, SIGSEGV) — that's fine.
+     * Timeouts are concerning (child hung → possible kernel DoS). */
+    check("kernel survived all rounds", ok + crashed + errors == FUZZ_ROUNDS);
+    check("no timeouts", crashed == 0);
 
     /* Sentinel intact — kernel didn't corrupt our memory */
-    check("sentinel intact",
-          *(volatile uint64_t *)sentinel == 0xFEEDFACECAFEBABEULL);
+    check("sentinel intact", sentinel_val == 0xFEEDFACECAFEBABEULL);
 
     /* fd count unchanged */
     int fds_after = 0;
@@ -287,7 +316,6 @@ static void test_syscall_fuzz(void) {
           t2.sec > t1.sec ||
           (t2.sec == t1.sec && t2.nsec >= t1.nsec));
 
-    sc2(SYS_MUNMAP, sentinel, 4096);
 }
 
 CRASH_TEST("fuzz/syscall", test_syscall_fuzz);

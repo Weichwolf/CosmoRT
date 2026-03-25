@@ -130,6 +130,17 @@ void deliver_signal(thread_t *t, int signo) {
 
     if ((uint64_t)sa->sa_handler <= 1) return; /* SIG_DFL or SIG_IGN — shouldn't be here */
 
+    /* Validate handler address: must be in user address space.
+     * Garbage handlers (from fuzzing rt_sigaction) would cause the CPU to
+     * jump to unmapped/kernel memory on return to userspace. */
+    uint64_t handler_addr = (uint64_t)sa->sa_handler;
+    if (handler_addr >= 0x800000000000ULL) {
+        /* Invalid handler — kill process instead of jumping to garbage */
+        p->exit_signal = signo;
+        do_exit(128 + signo);
+        return;
+    }
+
     /* Compute frame location on user stack (or alternate signal stack) */
     uint64_t frame_size = SIG_FRAME_SIZE;
     /* Add trampoline only if no sa_restorer */
@@ -668,10 +679,19 @@ long do_rt_sigreturn(void) {
     { int r = copy_from_user(&uc, (const void *)uc_addr, sizeof(uc)); if (r) return r; }
 
     /* Restore FPU/SSE state from inline __fpregs_mem via FXRSTOR.
-     * FXRSTOR requires 16-byte aligned operand, so use a temp buffer. */
+     * FXRSTOR requires 16-byte aligned operand, so use a temp buffer.
+     * Validate MXCSR first: reserved bits (31:16) must be zero, and
+     * each mask bit must cover the corresponding exception-enable bit
+     * (otherwise FXRSTOR raises #GP in kernel mode — fatal). */
     {
         sig_fpstate_t _fxbuf __attribute__((aligned(16)));
         kmemcpy(&_fxbuf, &uc.__fpregs_mem, sizeof(sig_fpstate_t));
+        /* Sanitize MXCSR: clear reserved bits, force mask bits on to
+         * prevent unmasked FP exceptions in kernel context */
+        uint32_t mxcsr = _fxbuf.mxcsr;
+        uint32_t mxcsr_mask = _fxbuf.mxcsr_mask;
+        if (mxcsr_mask == 0) mxcsr_mask = 0x0000FFBF; /* default if unsupported */
+        _fxbuf.mxcsr = mxcsr & mxcsr_mask;
         arch_fxrstor(&_fxbuf);
     }
 
