@@ -36,6 +36,7 @@ typedef struct process {
     /* Memory */
     uint64_t    brk_base;
     uint64_t    brk_current;
+    uint64_t    brk_ceiling;   /* fast-reject: VMA collision boundary (0 = uncached) */
     uint64_t    mmap_next;
 
     /* VMA tree */

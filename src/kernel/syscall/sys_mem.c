@@ -102,6 +102,8 @@ static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
 
 __attribute__((cold))
 static void brk_collision_error(uint64_t addr, uint64_t ov_start, uint64_t ov_end) {
+    static int brk_coll_cnt;
+    if (brk_coll_cnt++ >= 2) return; /* suppress after first 2 */
     serial_puts("brk: ENOMEM collision 0x");
     serial_hex64(addr);
     serial_puts(" vs VMA [0x");
@@ -167,6 +169,8 @@ long do_brk(unsigned long addr) {
     if (addr >= 0x800000000000ULL) return (long)p->brk_current;
     /* Cap brk growth to 256MB above base to prevent excessive virtual memory use */
     if (addr > p->brk_base + (256ULL << 20)) return (long)p->brk_current;
+    /* Fast reject: if we previously hit a VMA collision, don't re-scan */
+    if (p->brk_ceiling && addr >= p->brk_ceiling) return (long)p->brk_current;
 
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
@@ -178,7 +182,9 @@ long do_brk(unsigned long addr) {
     if (new_end > old_end) {
         vma_t *overlap = vma_find_overlap(p->vma_root, old_end, new_end);
         if (overlap && !(overlap->start == p->brk_base)) {
-            /* brk would collide with an mmap'd region — refuse */
+            /* brk would collide with an mmap'd region — refuse.
+             * Cache the collision point so future calls return instantly. */
+            p->brk_ceiling = overlap->start;
             long ret = (long)p->brk_current;
             uint64_t ov_start = overlap->start, ov_end = overlap->end;
             spin_unlock_irq(&p->lock, flags);
