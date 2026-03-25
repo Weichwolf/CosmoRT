@@ -60,10 +60,17 @@ fi
 
 # /etc
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
-./tools/cosmo_cp "$COSMOFS_TMP" --write-string "127.0.0.1 localhost
-104.16.4.34 registry.npmjs.org
-104.18.27.120 example.com
-160.79.104.10 api.anthropic.com" /etc/hosts
+
+# Resolve hostnames at build time (c-ares UDP DNS broken, /etc/hosts as workaround)
+resolve() { dig +short "$1" A 2>/dev/null | head -1; }
+HOSTS="127.0.0.1 localhost"
+for h in registry.npmjs.org example.com api.anthropic.com; do
+    ip=$(resolve "$h")
+    [ -n "$ip" ] && HOSTS="$HOSTS
+$ip $h"
+done
+./tools/cosmo_cp "$COSMOFS_TMP" --write-string "$HOSTS" /etc/hosts
+
 ./tools/cosmo_cp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
 
 # TLS CA certificate bundle (Mozilla root CAs, required for HTTPS)
