@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 532 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 543 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -111,12 +111,10 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ### RT/Compute-E: Prioritaeten auf RT-Core
 
-- [ ] rt_poll() prueft in statischer Prio-Reihenfolge:
-      P0 Audio (<5ms) → P1 Input/HID (<1ms) → P2 Net-RX (max 64 pkt) →
-      P3 Net-TX (max 64 pkt) → P4 VSync/DMA → P5 Timer-Wheel
-- [ ] Bounded Work: Netzwerk max N Pakete pro Durchlauf, dann Prio-Check
-- [ ] Handler returniert "more_work" Flag → naechste Runde nach Prio-Pruefung
-- [ ] test: Audio-Callback unterbricht Netzwerk-Burst
+- [x] rt_poll_run() mit 6 Prio-Levels + Restart bei hoeherer Prio
+- [x] Bounded Work: max_work pro Handler (Net-RX/TX: 64)
+- [x] Handler returniert work_done → Restart von Prio 0 (max 4 Restarts)
+- [x] test: Registrierung, Prio-Reihenfolge, Bounded Work (11 Tests)
 
 ### RT/Compute-F: Skalierung (Abstraktion, nicht Implementierung)
 
