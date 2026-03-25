@@ -73,6 +73,25 @@ done
 
 ./tools/cosmocp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
 
+# Shell profile
+./tools/cosmocp "$COSMOFS_TMP" --write-string 'export PATH=/usr/local/bin:/usr/bin:/bin
+export HOME=/home
+export TERM=xterm-256color
+export LANG=en_US.UTF-8
+export NODE_PATH=/usr/lib/node_modules
+export SSL_CERT_FILE=/etc/ssl/cert.pem
+export PS1="\[\e[1;32m\]cosmo\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\\$ "
+cd /home' /etc/profile
+
+./tools/cosmocp "$COSMOFS_TMP" --write-string '[ -f /etc/profile ] && . /etc/profile' /home/.bash_profile
+./tools/cosmocp "$COSMOFS_TMP" --write-string '# CosmoRT user config
+alias ls="ls --color=auto"
+alias ll="ls -la"
+alias grep="grep --color=auto"' /home/.bashrc
+
+./tools/cosmocp "$COSMOFS_TMP" --write-string 'root:x:0:0:root:/home:/usr/bin/bash' /etc/passwd
+./tools/cosmocp "$COSMOFS_TMP" --write-string 'root:x:0:' /etc/group
+
 # TLS CA certificate bundle (Mozilla root CAs, required for HTTPS)
 [ -f "$BREW/ssl/cert.pem" ] && \
     ./tools/cosmocp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /etc/ssl/cert.pem
