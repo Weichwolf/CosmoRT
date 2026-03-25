@@ -7,8 +7,8 @@ C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
 
 ```
 include/public/
-  cosmo_rt.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
-  cosmo_ui.h   CosmoUI-API: Display, Audio, Input, Power (Stubs).
+  cosmort.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
+  cosmoui.h   CosmoUI-API: Display, Audio, Input, Power (Stubs).
 
 include/kernel/
   core/       sched.h, edf.h, percpu.h, smp.h, timer.h, irq.h, rt.h
@@ -39,13 +39,13 @@ Sichtbarkeit:
 
 Kein Consumer braucht mehr als eine Datei:
 - CosmoPX libc: linux.h → uebersetzt POSIX in Syscalls
-- Treiber: cosmo_rt.h → spricht Hardware
-- CosmoUI: cosmo_ui.h → spricht Kernel-Subsysteme
+- Treiber: cosmort.h → spricht Hardware
+- CosmoUI: cosmoui.h → spricht Kernel-Subsysteme
 - Programme: sehen nur was libc ihnen gibt, nie Header direkt
 
 Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
 
-## cosmo_rt.h (Treiber)
+## cosmort.h (Treiber)
 
 ```
 mmio_map, dma_alloc, irq_register, pci_config_read, fw_load
@@ -53,7 +53,7 @@ nic_driver_t + net_nic_register
 blk_driver_t + blk_register
 ```
 
-## cosmo_ui.h (CosmoUI)
+## cosmoui.h (CosmoUI)
 
 ```
 Display    surface_create/present/destroy (VSync, Multi-Monitor)
@@ -73,7 +73,7 @@ Userspace:  FAT32, ext4, NTFS, NFS, SMB (Latenz-tolerant, ueber Block-I/O)
 ```
 
 CosmoFS ist der einzige FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
-werden von Userspace-Daemons gemountet die Block-I/O ueber cosmo_rt.h sprechen.
+werden von Userspace-Daemons gemountet die Block-I/O ueber cosmort.h sprechen.
 
 ## Core-Modell: RT + Compute (SMP 2+)
 
@@ -108,7 +108,7 @@ CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
 
 ```
 include/
-  public/        cosmo_rt.h (Treiber-API), cosmo_ui.h (CosmoUI-API)
+  public/        cosmort.h (Treiber-API), cosmoui.h (CosmoUI-API)
   kernel/        Kernel-Interna (Subsystem-Spiegel: core/, mm/, proc/, net/, ...)
 src/kernel/
   core/          main, irq, sched, timer, smp, tss, percpu

@@ -26,7 +26,7 @@ KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -Wall -Wextra -Werror -O2 -c \
            -Iinclude/public -Iinclude/kernel -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
 
-# Drivers: only public headers (cosmo_rt.h) + own subdirectory
+# Drivers: only public headers (cosmort.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
            -Wall -Wextra -Werror -O2 -c \
@@ -116,7 +116,7 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/fb.o \
             $(BUILD)/kernel/vt/input.o
 
-KERN_HW   = $(BUILD)/kernel/hw/cosmo_rt.o \
+KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \

@@ -6,7 +6,7 @@
 
 #include "virtio_blk.h"
 #include "virtio.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 /* Virtio-blk request header */
 struct virtio_blk_req {

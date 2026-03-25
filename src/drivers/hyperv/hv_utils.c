@@ -7,7 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 /* Hyper-V Heartbeat GUID: {57164f39-9115-4e78-ab55-382f3bd5422d} */
 static const uint8_t HV_HEARTBEAT_GUID[16] = {

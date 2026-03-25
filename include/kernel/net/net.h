@@ -9,7 +9,7 @@
 #include "spinlock.h"
 
 /* nic_driver_t, net_nic_register — from cosmo.h (public driver API) */
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 /* TCP types and API */
 #include "net/tcp.h"

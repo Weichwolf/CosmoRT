@@ -7,7 +7,7 @@
  */
 
 #include "vmbus.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 /* Hyper-V Mouse GUID: {cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a} */
 static const uint8_t HV_MOUSE_GUID[16] = {

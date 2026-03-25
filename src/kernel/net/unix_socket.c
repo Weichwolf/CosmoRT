@@ -11,7 +11,7 @@
 #include "spinlock.h"
 #include "memops.h"
 #include "sys/syscall.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 #include "arch/arch.h"
 
 /* ── Pool ─────────────────────────────────────── */

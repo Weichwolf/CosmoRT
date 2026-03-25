@@ -22,9 +22,9 @@ EFI_BIN=build/BOOTX64.EFI
 COSMOFS_TMP=.cosmofs.tmp
 
 # Build host tools
-make tools/mkfs tools/cosmo_cp 2>/dev/null || {
+make tools/mkfs tools/cosmocp 2>/dev/null || {
     gcc -Wall -Wextra -O2 -o tools/mkfs tools/mkfs.c
-    gcc -Wall -Wextra -O2 -o tools/cosmo_cp tools/cosmo_cp.c
+    gcc -Wall -Wextra -O2 -o tools/cosmocp tools/cosmocp.c
 }
 
 # ── Step 1: Create CosmoFS partition image ──────────
@@ -32,34 +32,34 @@ make tools/mkfs tools/cosmo_cp 2>/dev/null || {
 
 # Directories
 for d in usr usr/bin usr/lib usr/local usr/local/ssl home home/.npm tmp etc etc/ssl opt opt/claude-code dev; do
-    ./tools/cosmo_cp "$COSMOFS_TMP" --mkdir "/$d"
+    ./tools/cosmocp "$COSMOFS_TMP" --mkdir "/$d"
 done
 
 # Shell + coreutils
 if [ -d "$PX/coreutils/build" ]; then
     for bin in "$PX"/coreutils/build/*; do
-        ./tools/cosmo_cp "$COSMOFS_TMP" "$bin" "/usr/bin/$(basename "$bin")"
+        ./tools/cosmocp "$COSMOFS_TMP" "$bin" "/usr/bin/$(basename "$bin")"
     done
 fi
-[ -f "$PX/sh/build/sh" ] && ./tools/cosmo_cp "$COSMOFS_TMP" "$PX/sh/build/sh" /usr/bin/sh
-[ -f "$BREW/bin/bash" ] && ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/bin/bash" /usr/bin/bash
+[ -f "$PX/sh/build/sh" ] && ./tools/cosmocp "$COSMOFS_TMP" "$PX/sh/build/sh" /usr/bin/sh
+[ -f "$BREW/bin/bash" ] && ./tools/cosmocp "$COSMOFS_TMP" "$BREW/bin/bash" /usr/bin/bash
 
 # Node.js
-[ -f "$BREW/bin/node" ] && ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/bin/node" /usr/bin/node
+[ -f "$BREW/bin/node" ] && ./tools/cosmocp "$COSMOFS_TMP" "$BREW/bin/node" /usr/bin/node
 
 # npm
 if [ -d "$BREW/lib/node_modules/npm" ]; then
-    ./tools/cosmo_cp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/npm" /usr/lib/node_modules/npm
-    ./tools/cosmo_cp "$COSMOFS_TMP" --write-string '#!/usr/bin/node
+    ./tools/cosmocp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/npm" /usr/lib/node_modules/npm
+    ./tools/cosmocp "$COSMOFS_TMP" --write-string '#!/usr/bin/node
 require("/usr/lib/node_modules/npm/bin/npm-cli.js")' /usr/bin/npm
 fi
 
 # Claude Code
 [ -d "$BREW/lib/node_modules/@anthropic-ai/claude-code" ] && \
-    ./tools/cosmo_cp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/@anthropic-ai/claude-code" /opt/claude-code
+    ./tools/cosmocp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/@anthropic-ai/claude-code" /opt/claude-code
 
 # /etc
-./tools/cosmo_cp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
+./tools/cosmocp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
 
 # Resolve hostnames at build time (c-ares UDP DNS broken, /etc/hosts as workaround)
 resolve() { dig +short "$1" A 2>/dev/null | head -1; }
@@ -69,19 +69,19 @@ for h in registry.npmjs.org example.com api.anthropic.com; do
     [ -n "$ip" ] && HOSTS="$HOSTS
 $ip $h"
 done
-./tools/cosmo_cp "$COSMOFS_TMP" --write-string "$HOSTS" /etc/hosts
+./tools/cosmocp "$COSMOFS_TMP" --write-string "$HOSTS" /etc/hosts
 
-./tools/cosmo_cp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
+./tools/cosmocp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
 
 # TLS CA certificate bundle (Mozilla root CAs, required for HTTPS)
 [ -f "$BREW/ssl/cert.pem" ] && \
-    ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /etc/ssl/cert.pem
+    ./tools/cosmocp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /etc/ssl/cert.pem
 [ -f "$BREW/ssl/cert.pem" ] && \
-    ./tools/cosmo_cp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /usr/local/ssl/cert.pem
+    ./tools/cosmocp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /usr/local/ssl/cert.pem
 
 # Boot-test script (init runs /home/.boot if present, else starts bash -i)
 if [ -z "$COSMO_INTERACTIVE" ] && [ -f tools/boot-test.sh ]; then
-    ./tools/cosmo_cp "$COSMOFS_TMP" tools/boot-test.sh /home/.boot
+    ./tools/cosmocp "$COSMOFS_TMP" tools/boot-test.sh /home/.boot
 fi
 
 # ── Step 2: Build combined GPT image ───────────────

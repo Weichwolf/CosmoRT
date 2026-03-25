@@ -1,5 +1,5 @@
 #include "ktest.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 static void test_rt_core(void) {
     puts("\n[RT Core]\n");

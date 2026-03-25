@@ -16,7 +16,7 @@
 #include "memops.h"
 #include "uaccess.h"
 #include "net/socket.h"
-#include "cosmo_rt.h"
+#include "cosmort.h"
 #include "net/net_port.h"
 #include "core/irq.h"
 #include "spinlock.h"

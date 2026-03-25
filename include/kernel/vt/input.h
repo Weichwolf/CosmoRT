@@ -9,7 +9,7 @@
 #ifndef INPUT_H
 #define INPUT_H
 
-#include "cosmo_rt.h"
+#include "cosmort.h"
 
 void input_init(void);
 int  input_has_keyboard(void);
