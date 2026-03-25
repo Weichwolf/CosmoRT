@@ -95,11 +95,10 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ### RT/Compute-C: TX-Ring (Compute→RT fuer Netzwerk-TX)
 
-- [ ] tx_ring_t pro NIC: SPSC, Compute=Producer, RT=Consumer
-- [ ] send() Syscall: TCP-Paket bauen → tx_ring_push
-- [ ] net_poll() auf RT-Core: tx_ring_drain() → nic->send()
-- [ ] Doorbell-Flag (atomic): Compute setzt nach Push, RT prueft im IRQ-Return-Path
-- [ ] test: TX-Ring Durchsatz (Pakete/s)
+- [x] tx_ring_t pro NIC: SPSC rt_channel_t, Compute=Producer, RT=Consumer
+- [x] send() Syscall: ip_send_raw() → rt_is_current_rt() → tx_ring_push auf Compute
+- [x] net_poll() auf RT-Core: tx_ring_drain() → nic->send()
+- [x] test: TX-Ring via TCP connect+send (test_tx_ring.c)
 
 ### RT/Compute-D: Timer-Wheel (RT-Core owned)
 
