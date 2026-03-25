@@ -6,6 +6,8 @@
 #include "config.h"
 #include "spinlock.h"
 
+struct thread; /* forward declaration for wait_thread */
+
 /* ── Config ────────────────────────────────────────── */
 
 #define NET_UDP_MAX 16
@@ -15,6 +17,7 @@
 typedef struct {
     uint16_t   port;       /* host byte order, 0 = unused */
     pkt_queue_t q;
+    struct thread *wait_thread;  /* thread blocked on recv, or NULL */
 } udp_sock_t;
 
 /* ── UDP Registration ──────────────────────────────── */

@@ -77,6 +77,9 @@ extern pkt_queue_t q_udp_dns;
 extern pkt_queue_t q_arp;
 extern pkt_queue_t q_icmp;
 
+/* Thread blocked on q_tcp (accept/connect handshake), or NULL */
+extern struct thread *q_tcp_wait_thread;
+
 /* UDP types and API (needs pkt_queue_t) */
 #include "net/udp.h"
 

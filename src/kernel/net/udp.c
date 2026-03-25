@@ -1,11 +1,13 @@
 /* CosmoRT UDP — Per-Socket Demux, Send/Recv
  * Extracted from net.c (Phase B).
+ * E0: Sleep/Wake statt Busy-Wait.
  */
 
 #include "net/net.h"
 #include "net/net_util.h"
 #include "hw/serial.h"
 #include "core/timer.h"
+#include "core/rt.h"
 
 /* ── Per-Socket Table ──────────────────────────────── */
 
@@ -61,6 +63,9 @@ int udp_input(const uint8_t *pkt, int len) {
     udp_sock_t *s = udp_find(dport);
     if (!s) return 0;
     q_push(&s->q, pkt, len);
+    /* Wake thread blocked on recv */
+    struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
+    if (wt) sched_wake(wt);
     return 1;
 }
 
@@ -105,6 +110,8 @@ int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
 int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
                  uint8_t *src_ip_out, uint16_t *src_port_out,
                  int timeout_ms) {
+    (void)timeout_ms; /* timeout handled by caller via thread blocking */
+
     /* Auto-bind if not already registered */
     udp_sock_t *s = udp_find(local_port);
     if (!s) {
@@ -113,31 +120,22 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
     }
 
     uint8_t pkt[Q_PKT];
-    uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
+    int len = q_pop(&s->q, pkt, sizeof(pkt));
+    if (len < 42) return -1; /* no data — caller blocks */
 
-    /* Always run at least once (non-blocking callers pass timeout=0) */
-    do {
-        int len = q_pop(&s->q, pkt, sizeof(pkt));
-        if (len < 42) {
-            if (timeout_ms == 0) break;
-            net_idle(); continue;
-        }
+    /* Extract payload */
+    int ihl = (pkt[14] & 0x0F) * 4;
+    int udp_off = 14 + ihl;
+    int udp_len = get16(pkt + udp_off + 4);
+    int data_off = udp_off + 8;
+    int data_len = udp_len - 8;
+    if (data_len < 0) data_len = 0;
+    if (data_len > bufsize) data_len = bufsize;
+    mcpy(buf, pkt + data_off, data_len);
 
-        /* Extract payload */
-        int ihl = (pkt[14] & 0x0F) * 4;
-        int udp_off = 14 + ihl;
-        int udp_len = get16(pkt + udp_off + 4);
-        int data_off = udp_off + 8;
-        int data_len = udp_len - 8;
-        if (data_len < 0) data_len = 0;
-        if (data_len > bufsize) data_len = bufsize;
-        mcpy(buf, pkt + data_off, data_len);
+    /* Source address */
+    if (src_ip_out) mcpy(src_ip_out, pkt + 26, 4);
+    if (src_port_out) *src_port_out = get16(pkt + udp_off);
 
-        /* Source address */
-        if (src_ip_out) mcpy(src_ip_out, pkt + 26, 4);
-        if (src_port_out) *src_port_out = get16(pkt + udp_off);
-
-        return data_len;
-    } while (timer_ms() < deadline);
-    return -1; /* timeout */
+    return data_len;
 }

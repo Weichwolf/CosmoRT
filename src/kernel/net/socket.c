@@ -1,4 +1,6 @@
-/* CosmoRT Socket Layer — maps POSIX socket syscalls to net_tcp_* */
+/* CosmoRT Socket Layer — maps POSIX socket syscalls to net_tcp_*
+ * E0: Sleep/Wake statt Busy-Wait — block thread via syscall restart.
+ */
 
 #include "net/socket.h"
 #include "proc/process.h"
@@ -12,6 +14,30 @@
 #include "core/percpu.h"
 #include "event/epoll.h"
 #include "arch/arch.h"
+#include "core/rt.h"
+
+/* Blocking helpers — save user state, rewind to syscall insn, block thread.
+ * On wake, the syscall is re-executed from userspace. */
+extern uint64_t pml4[];
+extern void save_user_state_for_block(thread_t *t, long return_value);
+extern void thread_return_to_kernel(thread_t *t);
+
+static void sock_block_thread(int syscall_nr, thread_t **wait_slot, uint64_t timeout_ms) {
+    thread_t *t = thread_current();
+    if (!t) return;
+    __atomic_store_n(wait_slot, t, __ATOMIC_RELEASE);
+    save_user_state_for_block(t, 0);
+    t->rip -= 2;           /* back to `syscall` instruction (0F 05) */
+    t->rax = (uint64_t)syscall_nr;
+    t->wake_at = timeout_ms ? timer_ms() + timeout_ms : 0;
+    /* Register as epoll sleeper for timeout checking */
+    extern void epoll_sleeper_add_ext(thread_t *t);
+    epoll_sleeper_add_ext(t);
+    t->state = THREAD_BLOCKED;
+    arch_set_cr3(virt_to_phys(pml4));
+    thread_return_to_kernel(t);
+    /* unreachable — thread resumes via syscall restart */
+}
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -127,19 +153,29 @@ long do_connect(int fd, const void *addr, int addrlen) {
         return 0;
     }
 
-    /* Zero the tcp struct */
-    for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
-        ((uint8_t *)&s->tcp)[i] = 0;
+    /* Zero the tcp struct — but only on first call, not syscall restart */
+    if (s->tcp.state == TCP_CLOSED && !s->tcp.got_rst)
+        for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
+            ((uint8_t *)&s->tcp)[i] = 0;
 
     /* No gateway configured → network unreachable */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -ENETUNREACH;
-    if (net_tcp_connect(&s->tcp, dst_ip, port) < 0) return -ETIMEDOUT;
-    s->state = SOCK_CONNECTED;
-    s->remote_ip = k_addr.sin_addr;
-    s->remote_port = k_addr.sin_port;
-    return 0;
+    int r = net_tcp_connect(&s->tcp, dst_ip, port);
+    if (r == 0) {
+        /* Connected (SYN-ACK arrived before we blocked, or syscall restart) */
+        s->state = SOCK_CONNECTED;
+        s->remote_ip = k_addr.sin_addr;
+        s->remote_port = k_addr.sin_port;
+        s->tcp.wait_thread = 0;
+        return 0;
+    }
+    if (r == -11) { /* -EAGAIN: SYN sent, waiting for SYN-ACK */
+        sock_block_thread(SYS_CONNECT, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
+        return -ETIMEDOUT; /* unreachable */
+    }
+    return -ETIMEDOUT;
 }
 
 /* ── SYS_SENDTO (44) ─────────────────────────────── */
@@ -226,18 +262,25 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
         if (!s->udp_local_port) return -EAGAIN;
-        /* Check non-blocking: O_NONBLOCK on fd or MSG_DONTWAIT */
-        int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
-        { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
-                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
         uint8_t kbuf[1400];
         uint8_t sip[4];
         uint16_t sport;
-        int timeout = nonblock ? 0 : NET_TCP_TIMEOUT_MS;
         int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
-                             sip, &sport, timeout);
-        if (r < 0) return -EAGAIN;
+                             sip, &sport, 0);
+        if (r < 0) {
+            /* No data — check non-blocking */
+            int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
+            { process_t *rp = proc_current();
+              if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                         if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+            if (nonblock) return -EAGAIN;
+            /* Block — udp_input will wake */
+            udp_sock_t *us = udp_find(s->udp_local_port);
+            if (us) {
+                sock_block_thread(SYS_RECVFROM, &us->wait_thread, NET_TCP_TIMEOUT_MS);
+            }
+            return -EAGAIN; /* unreachable or fallback */
+        }
         { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
 
         /* Fill src_addr if provided */
@@ -259,8 +302,18 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     if (s->state != SOCK_CONNECTED) return -EBADF;
     uint8_t kbuf[4096];
     int want = (int)len > 4096 ? 4096 : (int)len;
-    int r = net_tcp_recv(&s->tcp, kbuf, want, NET_TCP_TIMEOUT_MS);
-    if (r == -EAGAIN) return -EAGAIN;
+    int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
+    if (r == -11) { /* -EAGAIN: no data yet */
+        /* Check non-blocking */
+        int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+        if (nonblock) return -EAGAIN;
+        sock_block_thread(SYS_RECVFROM, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
+        return -EAGAIN; /* unreachable */
+    }
+    s->tcp.wait_thread = 0;
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
     if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;
@@ -275,16 +328,19 @@ long socket_read(int fd, void *buf, long count) {
     /* DGRAM: delegate to recvfrom */
     if (s->is_dgram) return do_recvfrom(fd, buf, count, 0, 0, 0);
     if (s->state != SOCK_CONNECTED) return -EBADF;
-    /* Check non-blocking */
-    int nonblock = 0;
-    { process_t *rp = proc_current();
-      if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
-                 if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
     uint8_t kbuf[4096];
     int want = (int)count > 4096 ? 4096 : (int)count;
-    int timeout = nonblock ? 0 : NET_TCP_TIMEOUT_MS;
-    int r = net_tcp_recv(&s->tcp, kbuf, want, timeout);
-    if (r == -EAGAIN) return -EAGAIN; /* timeout or non-blocking, no data */
+    int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
+    if (r == -11) { /* -EAGAIN: no data yet */
+        int nonblock = 0;
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+        if (nonblock) return -EAGAIN;
+        sock_block_thread(SYS_READ, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
+        return -EAGAIN; /* unreachable */
+    }
+    s->tcp.wait_thread = 0;
     if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
     if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
     return r;
@@ -468,13 +524,21 @@ long do_accept(int fd, void *addr, int *addrlen) {
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -EAGAIN;
 
-    /* Block: do the server-side TCP handshake (SYN → SYN-ACK → ACK) */
+    /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state.
+     * On syscall restart after wake, ls->tcp.state == TCP_SYN_RCVD resumes. */
     uint16_t host_port = bswap16(ls->local_port);
-    net_tcp_t conn;
-    if (net_tcp_accept(&conn, host_port, NET_TCP_TIMEOUT_MS) < 0)
+    int r = net_tcp_accept(&ls->tcp, host_port, 0);
+    if (r == -11) { /* -EAGAIN: no SYN yet or waiting for ACK */
+        sock_block_thread(SYS_ACCEPT, &q_tcp_wait_thread, NET_TCP_TIMEOUT_MS);
+        return -EAGAIN; /* unreachable */
+    }
+    if (r < 0) {
+        ls->tcp.state = TCP_CLOSED;
         return -EAGAIN;
+    }
 
-    /* Allocate new socket for the accepted connection */
+    /* Handshake complete — allocate new socket */
+    q_tcp_wait_thread = 0;
     socket_t *ns = 0;
     spin_lock_irq(&sock_lock, &flags);
     for (int i = 0; i < MAX_SOCKETS; i++) {
@@ -487,26 +551,27 @@ long do_accept(int fd, void *addr, int *addrlen) {
     }
     if (!ns) { spin_unlock_irq(&sock_lock, flags); return -EMFILE; }
 
-    kmemcpy(&ns->tcp, &conn, sizeof(net_tcp_t));
+    kmemcpy(&ns->tcp, &ls->tcp, sizeof(net_tcp_t));
+    ns->tcp.wait_thread = 0;
     ns->state = SOCK_CONNECTED;
     ns->refcount = 1;
     ns->local_ip = ls->local_ip;
     ns->local_port = ls->local_port;
-    /* Store remote addr in network byte order */
-    ns->remote_ip = (uint32_t)conn.dst_ip[0] |
-                    ((uint32_t)conn.dst_ip[1] << 8) |
-                    ((uint32_t)conn.dst_ip[2] << 16) |
-                    ((uint32_t)conn.dst_ip[3] << 24);
-    ns->remote_port = bswap16(conn.remote_port);
+    ns->remote_ip = (uint32_t)ls->tcp.dst_ip[0] |
+                    ((uint32_t)ls->tcp.dst_ip[1] << 8) |
+                    ((uint32_t)ls->tcp.dst_ip[2] << 16) |
+                    ((uint32_t)ls->tcp.dst_ip[3] << 24);
+    ns->remote_port = bswap16(ls->tcp.remote_port);
     spin_unlock_irq(&sock_lock, flags);
 
-    /* Allocate FD */
+    /* Reset listener's scratch tcp for next accept */
+    kmemset(&ls->tcp, 0, sizeof(net_tcp_t));
+
     p = proc_current();
     if (!p) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EFAULT; }
     int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
     if (newfd < 0) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EMFILE; }
 
-    /* Fill in addr if requested */
     if (addr && addrlen) {
         struct k_sockaddr_in sa;
         for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;

@@ -6,6 +6,8 @@
 #include "config.h"
 #include "spinlock.h"
 
+struct thread; /* forward declaration for wait_thread */
+
 /* ── Config ────────────────────────────────────────── */
 
 #define NET_TCP_MAX       32
@@ -65,6 +67,9 @@ typedef struct net_tcp {
     uint64_t rto_ms, last_send_ms;
 
     uint8_t got_fin, got_rst;
+
+    /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
+    struct thread *wait_thread;
 } net_tcp_t;
 
 /* ── TCP Hash Table ───────────────────────────────── */

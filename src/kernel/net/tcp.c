@@ -1,11 +1,13 @@
 /* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine, Hash-Lookup
  * Extracted from net.c (Phase A).
+ * E0: Sleep/Wake statt Busy-Wait — sched_wake statt net_idle.
  */
 
 #include "net/tcp.h"
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
+#include "core/rt.h"
 #include "mm/page_alloc.h"
 
 /* ── Ringbuffer ────────────────────────────────────── */
@@ -167,6 +169,9 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (!c) {
         /* No connection found — push to global q_tcp for accept/connect */
         q_push(&q_tcp, pkt, len);
+        /* Wake thread waiting on q_tcp (accept/connect handshake) */
+        struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
         return;
     }
 
@@ -180,10 +185,24 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (plen < 0) plen = 0;
     uint32_t tseq = get32(pkt + 38);
 
+    /* SYN-ACK for outgoing connect (SYN_SENT → ESTABLISHED) */
+    if (c->state == TCP_SYN_SENT && (flags & 0x12) == 0x12) {
+        c->rcv_nxt = tseq + 1;
+        c->snd_nxt++;
+        c->snd_una = c->snd_nxt;
+        send_tcp(c, 0x10, 0, 0); /* ACK */
+        c->state = TCP_ESTABLISHED;
+        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
+        return;
+    }
+
     /* RST → connection reset */
     if (flags & 0x04) {
         c->state = TCP_CLOSED;
         c->got_rst = 1;
+        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
         return;
     }
 
@@ -198,6 +217,9 @@ void tcp_input(const uint8_t *pkt, int len) {
         const uint8_t *payload = pkt + 14 + 20 + doff;
         rxring_push(&c->rx, payload, plen);
         send_tcp(c, 0x10, 0, 0);
+        /* Wake thread blocked on recv */
+        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
     }
 
     /* FIN */
@@ -215,41 +237,80 @@ void tcp_input(const uint8_t *pkt, int len) {
             c->state = TCP_TIME_WAIT;
             send_tcp(c, 0x10, 0, 0);
         }
+        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
     }
 
     /* ACK processing for close states */
     if (flags & 0x10) {
         uint32_t ack_num = get32(pkt + 42);
+        int state_changed = 0;
         if (c->state == TCP_FIN_WAIT1 && ack_num == c->snd_nxt) {
             c->state = TCP_FIN_WAIT2;
+            state_changed = 1;
         } else if (c->state == TCP_CLOSING && ack_num == c->snd_nxt) {
             c->state = TCP_TIME_WAIT;
+            state_changed = 1;
         } else if (c->state == TCP_LAST_ACK && ack_num == c->snd_nxt) {
             c->state = TCP_CLOSED;
             tcp_unregister(c);
+            state_changed = 1;
         }
         /* Track snd_una */
         if ((int32_t)(ack_num - c->snd_una) > 0)
             c->snd_una = ack_num;
+        /* Wake thread blocked on close */
+        if (state_changed) {
+            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+            if (wt) sched_wake(wt);
+        }
     }
 }
 
 /* ── TCP Accept ────────────────────────────────────── */
 
 int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
-    uint8_t pkt[Q_PKT];
-    uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
+    (void)timeout_ms; /* timeout handled by caller via thread blocking */
 
-    /* Phase 1: wait for SYN on local_port */
-    while (timer_ms() < deadline) {
+    /* Phase 2 resume: if SYN-ACK already sent, check for ACK */
+    if (c->state == TCP_SYN_RCVD) {
+        uint8_t pkt[Q_PKT];
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) { net_idle(); continue; }
-        uint16_t dport = get16(pkt + 36);
-        if (dport != local_port) continue;
+        if (len < 54) return -11; /* -EAGAIN */
+        if (get16(pkt + 36) != c->local_port ||
+            get16(pkt + 34) != c->remote_port) {
+            q_push(&q_tcp, pkt, len);
+            return -11; /* -EAGAIN */
+        }
         uint8_t fl = pkt[47];
-        if ((fl & 0x02) && !(fl & 0x10)) break; /* SYN only */
+        if (fl & 0x04) { c->state = TCP_CLOSED; return -1; } /* RST */
+        if (fl & 0x10) {
+            uint32_t ack_num = get32(pkt + 42);
+            if (ack_num == c->snd_nxt + 1) {
+                c->snd_nxt++;
+                c->snd_una = c->snd_nxt;
+                c->state = TCP_ESTABLISHED;
+                tcp_register(c);
+                return 0;
+            }
+        }
+        return -11; /* -EAGAIN */
     }
-    if (timer_ms() >= deadline) return -1;
+
+    /* Phase 1: try to pop a SYN from q_tcp */
+    uint8_t pkt[Q_PKT];
+    int len = q_pop(&q_tcp, pkt, sizeof(pkt));
+    if (len < 54) return -11; /* -EAGAIN — caller blocks */
+    uint16_t dport = get16(pkt + 36);
+    if (dport != local_port) {
+        q_push(&q_tcp, pkt, len);
+        return -11; /* -EAGAIN */
+    }
+    uint8_t fl = pkt[47];
+    if (!((fl & 0x02) && !(fl & 0x10))) {
+        q_push(&q_tcp, pkt, len);
+        return -11; /* -EAGAIN — not a SYN */
+    }
 
     /* Initialize connection from SYN */
     mzero(c, sizeof(*c));
@@ -269,34 +330,22 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     /* Send SYN-ACK */
     send_tcp(c, 0x12, 0, 0);
     c->state = TCP_SYN_RCVD;
-
-    /* Phase 2: wait for ACK */
-    deadline = timer_ms() + (uint64_t)timeout_ms;
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) { net_idle(); continue; }
-        if (get16(pkt + 36) != c->local_port) continue;
-        if (get16(pkt + 34) != c->remote_port) continue;
-        uint8_t fl = pkt[47];
-        if (fl & 0x04) { c->state = TCP_CLOSED; return -1; } /* RST */
-        if (fl & 0x10) {
-            uint32_t ack_num = get32(pkt + 42);
-            if (ack_num == c->snd_nxt + 1) {
-                c->snd_nxt++;
-                c->snd_una = c->snd_nxt;
-                c->state = TCP_ESTABLISHED;
-                tcp_register(c);
-                return 0;
-            }
-        }
-    }
-    c->state = TCP_CLOSED;
-    return -1;
+    return -11; /* -EAGAIN — wait for ACK, caller blocks */
 }
 
 /* ── TCP Connect ───────────────────────────────────── */
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
+    /* If already connected (syscall restart after wake), return success */
+    if (c->state == TCP_ESTABLISHED) return 0;
+
+    /* If SYN already sent (restart but not yet established), return EAGAIN */
+    if (c->state == TCP_SYN_SENT) return -11; /* -EAGAIN */
+
+    /* If RST received during handshake */
+    if (c->got_rst) return -1;
+
+    /* First call: init and send SYN */
     mzero(c, sizeof(*c));
     rxring_init(&c->rx);
     mcpy(c->dst_ip, dst_ip, 4);
@@ -314,29 +363,13 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
 
     if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
 
-    send_tcp(c, 0x02, 0, 0);
+    /* Register in hash BEFORE sending SYN so tcp_input() can find us */
     c->state = TCP_SYN_SENT;
+    tcp_register(c);
 
-    uint8_t reply[Q_PKT];
-    uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
-    while (timer_ms() < deadline) {
-        int len = q_pop(&q_tcp, reply, sizeof(reply));
-        if (len < 54) { net_idle(); continue; }
-        if (get16(reply + 36) != c->local_port) continue;
-        if (get16(reply + 34) != c->remote_port) continue;
-        uint8_t fl = reply[47];
-        if ((fl & 0x12) == 0x12) {
-            c->rcv_nxt = get32(reply + 38) + 1;
-            c->snd_nxt++;
-            c->snd_una = c->snd_nxt;
-            send_tcp(c, 0x10, 0, 0);
-            c->state = TCP_ESTABLISHED;
-            tcp_register(c);
-            return 0;
-        }
-        if (fl & 0x04) return -1;
-    }
-    return -1;
+    send_tcp(c, 0x02, 0, 0);
+
+    return -11; /* -EAGAIN — caller blocks, tcp_input handles SYN-ACK */
 }
 
 /* ── TCP Send ──────────────────────────────────────── */
@@ -358,6 +391,8 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
 /* ── TCP Recv ──────────────────────────────────────── */
 
 int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms) {
+    (void)timeout_ms; /* timeout handled by caller via thread blocking */
+
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) {
         if (c->state == TCP_CLOSED && (c->got_fin || c->got_rst)) {
             /* Connection already closed — drain ringbuffer */
@@ -367,90 +402,15 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms) {
         return -1;
     }
 
-    int total = 0;
-    uint64_t last_data_ms = timer_ms();
-    uint64_t tmo = (uint64_t)timeout_ms;
-
-    /* Drain ringbuffer first */
+    /* Try ringbuffer — tcp_input() deposits data here via rxring_push */
     int got = rxring_pop(&c->rx, buf, bufsize);
     if (got > 0) return got;
 
-    /* Poll for incoming data — dispatcher puts packets into ringbuffer
-     * via tcp_input() for registered connections, or into q_tcp for
-     * unregistered ones (handshake phase). Check both paths. */
-    while (total < bufsize) {
-        if (timer_ms() - last_data_ms > tmo) break;
+    /* Check FIN/RST set by tcp_input() */
+    if (c->got_fin) return 0;   /* EOF */
+    if (c->got_rst) return -1;  /* reset */
 
-        /* Check ringbuffer first — tcp_input() deposits data here */
-        int rn = rxring_pop(&c->rx, (uint8_t *)buf + total, bufsize - total);
-        if (rn > 0) {
-            total += rn;
-            last_data_ms = timer_ms();
-            continue;
-        }
-
-        /* Check FIN/RST set by tcp_input() while we were waiting */
-        if (c->got_fin || c->got_rst) break;
-
-        uint8_t reply[Q_PKT];
-        int len = q_pop(&q_tcp, reply, sizeof(reply));
-        if (len < 54) { net_idle(); continue; }
-
-        /* Non-matching packets: re-queue */
-        if (get16(reply + 36) != c->local_port ||
-            get16(reply + 34) != c->remote_port) {
-            q_push(&q_tcp, reply, len);
-            net_idle();
-            continue;
-        }
-
-        uint8_t flags = reply[47];
-        int doff = (reply[46] >> 4) * 4;
-        if (doff < 20) doff = 20;
-        int ip_total = get16(reply + 16);
-        if (ip_total < 20 + doff) continue;
-        int plen = ip_total - 20 - doff;
-        if (14 + 20 + doff + plen > len) plen = len - 14 - 20 - doff;
-        if (plen < 0) continue;
-        uint32_t tseq = get32(reply + 38);
-
-        /* RST */
-        if (flags & 0x04) {
-            c->state = TCP_CLOSED;
-            c->got_rst = 1;
-            break;
-        }
-
-        if (plen > 0) {
-            if (tseq != c->rcv_nxt) { send_tcp(c, 0x10, 0, 0); continue; }
-            c->rcv_nxt = tseq + (uint32_t)plen;
-            uint8_t *payload = reply + 14 + 20 + doff;
-
-            int cp = plen;
-            if (total + cp > bufsize) cp = bufsize - total;
-            mcpy((uint8_t *)buf + total, payload, cp);
-            total += cp;
-
-            /* Overflow → push to ringbuffer */
-            if (cp < plen)
-                rxring_push(&c->rx, payload + cp, plen - cp);
-
-            send_tcp(c, 0x10, 0, 0);
-            last_data_ms = timer_ms();
-        }
-
-        if (flags & 0x01) { /* FIN */
-            if (plen == 0 && tseq != c->rcv_nxt) continue;
-            c->got_fin = 1;
-            c->rcv_nxt++;
-            send_tcp(c, 0x11, 0, 0);
-            c->state = TCP_CLOSE_WAIT;
-            break;
-        }
-    }
-
-    if (total == 0 && !c->got_fin && !c->got_rst) return -11; /* -EAGAIN */
-    return total;
+    return -11; /* -EAGAIN — caller blocks thread */
 }
 
 /* ── TCP Close ─────────────────────────────────────── */
@@ -460,26 +420,16 @@ void net_tcp_close(net_tcp_t *c) {
         send_tcp(c, 0x11, 0, 0);
         c->snd_nxt++;
         c->state = TCP_FIN_WAIT1;
-
-        /* tcp_input() handles ACK/FIN and advances state directly */
-        uint64_t deadline = timer_ms() + 2000;
-        while (timer_ms() < deadline) {
-            if (c->state >= TCP_TIME_WAIT || c->state == TCP_CLOSED) break;
-            net_idle();
-        }
-        c->state = TCP_CLOSED;
+        /* tcp_input() handles ACK/FIN and advances state via sched_wake.
+         * Don't wait — caller (socket_close) doesn't block on close. */
     } else if (c->state == TCP_CLOSE_WAIT) {
         send_tcp(c, 0x11, 0, 0);
         c->snd_nxt++;
         c->state = TCP_LAST_ACK;
-
-        uint64_t deadline = timer_ms() + 2000;
-        while (timer_ms() < deadline) {
-            if (c->state == TCP_CLOSED) break;
-            net_idle();
-        }
-        c->state = TCP_CLOSED;
     }
+    /* For active close states (FIN_WAIT1/2, LAST_ACK, TIME_WAIT):
+     * tcp_input() will handle the final ACK and unregister.
+     * We unregister here as well for safety (idempotent). */
     tcp_unregister(c);
     rxring_destroy(&c->rx);
     c->state = TCP_CLOSED;

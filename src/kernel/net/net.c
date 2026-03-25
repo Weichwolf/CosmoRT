@@ -36,6 +36,9 @@ pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
 pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 
+/* Thread blocked on q_tcp (accept/connect handshake), or NULL */
+struct thread *q_tcp_wait_thread;
+
 void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
     uint64_t flags;
     spin_lock_irq(&q->lock, &flags);
