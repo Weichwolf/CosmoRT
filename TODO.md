@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 543 ktest PASS, 0 FAIL. 32s test-hw.
+Stand: 2026-03-25. 559 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -407,14 +407,16 @@ Aktuell nur MAP_PRIVATE.
 - [ ] LC_ALL/LANG: UTF-8 Locale (CosmoPX libc)
 - [ ] test: time() mit korrektem TZ Offset
 
-### SH-H: Symlinks + Permissions vollstaendig
+### SH-H: Symlinks + Permissions
 
 - [ ] Symlink-Resolution in allen Pfad-Operationen (open, stat, exec, ...)
 - [ ] Brew Symlink-Farm: /usr/local/bin/git → ../Cellar/git/2.x/bin/git
-- [ ] chmod/chown: pruefen ob alle Modes korrekt gesetzt werden
-- [ ] Executable-Bit: exec prueft Permissions
+- [ ] CosmoFS Inode: rwx Bits speichern (chmod aendert, stat liefert)
+- [ ] Enforcement: nur +x wird geprueft (exec). r/w gespeichert aber nicht enforced (Single-User)
+- [ ] Default: Dirs 0755, Files 0644, nach chmod beliebig
 - [ ] test: Symlink-Chain resolution (3 Ebenen)
 - [ ] test: chmod +x, dann exec
+- [ ] test: stat liefert gesetzte Permissions korrekt zurueck
 
 ## Offen
 
