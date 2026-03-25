@@ -67,9 +67,11 @@ static void test_tcp_server(void) {
     check_val("getsockopt SO_KEEPALIVE ret", r, 0);
     check_val("getsockopt SO_KEEPALIVE val", (long)got_val, 1);
 
-    /* accept on empty queue -> EAGAIN */
+    /* accept on empty queue (non-blocking) -> EAGAIN */
+    sc3(SYS_FCNTL, fd, F_SETFL, O_NONBLOCK);
     r = sc3(SYS_ACCEPT, fd, 0, 0);
     check_val("accept empty -> EAGAIN", r, -EAGAIN);
+    sc3(SYS_FCNTL, fd, F_SETFL, 0);
 
     /* shutdown */
     r = sc2(SYS_SHUTDOWN, fd, SHUT_RDWR);

@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "memops.h"
-#include "linux.h"
+#include "linux/abi.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {

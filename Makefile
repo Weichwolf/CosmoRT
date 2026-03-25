@@ -24,7 +24,7 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
            -Wall -Wextra -Werror -O2 -c \
-           -Iinclude/public -Iinclude/internal -I$(SRC)/kernel -I$(BUILD) -std=c11
+           -Iinclude/public -Iinclude/internal -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
 
 # Drivers: only public headers (cosmo_rt.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
@@ -67,13 +67,20 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
 KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/elf.o
 
-KERN_SYSCALL = $(BUILD)/kernel/syscall/dispatch.o \
-               $(BUILD)/kernel/syscall/sys_file.o \
-               $(BUILD)/kernel/syscall/sys_mem.o \
-               $(BUILD)/kernel/syscall/sys_proc.o \
-               $(BUILD)/kernel/syscall/sys_signal.o \
-               $(BUILD)/kernel/syscall/sys_time.o \
-               $(BUILD)/kernel/syscall/sys_ipc.o
+KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
+             $(BUILD)/kernel/sys/sys_file.o \
+             $(BUILD)/kernel/sys/sys_fs.o \
+             $(BUILD)/kernel/sys/sys_mem.o \
+             $(BUILD)/kernel/sys/sys_proc.o \
+             $(BUILD)/kernel/sys/sys_sched.o \
+             $(BUILD)/kernel/sys/sys_signal.o \
+             $(BUILD)/kernel/sys/sys_time.o \
+             $(BUILD)/kernel/sys/sys_ipc.o \
+             $(BUILD)/kernel/sys/sys_net.o \
+             $(BUILD)/kernel/sys/sys_event.o \
+             $(BUILD)/kernel/sys/sys_id.o \
+             $(BUILD)/kernel/sys/stubs.o \
+             $(BUILD)/kernel/sys/sys_cosmo.o
 
 KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
             $(BUILD)/kernel/ipc/futex.o \
@@ -90,25 +97,29 @@ KERN_NET  = $(BUILD)/kernel/net/net.o \
             $(BUILD)/kernel/net/socket.o \
             $(BUILD)/kernel/net/unix_socket.o
 
-KERN_EVENT = $(BUILD)/kernel/event/epoll.o
+KERN_EVENT = $(BUILD)/kernel/event/epoll.o \
+             $(BUILD)/kernel/event/eventfd.o \
+             $(BUILD)/kernel/event/timerfd.o \
+             $(BUILD)/kernel/event/signalfd.o \
+             $(BUILD)/kernel/event/inotify.o
 
 KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/pty.o \
             $(BUILD)/kernel/vt/fb.o \
             $(BUILD)/kernel/vt/input.o
 
-KERN_HW   = $(BUILD)/kernel/hw/hw.o \
+KERN_HW   = $(BUILD)/kernel/hw/cosmo_rt.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
-            $(BUILD)/kernel/hw/hyperv.o
+            $(BUILD)/arch/x86_64/hyperv.o
 
 KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
-            $(BUILD)/drivers/net/e1000.o \
-            $(BUILD)/drivers/net/virtio_net.o \
-            $(BUILD)/drivers/blk/virtio_blk.o \
-            $(BUILD)/drivers/gpu/virtio_gpu.o \
-            $(BUILD)/drivers/input/virtio_input.o \
+            $(BUILD)/drivers/virtio/virtio_net.o \
+            $(BUILD)/drivers/virtio/virtio_blk.o \
+            $(BUILD)/drivers/virtio/virtio_gpu.o \
+            $(BUILD)/drivers/virtio/virtio_input.o \
+            $(BUILD)/drivers/pci/e1000.o \
             $(BUILD)/drivers/hyperv/vmbus.o \
             $(BUILD)/drivers/hyperv/storvsc.o \
             $(BUILD)/drivers/hyperv/netvsc.o \
@@ -118,7 +129,7 @@ KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
             $(BUILD)/drivers/hyperv/hv_utils.o
 
 KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
-           $(KERN_SYSCALL) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
+           $(KERN_SYS) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
            $(KERN_EVENT) $(KERN_VT) $(KERN_HW) $(KERN_DRV)
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
@@ -129,13 +140,12 @@ all: $(ESP_IMG)
 
 # ── Directories ──────────────────────────────────
 KDIRS = $(BUILD)/kernel $(BUILD)/kernel/core $(BUILD)/kernel/mm \
-        $(BUILD)/kernel/proc $(BUILD)/kernel/syscall $(BUILD)/kernel/ipc \
+        $(BUILD)/kernel/proc $(BUILD)/kernel/ipc \
         $(BUILD)/kernel/fs $(BUILD)/kernel/net $(BUILD)/kernel/event \
-        $(BUILD)/kernel/vt $(BUILD)/kernel/hw
-DDIRS = $(BUILD)/drivers/net $(BUILD)/drivers/blk $(BUILD)/drivers/virtio \
-        $(BUILD)/drivers/gpu $(BUILD)/drivers/input $(BUILD)/drivers/hyperv
+        $(BUILD)/kernel/vt $(BUILD)/kernel/hw $(BUILD)/kernel/sys
+DDIRS = $(BUILD)/drivers/virtio $(BUILD)/drivers/pci $(BUILD)/drivers/hyperv
 
-$(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS):
+$(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS) $(BUILD)/arch/x86_64:
 	mkdir -p $@
 
 # ── AP trampoline (16-bit, flat binary → C header) ──
@@ -262,10 +272,10 @@ $(BUILD)/gen/svcmgr_bin.h: $(BUILD)/user/svcmgr | $(BUILD)/gen
 tools/mkfs: tools/mkfs.c
 	$(HOST_CC) -Wall -Wextra -O2 -o $@ $<
 
-disk.img: tools/mkfs $(EFI_BIN)
+$(BUILD)/disk.img: tools/mkfs $(EFI_BIN) | $(BUILD)
 	sh tools/mkimage.sh
 
-disk: disk.img
+disk: $(BUILD)/disk.img
 
 # ── Benchmark binary ────────────────────────────
 UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -318,19 +328,19 @@ $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/crash $(BU
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
-	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
-	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
-	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
-	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
-	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_OBJ)
@@ -383,6 +393,10 @@ $(BUILD)/kernel/context.o: $(ARCH_DIR)/context.asm | $(BUILD)/kernel
 $(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
+# ── Architecture C (src/arch/x86_64/) ─────────────
+$(BUILD)/arch/x86_64/%.o: $(ARCH_DIR)/%.c | $(BUILD)/arch/x86_64
+	$(CC) $(KCFLAGS) -o $@ $<
+
 $(BUILD)/kernel/memops.o: $(SRC)/kernel/mm/memops.c | $(BUILD)/kernel
 	$(CC) $(KCFLAGS) -o $@ $<
 
@@ -396,8 +410,8 @@ $(BUILD)/kernel/mm/%.o: $(SRC)/kernel/mm/%.c | $(BUILD)/kernel/mm
 $(BUILD)/kernel/proc/%.o: $(SRC)/kernel/proc/%.c | $(BUILD)/kernel/proc
 	$(CC) $(KCFLAGS) -o $@ $<
 
-$(BUILD)/kernel/syscall/%.o: $(SRC)/kernel/syscall/%.c | $(BUILD)/kernel/syscall
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/syscall -o $@ $<
+$(BUILD)/kernel/sys/%.o: $(SRC)/kernel/sys/%.c | $(BUILD)/kernel/sys
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/sys -o $@ $<
 
 $(BUILD)/kernel/ipc/%.o: $(SRC)/kernel/ipc/%.c | $(BUILD)/kernel/ipc
 	$(CC) $(KCFLAGS) -o $@ $<
@@ -418,24 +432,15 @@ $(BUILD)/kernel/hw/%.o: $(SRC)/kernel/hw/%.c | $(BUILD)/kernel/hw
 	$(CC) $(KCFLAGS) -o $@ $<
 
 # ── Drivers (public headers only + own subdirectory) ──
-$(BUILD)/drivers/net/%.o: $(SRC)/drivers/net/%.c | $(BUILD)/drivers/net
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/net -I$(SRC)/drivers/virtio -o $@ $<
-
-$(BUILD)/drivers/blk/%.o: $(SRC)/drivers/blk/%.c | $(BUILD)/drivers/blk
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/blk -I$(SRC)/drivers/virtio -o $@ $<
-
 $(BUILD)/drivers/virtio/%.o: $(SRC)/drivers/virtio/%.c | $(BUILD)/drivers/virtio
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/virtio -o $@ $<
 
-$(BUILD)/drivers/gpu/%.o: $(SRC)/drivers/gpu/%.c | $(BUILD)/drivers/gpu
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/gpu -I$(SRC)/drivers/virtio -o $@ $<
-
-$(BUILD)/drivers/input/%.o: $(SRC)/drivers/input/%.c | $(BUILD)/drivers/input
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/input -I$(SRC)/drivers/virtio -o $@ $<
+$(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
+	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/pci -o $@ $<
 
 # Hyper-V drivers: need hyperv.h from internal/ (kernel-side MSR/SynIC defs)
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/internal -o $@ $<
+	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/internal -Iinclude -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
 $(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
@@ -489,7 +494,7 @@ qemu-gui: $(BUILD)/user/vt_shell
 	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
-qemu-disk: disk.img
+qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
 	        -drive file=build/cosmofs.img,format=raw,if=virtio
 
@@ -501,9 +506,9 @@ qemu-shell: $(ESP_IMG)
 	        -drive file=build/cosmofs.img,format=raw,if=virtio \
 	        -device virtio-keyboard-pci
 
-vhdx: disk.img
-	qemu-img convert -f raw -O vhdx disk.img disk.vhdx
-	@echo "disk.vhdx: $$(du -h disk.vhdx | cut -f1)"
+vhdx: $(BUILD)/disk.img
+	qemu-img convert -f raw -O vhdx $(BUILD)/disk.img $(BUILD)/disk.vhdx
+	@echo "disk.vhdx: $$(du -h $(BUILD)/disk.vhdx | cut -f1)"
 
 qemu-net: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS) -device e1000,netdev=net0 -netdev user,id=net0
@@ -535,11 +540,11 @@ test-boot: $(ESP_IMG)
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
 	  echo "=== PASS ===" || echo "=== FAIL ==="
 
-test-boot-disk: disk.img
+test-boot-disk: $(BUILD)/disk.img
 	@rm -f /tmp/cosmo-serial.log
 	timeout 10 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
-	        -drive file=disk.img,format=raw \
+	        -drive file=$(BUILD)/disk.img,format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
@@ -552,4 +557,4 @@ test-boot-disk: disk.img
 clean:
 	rm -rf $(BUILD)
 	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
-	rm -f tools/mkfs disk.img disk.vhdx
+	rm -f tools/mkfs

@@ -53,6 +53,10 @@ typedef struct {
 /* iovec for readv/writev (POSIX: iov_base is void*, not const void*) */
 struct iovec { void *iov_base; size_t iov_len; };
 
+/* ── Shared helpers: sys_file.c + sys_fs.c ── */
+int resolve_path(const char *path, char *out, int outsize);
+int resolve_at_path(int dirfd, const char *upath, char *kpath, int max);
+
 /* ── Forward declarations: sys_file.c ── */
 long do_read(int fd, void *buf, size_t count);
 long do_write(int fd, const void *buf, size_t count);
@@ -62,12 +66,18 @@ long do_close(int fd);
 long do_open(const char *path, int flags, int mode);
 long do_openat(int dirfd, const char *path, int flags, int mode);
 long do_lseek(int fd, long offset, int whence);
-long do_fstat(int fd, struct k_stat *buf);
-long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags);
 long do_dup3(int oldfd, int newfd, int flags);
 long do_getcwd(char *buf, size_t size);
-long do_getcpu(unsigned *cpu, unsigned *node);
 long do_chdir(const char *path);
+long do_getdents64(int fd, void *buf, size_t count);
+long do_ioctl(int fd, unsigned long request, unsigned long arg);
+long do_fcntl(int fd, int cmd, long arg);
+long do_pread64(int fd, void *buf, size_t count, int64_t offset);
+long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset);
+
+/* ── Forward declarations: sys_fs.c ── */
+long do_fstat(int fd, struct k_stat *buf);
+long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags);
 long do_mkdirat(int dirfd, const char *path, int mode);
 long do_unlinkat(int dirfd, const char *path, int flags);
 long do_renameat2(int olddirfd, const char *oldpath,
@@ -84,14 +94,11 @@ long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags);
 long do_utimensat(int dirfd, const char *path, const void *utimes, int flags);
 long do_fallocate(int fd, int mode, int64_t offset, int64_t len);
 long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev);
-long do_getdents64(int fd, void *buf, size_t count);
-long do_ioctl(int fd, unsigned long request, unsigned long arg);
-long do_fcntl(int fd, int cmd, long arg);
 long do_faccessat(int dirfd, const char *path, int mode, int flags);
-long do_pread64(int fd, void *buf, size_t count, int64_t offset);
-long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset);
 long do_statx(int dirfd, const char *pathname, int flags,
               unsigned int mask, void *statxbuf);
+long do_statfs(const char *path, void *buf);
+long do_fstatfs(int fd, void *buf);
 
 /* ── Forward declarations: sys_mem.c ── */
 long do_brk(unsigned long addr);
@@ -114,6 +121,17 @@ long do_clone(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_uname(void *buf);
 long do_getrandom(void *buf, size_t buflen, unsigned int flags);
+long do_arch_prctl(int code, unsigned long addr);
+long do_clone3(void *uargs, size_t size);
+long do_sysinfo(void *info);
+long do_getrusage(int who, void *usage);
+long do_prlimit64(int pid, int resource, const void *new_rlim, void *old_rlim);
+long do_times(void *buf);
+long do_prctl(int option, unsigned long a2, unsigned long a3,
+              unsigned long a4, unsigned long a5);
+long do_getcpu(unsigned *cpu, unsigned *node);
+
+/* ── Forward declarations: sys_sched.c ── */
 long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mask);
 long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask);
 long do_sched_yield(void);
@@ -121,18 +139,6 @@ long do_sched_setscheduler(int pid, int policy, const void *param);
 long do_sched_getscheduler(int pid);
 long do_sched_setparam(int pid, const void *param);
 long do_sched_getparam(int pid, void *param);
-long do_arch_prctl(int code, unsigned long addr);
-long do_clone3(void *uargs, size_t size);
-long do_sysinfo(void *info);
-long do_getrusage(int who, void *usage);
-long do_prlimit64(int pid, int resource, const void *new_rlim, void *old_rlim);
-long do_times(void *buf);
-
-/* ── Forward declarations: sys_proc.c (continued) ── */
-long do_prctl(int option, unsigned long a2, unsigned long a3,
-              unsigned long a4, unsigned long a5);
-long do_statfs(const char *path, void *buf);
-long do_fstatfs(int fd, void *buf);
 
 /* ── Forward declarations: sys_signal.c ── */
 void check_pending_signals(void);
@@ -163,6 +169,52 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count);
 long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count);
 long pipe_close(fd_entry_t *fde);
 long do_pipe2(int *fds, int flags);
+
+/* ── Forward declarations: sys_net.c ── */
+long do_sendmsg(int fd, const void *msg, int flags);
+long do_recvmsg(int fd, void *msg, int flags);
+long do_sendmmsg(int fd, uint64_t mmsg_arr, int vlen, int flags);
+long do_recvmmsg(int fd, uint64_t mmsg_arr, int vlen, int flags);
+
+/* ── Forward declarations: sys_event.c ── */
+long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long num);
+long do_ppoll(long a1, long a2, long a3);
+
+/* ── Forward declarations: cosmo_hw.c ── */
+long do_cosmo_mmio_map(long a1, long a2, long a3);
+long do_cosmo_dma_alloc(long a1, long a2, long a3);
+long do_cosmo_dma_free(long a1, long a2);
+long do_cosmo_irq_register(long a1, long a2, long a3);
+long do_cosmo_pci_read(long a1, long a2, long a3, long a4, long a5);
+long do_cosmo_pci_write(long a1, long a2, long a3, long a4, long a5);
+long do_cosmo_fw_load(long a1, long a2, long a3);
+long do_cosmo_nic_attach(long a1);
+long do_cosmo_kexec(long a1, long a2);
+
+/* ── Forward declarations: sys_id.c ── */
+long do_getuid(void);
+long do_getgid(void);
+long do_geteuid(void);
+long do_getegid(void);
+
+/* ── Forward declarations: stubs.c ── */
+long do_set_robust_list(void);
+long do_mount(void);
+long do_sethostname(void);
+long do_rseq(void);
+long do_capget(void);
+long do_capset(void);
+long do_flock(int fd, int operation);
+long do_msync(void);
+long do_sendfile(void);
+long do_lchown(void);
+long do_sched_get_priority_max(int policy);
+long do_sched_get_priority_min(int policy);
+long do_setrlimit(void);
+long do_fadvise64(void);
+long do_umask(int mask);
+long do_getgroups(void);
+long do_setgroups(void);
 
 /* Save user register state from syscall frame into thread_t */
 void save_user_state_for_block(thread_t *t, long return_value);

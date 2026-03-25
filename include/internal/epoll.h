@@ -9,7 +9,7 @@
 /* k_timespec, k_itimerspec, epoll_event, EPOLL_*, EFD_*, TFD_*, IN_*
  * — all from linux.h */
 #define __KERNEL__
-#include "linux.h"
+#include "linux/abi.h"
 
 /* ── eventfd_t — exposed so syscall.c can check .counter for readiness ── */
 
@@ -34,6 +34,14 @@ typedef struct {
 
 /* Initialise epoll/eventfd/timerfd slab pools */
 void epoll_init(void);
+
+/* Sub-system init (called from epoll_init) */
+void eventfd_init(void);
+void timerfd_init(void);
+void inotify_init_slab(void);
+
+/* Check if any timerfd has expired — used by epoll_check_timeouts */
+int timerfd_any_expired(void);
 
 /* Syscall implementations */
 long do_epoll_create1(int flags);

@@ -7,7 +7,7 @@
 
 /* PROT_* and MAP_* flags come from linux.h (via syscall.h or direct) */
 #define __KERNEL__
-#include "linux.h"
+#include "linux/abi.h"
 
 /* VMA flags (internal, stored in vma_t.flags upper bits) */
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */

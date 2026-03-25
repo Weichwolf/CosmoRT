@@ -2,6 +2,7 @@
  * Child process fuzzes, parent verifies survival. Kernel must never
  * crash, hang, or corrupt state — only return values or errno. */
 #include "ktest.h"
+#include "cosmo_rt.h"
 
 /* ── Wait status macros ─────────────────────────── */
 #define WIFEXITED(s)    (((s) & 0x7F) == 0)

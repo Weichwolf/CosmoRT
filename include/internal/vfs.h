@@ -15,7 +15,7 @@
 
 /* O_*, SEEK_*, S_IF*, k_stat — all from linux.h */
 #define __KERNEL__
-#include "linux.h"
+#include "linux/abi.h"
 
 /* Node types */
 #define VFS_FILE    1

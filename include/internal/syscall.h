@@ -7,7 +7,7 @@
 #define SYSCALL_H
 
 #define __KERNEL__
-#include "linux.h"
+#include "linux/abi.h"
 
 /* Clean up a single FD entry (socket, pipe, etc.) during process exit.
  * Does NOT free FD_FILE — caller handles that via vfs.

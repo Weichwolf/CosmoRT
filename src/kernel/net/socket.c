@@ -449,6 +449,12 @@ long do_accept(int fd, void *addr, int *addrlen) {
     }
     spin_unlock_irq(&sock_lock, flags);
 
+    /* Non-blocking: return EAGAIN immediately if no pending connection */
+    int nonblock = 0;
+    { fd_entry_t *fde = fd_get(&p->fds, fd);
+      if (fde && (fde->flags & O_NONBLOCK)) nonblock = 1; }
+    if (nonblock) return -EAGAIN;
+
     /* No gateway → can only accept on loopback (not wired yet) → EAGAIN */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)

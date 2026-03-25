@@ -8,7 +8,7 @@
  */
 
 #include "cosmo_rt.h"
-#include "linux.h"
+#include "linux/abi.h"
 #include "config.h"
 #include "page_alloc.h"
 #include "paging.h"

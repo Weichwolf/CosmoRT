@@ -18,6 +18,20 @@
 
 #define COSMO_PHYS_OFFSET    0xFFFF800000000000ULL
 
+/* ══════════════════════════════════════════════════════════════════
+ * Syscall numbers (for userspace drivers via syscall interface)
+ * ══════════════════════════════════════════════════════════════════ */
+
+#define SYS_COSMO_MMIO_MAP       512
+#define SYS_COSMO_DMA_ALLOC      513
+#define SYS_COSMO_DMA_FREE       514
+#define SYS_COSMO_IRQ_REGISTER   515
+#define SYS_COSMO_PCI_READ       516
+#define SYS_COSMO_PCI_WRITE      517
+#define SYS_COSMO_FW_LOAD        518
+#define SYS_COSMO_NIC_ATTACH     519
+#define SYS_COSMO_KEXEC          520
+
 #ifndef phys_to_virt
 #define phys_to_virt(p) ((void *)((uint64_t)(p) + COSMO_PHYS_OFFSET))
 #endif

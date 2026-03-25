@@ -4,7 +4,7 @@
 
 /* Resolve a relative path against CWD, handling "." and ".." components.
  * Result written to out (max outsize bytes). Returns 0 on success. */
-static int resolve_path(const char *path, char *out, int outsize) {
+int resolve_path(const char *path, char *out, int outsize) {
     if (!path || !out || outsize < 2) return -EINVAL;
 
     /* Start from CWD for relative paths */
@@ -42,7 +42,7 @@ static int resolve_path(const char *path, char *out, int outsize) {
 /* Resolve dirfd + relative path.
  * Absolute paths and AT_FDCWD are handled directly.
  * Real dirfd with relative path → -EBADF (no path stored per FD yet). */
-static int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
+int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     int len = copy_path_from_user(kpath, upath, (size_t)max);
     if (len < 0) return len;
     if (kpath[0] == '/' || dirfd == AT_FDCWD) return len;
@@ -366,13 +366,6 @@ long do_lseek(int fd, long offset, int whence) {
     return vfs_lseek(fd, offset, whence);
 }
 
-/* ── SYS_fstat (5) / SYS_stat (4) ───────────────── */
-
-long do_fstat(int fd, struct k_stat *buf) {
-    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    return vfs_fstat(fd, buf);
-}
-
 /* ── SYS_dup3 (292) — primary; dup2 delegates here via dispatch ── */
 
 long do_dup3(int oldfd, int newfd, int flags) {
@@ -426,197 +419,6 @@ long do_chdir(const char *path) {
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
     return vfs_chdir(kpath);
-}
-
-/* ── SYS_fstatat (262) — primary; stat/lstat delegate here via dispatch ── */
-
-long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
-    char kpath[PATH_MAX], rpath[PATH_MAX];
-    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (len < 0) return len;
-    if (!user_ok((uint64_t)buf, sizeof(struct k_stat))) return -EFAULT;
-    resolve_path(kpath, rpath, PATH_MAX);
-    if (flags & AT_SYMLINK_NOFOLLOW)
-        return vfs_lstat(rpath, buf);
-    return vfs_stat(rpath, buf);
-}
-
-/* ── SYS_mkdir/rmdir/unlink/rename ───────────────── */
-
-/* ── SYS_mkdirat (258) — primary; mkdir delegates here via dispatch ── */
-
-long do_mkdirat(int dirfd, const char *path, int mode) {
-    (void)mode;
-    char kpath[PATH_MAX];
-    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (len < 0) return len;
-    return vfs_mkdir(kpath);
-}
-
-/* ── SYS_unlinkat (263) — primary; unlink/rmdir delegate here via dispatch ── */
-
-long do_unlinkat(int dirfd, const char *path, int flags) {
-    char kpath[PATH_MAX];
-    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (len < 0) return len;
-    if (flags & AT_REMOVEDIR)
-        return vfs_rmdir(kpath);
-    return vfs_unlink(kpath);
-}
-
-/* ── SYS_renameat2 (316) — primary; rename delegates here via dispatch ── */
-
-long do_renameat2(int olddirfd, const char *oldpath,
-                          int newdirfd, const char *newpath, int flags) {
-    /* Reject unsupported flag combinations */
-    if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE)) return -EINVAL;
-    if ((flags & RENAME_NOREPLACE) && (flags & RENAME_EXCHANGE)) return -EINVAL;
-    if (flags & RENAME_EXCHANGE) return -EINVAL; /* not implemented */
-
-    char kold[PATH_MAX], knew[PATH_MAX];
-    int r = resolve_at_path(olddirfd, oldpath, kold, PATH_MAX);
-    if (r < 0) return r;
-    r = resolve_at_path(newdirfd, newpath, knew, PATH_MAX);
-    if (r < 0) return r;
-
-    if (flags & RENAME_NOREPLACE) {
-        /* Target must not exist */
-        extern uint64_t cosmofs_walk_path(const char *);
-        if (vfs_lookup(knew) || cosmofs_walk_path(knew))
-            return -EEXIST;
-    }
-    return vfs_rename(kold, knew);
-}
-
-/* ── SYS_fchmod (91) ─────────────────────────────── */
-
-long do_fchmod(int fd, uint32_t mode) {
-    return vfs_fchmod(fd, mode);
-}
-
-/* ── SYS_fchown (93) ─────────────────────────────── */
-
-long do_fchown(int fd, uint32_t uid, uint32_t gid) {
-    return vfs_fchown(fd, uid, gid);
-}
-
-/* ── SYS_link (86) ───────────────────────────────── */
-
-/* ── SYS_linkat (265) — primary; link delegates here via dispatch ── */
-
-long do_linkat(int olddirfd, const char *oldpath,
-               int newdirfd, const char *newpath, int flags) {
-    if (flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) return -EINVAL;
-    if (flags & AT_EMPTY_PATH) return -ENOSYS; /* requires /proc/self/fd */
-
-    char kold[PATH_MAX], knew[PATH_MAX];
-    int r = resolve_at_path(olddirfd, oldpath, kold, PATH_MAX);
-    if (r < 0) return r;
-    r = resolve_at_path(newdirfd, newpath, knew, PATH_MAX);
-    if (r < 0) return r;
-    /* AT_SYMLINK_FOLLOW: resolve symlinks on source (default: don't follow).
-     * vfs_link already operates on the resolved node, so the flag is a no-op
-     * for our current symlink implementation (ramfs resolves on lookup). */
-    return vfs_link(kold, knew);
-}
-
-/* ── SYS_symlink (88) ───────────────────────────── */
-
-/* ── SYS_symlinkat (266) — primary; symlink delegates here via dispatch ── */
-
-long do_symlinkat(const char *target, int newdirfd, const char *linkpath) {
-    char ktarget[PATH_MAX], klink[PATH_MAX];
-    int r = copy_path_from_user(ktarget, target, PATH_MAX);
-    if (r < 0) return r;
-    r = resolve_at_path(newdirfd, linkpath, klink, PATH_MAX);
-    if (r < 0) return r;
-    return vfs_symlink(ktarget, klink);
-}
-
-/* ── SYS_readlink (89) ──────────────────────────── */
-
-/* ── SYS_readlinkat (267) — primary; readlink delegates here via dispatch ── */
-
-long do_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
-    char kpath[PATH_MAX];
-    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (r < 0) return r;
-    if (!user_ok((uint64_t)buf, bufsiz)) return -EFAULT;
-    return vfs_readlink(kpath, buf, bufsiz);
-}
-
-/* ── SYS_truncate (76) / SYS_ftruncate (77) ─────── */
-
-long do_truncate(const char *path, int64_t length) {
-    char kpath[PATH_MAX];
-    int r = copy_path_from_user(kpath, path, PATH_MAX);
-    if (r < 0) return r;
-    return vfs_truncate(kpath, length);
-}
-
-long do_ftruncate(int fd, int64_t length) {
-    return vfs_ftruncate(fd, length);
-}
-
-/* ── SYS_fchmodat (268) ─────────────────────────── */
-
-long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
-    (void)flags;
-    char kpath[PATH_MAX];
-    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (r < 0) return r;
-    return vfs_chmod(kpath, mode);
-}
-
-/* ── SYS_utimensat (280) ────────────────────────── */
-
-long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
-    if (!path) return 0; /* futimens with NULL path = no-op for now */
-
-    char kpath[PATH_MAX];
-    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (r < 0) return r;
-
-    int64_t ktimes[4];
-    if (utimes) {
-        int r = copy_from_user(ktimes, utimes, 2 * sizeof(struct k_timespec));
-        if (r) return r;
-    }
-
-    return vfs_utimensat(kpath, utimes ? ktimes : 0, flags);
-}
-
-/* ── SYS_fallocate (285) ────────────────────────── */
-
-long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
-    if (mode != 0) return -EOPNOTSUPP;
-    if (offset < 0 || len <= 0) return -EINVAL;
-    int64_t end = offset + len;
-    /* Only extend, never shrink — check current size via fstat */
-    struct k_stat st;
-    int rc = vfs_fstat(fd, &st);
-    if (rc < 0) return rc;
-    if (end <= st.st_size) return 0;
-    return vfs_ftruncate(fd, end);
-}
-
-/* ── SYS_mknodat (259) ──────────────────────────── */
-
-long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
-    (void)dev;
-
-    /* Only S_IFREG (regular files) supported */
-    if ((mode & S_IFMT) != S_IFREG && (mode & S_IFMT) != 0)
-        return -EPERM;
-
-    char kpath[PATH_MAX];
-    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (r < 0) return r;
-
-    /* Create as regular file via open+close */
-    int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
-    if (fd < 0) return fd;
-    return vfs_close(fd);
 }
 
 /* ── SYS_getdents64 (217) ───────────────────────── */
@@ -764,54 +566,6 @@ long do_getdents64(int fd, void *buf, size_t count) {
     }
 
     return (long)written;
-}
-
-/* ── SYS_faccessat (269) — primary; access delegates here via dispatch ── */
-
-long do_faccessat(int dirfd, const char *path, int mode, int flags) {
-    (void)flags; /* AT_EACCESS / AT_SYMLINK_NOFOLLOW — irrelevant for single-user */
-    if (mode & ~(F_OK | R_OK | W_OK | X_OK)) return -EINVAL;
-
-    char kpath[PATH_MAX];
-    int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (len < 0) return len;
-
-    /* Check existence across all filesystems */
-    int exists = 0;
-
-    /* ramfs */
-    if (vfs_lookup(kpath)) { exists = 1; goto found; }
-    /* procfs entries (/proc/NAME) */
-    {
-        const char *pname = 0;
-        if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
-            kpath[4]=='c' && kpath[5]=='/')
-            pname = kpath + 6;
-        if (pname && procfs_open(pname)) { exists = 1; goto found; }
-    }
-    /* Device special files and virtual dirs */
-    {
-        static const char *devpaths[] = {
-            "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
-            "/dev", "/proc", 0
-        };
-        for (const char **dp = devpaths; *dp; dp++) {
-            const char *a = kpath, *b = *dp;
-            while (*a && *a == *b) { a++; b++; }
-            if (*a == 0 && *b == 0) { exists = 1; goto found; }
-        }
-    }
-    /* CosmoFS on disk */
-    {
-        extern uint64_t cosmofs_walk_path(const char *);
-        if (cosmofs_walk_path(kpath)) { exists = 1; goto found; }
-    }
-
-found:
-    if (!exists) return -ENOENT;
-    /* F_OK: existence only — already confirmed.
-     * R_OK/W_OK/X_OK: single-user system, all permissions granted if file exists. */
-    return 0;
 }
 
 /* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
@@ -986,92 +740,4 @@ long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
     if (fde->type != FD_FILE) return -ESPIPE;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     return vfs_pwrite(f, buf, count, (uint64_t)offset);
-}
-
-/* ── SYS_statx (332) ─────────────────────────────── */
-
-struct statx_timestamp {
-    int64_t  tv_sec;
-    uint32_t tv_nsec;
-    int32_t  __reserved;
-};
-
-struct statx {
-    uint32_t stx_mask;
-    uint32_t stx_blksize;
-    uint64_t stx_attributes;
-    uint32_t stx_nlink;
-    uint32_t stx_uid;
-    uint32_t stx_gid;
-    uint16_t stx_mode;
-    uint16_t __spare0;
-    uint64_t stx_ino;
-    uint64_t stx_size;
-    uint64_t stx_blocks;
-    uint64_t stx_attributes_mask;
-    struct statx_timestamp stx_atime;
-    struct statx_timestamp stx_btime;
-    struct statx_timestamp stx_ctime;
-    struct statx_timestamp stx_mtime;
-    uint32_t stx_rdev_major;
-    uint32_t stx_rdev_minor;
-    uint32_t stx_dev_major;
-    uint32_t stx_dev_minor;
-    uint64_t stx_mnt_id;
-    uint64_t __spare2[13];
-};
-
-#define STATX_BASIC_STATS 0x7ffU
-
-long do_statx(int dirfd, const char *pathname, int flags,
-              unsigned int mask, void *statxbuf) {
-    (void)mask;
-    if (!user_ok((uint64_t)statxbuf, sizeof(struct statx))) return -EFAULT;
-
-    /* Get k_stat via existing fstatat path */
-    struct k_stat kst;
-    kmemset(&kst, 0, sizeof(kst));
-
-    long r;
-    if (flags & AT_EMPTY_PATH) {
-        /* statx(fd, "", AT_EMPTY_PATH, ...) → fstat */
-        r = vfs_fstat(dirfd, &kst);
-    } else {
-        char kpath[PATH_MAX], rpath[PATH_MAX];
-        int len = resolve_at_path(dirfd, pathname, kpath, PATH_MAX);
-        if (len < 0) return len;
-        resolve_path(kpath, rpath, PATH_MAX);
-        if (flags & AT_SYMLINK_NOFOLLOW)
-            r = vfs_lstat(rpath, &kst);
-        else
-            r = vfs_stat(rpath, &kst);
-    }
-    if (r < 0) return r;
-
-    /* Convert k_stat → statx */
-    struct statx sx;
-    kmemset(&sx, 0, sizeof(sx));
-    sx.stx_mask     = STATX_BASIC_STATS;
-    sx.stx_blksize  = (uint32_t)kst.st_blksize;
-    sx.stx_nlink    = (uint32_t)kst.st_nlink;
-    sx.stx_uid      = kst.st_uid;
-    sx.stx_gid      = kst.st_gid;
-    sx.stx_mode     = (uint16_t)kst.st_mode;
-    sx.stx_ino      = kst.st_ino;
-    sx.stx_size     = (uint64_t)kst.st_size;
-    sx.stx_blocks   = (uint64_t)kst.st_blocks;
-    sx.stx_atime.tv_sec  = kst.st_atime_sec;
-    sx.stx_atime.tv_nsec = (uint32_t)kst.st_atime_nsec;
-    sx.stx_btime.tv_sec  = kst.st_ctime_sec;  /* no btime — use ctime */
-    sx.stx_btime.tv_nsec = (uint32_t)kst.st_ctime_nsec;
-    sx.stx_ctime.tv_sec  = kst.st_ctime_sec;
-    sx.stx_ctime.tv_nsec = (uint32_t)kst.st_ctime_nsec;
-    sx.stx_mtime.tv_sec  = kst.st_mtime_sec;
-    sx.stx_mtime.tv_nsec = (uint32_t)kst.st_mtime_nsec;
-    sx.stx_dev_major = (uint32_t)(kst.st_dev >> 8);
-    sx.stx_dev_minor = (uint32_t)(kst.st_dev & 0xff);
-    sx.stx_rdev_major = (uint32_t)(kst.st_rdev >> 8);
-    sx.stx_rdev_minor = (uint32_t)(kst.st_rdev & 0xff);
-
-    return copy_to_user(statxbuf, &sx, sizeof(sx));
 }

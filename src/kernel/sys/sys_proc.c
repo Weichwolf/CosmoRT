@@ -1,4 +1,4 @@
-/* CosmoRT Syscall Layer — process, thread, scheduling syscalls */
+/* CosmoRT Syscall Layer — process, thread syscalls */
 
 #include "internal.h"
 
@@ -274,13 +274,13 @@ long do_clone3(void *uargs, size_t size) {
     if (kargs.stack && kargs.stack_size == 0) return -EINVAL;
 
     /* Map clone3 flags to clone flags */
-    unsigned long flags = (unsigned long)kargs.flags;
+    unsigned long cflags = (unsigned long)kargs.flags;
     void *child_stack = kargs.stack ? (void *)(kargs.stack + kargs.stack_size) : 0;
     int *parent_tid = (int *)(uintptr_t)kargs.parent_tid;
     int *child_tid = (int *)(uintptr_t)kargs.child_tid;
     unsigned long tls = (unsigned long)kargs.tls;
 
-    return do_clone(flags, child_stack, parent_tid, child_tid, tls);
+    return do_clone(cflags, child_stack, parent_tid, child_tid, tls);
 }
 
 /* ── SYS_uname (63) ─────────────────────────────── */
@@ -340,75 +340,6 @@ long do_prctl(int option, unsigned long a2, unsigned long a3,
     }
 }
 
-/* ── SYS_statfs (137) / SYS_fstatfs (138) ───────── */
-
-struct k_statfs {
-    long f_type;     long f_bsize;
-    long f_blocks;   long f_bfree;   long f_bavail;
-    long f_files;    long f_ffree;
-    struct { int __val[2]; } f_fsid;
-    long f_namelen;  long f_frsize;
-    long f_flags;    long f_spare[4];
-};
-
-static long fill_statfs(struct k_statfs *kbuf, const char *path) {
-    kmemset(kbuf, 0, sizeof(*kbuf));
-    kbuf->f_bsize = 4096;
-    kbuf->f_frsize = 4096;
-    kbuf->f_namelen = 255;
-
-    /* Check filesystem type by path */
-    int is_proc = (path && path[0]=='/' && path[1]=='p' && path[2]=='r' &&
-                   path[3]=='o' && path[4]=='c' && (path[5]=='/' || path[5]==0));
-    int is_tmp  = (path && path[0]=='/' && path[1]=='t' && path[2]=='m' &&
-                   path[3]=='p' && (path[4]=='/' || path[4]==0));
-    int is_dev  = (path && path[0]=='/' && path[1]=='d' && path[2]=='e' &&
-                   path[3]=='v' && (path[4]=='/' || path[4]==0));
-
-    if (is_proc) {
-        kbuf->f_type = 0x9FA0; /* PROC_SUPER_MAGIC */
-        kbuf->f_blocks = 0;
-        kbuf->f_bfree = 0;
-        kbuf->f_bavail = 0;
-    } else if (is_tmp || is_dev) {
-        kbuf->f_type = 0x01021994; /* TMPFS_MAGIC */
-        kbuf->f_blocks = 1024;
-        kbuf->f_bfree = 512;
-        kbuf->f_bavail = 512;
-    } else {
-        /* CosmoFS */
-        kbuf->f_type = 0x434F534D; /* 'COSM' */
-        kbuf->f_blocks = (long)(page_alloc_total());
-        kbuf->f_bfree = (long)(page_alloc_free());
-        kbuf->f_bavail = kbuf->f_bfree;
-    }
-    kbuf->f_files = 1024;
-    kbuf->f_ffree = 512;
-    return 0;
-}
-
-long do_statfs(const char *path, void *buf) {
-    char kpath[256];
-    int r = copy_path_from_user(kpath, path, 256);
-    if (r < 0) return r;
-    struct k_statfs kbuf;
-    fill_statfs(&kbuf, kpath);
-    return copy_to_user(buf, &kbuf, sizeof(kbuf)) ? -EFAULT : 0;
-}
-
-long do_fstatfs(int fd, void *buf) {
-    process_t *p = proc_current();
-    if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde || fde->type == FD_NONE) return -EBADF;
-    struct k_statfs kbuf;
-    /* Infer filesystem from fd type */
-    const char *pseudo_path = "/";
-    if (fde->type == FD_PROCFS) pseudo_path = "/proc";
-    fill_statfs(&kbuf, pseudo_path);
-    return copy_to_user(buf, &kbuf, sizeof(kbuf)) ? -EFAULT : 0;
-}
-
 /* ── SYS_getrandom (318) ────────────────────────── */
 
 long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
@@ -427,104 +358,6 @@ long do_getrandom(void *buf, size_t buflen, unsigned int flags) {
         done += chunk;
     }
     return (long)done;
-}
-
-/* ── SYS_sched_setaffinity (203) / getaffinity (204) ── */
-
-long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mask) {
-    (void)pid; /* pid=0 → current thread */
-    thread_t *t = thread_current();
-    if (!t) return -EFAULT;
-    if (cpusetsize < 8 || !mask) return -EINVAL;
-    uint64_t k_mask;
-    int r = copy_from_user(&k_mask, mask, 8);
-    if (r) return r;
-    if (k_mask == 0) return -EINVAL;
-    int core = __builtin_ctzll(k_mask);
-    if (core >= SMP_MAX_CORES) return -EINVAL;
-    t->cpu_affinity = core;
-    return 0;
-}
-
-long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
-    (void)pid;
-    thread_t *t = thread_current();
-    if (!t) return -EFAULT;
-    if (cpusetsize < 8 || !mask) return -EINVAL;
-    uint64_t kmask;
-    if (t->cpu_affinity >= 0)
-        kmask = 1ULL << t->cpu_affinity;
-    else
-        kmask = ~0ULL;  /* all 64 cores */
-    { int r = copy_to_user(mask, &kmask, 8); if (r) return r; }
-    return (long)sizeof(uint64_t);
-}
-
-long do_sched_yield(void) {
-    /* Real yield: save user state, enqueue at tail, longjmp to sched_loop.
-     * sched_pick returns the next thread (FIFO round-robin), so other
-     * threads (e1000d, shell) get CPU time before we run again. */
-    thread_t *t = thread_current();
-    if (!t) return 0;
-    extern uint64_t pml4[];
-    extern void sched_add(thread_t *t);
-    save_user_state_for_block(t, 0); /* saves state, sets rax=0 */
-    sched_add(t);                    /* enqueue at tail (FIFO) */
-    t->state = THREAD_RUNNING;       /* prevent sched_loop double-add */
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t); /* longjmp to sched_loop */
-    return 0; /* unreachable */
-}
-
-/* ── SYS_sched_setscheduler (144) / getscheduler (145) ── */
-
-struct sched_param_k { int sched_priority; };
-
-long do_sched_setscheduler(int pid, int policy, const void *param_) {
-    const struct sched_param_k *param = (const struct sched_param_k *)param_;
-    (void)pid;
-    thread_t *t = thread_current();
-    if (!t) return -EFAULT;
-    if (policy < 0 || policy > 2) return -EINVAL;
-    t->sched_policy = policy;
-    if (param) {
-        struct sched_param_k kp;
-        int r = copy_from_user(&kp, param, sizeof(kp));
-        if (r) return r;
-        if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
-        t->priority = kp.sched_priority;
-    }
-    return 0;
-}
-
-long do_sched_getscheduler(int pid) {
-    (void)pid;
-    thread_t *t = thread_current();
-    return t ? t->sched_policy : 0;
-}
-
-long do_sched_setparam(int pid, const void *param_) {
-    const struct sched_param_k *param = (const struct sched_param_k *)param_;
-    (void)pid;
-    thread_t *t = thread_current();
-    if (!t || !param) return -EFAULT;
-    struct sched_param_k kp;
-    int r = copy_from_user(&kp, param, sizeof(kp));
-    if (r) return r;
-    if (kp.sched_priority < 0 || kp.sched_priority >= PRIO_LEVELS) return -EINVAL;
-    t->priority = kp.sched_priority;
-    return 0;
-}
-
-long do_sched_getparam(int pid, void *param_) {
-    struct sched_param_k *param = (struct sched_param_k *)param_;
-    (void)pid;
-    thread_t *t = thread_current();
-    if (!t || !param) return -EFAULT;
-    struct sched_param_k kparam;
-    kparam.sched_priority = t->priority;
-    { int r = copy_to_user(param, &kparam, sizeof(kparam)); if (r) return r; }
-    return 0;
 }
 
 /* ── SYS_sysinfo (99) ────────────────────────────── */

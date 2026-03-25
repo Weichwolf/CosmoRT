@@ -41,7 +41,7 @@
     X(435, clone3,            2, do_clone3((void *)a1, (size_t)a2)) \
     /* Thread/TLS */ \
     X(158, arch_prctl,        2, do_arch_prctl((int)a1, (unsigned long)a2)) \
-    X(273, set_robust_list,   0, 0) \
+    X(273, set_robust_list,   0, do_set_robust_list()) \
     /* Signals */ \
     X( 13, rt_sigaction,      4, do_rt_sigaction((int)a1, (const void *)a2, (void *)a3, (size_t)a4)) \
     X( 14, rt_sigprocmask,    4, do_rt_sigprocmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3, (size_t)a4)) \
@@ -51,20 +51,20 @@
     X(130, rt_sigsuspend,     2, do_rt_sigsuspend((const uint64_t *)a1, (size_t)a2)) \
     X(234, tgkill,            3, do_tgkill((int)a1, (int)a2, (int)a3)) \
     /* Identity (single-user: uid/gid always 0) */ \
-    X(102, getuid,            0, 0) \
-    X(104, getgid,            0, 0) \
-    X(107, geteuid,           0, 0) \
-    X(108, getegid,           0, 0) \
+    X(102, getuid,            0, do_getuid()) \
+    X(104, getgid,            0, do_getgid()) \
+    X(107, geteuid,           0, do_geteuid()) \
+    X(108, getegid,           0, do_getegid()) \
     /* Process info */ \
     X(157, prctl,             5, do_prctl((int)a1, (unsigned long)a2, (unsigned long)a3, (unsigned long)a4, (unsigned long)a5)) \
     X( 97, getrlimit,         2, do_prlimit64(0, (int)a1, 0, (void *)a2)) \
     /* Stubs */ \
-    X( 73, flock,             2, (long)0) /* advisory locks: noop, single-user */ \
-    X(165, mount,             0, 0) \
-    X(170, sethostname,       0, 0) \
-    X(334, rseq,              0, -ENOSYS) \
-    X(125, capget,            0, -EPERM) \
-    X(126, capset,            0, -EPERM) \
+    X( 73, flock,             2, do_flock((int)a1, (int)a2)) \
+    X(165, mount,             0, do_mount()) \
+    X(170, sethostname,       0, do_sethostname()) \
+    X(334, rseq,              0, do_rseq()) \
+    X(125, capget,            0, do_capget()) \
+    X(126, capset,            0, do_capset()) \
     /* Filesystem (stat wrappers) */ \
     X(137, statfs,            2, do_statfs((const char *)a1, (void *)a2)) \
     X(138, fstatfs,           2, do_fstatfs((int)a1, (void *)a2)) \
@@ -75,18 +75,18 @@
     X( 63, uname,             1, do_uname((void *)a1)) \
     X(318, getrandom,         3, do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3)) \
     X(302, prlimit64,         4, do_prlimit64((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
-        X( 95, umask,             1, (long)0022) /* single-user: return default, ignore new */ \
+    X( 95, umask,             1, do_umask((int)a1)) \
     X( 99, sysinfo,           1, do_sysinfo((void *)a1)) \
-    X(115, getgroups,         2, (long)0) \
-    X(116, setgroups,         2, (long)0) \
+    X(115, getgroups,         2, do_getgroups()) \
+    X(116, setgroups,         2, do_setgroups()) \
     /* Stubs for npm/node compatibility */ \
-    X( 26, msync,             3, (long)0) /* no-op: pages always coherent */ \
-    X( 40, sendfile,          4, (long)-ENOSYS) /* TODO: implement if needed */ \
-    X( 94, lchown,            3, (long)0) /* single-user: noop */ \
-    X(146, sched_get_priority_max, 1, (long)31) \
-    X(147, sched_get_priority_min, 1, (long)0) \
-    X(160, setrlimit,         2, (long)0) /* noop: no enforcement */ \
-    X(221, fadvise64,         4, (long)0) /* no-op: no page cache hints */ \
+    X( 26, msync,             3, do_msync()) \
+    X( 40, sendfile,          4, do_sendfile()) \
+    X( 94, lchown,            3, do_lchown()) \
+    X(146, sched_get_priority_max, 1, do_sched_get_priority_max((int)a1)) \
+    X(147, sched_get_priority_min, 1, do_sched_get_priority_min((int)a1)) \
+    X(160, setrlimit,         2, do_setrlimit()) \
+    X(221, fadvise64,         4, do_fadvise64()) \
     X(309, getcpu,            3, do_getcpu((unsigned *)a1, (unsigned *)a2)) \
     X( 98, getrusage,         2, do_getrusage((int)a1, (void *)a2)) \
     X(100, times,             1, do_times((void *)a1)) \
@@ -127,7 +127,9 @@
     X( 55, getsockopt,        5, do_getsockopt((int)a1, (int)a2, (int)a3, (void *)a4, (int *)a5)) \
     X( 51, getsockname,       3, do_getsockname((int)a1, (void *)a2, (int *)a3)) \
     X( 52, getpeername,       3, do_getpeername((int)a1, (void *)a2, (int *)a3)) \
-    /* sendmsg(46)/recvmsg(47): inline in dispatch.c (unix vs inet) */ \
+    /* sendmsg(46)/recvmsg(47): in sys_net.c */ \
+    X( 46, sendmsg,           3, do_sendmsg((int)a1, (const void *)a2, (int)a3)) \
+    X( 47, recvmsg,           3, do_recvmsg((int)a1, (void *)a2, (int)a3)) \
     X( 48, shutdown,          2, do_shutdown((int)a1, (int)a2)) \
     X(  7, poll,              3, do_poll((void *)a1, (int)a2, (int)a3)) \
     /* Filesystem mutation */ \

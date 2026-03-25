@@ -1,4 +1,5 @@
 #include "ktest.h"
+#include "cosmo_rt.h"
 
 static void test_pci(void) {
     puts("\n[PCI Scan]\n");

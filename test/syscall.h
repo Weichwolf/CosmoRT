@@ -2,7 +2,7 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
-#include "linux.h"
+#include "linux/abi.h"
 
 static inline long sc0(long n) {
     long r; __asm__ volatile("syscall":"=a"(r):"a"(n):"rcx","r11","memory"); return r;

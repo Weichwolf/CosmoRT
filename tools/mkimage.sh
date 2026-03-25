@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 PX=~/Git/CosmoPX
 BREW="$PX/brew/prefix"
-IMG=disk.img
+IMG=build/disk.img
 ESP_MB=64
 FS_MB=512
 TOTAL_MB=$((ESP_MB + FS_MB + 2))  # +2 for GPT headers
