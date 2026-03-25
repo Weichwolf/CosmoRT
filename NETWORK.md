@@ -62,8 +62,8 @@ CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT1 → FIN_WAIT2 → TIME_WAIT �
                      ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 ```
 
-10 States. Kein SACK, kein DSACK. Slow-Start + AIMD statt Cubic/BBR.
-Korrekt fuer VM-Netzwerk, ausreichend fuer Internet ueber QEMU slirp.
+10 States. Slow-Start + AIMD. Kein SACK (Phase E: optional).
+Muss auf Bare-Metal, VMs und jeder Virtualisierung korrekt funktionieren.
 
 ### Wo CosmoRT besser als Linux
 
