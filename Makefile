@@ -308,19 +308,22 @@ bench: $(BUILD)/gen/kbench_bin.h
 	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 
 # ── Hardware test binary ─────────────────────────
-KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/fuzz/*.c)
+KTEST_SRC = test/main.c $(wildcard test/unit/*.c) $(wildcard test/unit/net/*.c)
 KTEST_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
-            $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
-# test/crash/*.c disabled — re-enable when needed
+            $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c))
+# test/crash/*.c test/fuzz/*.c disabled
 
-$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash $(BUILD)/test/fuzz:
+$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/crash $(BUILD)/test/fuzz:
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
 	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
+	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
 	$(CC) $(UCFLAGS) -Iinclude/internal -Itest -c -o $@ $<
 
 $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash

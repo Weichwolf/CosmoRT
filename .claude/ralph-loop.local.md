@@ -4,7 +4,7 @@ iteration: 1
 session_id: 
 max_iterations: 0
 completion_promise: "kräuteraal"
-started_at: "2026-03-24T20:14:33Z"
+started_at: "2026-03-25T07:29:22Z"
 ---
 
-TODO.md lesen und alle offenen taks in phase 1 bis 7 umsetzen. nach jedem task testen, bei bedarf fixen, abhaken, committen. verwende background agents für task delegation.
+TODO.md und NETWORK.md lesen und iterieren bis alle netzwerk phasen mit allen tasks umgesetzt sind und Unit-Tests, Integrations-Tests und End-to-End-Tests alle grün sind.

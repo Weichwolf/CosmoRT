@@ -596,10 +596,8 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
         net_poll(); /* actively poll NIC — don't rely solely on IRQ */
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_idle(); continue; }
-        if (get16(reply+36) != c->local_port ||
-            get16(reply+34) != c->remote_port) {
-            q_push(&q_tcp, reply, len); net_idle(); continue;
-        }
+        if (get16(reply+36) != c->local_port) continue;
+        if (get16(reply+34) != c->remote_port) continue;
         uint8_t fl = reply[47];
         if ((fl & 0x12) == 0x12) {
             c->ack = get32(reply+38) + 1; c->seq++;
@@ -645,13 +643,8 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
         uint8_t reply[Q_PKT];
         int len = q_pop(&q_tcp, reply, sizeof(reply));
         if (len < 54) { net_poll(); net_idle(); continue; }
-        /* Re-queue packets for other connections instead of dropping */
-        if (get16(reply+36) != c->local_port ||
-            get16(reply+34) != c->remote_port) {
-            q_push(&q_tcp, reply, len);
-            net_idle();
-            continue;
-        }
+        if (get16(reply+36) != c->local_port) continue;
+        if (get16(reply+34) != c->remote_port) continue;
 
         uint8_t flags = reply[47];
         int doff = (reply[46]>>4)*4;

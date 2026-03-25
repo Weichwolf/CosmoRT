@@ -51,7 +51,7 @@ syscall_entry_asm:
     mov r8,  [rsp + 0x40]       ; a4 = saved r10
     mov r9,  [rsp + 0x38]       ; a5 = saved r8
     ; a6 = saved r9 → push on stack as 7th C arg
-    push qword [rsp + 0x30 + 8] ; +8 because we just pushed
+    push qword [rsp + 0x30]     ; r9 saved at RSP+0x30
     call sys_handler
     add rsp, 8                  ; pop a6
 
