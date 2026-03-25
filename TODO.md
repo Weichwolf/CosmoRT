@@ -141,13 +141,34 @@ Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
 
 #### G2: RAM-Dedup (KSM auf RT-Core)
 
-- [ ] Page-Scanner: iteriert anonyme User-Pages im Idle
-- [ ] Hash pro Page → Lookup in Merge-Tabelle
-- [ ] Match: memcmp zur Sicherheit → COW-Merge (beide PTEs read-only, page_decref)
-- [ ] Kein Match: Hash in Tabelle eintragen
+MM↔Dedup Interface: MM kennt kein Hashing, Dedup kennt keine PTEs.
+
+MM exportiert:
+- [ ] mm_dedup_scan_next(phys_out): naechste anonyme User-Page (refcount==1, nicht gelockt)
+- [ ] mm_dedup_scan_reset(): Scan-Zyklus neu starten
+- [ ] mm_dedup_merge(keep, victim): alle PTEs victim→keep umschreiben (COW), page_decref
+- [ ] include/kernel/mm/dedup.h: Interface-Header
+
+Dedup exportiert (Lifecycle-Callbacks fuer MM):
+- [ ] dedup_on_page_free(phys): Hash aus Tabelle entfernen
+- [ ] dedup_on_cow_break(old, new): alten Hash invalidieren, neuen queuen
+- [ ] page_free() und COW-Fault-Handler rufen Callbacks auf
+
+Page-Age Tracking (Accessed/Dirty Hardware-Bits):
+- [ ] include/kernel/mm/page_age.h: PAGE_HOT/WARM/COLD enum
+- [ ] 2-Bit Age-Counter pro physische Page (256KB fuer 4GB RAM)
+- [ ] mm_age_pages(): periodisch Accessed-Bit lesen, Age shiften, Accessed clearen
+- [ ] mm_page_temperature(phys): HOT/WARM/COLD abfragen
+- [ ] Dedup scannt nur PAGE_COLD + nicht-dirty Pages (kein Waste auf hot Pages)
+
+Dedup-Engine:
+- [ ] Hash-Tabelle: hash[32] → phys_addr (statisch, 4096 Buckets)
+- [ ] hash_poll(): scan_next → skip hot → sha256 → lookup → memcmp → merge
 - [ ] Scan-Rate begrenzt (max N Pages pro rt_poll Durchlauf)
-- [ ] Statistik: /proc/ksm (pages_shared, pages_merged)
+- [ ] Statistik: /proc/ksm (pages_scanned, pages_shared, pages_merged, bytes_saved)
 - [ ] test: zwei Prozesse mit identischen Pages → nach Merge nur 1 physische Page
+- [ ] test: hot Page wird uebersprungen, cold Page wird gemerged
+- [ ] test: COW-Break nach Merge → neue Page, alter Hash invalidiert
 
 #### G3: CosmoFS Block-Dedup (Write-Path Offload)
 
