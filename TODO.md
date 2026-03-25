@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 422 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 444 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -24,12 +24,12 @@ Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 
 ## Net Phase A — tcp.c extrahieren
 
-- [ ] TCP-Code aus net.c → tcp.c
-- [ ] Per-Socket Ringbuffer (64KB) statt globale q_tcp
-- [ ] TCP State-Machine (10 States, RFC 793)
-- [ ] Hash-Lookup tcp_find(sport, dport, src_ip)
-- [ ] test/net/test_tcp_state.c
-- [ ] test/net/test_tcp_rxring.c
+- [x] TCP-Code aus net.c → tcp.c
+- [x] Per-Socket Ringbuffer (64KB) statt globale q_tcp
+- [x] TCP State-Machine (10 States, RFC 793)
+- [x] Hash-Lookup tcp_find(sport, dport, src_ip)
+- [x] test/unit/net/test_tcp_state.c
+- [x] test/unit/net/test_tcp_rxring.c
 
 ## Net Phase B — udp.c extrahieren
 
