@@ -262,6 +262,37 @@ Problem: 500MB Node.js Heap = 128.000 4KB-PTEs = TLB-Thrashing.
 - [ ] test: mmap 4MB aligned → 2 Huge Pages in PMD
 - [ ] test: Huge Page + fork → COW split zu 4KB
 
+## VT — Terminal-Usability
+
+### VT-A: Scrollback-Buffer
+
+Problem: scroll_up() loescht vergangene Zeilen. cat bigfile → nur letzte N Zeilen
+sichtbar, kein Zurueckscrollen.
+
+- [ ] Scrollback-Ringbuffer (z.B. 4096 Zeilen) pro VT
+- [ ] scroll_up: alte Zeilen in Scrollback schieben statt loeschen
+- [ ] Shift+PageUp/PageDown: Scrollback navigieren
+- [ ] Scroll-Position Reset bei neuer Ausgabe
+
+### VT-B: Dirty-Line Tracking
+
+Problem: mark_all_dirty() bei jedem Scroll → Full-Screen Framebuffer-Repaint.
+cat von 1000 Zeilen = 1000 Full-Repaints.
+
+- [ ] Dirty-Bitmap pro Zeile statt pro Screen
+- [ ] fb_flush(): nur dirty Zeilen rendern
+- [ ] scroll_up: nur neue untere Zeile als dirty markieren (Framebuffer-Scroll via memcpy)
+
+### VT-C: Alternate Screen
+
+Problem: less, vim, htop brauchen CSI ?1049h/l (Alternate Screen Buffer).
+Ohne das ueberschreiben sie den normalen Screen.
+
+- [ ] Zweiter Screen-Buffer pro VT (chars_alt, attrs_alt)
+- [ ] CSI ?1049h: Wechsel zu Alternate Screen, Cursor save
+- [ ] CSI ?1049l: Zurueck zum normalen Screen, Cursor restore
+- [ ] test: Alternate Screen Switch + Restore
+
 ## Job Control — bash/Shell-Interaktion
 
 Problem: Ctrl-C/Ctrl-Z in bash funktionieren nicht. Ohne Job Control ist
