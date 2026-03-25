@@ -7,6 +7,7 @@
 
 #include "core/timer_wheel.h"
 #include "core/timer.h"
+#include "core/rt_poll.h"
 #include "hw/serial.h"
 
 /* ── Global timer wheel instance ─────────────────── */
@@ -38,6 +39,9 @@ void timer_wheel_init(void) {
     tw_last_ms = timer_ms();
 
     rt_channel_init(&tw_req_ring, tw_req_buf, TW_REQ_RING_SIZE);
+
+    extern int timer_poll(int max_work);
+    rt_poll_register(RT_PRIO_TIMER, timer_poll, 0);
 }
 
 /* ── Pool alloc/free ─────────────────────────────── */
@@ -217,4 +221,13 @@ int timer_wheel_active_count(void) {
     for (int i = 0; i < TW_MAX_TIMERS; i++)
         if (tw.entries[i].active) n++;
     return n;
+}
+
+/* ── rt_poll handler ─────────────────────────────── */
+
+int timer_poll(int max_work) {
+    (void)max_work;
+    timer_wheel_drain_requests();
+    timer_wheel_tick();
+    return 0; /* timers are fire-and-forget, no "more work" signal */
 }

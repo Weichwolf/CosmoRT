@@ -225,7 +225,10 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         /* a1=0: rt_is_current_rt(), a1=1: rt_core_id(a2), a1=2: rt_wake(a2)
          * a1=3: rt_timer_request(a2=action, a3=ctx, a4=timeout_ms)
          * a1=4: timer_wheel_cancel(a2=ctx)
-         * a1=5: timer_wheel_active_count() */
+         * a1=5: timer_wheel_active_count()
+         * a1=6: rt_poll_test_install()
+         * a1=7: rt_poll_test_restore()
+         * a1=8: rt_poll_test_query(a2=sub, a3=prio) */
         if (a1 == 0) return (long)rt_is_current_rt();
         if (a1 == 1) return (long)rt_core_id((int)a2);
         if (a1 == 2) { rt_wake((int)a2); return 0; }
@@ -240,6 +243,18 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (a1 == 5) {
             extern int timer_wheel_active_count(void);
             return (long)timer_wheel_active_count();
+        }
+        if (a1 == 6) {
+            extern int rt_poll_test_install(void);
+            return (long)rt_poll_test_install();
+        }
+        if (a1 == 7) {
+            extern int rt_poll_test_restore(void);
+            return (long)rt_poll_test_restore();
+        }
+        if (a1 == 8) {
+            extern int rt_poll_test_query(int sub, int prio);
+            return (long)rt_poll_test_query((int)a2, (int)a3);
         }
         return -EINVAL;
     }

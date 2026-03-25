@@ -542,15 +542,9 @@ static void timer_handler(int vector) {
     /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
-    /* Full net_poll not safe here (reentrancy with spinlocks in epoll_wake_all).
-     * But TX ring drain is lock-free and safe in timer context. */
-    extern void net_tx_drain(void);
-    net_tx_drain();
-    /* Timer wheel: drain requests from Compute-Cores, advance wheel */
-    extern void timer_wheel_drain_requests(void);
-    extern void timer_wheel_tick(void);
-    timer_wheel_drain_requests();
-    timer_wheel_tick();
+    /* Prioritised I/O polling: net, timers, audio, input, vsync */
+    extern void rt_poll_run(void);
+    rt_poll_run();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

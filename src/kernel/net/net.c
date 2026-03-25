@@ -5,6 +5,7 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/rt.h"
+#include "core/rt_poll.h"
 #include "hw/serial.h"
 
 /* ── NIC Registration ──────────────────────────────── */
@@ -82,5 +83,10 @@ int net_init(void) {
     nic->get_mac(net_my_mac);
     rt_channel_init(&tx_ring, tx_ring_buf, NET_TX_RING_SIZE);
     tx_ring_ready = 1;
+
+    extern int net_rx_poll(int max_work);
+    extern int net_tx_poll(int max_work);
+    rt_poll_register(RT_PRIO_NET_RX, net_rx_poll, 64);
+    rt_poll_register(RT_PRIO_NET_TX, net_tx_poll, 64);
     return 0;
 }
