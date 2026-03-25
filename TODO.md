@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 543 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 543 ktest PASS, 0 FAIL. 32s test-hw.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -124,25 +124,16 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ## Net Phase E0 — Polling eliminieren (Sleep/Wake statt Busy-Wait)
 
-Problem: net_tcp_recv pollt q_tcp in Busy-Wait-Loop mit timer_ms() Deadline.
-Verschwendet CPU, blockiert Compute-Core, 30s Timeout bei leerem accept.
-
-Architektur: RT-Core (IRQ) → Lock-free Ringbuffer → IPI → Compute-Core (Wake).
-RT-Core darf nie blockieren, nie Spinlock halten der Compute-Core gehoert.
-
-- [ ] Lock-free Ringbuffer fuer rxring (atomic head/tail, kein Spinlock)
-- [ ] IPI-basiertes Wake: RT-Core schreibt Ringbuffer, sendet IPI an Ziel-Compute-Core
-- [ ] sched_wake(thread_t *t) — markiert Thread runnable, sendet IPI falls anderer Core
-- [ ] sock_waitq: Thread-ID + Timeout pro Socket (kein wait_queue Spinlock auf RT-Core)
-- [ ] tcp_input() auf RT-Core: rxring_push (lock-free) → sched_wake via IPI
-- [ ] net_tcp_recv auf Compute-Core: Ringbuffer leer → Thread suspendieren, Timeout setzen
-- [ ] net_tcp_accept: keine pending SYN → Thread suspendieren bis SYN-Wakeup
-- [ ] net_tcp_connect: nach SYN → Thread suspendieren bis SYN-ACK-Wakeup
-- [ ] udp recv analog: Queue leer → Thread suspendieren
-- [ ] q_tcp eliminieren — alle Pakete direkt in Per-Socket Ringbuffer via tcp_input
-- [ ] net_idle() Aufrufe in TCP/UDP entfernen
-- [ ] test: recv blockt bis IRQ Daten liefert (kein Polling)
-- [ ] test: accept blockt bis SYN kommt (kein Timeout-Polling)
+- [x] wait_thread Feld in net_tcp_t und udp_sock_t
+- [x] sock_block_thread(): generische Blocking-Hilfsfunktion (save state, timer, epoll wake)
+- [x] tcp_input() auf RT-Core: sched_wake(wait_thread) nach Daten/FIN/RST/SYN-ACK
+- [x] udp_input(): sched_wake(wait_thread) nach Paket-Zustellung
+- [x] net_tcp_recv: non-blocking + sock_block_thread() statt Busy-Wait
+- [x] net_tcp_connect: registriert im Hash vor SYN, blockt bis SYN-ACK
+- [x] net_tcp_accept: non-blocking + sock_block_thread()
+- [x] net_tcp_close: sendet FIN, kehrt sofort zurueck (kein Busy-Wait)
+- [x] udp recv: non-blocking + sock_block_thread()
+- [x] net_idle() aus TCP/UDP entfernt (bleibt in ARP/DHCP/DNS fuer Boot)
 
 ## Net Phase E — Robustheit
 
