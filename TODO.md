@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 522 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 532 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -102,12 +102,12 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ### RT/Compute-D: Timer-Wheel (RT-Core owned)
 
-- [ ] timer_wheel_t auf RT-Core: 1ms Granularitaet, 256 Slots
-- [ ] rt_timer_request(sock, action, timeout_ms) — Compute postet in Timer-Request-Ring
-- [ ] RT-Core: Timer-Wheel tick → faellige Timer feuern → Aktion direkt ausfuehren
-- [ ] Timer-Actions: TCP Retransmit, Keepalive, DHCP Renewal (alle Netzwerk-Sends)
-- [ ] test: Timer feuert nach Deadline
-- [ ] test: Timer-Cancel vor Deadline
+- [x] timer_wheel_t auf RT-Core: 1ms Granularitaet, 256 Slots, 64 Entries
+- [x] rt_timer_request via SPSC Request-Ring (Compute→RT)
+- [x] RT-Core: Timer-Wheel tick mit Elapsed-Time Berechnung
+- [x] Timer-Actions: TCP Retransmit stub (Keepalive, DHCP spaeter)
+- [x] test: Timer feuert nach Deadline
+- [x] test: Timer-Cancel vor Deadline
 
 ### RT/Compute-E: Prioritaeten auf RT-Core
 
