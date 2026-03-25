@@ -31,6 +31,7 @@
 #define SYS_COSMO_FW_LOAD        518
 #define SYS_COSMO_NIC_ATTACH     519
 #define SYS_COSMO_KEXEC          520
+#define SYS_COSMO_RT_QUERY       521
 
 #ifndef phys_to_virt
 #define phys_to_virt(p) ((void *)((uint64_t)(p) + COSMO_PHYS_OFFSET))

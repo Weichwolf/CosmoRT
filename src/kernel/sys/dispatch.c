@@ -218,6 +218,14 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_COSMO_FW_LOAD:     return do_cosmo_fw_load(a1, a2, a3);
     case SYS_COSMO_NIC_ATTACH:  return do_cosmo_nic_attach(a1);
     case SYS_COSMO_KEXEC:       return do_cosmo_kexec(a1, a2);
+    case SYS_COSMO_RT_QUERY: {
+        extern int rt_core_id(int);
+        extern int rt_is_current_rt(void);
+        /* a1=0: rt_is_current_rt(), a1=1: rt_core_id(a2) */
+        if (a1 == 0) return (long)rt_is_current_rt();
+        if (a1 == 1) return (long)rt_core_id((int)a2);
+        return -EINVAL;
+    }
 
     /* pselect6 / select → sys_event.c */
     case 270: /* SYS_PSELECT6 */

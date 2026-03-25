@@ -7,6 +7,7 @@
 #define COSMO_ARCH_X86_64_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* --- TLB / Address Space ------------------------------------------ */
 
@@ -116,6 +117,27 @@ static inline void arch_cli(void) {
 static inline void arch_mfence(void) {
     __asm__ volatile("mfence" ::: "memory");
 }
+
+/* Memory barriers for lock-free data structures.
+ * x86 TSO: stores are ordered, loads are ordered. Only need compiler barriers
+ * for store-release/load-acquire. Full barriers for special cases. */
+static inline void arch_wmb(void) { __asm__ volatile("" ::: "memory"); }  /* write barrier (compiler) */
+static inline void arch_rmb(void) { __asm__ volatile("" ::: "memory"); }  /* read barrier (compiler) */
+static inline void arch_mb(void)  { __asm__ volatile("mfence" ::: "memory"); }  /* full barrier */
+
+static inline void arch_store_release(volatile uint32_t *p, uint32_t v) {
+    __asm__ volatile("" ::: "memory");  /* compiler barrier before store */
+    *p = v;
+}
+static inline uint32_t arch_load_acquire(volatile uint32_t *p) {
+    uint32_t v = *p;
+    __asm__ volatile("" ::: "memory");  /* compiler barrier after load */
+    return v;
+}
+
+/* DMA cache coherency — x86 PCIe is cache-coherent, these are no-ops */
+static inline void arch_dma_sync_for_device(void *addr, size_t len) { (void)addr; (void)len; }
+static inline void arch_dma_sync_for_cpu(void *addr, size_t len) { (void)addr; (void)len; }
 
 /* --- TSC ---------------------------------------------------------- */
 
