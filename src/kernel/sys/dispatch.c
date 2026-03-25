@@ -49,8 +49,15 @@ static void dispatch_unhandled(long num, int pid) {
 
 /* ── Dispatcher ──────────────────────────────────── */
 
+/* CosmoRT-eigene Syscalls (0x10000+) — eigener Dispatch, kein Switch-Pollution */
+extern long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6);
+
 __attribute__((hot))
 static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    /* CosmoRT syscalls: separate dispatch for 0x10000+ range */
+    if (__builtin_expect(num >= 0x10000, 0))
+        return cosmo_dispatch(num, a1, a2, a3, a4, a5, a6);
+
     switch (num) {
 
     /* ── X-Macro generated cases ── */
@@ -203,57 +210,6 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_LISTXATTR: case SYS_LLISTXATTR: case SYS_FLISTXATTR:
     case SYS_REMOVEXATTR: case SYS_LREMOVEXATTR: case SYS_FREMOVEXATTR:
         return -ENODATA;
-
-    /* ── CosmoRT Hardware Primitives (for userspace drivers) ── */
-    case SYS_COSMO_MMIO_MAP:    return do_cosmo_mmio_map(a1, a2, a3);
-    case SYS_COSMO_DMA_ALLOC:   return do_cosmo_dma_alloc(a1, a2, a3);
-    case SYS_COSMO_DMA_FREE:    return do_cosmo_dma_free(a1, a2);
-    case SYS_COSMO_IRQ_REGISTER:return do_cosmo_irq_register(a1, a2, a3);
-    case SYS_COSMO_PCI_READ:    return do_cosmo_pci_read(a1, a2, a3, a4, a5);
-    case SYS_COSMO_PCI_WRITE:   return do_cosmo_pci_write(a1, a2, a3, a4, a5);
-    case SYS_COSMO_FW_LOAD:     return do_cosmo_fw_load(a1, a2, a3);
-    case SYS_COSMO_NIC_ATTACH:  return do_cosmo_nic_attach(a1);
-    case SYS_COSMO_KEXEC:       return do_cosmo_kexec(a1, a2);
-    case SYS_COSMO_RT_QUERY: {
-        extern int rt_core_id(int);
-        extern int rt_is_current_rt(void);
-        extern void rt_wake(int core_id);
-        /* a1=0: rt_is_current_rt(), a1=1: rt_core_id(a2), a1=2: rt_wake(a2)
-         * a1=3: rt_timer_request(a2=action, a3=ctx, a4=timeout_ms)
-         * a1=4: timer_wheel_cancel(a2=ctx)
-         * a1=5: timer_wheel_active_count()
-         * a1=6: rt_poll_test_install()
-         * a1=7: rt_poll_test_restore()
-         * a1=8: rt_poll_test_query(a2=sub, a3=prio) */
-        if (a1 == 0) return (long)rt_is_current_rt();
-        if (a1 == 1) return (long)rt_core_id((int)a2);
-        if (a1 == 2) { rt_wake((int)a2); return 0; }
-        if (a1 == 3) {
-            extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
-            return (long)rt_timer_request((uint8_t)a2, (void *)a3, (uint32_t)a4);
-        }
-        if (a1 == 4) {
-            extern int timer_wheel_cancel(void *ctx);
-            return (long)timer_wheel_cancel((void *)a2);
-        }
-        if (a1 == 5) {
-            extern int timer_wheel_active_count(void);
-            return (long)timer_wheel_active_count();
-        }
-        if (a1 == 6) {
-            extern int rt_poll_test_install(void);
-            return (long)rt_poll_test_install();
-        }
-        if (a1 == 7) {
-            extern int rt_poll_test_restore(void);
-            return (long)rt_poll_test_restore();
-        }
-        if (a1 == 8) {
-            extern int rt_poll_test_query(int sub, int prio);
-            return (long)rt_poll_test_query((int)a2, (int)a3);
-        }
-        return -EINVAL;
-    }
 
     default: {
         process_t *dp = proc_current();

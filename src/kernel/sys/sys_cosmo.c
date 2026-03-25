@@ -1,6 +1,8 @@
-/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers */
+/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers.
+ * Separate dispatch from Linux syscalls for clean jump-table generation. */
 
 #include "internal.h"
+#include "core/rt.h"
 
 #define HW_CAP_CHECK() do { \
     process_t *_p = proc_current(); \
@@ -67,4 +69,58 @@ long do_cosmo_kexec(long a1, long a2) {
     if (!user_ok(a1, (size_t)a2)) return -EFAULT;
     extern int do_kexec(const void *, size_t);
     return do_kexec((const void *)a1, (size_t)a2);
+}
+
+/* ── RT Query (subcommands via a1) ────────────────── */
+
+static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
+    switch (a1) {
+    case 0: return (long)rt_is_current_rt();
+    case 1: return (long)rt_core_id((int)a2);
+    case 2: rt_wake((int)a2); return 0;
+    case 3: {
+        extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
+        return (long)rt_timer_request((uint8_t)a2, (void *)a3, (uint32_t)a4);
+    }
+    case 4: {
+        extern int timer_wheel_cancel(void *ctx);
+        return (long)timer_wheel_cancel((void *)a2);
+    }
+    case 5: {
+        extern int timer_wheel_active_count(void);
+        return (long)timer_wheel_active_count();
+    }
+    case 6: {
+        extern int rt_poll_test_install(void);
+        return (long)rt_poll_test_install();
+    }
+    case 7: {
+        extern int rt_poll_test_restore(void);
+        return (long)rt_poll_test_restore();
+    }
+    case 8: {
+        extern int rt_poll_test_query(int sub, int prio);
+        return (long)rt_poll_test_query((int)a2, (int)a3);
+    }
+    default: return -EINVAL;
+    }
+}
+
+/* ── CosmoRT Syscall Dispatcher (0x10000+) ────────── */
+
+long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    (void)a6;
+    switch (num) {
+    case SYS_COSMO_MMIO_MAP:     return do_cosmo_mmio_map(a1, a2, a3);
+    case SYS_COSMO_DMA_ALLOC:    return do_cosmo_dma_alloc(a1, a2, a3);
+    case SYS_COSMO_DMA_FREE:     return do_cosmo_dma_free(a1, a2);
+    case SYS_COSMO_IRQ_REGISTER: return do_cosmo_irq_register(a1, a2, a3);
+    case SYS_COSMO_PCI_READ:     return do_cosmo_pci_read(a1, a2, a3, a4, a5);
+    case SYS_COSMO_PCI_WRITE:    return do_cosmo_pci_write(a1, a2, a3, a4, a5);
+    case SYS_COSMO_FW_LOAD:      return do_cosmo_fw_load(a1, a2, a3);
+    case SYS_COSMO_NIC_ATTACH:   return do_cosmo_nic_attach(a1);
+    case SYS_COSMO_KEXEC:        return do_cosmo_kexec(a1, a2);
+    case SYS_COSMO_RT_QUERY:     return do_cosmo_rt_query(a1, a2, a3, a4);
+    default:                     return -ENOSYS;
+    }
 }
