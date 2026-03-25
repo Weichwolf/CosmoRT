@@ -1,8 +1,8 @@
 /* CosmoRT VMA — AVL tree for per-process virtual memory areas */
 
-#include "vma.h"
-#include "slab.h"
-#include "serial.h"
+#include "mm/vma.h"
+#include "mm/slab.h"
+#include "hw/serial.h"
 
 #define VMA_MAX 8192  /* 384KB — mprotect splits multiply VMA count */
 static vma_t vma_pool[VMA_MAX];

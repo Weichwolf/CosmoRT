@@ -8,11 +8,11 @@
  * (255-byte keys), typical case ~100+ (short filenames).
  */
 
-#include "btree.h"
-#include "bcache.h"
+#include "fs/btree.h"
+#include "fs/bcache.h"
 #include "memops.h"
-#include "serial.h"
-#include "syscall.h"  /* ENOENT, ENOMEM */
+#include "hw/serial.h"
+#include "sys/syscall.h"  /* ENOENT, ENOMEM */
 
 /* Block allocator — provided by cosmofs */
 extern uint64_t cosmofs_block_alloc(void);

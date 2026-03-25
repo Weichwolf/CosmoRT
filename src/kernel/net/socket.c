@@ -1,17 +1,17 @@
 /* CosmoRT Socket Layer — maps POSIX socket syscalls to net_tcp_* */
 
-#include "socket.h"
-#include "process.h"
-#include "fd.h"
-#include "serial.h"
-#include "timer.h"
-#include "syscall.h"
+#include "net/socket.h"
+#include "proc/process.h"
+#include "event/fd.h"
+#include "hw/serial.h"
+#include "core/timer.h"
+#include "sys/syscall.h"
 #include "spinlock.h"
 #include "memops.h"
 #include "config.h"
-#include "percpu.h"
-#include "epoll.h"
-#include "arch.h"
+#include "core/percpu.h"
+#include "event/epoll.h"
+#include "arch/arch.h"
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {

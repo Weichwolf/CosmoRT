@@ -24,7 +24,7 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
            -Wall -Wextra -Werror -O2 -c \
-           -Iinclude/public -Iinclude/internal -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
+           -Iinclude/public -Iinclude/kernel -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
 
 # Drivers: only public headers (cosmo_rt.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
@@ -337,19 +337,19 @@ $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/crash $(BU
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
-	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
-	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
-	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
-	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
-	$(CC) $(UCFLAGS) -Iinclude/internal -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/user/ktest: $(KTEST_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_OBJ)
@@ -447,9 +447,9 @@ $(BUILD)/drivers/virtio/%.o: $(SRC)/drivers/virtio/%.c | $(BUILD)/drivers/virtio
 $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/pci -o $@ $<
 
-# Hyper-V drivers: need hyperv.h from internal/ (kernel-side MSR/SynIC defs)
+# Hyper-V drivers: need hyperv.h from kernel/ (kernel-side MSR/SynIC defs)
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
-	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/internal -Iinclude -o $@ $<
+	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
 # main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
 $(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core

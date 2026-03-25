@@ -5,8 +5,8 @@
  * No driver-specific code here.
  */
 
-#include "input.h"
-#include "serial.h"
+#include "vt/input.h"
+#include "hw/serial.h"
 
 /* EV_KEY from Linux input-event-codes.h */
 #define EV_KEY 0x01

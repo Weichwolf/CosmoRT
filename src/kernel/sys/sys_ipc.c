@@ -1,7 +1,7 @@
 /* CosmoRT Syscall Layer — pipe, fd_cleanup, fd_poll */
 
 #include "internal.h"
-#include "pty.h"
+#include "vt/pty.h"
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 

@@ -3,22 +3,22 @@
  * Blocking: hlt-loop with IRQ wakeup, same pattern as do_poll in socket.c.
  */
 
-#include "epoll.h"
-#include "syscall.h"
-#include "process.h"
-#include "percpu.h"
-#include "serial.h"
-#include "slab.h"
+#include "event/epoll.h"
+#include "sys/syscall.h"
+#include "proc/process.h"
+#include "core/percpu.h"
+#include "hw/serial.h"
+#include "mm/slab.h"
 #include "spinlock.h"
-#include "timer.h"
-#include "fd.h"
+#include "core/timer.h"
+#include "event/fd.h"
 #include "config.h"
 #include "memops.h"
-#include "net.h"
+#include "net/net.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ── Epoll internals ─────────────────────────────── */
 

@@ -12,10 +12,10 @@
  * to avoid circular dependency. Final block writes go through bcache.
  */
 
-#include "journal.h"
-#include "bcache.h"
+#include "fs/journal.h"
+#include "fs/bcache.h"
 #include "memops.h"
-#include "serial.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 
 /* Direct block I/O for journal writes (avoids bcache for journal area) */

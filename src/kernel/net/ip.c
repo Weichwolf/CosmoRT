@@ -2,9 +2,9 @@
  * Extracted from net.c (Phase C).
  */
 
-#include "ip.h"
-#include "net.h"
-#include "net_util.h"
+#include "net/ip.h"
+#include "net/net.h"
+#include "net/net_util.h"
 
 /* NIC driver access (defined in net.c) */
 extern const nic_driver_t *net_nic_get(void);

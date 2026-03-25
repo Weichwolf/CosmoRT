@@ -2,11 +2,11 @@
  * Extracted from net.c (Phase C).
  */
 
-#include "arp.h"
-#include "ip.h"
-#include "net.h"
-#include "net_util.h"
-#include "timer.h"
+#include "net/arp.h"
+#include "net/ip.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "core/timer.h"
 
 /* ── ARP Cache ─────────────────────────────────────── */
 

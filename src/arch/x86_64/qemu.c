@@ -1,7 +1,7 @@
 /* CosmoRT QEMU Platform Support — shutdown, reboot, detection */
 
-#include "arch.h"
-#include "serial.h"
+#include "arch/arch.h"
+#include "hw/serial.h"
 
 /* Try multiple ACPI shutdown methods.
  * QEMU i440FX: PM1a_CNT at 0x604

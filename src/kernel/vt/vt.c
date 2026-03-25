@@ -7,12 +7,12 @@
  * Font: glyph_cache from fb.c (bilinear-scaled at boot).
  */
 
-#include "vt.h"
-#include "pty.h"
-#include "fb.h"
-#include "serial.h"
+#include "vt/vt.h"
+#include "vt/pty.h"
+#include "vt/fb.h"
+#include "hw/serial.h"
 #include "memops.h"
-#include "page_alloc.h"
+#include "mm/page_alloc.h"
 #include "gen/font_atlas.h"
 
 #define VT_MAX 4

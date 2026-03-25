@@ -4,13 +4,13 @@
  * Global lock only for endpoint allocation (rare path).
  */
 
-#include "ipc.h"
-#include "process.h"
-#include "percpu.h"
-#include "serial.h"
+#include "ipc/ipc.h"
+#include "proc/process.h"
+#include "core/percpu.h"
+#include "hw/serial.h"
 #include "spinlock.h"
-#include "thread.h"
-#include "arch.h"
+#include "proc/thread.h"
+#include "arch/arch.h"
 
 extern void sched_add(thread_t *t);
 

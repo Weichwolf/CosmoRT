@@ -9,16 +9,16 @@
  * priority inversion per IEEE 1003.1b PTHREAD_PRIO_INHERIT.
  */
 
-#include "futex.h"
-#include "syscall.h"
-#include "thread.h"
-#include "process.h"
-#include "percpu.h"
+#include "ipc/futex.h"
+#include "sys/syscall.h"
+#include "proc/thread.h"
+#include "proc/process.h"
+#include "core/percpu.h"
 #include "spinlock.h"
-#include "slab.h"
-#include "serial.h"
+#include "mm/slab.h"
+#include "hw/serial.h"
 #include "config.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 extern void sched_add(thread_t *t);
 

@@ -2,10 +2,10 @@
  * Extracted from net.c (Phase B).
  */
 
-#include "net.h"
-#include "net_util.h"
-#include "serial.h"
-#include "timer.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "hw/serial.h"
+#include "core/timer.h"
 
 /* ── Per-Socket Table ──────────────────────────────── */
 

@@ -6,12 +6,12 @@
  */
 
 #include "config.h"
-#include "smp.h"
-#include "serial.h"
-#include "timer.h"
-#include "percpu.h"
+#include "core/smp.h"
+#include "hw/serial.h"
+#include "core/timer.h"
+#include "core/percpu.h"
 #include "memops.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* Trampoline binary (assembled from ap_trampoline.asm → flat binary → C header) */
 #include "gen/ap_trampoline_bin.h"

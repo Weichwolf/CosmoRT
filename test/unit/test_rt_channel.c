@@ -2,7 +2,7 @@
 
 /* rt_channel is header-only (static inline), include directly.
  * arch.h → arch/x86_64.h provides arch_store_release/arch_load_acquire. */
-#include "rt.h"
+#include "core/rt.h"
 
 static uint8_t chbuf[256] __attribute__((aligned(64)));
 

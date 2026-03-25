@@ -1,9 +1,9 @@
 /* Calibrated timer — uses TSC, calibrated against APIC timer.
  * Also reads CMOS RTC at boot for wall-clock epoch offset. */
 
-#include "timer.h"
-#include "serial.h"
-#include "arch.h"
+#include "core/timer.h"
+#include "hw/serial.h"
+#include "arch/arch.h"
 
 static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
 

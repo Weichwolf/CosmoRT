@@ -1,10 +1,10 @@
 /* CosmoRT eventfd — lightweight inter-thread signalling */
 
-#include "epoll.h"
-#include "process.h"
-#include "slab.h"
+#include "event/epoll.h"
+#include "proc/process.h"
+#include "mm/slab.h"
 #include "spinlock.h"
-#include "fd.h"
+#include "event/fd.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"

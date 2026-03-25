@@ -1,11 +1,11 @@
 /* CosmoRT timerfd — timer as file descriptor */
 
-#include "epoll.h"
-#include "process.h"
-#include "slab.h"
+#include "event/epoll.h"
+#include "proc/process.h"
+#include "mm/slab.h"
 #include "spinlock.h"
-#include "timer.h"
-#include "fd.h"
+#include "core/timer.h"
+#include "event/fd.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"

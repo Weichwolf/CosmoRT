@@ -1,9 +1,9 @@
 /* CosmoRT Block Cache — LRU with hash table lookup */
 
-#include "bcache.h"
-#include "page_alloc.h"
+#include "fs/bcache.h"
+#include "mm/page_alloc.h"
 #include "memops.h"
-#include "serial.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 
 /* Forward declarations for block driver */

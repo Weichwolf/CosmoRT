@@ -66,7 +66,7 @@ Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 - [x] serial_puts Debug-Ausgaben in tcp.c entfernt (8 Stellen)
 - [x] IP-Adress-Formatierung in tcp.c entfernt
 
-## RT/Compute Schnittstelle — include/internal/rt.h
+## RT/Compute Schnittstelle — include/kernel/core/rt.h
 
 Problem: Keine saubere Abstraktion zwischen RT-Core und Compute-Cores.
 Kommunikation laeuft ueber globale Queues mit Spinlocks.
@@ -165,6 +165,47 @@ RT-Core darf nie blockieren, nie Spinlock halten der Compute-Core gehoert.
 - [ ] test/net/test_net_tcp_transfer.c — HTTP GET, Body pruefen
 - [ ] test/net/test_net_tls.c — HTTPS via Node.js
 - [ ] test/net/test_net_npm_registry.c — HTTPS GET registry.npmjs.org
+
+## MM — Copy-on-Write fork()
+
+Problem: fork() deep-copied jede Seite (process.c:544-548). Node.js Worker-fork
+bei 500MB Heap = 500MB kopiert, auch wenn Child nur 2MB aendert.
+
+- [ ] COW-Bit im PTE: fork markiert alle User-Pages read-only in beiden Prozessen
+- [ ] Page-Fault-Handler: Schreibzugriff auf COW-Page → neue Page allozieren, kopieren, PTE writable
+- [ ] Refcount pro physische Page (page_alloc.h): fork incrementiert, munmap/exit decrementiert
+- [ ] fork() wird O(Page-Tables) statt O(Speicher): nur PTEs kopieren, nicht Daten
+- [ ] COW-sichere Kernel-Zugriffe: copy_from_user darf COW-Pages nicht triggern
+- [ ] test: fork + child write → eigene Page, parent unveraendert
+- [ ] test: fork ohne write → keine neuen Pages alloziert
+- [ ] test: exit nach fork → refcount korrekt decrementiert
+
+## MM — MADV_FREE (V8 Heap Management)
+
+Problem: V8 gibt Heap-Seiten mit madvise(MADV_FREE) zurueck. Kernel darf sie bei
+Speicherdruck recyclen, Prozess behaelt den VA-Range. Aktuell nur MADV_DONTNEED
+(zerstoert sofort), V8 braucht lazy reclaim.
+
+- [ ] VMA-Flag VM_LAZYFREE: Seiten als reclaimable markieren statt sofort freigeben
+- [ ] Page-Reclaim: unter Speicherdruck LAZYFREE-Seiten zuerst freigeben
+- [ ] Dirty-Check: LAZYFREE-Seite die erneut beschrieben wird verliert LAZYFREE-Status
+- [ ] MADV_FREE in do_madvise (sys_mem.c) implementieren
+- [ ] test: madvise(MADV_FREE) + erneuter Zugriff → Seite noch da (kein Druck)
+- [ ] test: madvise(MADV_FREE) + Speicherdruck → Seite weg, erneuter Zugriff → Zero-Page
+
+## MM — Transparent Huge Pages (2MB)
+
+Problem: 500MB Node.js Heap = 128.000 4KB-PTEs = TLB-Thrashing.
+2MB Huge Pages reduzieren auf ~250 PTEs.
+
+- [ ] 2MB-Page-Allocator (Buddy oder freelist fuer order-9 Pages)
+- [ ] PTE-Promotion: 512 zusammenhaengende 4KB-Pages mit gleichen Flags → 1 PMD-Entry (2MB)
+- [ ] Automatische Promotion bei mmap(MAP_ANONYMOUS) >= 2MB-aligned
+- [ ] Page-Fault auf 2MB-Page: direkt 2MB allozieren wenn alignment+size passen
+- [ ] Fallback auf 4KB wenn 2MB nicht verfuegbar (keine Fragmentierung)
+- [ ] COW-Interaktion: COW-Fault auf Huge Page → erst zu 4KB splitten, dann COW
+- [ ] test: mmap 4MB aligned → 2 Huge Pages in PMD
+- [ ] test: Huge Page + fork → COW split zu 4KB
 
 ## Offen (nicht Netzwerk)
 

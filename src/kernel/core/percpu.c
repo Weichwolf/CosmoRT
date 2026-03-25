@@ -1,10 +1,10 @@
 /* CosmoRT Per-CPU Data */
 
-#include "percpu.h"
-#include "serial.h"
-#include "smp.h"
+#include "core/percpu.h"
+#include "hw/serial.h"
+#include "core/smp.h"
 #include "config.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 percpu_t percpu_data[SMP_MAX_CORES];
 

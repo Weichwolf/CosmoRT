@@ -9,14 +9,14 @@
  * Each core has its own run queue + spinlock. No global lock.
  */
 
-#include "thread.h"
-#include "process.h"
-#include "percpu.h"
-#include "serial.h"
+#include "proc/thread.h"
+#include "proc/process.h"
+#include "core/percpu.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include "config.h"
-#include "smp.h"
-#include "arch.h"
+#include "core/smp.h"
+#include "arch/arch.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
 static uint8_t core_isolated[SMP_MAX_CORES];

@@ -5,9 +5,9 @@
  * No preemption between RT tasks (cooperative within RT pool).
  */
 
-#include "edf.h"
-#include "serial.h"
-#include "timer.h"
+#include "core/edf.h"
+#include "hw/serial.h"
+#include "core/timer.h"
 
 #define MAX_TASKS 16
 

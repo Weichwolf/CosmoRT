@@ -13,20 +13,20 @@
  *   7. Jump to trampoline → new kernel
  */
 
-#include "kexec.h"
+#include "hw/kexec.h"
 #include "config.h"
-#include "serial.h"
-#include "process.h"
-#include "smp.h"
+#include "hw/serial.h"
+#include "proc/process.h"
+#include "core/smp.h"
 #include "memops.h"
-#include "elf.h"
-#include "page_alloc.h"
+#include "proc/elf.h"
+#include "mm/page_alloc.h"
 #include "boot_info.h"
-#include "arch.h"
-#include "bcache.h"
-#include "journal.h"
-#include "syscall.h"
-#include "thread.h"
+#include "arch/arch.h"
+#include "fs/bcache.h"
+#include "fs/journal.h"
+#include "sys/syscall.h"
+#include "proc/thread.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"

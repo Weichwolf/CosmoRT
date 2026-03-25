@@ -5,15 +5,15 @@
  * All disk access through bcache. All metadata mutations through journal.
  */
 
-#include "cosmofs.h"
-#include "bcache.h"
-#include "btree.h"
-#include "journal.h"
+#include "fs/cosmofs.h"
+#include "fs/bcache.h"
+#include "fs/btree.h"
+#include "fs/journal.h"
 #include "memops.h"
-#include "serial.h"
+#include "hw/serial.h"
 #include "spinlock.h"
-#include "syscall.h"  /* error codes */
-#include "timer.h"
+#include "sys/syscall.h"  /* error codes */
+#include "core/timer.h"
 
 /* ── State ────────────────────────────────────────── */
 

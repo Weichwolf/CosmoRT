@@ -6,9 +6,9 @@
  *   Ctrl-A Ctrl-A  send literal Ctrl-A to PTY
  */
 
-#include "serial.h"
-#include "pty.h"
-#include "vt.h"
+#include "hw/serial.h"
+#include "vt/pty.h"
+#include "vt/vt.h"
 
 /* Which VT is attached to serial. -1 = detached (dmesg only). */
 static int serial_vt = 0;

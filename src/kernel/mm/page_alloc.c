@@ -6,8 +6,8 @@
  * Bitmap itself lives in first usable UEFI region — no static limits.
  */
 
-#include "page_alloc.h"
-#include "serial.h"
+#include "mm/page_alloc.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
 #include "config.h"

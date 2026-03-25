@@ -6,9 +6,9 @@
 #include <stddef.h>
 #include "config.h"
 #include "spinlock.h"
-#include "thread.h"
-#include "fd.h"
-#include "vma.h"
+#include "proc/thread.h"
+#include "event/fd.h"
+#include "mm/vma.h"
 
 /* k_sigaction, SA_* flags — from linux.h (via syscall.h) */
 

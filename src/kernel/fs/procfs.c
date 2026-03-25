@@ -4,11 +4,11 @@
  * Max 32 entries, static allocation, no dynamic memory.
  */
 
-#include "procfs.h"
-#include "serial.h"
-#include "page_alloc.h"
-#include "smp.h"
-#include "timer.h"
+#include "fs/procfs.h"
+#include "hw/serial.h"
+#include "mm/page_alloc.h"
+#include "core/smp.h"
+#include "core/timer.h"
 
 /* ── Entry table ─────────────────────────────────── */
 
@@ -182,8 +182,8 @@ static int procfs_cpuinfo(char *buf, int size, int offset, void *ctx) {
 
 /* ── /proc/self/maps ────────────────────────────── */
 
-#include "vma.h"
-#include "process.h"
+#include "mm/vma.h"
+#include "proc/process.h"
 
 /* Hex helper: append 64-bit hex (no leading zeros stripped — always 12 hex chars for compactness) */
 static int append_hex(char *buf, int pos, int max, uint64_t v) {

@@ -2,11 +2,11 @@
  * Extracted from net.c (Phase A).
  */
 
-#include "tcp.h"
-#include "net.h"
-#include "net_util.h"
-#include "timer.h"
-#include "page_alloc.h"
+#include "net/tcp.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "core/timer.h"
+#include "mm/page_alloc.h"
 
 /* ── Ringbuffer ────────────────────────────────────── */
 

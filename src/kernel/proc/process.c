@@ -4,22 +4,22 @@
  * Scheduler operates on threads, not processes.
  */
 
-#include "process.h"
-#include "paging.h"
-#include "serial.h"
-#include "page_alloc.h"
-#include "slab.h"
-#include "elf.h"
-#include "percpu.h"
+#include "proc/process.h"
+#include "mm/paging.h"
+#include "hw/serial.h"
+#include "mm/page_alloc.h"
+#include "mm/slab.h"
+#include "proc/elf.h"
+#include "core/percpu.h"
 #include "config.h"
-#include "vma.h"
-#include "vfs.h"
-#include "cosmofs.h"
+#include "mm/vma.h"
+#include "fs/vfs.h"
+#include "fs/cosmofs.h"
 #include "memops.h"
-#include "syscall.h"
-#include "irq.h"
-#include "socket.h"
-#include "arch.h"
+#include "sys/syscall.h"
+#include "core/irq.h"
+#include "net/socket.h"
+#include "arch/arch.h"
 
 /* Page table flags */
 #define PTE_PRESENT (1ULL << 0)

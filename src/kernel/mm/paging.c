@@ -5,10 +5,10 @@
  * PD pages are static (8MB BSS for 2TB — no dynamic allocation needed).
  */
 
-#include "paging.h"
-#include "serial.h"
+#include "mm/paging.h"
+#include "hw/serial.h"
 #include "config.h"
-#include "arch.h"
+#include "arch/arch.h"
 #include <stdint.h>
 
 extern uint64_t pml4[];

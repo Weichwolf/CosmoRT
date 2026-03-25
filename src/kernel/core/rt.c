@@ -4,8 +4,8 @@
  * Compute-Cores = Core 1..N, run userspace exclusively.
  */
 
-#include "rt.h"
-#include "smp.h"
+#include "core/rt.h"
+#include "core/smp.h"
 
 int rt_core_id(int index) {
     if (index < 0 || index >= RT_CORE_COUNT) return -1;

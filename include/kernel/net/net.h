@@ -12,7 +12,7 @@
 #include "cosmo_rt.h"
 
 /* TCP types and API */
-#include "tcp.h"
+#include "net/tcp.h"
 
 /* Initialize network state. Requires a NIC to be registered first.
  * Returns 0 on success, -1 if no NIC registered. */
@@ -22,10 +22,10 @@ int net_init(void);
 const nic_driver_t *net_nic_get(void);
 
 /* DHCP (dhcp.c) */
-#include "dhcp.h"
+#include "net/dhcp.h"
 
 /* DNS (dns.c) */
-#include "dns.h"
+#include "net/dns.h"
 
 /* Polling — call from idle loop and timer interrupt */
 void net_poll(void);
@@ -74,7 +74,7 @@ extern pkt_queue_t q_arp;
 extern pkt_queue_t q_icmp;
 
 /* UDP types and API (needs pkt_queue_t) */
-#include "udp.h"
+#include "net/udp.h"
 
 /* Network state */
 typedef struct {

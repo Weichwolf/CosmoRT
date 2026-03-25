@@ -2,9 +2,9 @@
  * Extracted from net.c (Phase C).
  */
 
-#include "net.h"
-#include "net_util.h"
-#include "arp.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "net/arp.h"
 
 /* Forward declarations */
 extern void tcp_input(const uint8_t *pkt, int len);

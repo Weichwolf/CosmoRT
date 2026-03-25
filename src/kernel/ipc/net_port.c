@@ -5,12 +5,12 @@
  * is in-kernel (e1000) or userspace (via this port).
  */
 
-#include "net_port.h"
-#include "net.h"
+#include "net/net_port.h"
+#include "net/net.h"
 #include "config.h"
-#include "serial.h"
-#include "process.h"
-#include "percpu.h"
+#include "hw/serial.h"
+#include "proc/process.h"
+#include "core/percpu.h"
 
 static struct net_port port;
 

@@ -4,15 +4,15 @@
  * read drains own buffer, write fills peer's buffer.
  * Named sockets: bind to path, listen, accept, connect. */
 
-#include "unix_socket.h"
-#include "process.h"
-#include "fd.h"
-#include "serial.h"
+#include "net/unix_socket.h"
+#include "proc/process.h"
+#include "event/fd.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
-#include "syscall.h"
+#include "sys/syscall.h"
 #include "cosmo_rt.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ── Pool ─────────────────────────────────────── */
 

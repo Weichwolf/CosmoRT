@@ -1,10 +1,10 @@
 /* CosmoRT PTY — pseudo-terminal pairs with line discipline */
 
-#include "pty.h"
+#include "vt/pty.h"
 #include "memops.h"
-#include "serial.h"
-#include "process.h"
-#include "thread.h"
+#include "hw/serial.h"
+#include "proc/process.h"
+#include "proc/thread.h"
 
 _Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
                "PTY_LINE_MAX must match line_buf array size");

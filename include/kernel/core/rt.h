@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ── RT-Core identification ──────────────────────── */
 

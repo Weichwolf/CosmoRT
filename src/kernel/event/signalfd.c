@@ -6,7 +6,7 @@
  * sigaction/sigwaitinfo. Node.js does not require signalfd.
  */
 
-#include "epoll.h"
+#include "event/epoll.h"
 
 long do_signalfd4(int fd, const uint64_t *mask, int flags) {
     (void)fd; (void)mask; (void)flags;

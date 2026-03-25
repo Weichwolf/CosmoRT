@@ -4,10 +4,10 @@
  * via serial_dmesg_read() — no VFS writes, no file I/O from serial.
  */
 
-#include "serial.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include <stdint.h>
-#include "arch.h"
+#include "arch/arch.h"
 
 #define COM1 0x3F8
 

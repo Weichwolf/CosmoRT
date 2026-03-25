@@ -5,14 +5,14 @@
  *              extracts PT_INTERP path, returns metadata for auxv
  */
 
-#include "elf.h"
-#include "process.h"
-#include "serial.h"
+#include "proc/elf.h"
+#include "proc/process.h"
+#include "hw/serial.h"
 #include "config.h"
-#include "page_alloc.h"
+#include "mm/page_alloc.h"
 #include "memops.h"
-#include "cosmofs.h"
-#include "arch.h"
+#include "fs/cosmofs.h"
+#include "arch/arch.h"
 
 /* CSPRNG for ASLR base address selection */
 static uint64_t elf_aslr_rand(void) {

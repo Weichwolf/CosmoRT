@@ -10,15 +10,15 @@
 #include "cosmo_rt.h"
 #include "linux/abi.h"
 #include "config.h"
-#include "page_alloc.h"
-#include "paging.h"
-#include "irq.h"
-#include "process.h"
-#include "vma.h"
-#include "serial.h"
+#include "mm/page_alloc.h"
+#include "mm/paging.h"
+#include "core/irq.h"
+#include "proc/process.h"
+#include "mm/vma.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ── MMIO Mapping ────────────────────────────────── */
 

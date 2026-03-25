@@ -9,11 +9,11 @@
  * Render: fb_blit_glyph() alpha-composites a cached glyph onto the FB.
  */
 
-#include "fb.h"
+#include "vt/fb.h"
 #include "boot_info.h"
 #include "config.h"
-#include "serial.h"
-#include "page_alloc.h"
+#include "hw/serial.h"
+#include "mm/page_alloc.h"
 #include "memops.h"
 #include "gen/font_atlas.h"
 

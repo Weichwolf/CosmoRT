@@ -4,16 +4,16 @@
  * On non-Hyper-V systems, hyperv_detect() returns 0 and nothing else runs.
  */
 
-#include "hyperv.h"
+#include "hw/hyperv.h"
 #include "cosmo_rt.h"
 #include "config.h"
-#include "page_alloc.h"
-#include "paging.h"
-#include "irq.h"
-#include "serial.h"
+#include "mm/page_alloc.h"
+#include "mm/paging.h"
+#include "core/irq.h"
+#include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ---- MSR helpers ---- */
 

@@ -1,18 +1,18 @@
 /* CosmoRT VFS — filesystem dispatch (ramfs + CosmoFS) */
 
-#include "vfs.h"
-#include "cosmofs.h"
-#include "bcache.h"
-#include "fd.h"
-#include "process.h"
-#include "percpu.h"
-#include "slab.h"
-#include "serial.h"
-#include "page_alloc.h"
+#include "fs/vfs.h"
+#include "fs/cosmofs.h"
+#include "fs/bcache.h"
+#include "event/fd.h"
+#include "proc/process.h"
+#include "core/percpu.h"
+#include "mm/slab.h"
+#include "hw/serial.h"
+#include "mm/page_alloc.h"
 #include "memops.h"
-#include "syscall.h"
-#include "procfs.h"
-#include "epoll.h"
+#include "sys/syscall.h"
+#include "fs/procfs.h"
+#include "event/epoll.h"
 
 /* ── Slab pools ──────────────────────────────────── */
 

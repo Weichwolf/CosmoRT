@@ -2,9 +2,9 @@
  * Protocol modules: tcp.c, udp.c, dispatch.c, arp.c, ip.c, dns.c, dhcp.c.
  */
 
-#include "net.h"
-#include "net_util.h"
-#include "serial.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "hw/serial.h"
 
 /* ── NIC Registration ──────────────────────────────── */
 

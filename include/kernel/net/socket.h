@@ -2,7 +2,7 @@
 #ifndef SOCKET_H
 #define SOCKET_H
 
-#include "net.h"
+#include "net/net.h"
 
 #define MAX_SOCKETS NET_MAX_SOCKETS
 
@@ -84,6 +84,6 @@ long socket_write(int fd, const void *buf, long count);
 long socket_close(int fd);
 
 /* AF_UNIX sockets */
-#include "unix_socket.h"
+#include "net/unix_socket.h"
 
 #endif

@@ -1,17 +1,17 @@
 /* CosmoRT Interrupt handling — APIC + IDT, thread-aware */
 
-#include "irq.h"
-#include "serial.h"
-#include "thread.h"
-#include "process.h"
-#include "percpu.h"
-#include "syscall.h"
+#include "core/irq.h"
+#include "hw/serial.h"
+#include "proc/thread.h"
+#include "proc/process.h"
+#include "core/percpu.h"
+#include "sys/syscall.h"
 #include "config.h"
-#include "vma.h"
-#include "page_alloc.h"
-#include "smp.h"
+#include "mm/vma.h"
+#include "mm/page_alloc.h"
+#include "core/smp.h"
 #include "spinlock.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 

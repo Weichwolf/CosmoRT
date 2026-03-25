@@ -1,7 +1,7 @@
 /* CosmoRT Memory Operations */
 
 #include "memops.h"
-#include "arch.h"
+#include "arch/arch.h"
 
 int memops_has_erms   = 0;
 int memops_has_avx2   = 0;

@@ -2,11 +2,11 @@
  * Extracted from net.c (Phase D1).
  */
 
-#include "dhcp.h"
-#include "net.h"
-#include "net_util.h"
-#include "ip.h"
-#include "timer.h"
+#include "net/dhcp.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "net/ip.h"
+#include "core/timer.h"
 
 static uint32_t dhcp_saved_xid;
 

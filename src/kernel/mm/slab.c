@@ -1,8 +1,8 @@
 /* CosmoRT Slab Allocator */
 
-#include "slab.h"
+#include "mm/slab.h"
 #include "memops.h"
-#include "serial.h"
+#include "hw/serial.h"
 
 void slab_init(slab_t *s, void *pool, int obj_size, int count) {
     s->obj_size = obj_size < 8 ? 8 : obj_size;

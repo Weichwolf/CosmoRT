@@ -5,10 +5,10 @@
  */
 
 #include <stdint.h>
-#include "serial.h"
+#include "hw/serial.h"
 #include "config.h"
-#include "smp.h"
-#include "arch.h"
+#include "core/smp.h"
+#include "arch/arch.h"
 
 /* TSS with I/O Permission Bitmap */
 #define IOPB_SIZE 8193

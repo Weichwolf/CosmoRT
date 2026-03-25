@@ -10,15 +10,31 @@ include/public/
   cosmo_rt.h   Treiber-API: 5 HW-Primitives, NIC/Block Registration.
   cosmo_ui.h   CosmoUI-API: Display, Audio, Input, Power (Stubs).
 
-include/internal/
-  linux.h      Linux x86_64 ABI (Syscalls, Structs, Errno). Nur Kernel + libc.
-  process.h, sched.h, vma.h, ... (alle Kernel-Interna)
+include/kernel/
+  core/       sched.h, edf.h, percpu.h, smp.h, timer.h, irq.h, rt.h
+  mm/         vma.h, paging.h, page_alloc.h, slab.h
+  proc/       process.h, thread.h, elf.h
+  sys/        syscall.h
+  ipc/        futex.h, ipc.h
+  fs/         vfs.h, cosmofs.h, procfs.h, bcache.h, btree.h, journal.h
+  net/        net.h, socket.h, unix_socket.h, tcp.h, udp.h, arp.h, ip.h, dns.h, dhcp.h, net_port.h, net_util.h
+  event/      epoll.h, fd.h
+  vt/         vt.h, pty.h, fb.h, input.h
+  hw/         serial.h, kexec.h, hyperv.h
+  arch/       arch.h, x86_64.h
+  config.h, spinlock.h, uaccess.h, memops.h, random.h, ring.h, boot_info.h
+
+include/linux/
+  abi.h        Linux x86_64 ABI Master-Include
+  syscall.h, errno.h, types.h, ... (ABI-Konstanten)
 ```
 
+Includes verwenden Subsystem-Pfade: `#include "proc/process.h"`, `#include "core/sched.h"`.
+
 Sichtbarkeit:
-- Kernel-Code: -Iinclude/public -Iinclude/internal (beides)
-- Treiber: -Iinclude/public (kein internal!)
-- Tests (ktest): -Iinclude/public -Iinclude/internal (braucht linux.h)
+- Kernel-Code: -Iinclude/public -Iinclude/kernel -Iinclude (alles)
+- Treiber: -Iinclude/public (kein kernel!)
+- Tests (ktest): -Iinclude/public -Iinclude/kernel -Iinclude -Itest
 - Userspace: -Iinclude/public
 
 Kein Consumer braucht mehr als eine Datei:
@@ -93,7 +109,7 @@ CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
 ```
 include/
   public/        cosmo_rt.h (Treiber-API), cosmo_ui.h (CosmoUI-API)
-  internal/      linux.h (ABI), process.h, sched.h, vma.h, ... (Kernel-Interna)
+  kernel/        Kernel-Interna (Subsystem-Spiegel: core/, mm/, proc/, net/, ...)
 src/kernel/
   core/          main, irq, sched, timer, smp, tss, percpu
   mm/            page_alloc, paging, vma, slab, random

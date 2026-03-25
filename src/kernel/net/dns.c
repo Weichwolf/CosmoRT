@@ -2,12 +2,12 @@
  * Extracted from net.c (Phase D1).
  */
 
-#include "dns.h"
-#include "net.h"
-#include "net_util.h"
-#include "ip.h"
-#include "arp.h"
-#include "timer.h"
+#include "net/dns.h"
+#include "net/net.h"
+#include "net/net_util.h"
+#include "net/ip.h"
+#include "net/arp.h"
+#include "core/timer.h"
 
 uint16_t dns_local_port = 0;
 
