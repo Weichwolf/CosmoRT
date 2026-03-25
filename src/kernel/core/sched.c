@@ -16,6 +16,7 @@
 #include "spinlock.h"
 #include "config.h"
 #include "core/smp.h"
+#include "core/rt.h"
 #include "arch/arch.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
@@ -153,17 +154,22 @@ void sched_add(thread_t *t) {
 
     spin_unlock_irq(&core_rq[cpu].lock, flags);
 
-    /* Send wakeup IPI if thread was enqueued on a different core.
-     * This breaks the target core out of hlt immediately instead of
-     * waiting for the next timer tick (~100ms). Critical for latency-
+    /* Send reschedule IPI if thread was enqueued on a different core.
+     * Breaks hlt + sets need_resched on target. Critical for latency-
      * sensitive paths like epoll_wait → recvfrom (c-ares DNS). */
     int self = percpu_self()->core_id;
-    if (cpu != self && cpu < smp_num_cores()) {
-        volatile uint32_t *icr_hi = (volatile uint32_t *)(0xFEE00310ULL + PHYS_OFFSET);
-        volatile uint32_t *icr_lo = (volatile uint32_t *)(0xFEE00300ULL + PHYS_OFFSET);
-        *icr_hi = ((uint32_t)cpu << 24);
-        *icr_lo = 0x4000 | 0xFD;  /* Fixed delivery, vector 0xFD */
-    }
+    if (cpu != self && cpu < smp_num_cores())
+        rt_wake(cpu);
+}
+
+/* Wake a blocked/sleeping thread. IRQ-safe.
+ * Sets THREAD_RUNNABLE, enqueues in run queue, sends IPI if remote core. */
+void sched_wake(thread_t *t) {
+    if (!t) return;
+    /* Only wake threads that are actually blocked/sleeping */
+    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
+    if (old != THREAD_BLOCKED) return;
+    sched_add(t);
 }
 
 /* Remove and return highest-priority runnable thread from current core */
@@ -458,10 +464,14 @@ void sched_loop_once(void) {
 
 void sched_loop(void) {
     int core = percpu_self()->core_id;
+    percpu_t *cpu = percpu_self();
     extern void tss_set_rsp0(uint64_t rsp0);
     (void)core;
 
     for (;;) {
+        /* Clear reschedule flag (set by IPI handler) */
+        cpu->need_resched = 0;
+
         thread_t *next = sched_pick();
         if (next) {
             thread_run(next);
@@ -471,7 +481,7 @@ void sched_loop(void) {
             uint64_t idle_top = (uint64_t)(uintptr_t)
                 (idle_stacks[core] + sizeof(idle_stacks[core]));
             tss_set_rsp0(idle_top);
-            percpu_self()->kernel_rsp = idle_top;
+            cpu->kernel_rsp = idle_top;
             arch_halt();
         }
     }

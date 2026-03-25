@@ -221,9 +221,11 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_COSMO_RT_QUERY: {
         extern int rt_core_id(int);
         extern int rt_is_current_rt(void);
-        /* a1=0: rt_is_current_rt(), a1=1: rt_core_id(a2) */
+        extern void rt_wake(int core_id);
+        /* a1=0: rt_is_current_rt(), a1=1: rt_core_id(a2), a1=2: rt_wake(a2) */
         if (a1 == 0) return (long)rt_is_current_rt();
         if (a1 == 1) return (long)rt_core_id((int)a2);
+        if (a1 == 2) { rt_wake((int)a2); return 0; }
         return -EINVAL;
     }
 

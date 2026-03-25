@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 509 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 516 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -87,11 +87,11 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 
 ### RT/Compute-B: IPI + Wake
 
-- [ ] rt_wake(int core_id) — IPI an Ziel-Core senden
-- [ ] sched_wake(thread_t *t) — markiert Thread runnable, sendet IPI falls anderer Core
-- [ ] IPI-Handler auf Compute-Core: Scheduler-Reschedule ausloesen
-- [ ] test: rt_wake IPI kommt an
-- [ ] test: sched_wake weckt schlafenden Thread auf anderem Core
+- [x] rt_wake(int core_id) — IPI an Ziel-Core senden
+- [x] sched_wake(thread_t *t) — markiert Thread runnable, sendet IPI falls anderer Core
+- [x] IPI-Handler auf Compute-Core: Scheduler-Reschedule ausloesen
+- [x] test: rt_wake IPI kommt an
+- [x] test: sched_wake weckt schlafenden Thread auf anderem Core
 
 ### RT/Compute-C: TX-Ring (Compute→RT fuer Netzwerk-TX)
 

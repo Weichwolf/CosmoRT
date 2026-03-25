@@ -22,6 +22,18 @@
 int  rt_core_id(int index);      /* physical core ID of RT-Core N (index 0 -> Core 0) */
 int  rt_is_current_rt(void);     /* 1 if current core is an RT-Core */
 
+/* ── IPI Wake ────────────────────────────────────── */
+
+/* Send reschedule IPI to a specific core. Breaks hlt, sets need_resched.
+ * Fire-and-forget, safe from IRQ context (RT-Core never blocks). */
+void rt_wake(int core_id);
+
+/* Wake a blocked/sleeping thread. Sets THREAD_RUNNABLE, enqueues in
+ * target core's run queue, sends IPI if on different core.
+ * IRQ-safe (can be called from IRQ handlers on RT-Core). */
+struct thread;
+void sched_wake(struct thread *t);
+
 /* ── SPSC Lock-free Ringbuffer ───────────────────── */
 
 typedef struct {

@@ -548,6 +548,13 @@ static void timer_handler(int vector) {
 
 uint64_t irq_get_ticks(void) { return tick_count; }
 
+/* ── Reschedule IPI ────────────────────────────────── */
+
+static void resched_ipi_handler(int vector) {
+    (void)vector;
+    percpu_self()->need_resched = 1;
+}
+
 /* ── Init ──────────────────────────────────────────── */
 
 __attribute__((cold))
@@ -568,8 +575,9 @@ void irq_init(void) {
     /* TLB shootdown IPI vector */
     irq_register(0xFE, tlb_shootdown_handler);
 
-    /* Wakeup IPI (0xFD): no handler needed, just breaks hlt on target core.
-     * The ISR stub runs, irq_dispatch does lapic_eoi, returns → iretq. */
+    /* Reschedule IPI (0xFD): sets need_resched flag on target core.
+     * Breaks hlt + triggers reschedule on next sched_loop iteration. */
+    irq_register(0xFD, resched_ipi_handler);
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);

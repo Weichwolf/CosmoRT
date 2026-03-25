@@ -189,3 +189,15 @@ int smp_core_id(void) {
     volatile uint32_t *lapic_id = (volatile uint32_t *)LAPIC_ID;
     return (int)((*lapic_id >> 24) & 0xFF);
 }
+
+/* Send reschedule IPI (vector 0xFD) to a specific core.
+ * Fire-and-forget: APIC write, no ACK wait, no locks.
+ * Safe from any context (IRQ, kernel, RT-Core). */
+void rt_wake(int core_id) {
+    if (core_id < 0 || core_id >= SMP_MAX_CORES) return;
+    if (!core_alive[core_id]) return;
+    volatile uint32_t *icr_hi = (volatile uint32_t *)LAPIC_ICR_HI;
+    volatile uint32_t *icr_lo = (volatile uint32_t *)LAPIC_ICR_LO;
+    *icr_hi = ((uint32_t)core_id << 24);
+    *icr_lo = 0x4000 | 0xFD;  /* Fixed delivery, vector 0xFD */
+}
