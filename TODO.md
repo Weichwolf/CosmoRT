@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 444 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 456 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -33,9 +33,9 @@ Netzwerk-Stack v2 Architektur: siehe notes/NETWORK.md
 
 ## Net Phase B — udp.c extrahieren
 
-- [ ] UDP-Code aus net.c → udp.c
-- [ ] Per-Socket Demux statt globale q_udp_sock
-- [ ] test/net/test_net_udp_echo.c
+- [x] UDP-Code aus net.c → udp.c
+- [x] Per-Socket Demux statt globale q_udp_sock
+- [x] test/unit/net/test_net_udp_echo.c
 
 ## Net Phase C — dispatch.c + arp.c + ip.c
 
