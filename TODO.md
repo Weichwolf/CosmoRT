@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 559 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 579 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -168,11 +168,10 @@ unbenutzbar.
 
 ### Skal-B: TCP Hash-Tabelle (HOCH)
 
-- [ ] tcp_hash[]: Chaining statt 1-Slot-per-Bucket (Kollision ueberschreibt!)
-- [ ] Linked-List pro Bucket oder Open Addressing
-- [ ] Hash-Tabelle vergroessern (256+ Buckets)
-- [ ] NET_TCP_MAX erhoehen (32 → 256+)
-- [ ] test: 64+ gleichzeitige TCP-Connections ohne Kollision
+- [x] tcp_hash[]: Chaining statt 1-Slot-per-Bucket (Linked-List pro Bucket)
+- [x] Hash-Tabelle vergroessert (256 Buckets)
+- [x] NET_TCP_MAX erhoehen (256)
+- [x] test: 8 gleichzeitige TCP-Connections, Kollisions-Resilience, Unregister
 
 ### Skal-C: UDP Socket-Tabelle (MITTEL)
 

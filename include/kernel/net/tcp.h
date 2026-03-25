@@ -10,7 +10,7 @@ struct thread; /* forward declaration for wait_thread */
 
 /* ── Config ────────────────────────────────────────── */
 
-#define NET_TCP_MAX       32
+#define NET_TCP_MAX       256
 #define NET_TCP_OOO_SLOTS 4
 
 /* ── TCP States (RFC 793) ─────────────────────────── */
@@ -70,6 +70,9 @@ typedef struct net_tcp {
 
     /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
     struct thread *wait_thread;
+
+    /* Hash-table chaining (tcp_hash bucket linked list) */
+    struct net_tcp *hash_next;
 } net_tcp_t;
 
 /* ── TCP Hash Table ───────────────────────────────── */

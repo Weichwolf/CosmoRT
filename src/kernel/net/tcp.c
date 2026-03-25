@@ -77,7 +77,7 @@ int rxring_pop(tcp_rxring_t *r, void *buf, int len) {
 
 /* ── TCP Hash Table ────────────────────────────────── */
 
-#define TCP_HASH_SIZE 64  /* must be power of 2 */
+#define TCP_HASH_SIZE 256  /* must be power of 2 */
 
 static net_tcp_t *tcp_hash[TCP_HASH_SIZE];
 static spinlock_t tcp_hash_lock = SPINLOCK_INIT;
@@ -94,7 +94,8 @@ void tcp_register(net_tcp_t *c) {
     uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
-    tcp_hash[idx] = c;  /* simple: one slot per bucket, last wins */
+    c->hash_next = tcp_hash[idx];
+    tcp_hash[idx] = c;
     spin_unlock_irq(&tcp_hash_lock, flags);
 }
 
@@ -102,14 +103,29 @@ void tcp_unregister(net_tcp_t *c) {
     uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
-    if (tcp_hash[idx] == c)
-        tcp_hash[idx] = 0;
+    net_tcp_t **pp = &tcp_hash[idx];
+    while (*pp) {
+        if (*pp == c) {
+            *pp = c->hash_next;
+            c->hash_next = 0;
+            break;
+        }
+        pp = &(*pp)->hash_next;
+    }
     spin_unlock_irq(&tcp_hash_lock, flags);
 }
 
 net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *src_ip) {
     uint32_t idx = tcp_hash_fn(local_port, remote_port, src_ip);
-    return __atomic_load_n(&tcp_hash[idx], __ATOMIC_ACQUIRE);
+    net_tcp_t *c = __atomic_load_n(&tcp_hash[idx], __ATOMIC_ACQUIRE);
+    while (c) {
+        if (c->local_port == local_port && c->remote_port == remote_port &&
+            c->dst_ip[0] == src_ip[0] && c->dst_ip[1] == src_ip[1] &&
+            c->dst_ip[2] == src_ip[2] && c->dst_ip[3] == src_ip[3])
+            return c;
+        c = c->hash_next;
+    }
+    return 0;
 }
 
 /* ── TCP Checksum ──────────────────────────────────── */
