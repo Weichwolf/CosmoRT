@@ -288,10 +288,12 @@ cat von 1000 Zeilen = 1000 Full-Repaints.
 Problem: Hardcoded US-QWERTY. Kein QWERTZ, kein AltGr, keine Umlaute.
 @ { } [ ] | \ ~ gehen auf DE-Layout nicht. Blocker fuer deutsche Nutzer.
 
-- [ ] Keymap-Struct: normal[256], shifted[256], altgr[256] (AltGr = Level 3)
+- [ ] Keymap-Binaerformat: Header + 3×256 uint32_t (normal, shifted, altgr) = 3KB
+- [ ] tools/mkkeymap.py: generiert .keymap Dateien
+- [ ] Keymaps auf CosmoFS: /lib/keymaps/us.keymap, de.keymap, fr.keymap, ...
+- [ ] Kernel laedt Keymap aus /lib/keymaps/ beim Boot (config: keymap = de)
 - [ ] AltGr-Erkennung: Right-Alt als Level-3-Modifier
-- [ ] DE-QWERTZ Keymap: z/y getauscht, Umlaute, AltGr fuer @ { } [ ] | \ ~
-- [ ] Keymap-Auswahl: Compile-Time oder Boot-Parameter (COSMO_KEYMAP=de)
+- [ ] Fallback: eingebettete US-Minimal-Keymap wenn /lib/keymaps/ nicht verfuegbar
 - [ ] Dead-Keys fuer Akzente (optional, niedrige Prio)
 - [ ] test: AltGr+Q → @ auf DE-Layout
 
@@ -304,6 +306,27 @@ Ohne das ueberschreiben sie den normalen Screen.
 - [ ] CSI ?1049h: Wechsel zu Alternate Screen, Cursor save
 - [ ] CSI ?1049l: Zurueck zum normalen Screen, Cursor restore
 - [ ] test: Alternate Screen Switch + Restore
+
+## Boot-Config — /etc/cosmo.conf
+
+Problem: Keine Konfiguration. Keymap, VT-Farben, Startup-Apps, Netzwerk
+sind hardcoded oder gar nicht konfigurierbar.
+
+Zwei Quellen: Kernel Command-Line (Recovery) + /etc/cosmo.conf (normal).
+Command-Line ueberschreibt Config-Datei.
+
+- [ ] config_parse.h: config_load(path), config_get(key), config_get_int(key, default)
+- [ ] Parser: key = value Format, # Kommentare, ~100 Zeilen
+- [ ] Statisches Entry-Array (64 Eintraege)
+- [ ] Boot-Reihenfolge: VFS init → CosmoFS mount → config_load → Keymap → VT → Netzwerk
+- [ ] Unterstuetzte Keys:
+      keymap (de/us/fr/...), vt.color (amber/green/white),
+      vt.font (/lib/fonts/...), vt.scrollback (Zeilen),
+      vt.0..vt.3 (Startup-Programm pro VT),
+      net.hostname, net.dns,
+      smp.cores (auto/N)
+- [ ] Kernel Command-Line Parsing aus UEFI Boot Services (Fallback)
+- [ ] test: config_get nach config_load
 
 ## Job Control — bash/Shell-Interaktion
 
