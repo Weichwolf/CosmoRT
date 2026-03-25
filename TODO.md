@@ -206,6 +206,31 @@ unbenutzbar.
 - [ ] FD_MAX erhoehen (256 → 1024) oder dynamisch
 - [ ] test: 512+ offene FDs pro Prozess
 
+## VT — Font-Rendering optimieren
+
+### Font-A: Zweistufiger Glyph-Lookup
+
+Problem: cp_to_glyph() macht binaere Suche ueber 1546 Eintraege bei jedem Zeichen.
+99% der Terminal-Ausgabe ist ASCII/Latin-1 (U+0000–U+00FF).
+
+- [ ] glyph_fast[256]: Direct-Map Array fuer U+0000–U+00FF → O(1), zero Branches
+- [ ] cp_to_glyph_slow(): binaere Suche nur fuer U+0100+ (Cold-Path)
+- [ ] cp_to_glyph(): if (cp < 256) return glyph_fast[cp], sonst slow
+- [ ] glyph_fast[] beim Boot aus font_map[] befuellen
+- [ ] test: ASCII Lookup O(1), Unicode Lookup korrekt
+
+### Font-B: Font-Daten aus Kernel in initrd/ramfs
+
+Problem: font_atlas.h = 12.391 Zeilen / ~200KB Glyph-Bitmaps im Kernel-Binary.
+Font ist Userspace-Daten, nicht Kernel-Code.
+
+- [ ] Font-Binary-Format definieren (Header + Glyph-Map + Bitmap-Daten)
+- [ ] tools/mkfont.py: generiert .font Datei statt .h
+- [ ] Font in ramfs einbetten: /lib/fonts/default.font
+- [ ] fb_init(): laedt Font aus ramfs statt aus eingebettetem Header
+- [ ] Abhaengigkeit: ramfs muss vor fb_init() verfuegbar sein (Boot-Reihenfolge pruefen)
+- [ ] Fallback: minimaler 7x13 ASCII-Font (128 Glyphen) bleibt embedded fuer Panic/Early-Boot
+
 ## MM — Copy-on-Write fork()
 
 Problem: fork() deep-copied jede Seite (process.c:544-548). Node.js Worker-fork
