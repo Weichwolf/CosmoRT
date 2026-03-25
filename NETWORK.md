@@ -63,7 +63,6 @@ CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT1 → FIN_WAIT2 → TIME_WAIT �
 ```
 
 10 States. Slow-Start + AIMD. Kein SACK (Phase E: optional).
-Muss auf Bare-Metal, VMs und jeder Virtualisierung korrekt funktionieren.
 
 ### Wo CosmoRT besser als Linux
 
