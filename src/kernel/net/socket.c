@@ -182,6 +182,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
             if (random_get(&rnd, sizeof(rnd)) < 0)
                 rnd = (uint16_t)(timer_ms() & 0xFFFF);
             s->udp_local_port = (uint16_t)(49152 + (rnd & 0x3FFF));
+            udp_bind(s->udp_local_port);
         }
 
         /* MTU guard: IP(20) + UDP(8) + payload ≤ 1500 */
@@ -313,6 +314,10 @@ long socket_write(int fd, const void *buf, long count) {
 long socket_close(int fd) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
+    if (s->is_dgram && s->udp_local_port) {
+        udp_sock_t *us = udp_find(s->udp_local_port);
+        if (us) udp_unbind(us);
+    }
     if (s->state == SOCK_CONNECTED && !s->is_dgram)
         net_tcp_close(&s->tcp);
     s->state = SOCK_UNUSED;
@@ -362,8 +367,10 @@ long do_bind(int fd, const void *addr, int addrlen) {
     s->local_ip = k_addr.sin_addr;
     s->local_port = k_addr.sin_port;
     /* For UDP: also set udp_local_port (host byte order) for sendto/recvfrom */
-    if (s->is_dgram)
+    if (s->is_dgram) {
         s->udp_local_port = bswap16(k_addr.sin_port);
+        udp_bind(s->udp_local_port);
+    }
     return 0;
 }
 

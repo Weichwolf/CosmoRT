@@ -383,10 +383,9 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
         socket_t *s = (socket_t *)fde->obj;
         if (!s) { ready |= EPOLLERR; break; }
         if (s->is_dgram) {
-            /* UDP: check if packets available in global UDP queue */
+            /* UDP: check if packets available in per-socket UDP queue */
             if (interest & EPOLLIN) {
-                extern pkt_queue_t q_udp_sock;
-                if (q_udp_sock.count > 0)
+                if (udp_poll_ready(s->udp_local_port))
                     ready |= EPOLLIN;
             }
             if (interest & EPOLLOUT)

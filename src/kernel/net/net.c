@@ -42,7 +42,6 @@ static int  mdns_hostname_len;
 pkt_queue_t q_tcp      = PKT_QUEUE_INIT;
 pkt_queue_t q_udp_dhcp = PKT_QUEUE_INIT;
 pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
-pkt_queue_t q_udp_sock = PKT_QUEUE_INIT; /* userspace UDP sockets */
 pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 static uint16_t dns_local_port = 0;
@@ -90,7 +89,8 @@ static void nic_send(const uint8_t *data, uint16_t len) {
         else if (proto == 17) {
             uint16_t dport = get16(lo + 36);
             if (dport == 68) q_push(&q_udp_dhcp, lo, len);
-            else             q_push(&q_udp_dns, lo, len);
+            else if (!udp_input(lo, len))
+                q_push(&q_udp_dns, lo, len);
         }
         return;
     }
@@ -273,7 +273,7 @@ void net_poll(void) {
         else if (dns_local_port && dport == dns_local_port)
             q_push(&q_udp_dns, pkt, len);
         else {
-            q_push(&q_udp_sock, pkt, len);
+            udp_input(pkt, len);
         }
         queued = 1;
     }
@@ -563,91 +563,3 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
     return -1;
 }
 
-/* ── UDP Socket API ────────────────────────────────── */
-
-int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
-                 uint16_t src_port, const void *data, int len) {
-    if (!nic || len < 0 || len > 1400) return -1;
-
-    uint8_t gw_mac[6];
-    if (net_arp_resolve(net_gw_ip, gw_mac) < 0) return -1;
-
-    uint8_t pkt[1536];
-    mzero(pkt, sizeof(pkt));
-
-    /* Ethernet */
-    mcpy(pkt, gw_mac, 6);
-    mcpy(pkt + 6, net_my_mac, 6);
-    put16(pkt + 12, 0x0800);
-
-    /* IP */
-    pkt[14] = 0x45;          /* version + IHL */
-    put16(pkt + 18, 0x4000); /* DF */
-    pkt[22] = 64;            /* TTL */
-    pkt[23] = 17;            /* UDP */
-    mcpy(pkt + 26, net_my_ip, 4);
-    mcpy(pkt + 30, dst_ip, 4);
-
-    int udp_len = 8 + len;
-    int ip_len  = 20 + udp_len;
-    put16(pkt + 16, (uint16_t)ip_len);
-
-    /* IP checksum */
-    uint16_t ic = ip_cksum(pkt + 14, 20);
-    pkt[24] = (uint8_t)(ic >> 8);
-    pkt[25] = (uint8_t)ic;
-
-    /* UDP */
-    put16(pkt + 34, src_port);
-    put16(pkt + 36, dst_port);
-    put16(pkt + 38, (uint16_t)udp_len);
-    /* UDP checksum = 0 (optional for IPv4) */
-
-    /* Payload */
-    mcpy(pkt + 42, data, len);
-
-    nic_send(pkt, (uint16_t)(14 + ip_len));
-    return len;
-}
-
-int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
-                 uint8_t *src_ip_out, uint16_t *src_port_out,
-                 int timeout_ms) {
-    uint8_t pkt[Q_PKT];
-    uint64_t deadline = timer_ms() + (uint64_t)timeout_ms;
-
-    /* Always run at least once (non-blocking callers pass timeout=0) */
-    do {
-        int len = q_pop(&q_udp_sock, pkt, sizeof(pkt));
-        if (len < 42) {
-            if (timeout_ms == 0) break; /* non-blocking: don't idle */
-            net_idle(); continue;
-        }
-
-        /* Match destination port (in IP+UDP header) */
-        uint16_t dport = get16(pkt + 36);
-        if (dport != local_port) {
-            /* Wrong port — re-queue for other sockets */
-            q_push(&q_udp_sock, pkt, len);
-            net_idle();
-            continue;
-        }
-
-        /* Extract payload */
-        int ihl = (pkt[14] & 0x0F) * 4;
-        int udp_off = 14 + ihl;
-        int udp_len = get16(pkt + udp_off + 4);
-        int data_off = udp_off + 8;
-        int data_len = udp_len - 8;
-        if (data_len < 0) data_len = 0;
-        if (data_len > bufsize) data_len = bufsize;
-        mcpy(buf, pkt + data_off, data_len);
-
-        /* Source address */
-        if (src_ip_out) mcpy(src_ip_out, pkt + 26, 4);
-        if (src_port_out) *src_port_out = get16(pkt + udp_off);
-
-        return data_len;
-    } while (timer_ms() < deadline);
-    return -1; /* timeout */
-}

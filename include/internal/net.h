@@ -37,13 +37,6 @@ int net_http_get(const uint8_t *dst_ip, uint16_t port,
 /* DNS */
 int net_dns_resolve(const char *hostname, uint8_t ip_out[4]);
 
-/* UDP socket support — used by socket layer for SOCK_DGRAM */
-int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
-                 uint16_t src_port, const void *data, int len);
-int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
-                 uint8_t *src_ip_out, uint16_t *src_port_out,
-                 int timeout_ms);
-
 /* Polling — call from idle loop and timer interrupt */
 void net_poll(void);
 
@@ -88,7 +81,9 @@ void q_push(pkt_queue_t *q, const uint8_t *pkt, int len);
 int  q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize);
 
 extern pkt_queue_t q_tcp;
-extern pkt_queue_t q_udp_sock;
+
+/* UDP types and API (needs pkt_queue_t) */
+#include "udp.h"
 
 /* Network state */
 typedef struct {
