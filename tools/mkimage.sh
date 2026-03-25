@@ -31,7 +31,7 @@ make tools/mkfs tools/cosmo_cp 2>/dev/null || {
 ./tools/mkfs "$COSMOFS_TMP" "$FS_MB"
 
 # Directories
-for d in usr usr/bin home tmp etc opt opt/claude-code dev; do
+for d in usr usr/bin usr/lib home home/.npm tmp etc opt opt/claude-code dev; do
     ./tools/cosmo_cp "$COSMOFS_TMP" --mkdir "/$d"
 done
 

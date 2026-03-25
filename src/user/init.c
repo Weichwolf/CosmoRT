@@ -29,6 +29,8 @@ void _start(void) {
         "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
         "PWD=/home", "SHELL=/usr/bin/bash",
         "PS1=cosmo:\\w$ ",
+        "npm_config_cache=/tmp/.npm-cache",
+        "NODE_OPTIONS=--max-old-space-size=512",
         (char *)0
     };
 

@@ -63,12 +63,12 @@ X="${X%%$'\r'*}"  # strip CR
 if [[ "$X" == [0-9]* ]]; then ok "npm $X"; else fail "npm ($X)"; fi
 check "https registry" node -e 'require("https").get("https://registry.npmjs.org/@anthropic-ai/claude-code/latest",function(r){console.log(r.statusCode);process.exit(r.statusCode===200?0:1)}).on("error",function(e){console.log(e.message);process.exit(1)})'
 
-# ── T6: npm install / claude update ──
-echo "--- T6: claude update ---"
-node /usr/lib/node_modules/npm/bin/npm-cli.js install -g @anthropic-ai/claude-code@latest --prefer-online 2>&1
-echo "  npm-install-exit: $?"
-node /opt/claude-code/cli.js update 2>&1
-echo "  claude-update-exit: $?"
+# ── T6: npm install ──
+echo "--- T6: npm install ---"
+node /usr/lib/node_modules/npm/bin/npm-cli.js install -g @anthropic-ai/claude-code@latest --no-optional --no-audit --no-fund 2>&1
+X=$?
+echo "  npm-install-exit: $X"
+if [ "$X" -eq 0 ]; then ok "npm install"; else fail "npm install (exit $X)"; fi
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -eq 0 ]; then
