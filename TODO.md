@@ -283,7 +283,19 @@ cat von 1000 Zeilen = 1000 Full-Repaints.
 - [ ] fb_flush(): nur dirty Zeilen rendern
 - [ ] scroll_up: nur neue untere Zeile als dirty markieren (Framebuffer-Scroll via memcpy)
 
-### VT-C: Alternate Screen
+### VT-C: Keymaps + AltGr
+
+Problem: Hardcoded US-QWERTY. Kein QWERTZ, kein AltGr, keine Umlaute.
+@ { } [ ] | \ ~ gehen auf DE-Layout nicht. Blocker fuer deutsche Nutzer.
+
+- [ ] Keymap-Struct: normal[256], shifted[256], altgr[256] (AltGr = Level 3)
+- [ ] AltGr-Erkennung: Right-Alt als Level-3-Modifier
+- [ ] DE-QWERTZ Keymap: z/y getauscht, Umlaute, AltGr fuer @ { } [ ] | \ ~
+- [ ] Keymap-Auswahl: Compile-Time oder Boot-Parameter (COSMO_KEYMAP=de)
+- [ ] Dead-Keys fuer Akzente (optional, niedrige Prio)
+- [ ] test: AltGr+Q → @ auf DE-Layout
+
+### VT-D: Alternate Screen
 
 Problem: less, vim, htop brauchen CSI ?1049h/l (Alternate Screen Buffer).
 Ohne das ueberschreiben sie den normalen Screen.
