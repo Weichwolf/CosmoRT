@@ -343,8 +343,80 @@ eine interaktive Shell kaum benutzbar. Blocker fuer Self-Hosting.
 - [ ] test: Ctrl-C killt Foreground-Prozess, nicht Shell
 - [ ] test: Ctrl-Z stoppt Prozess, fg setzt fort
 
+## Self-Hosting Blocker — Terminal-OS mit Homebrew
+
+### SH-A: Dynamic Linker (KRITISCH)
+
+Problem: Brew-Packages sind dynamisch gelinkt. Ohne ld-cosmo.so startet
+nichts aus Homebrew (git, gcc, vim, grep, ...).
+
+- [ ] ld-cosmo.so: ELF PT_INTERP, .dynamic Section, Relocation
+- [ ] DT_NEEDED: Shared Libraries laden (libc.so, libm.so, ...)
+- [ ] Symbol Resolution: PLT/GOT lazy binding
+- [ ] RPATH/RUNPATH fuer Brew-Prefix (/home/linuxbrew/.linuxbrew/lib)
+- [ ] test: dynamisch gelinktes Hello World
+- [ ] test: Brew-installiertes git startet
+
+### SH-B: Device Nodes
+
+- [ ] /dev/null: open → fd, write → discard, read → EOF
+- [ ] /dev/zero: read → zero-bytes, mmap → zero-pages
+- [ ] /dev/urandom: read → getrandom() Bytes
+- [ ] /dev/tty: Alias fuer controlling Terminal
+- [ ] VFS: Spezial-Inodes fuer Character-Devices (S_IFCHR)
+
+### SH-C: MAP_SHARED mmap
+
+Problem: git, gcc, make nutzen shared memory-mapped Files.
+Aktuell nur MAP_PRIVATE.
+
+- [ ] MAP_SHARED: aendern am mmap-Bereich schreibt in die Datei
+- [ ] msync: Flush von shared Mappings
+- [ ] Mehrere Prozesse koennen gleiche Datei MAP_SHARED mappen
+- [ ] test: MAP_SHARED write + read von zweitem Prozess
+
+### SH-D: Signale vervollstaendigen
+
+- [ ] SIGPIPE: write auf geschlossene Pipe/Socket → SIGPIPE an Writer
+- [ ] SIGALRM: alarm() / setitimer() Syscall
+- [ ] SIGCHLD: korrekt an Parent bei Child-Exit (fuer wait-Loops)
+- [ ] SIGWINCH: Terminal-Resize an Foreground-Prozess
+- [ ] test: write auf geschlossene Pipe → SIGPIPE
+- [ ] test: alarm(1) → SIGALRM nach 1s
+
+### SH-E: Terminal-Groesse
+
+- [ ] ioctl TIOCGWINSZ: Terminal-Breite/Hoehe abfragen (ncurses, vim, htop)
+- [ ] ioctl TIOCSWINSZ: Terminal-Groesse setzen (bei Resize)
+- [ ] SIGWINCH bei Groessenaenderung an Foreground Process Group
+- [ ] struct winsize in PTY speichern
+- [ ] test: TIOCGWINSZ liefert korrekte Spalten/Zeilen
+
+### SH-F: /proc erweitern
+
+- [ ] /proc/self/exe: Symlink auf eigene ELF-Binary (Node.js braucht das)
+- [ ] /proc/pid/cmdline: Kommandozeile des Prozesses (ps, htop)
+- [ ] /proc/pid/stat: Prozess-Status (ps)
+- [ ] /proc/pid/maps: Memory Mappings (Debugging)
+- [ ] /proc/meminfo: Freier/Belegter Speicher
+
+### SH-G: Locale + Timezone
+
+- [ ] TZ Environment-Variable: UTC Offset berechnen
+- [ ] /etc/localtime: Timezone-Datei (Symlink auf /usr/share/zoneinfo/...)
+- [ ] LC_ALL/LANG: UTF-8 Locale (CosmoPX libc)
+- [ ] test: time() mit korrektem TZ Offset
+
+### SH-H: Symlinks + Permissions vollstaendig
+
+- [ ] Symlink-Resolution in allen Pfad-Operationen (open, stat, exec, ...)
+- [ ] Brew Symlink-Farm: /usr/local/bin/git → ../Cellar/git/2.x/bin/git
+- [ ] chmod/chown: pruefen ob alle Modes korrekt gesetzt werden
+- [ ] Executable-Bit: exec prueft Permissions
+- [ ] test: Symlink-Chain resolution (3 Ebenen)
+- [ ] test: chmod +x, dann exec
+
 ## Offen
 
 - [ ] c-ares UDP DNS (c-ares ETIMEOUT trotz korrekter Pakete)
-- [ ] Dynamic Linker (ld-cosmo.so — CosmoPX)
 - [ ] GPT-Image Boot (Partitions-Support)
