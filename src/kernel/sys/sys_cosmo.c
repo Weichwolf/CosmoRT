@@ -102,6 +102,31 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
         extern int rt_poll_test_query(int sub, int prio);
         return (long)rt_poll_test_query((int)a2, (int)a3);
     }
+    case 9: {   /* rt_hash_request(user_addr, len, cookie) → copy to kernel, submit */
+        extern int rt_hash_submit(uint64_t kaddr, uint32_t len, uint32_t pages, uint64_t cookie);
+        uint32_t len = (uint32_t)a3;
+        uint32_t npages = (len + 4095) / 4096;
+        if (npages == 0) npages = 1;
+        if (!user_ok((uint64_t)a2, len)) return -EFAULT;
+        void *kbuf = pages_alloc((int)npages);
+        if (!kbuf) return -ENOMEM;
+        int r = copy_from_user(kbuf, (const void *)a2, len);
+        if (r) { pages_free(kbuf, (int)npages); return r; }
+        return (long)rt_hash_submit((uint64_t)(uintptr_t)kbuf, len, npages, (uint64_t)a4);
+    }
+    case 10: {  /* rt_hash_result(&cookie, hash[32]) — writes to user ptrs */
+        extern int rt_hash_result(uint64_t *cookie, uint8_t hash[32]);
+        uint64_t cookie;
+        uint8_t hash[32];
+        int r = rt_hash_result(&cookie, hash);
+        if (r < 0) return -1;
+        if (!user_ok(a2, 8) || !user_ok(a3, 32)) return -EFAULT;
+        int r2 = copy_to_user((void *)a2, &cookie, sizeof(cookie));
+        if (r2) return r2;
+        r2 = copy_to_user((void *)a3, hash, 32);
+        if (r2) return r2;
+        return 0;
+    }
     default: return -EINVAL;
     }
 }

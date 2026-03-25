@@ -15,7 +15,7 @@
 #define POLL_Q_MAXWORK   1   /* max_work_seen[prio] */
 #define POLL_Q_SEQ       2   /* total sequence counter */
 
-#define RT_PRIO_COUNT    6
+#define RT_PRIO_COUNT    7
 
 static long poll_install(void) {
     return sc2(SYS_COSMO_RT_QUERY, RT_QUERY_POLL_INSTALL, 0);

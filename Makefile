@@ -59,7 +59,8 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/percpu.o \
             $(BUILD)/kernel/core/rt.o \
             $(BUILD)/kernel/core/timer_wheel.o \
-            $(BUILD)/kernel/core/rt_poll.o
+            $(BUILD)/kernel/core/rt_poll.o \
+            $(BUILD)/kernel/core/rt_hash.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/paging.o \
@@ -123,7 +124,8 @@ KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
             $(BUILD)/arch/x86_64/hyperv.o \
-            $(BUILD)/arch/x86_64/qemu.o
+            $(BUILD)/arch/x86_64/qemu.o \
+            $(BUILD)/arch/x86_64/sha256.o
 
 KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
             $(BUILD)/drivers/virtio/virtio_net.o \
@@ -420,6 +422,12 @@ $(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.asm | $(BUILD)/kernel
 	$(NASM) -f elf64 -o $@ $<
 
 # ── Architecture C (src/arch/x86_64/) ─────────────
+
+# SHA-256: compiled without -mno-sse (RT-Core has no user FPU state to protect)
+SHA256_CFLAGS = $(subst -mno-sse,,$(subst -mno-sse2,,$(subst -mno-mmx,,$(subst -mgeneral-regs-only,,$(KCFLAGS)))))
+$(BUILD)/arch/x86_64/sha256.o: $(ARCH_DIR)/sha256.c | $(BUILD)/arch/x86_64
+	$(CC) $(SHA256_CFLAGS) -o $@ $<
+
 $(BUILD)/arch/x86_64/%.o: $(ARCH_DIR)/%.c | $(BUILD)/arch/x86_64
 	$(CC) $(KCFLAGS) -o $@ $<
 

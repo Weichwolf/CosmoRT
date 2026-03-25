@@ -15,6 +15,7 @@ enum rt_prio {
     RT_PRIO_NET_TX  = 3,  /* Network transmit (TX ring drain) */
     RT_PRIO_VSYNC   = 4,  /* Display VSync, DMA completion */
     RT_PRIO_TIMER   = 5,  /* Timer wheel */
+    RT_PRIO_HASH    = 6,  /* Background hashing (idle work) */
     RT_PRIO_COUNT
 };
 

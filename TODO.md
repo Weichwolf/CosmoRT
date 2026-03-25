@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 579 ktest PASS, 0 FAIL.
+Stand: 2026-03-25. 597 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -131,13 +131,13 @@ Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
 
 #### G1: SIMD SHA-256 auf RT-Core
 
-- [ ] src/arch/x86_64/sha256_sse.asm: SHA-256 mit SSE2 (Fallback) + SHA-NI (wenn verfuegbar)
-- [ ] CPUID-Check fuer SHA-NI Support (Zen+, Goldmont+)
-- [ ] Eigene CFLAGS (-msse2/-msha) fuer Hash-Datei, nicht global
-- [ ] rt_poll P7 (niedrigste): hash_poll() verarbeitet Jobs im Idle
-- [ ] rt_hash_request(addr, len, callback) — Compute postet Hash-Job via rt_channel
-- [ ] test: SHA-256 korrekt (Testvektoren aus NIST)
-- [ ] test: Hash-Durchsatz (Bytes/s)
+- [x] include/kernel/crypto/sha256.h + src/arch/x86_64/sha256.c (FIPS 180-4, scalar C)
+- [x] Eigene CFLAGS (ohne -mno-sse) fuer sha256.c
+- [x] rt_poll RT_PRIO_HASH (P6, niedrigste): hash_poll() verarbeitet Jobs im Idle
+- [x] rt_hash_submit/rt_hash_result via SPSC Channels (Compute→RT→Compute)
+- [x] SYS_COSMO_RT_QUERY Subcmds 9/10 fuer Userspace Hash-Request/Result
+- [x] test: 4 NIST Testvektoren (empty, "abc", 1Mx"a", 4K zeros)
+- [ ] SHA-NI Upgrade (sha256rnds2, sha256msg1/2) wenn CPUID verfuegbar
 
 #### G2: RAM-Dedup (KSM auf RT-Core)
 
