@@ -36,6 +36,7 @@ typedef struct {
     uint32_t ack;
     int      state;
     int      got_rst;    /* set when peer sends RST → ECONNRESET */
+    int      got_fin;    /* set when peer sends FIN → EOF */
     uint8_t  rxbuf[NET_TCP_RXBUF];
     int      rxbuf_pos;
     int      rxbuf_len;

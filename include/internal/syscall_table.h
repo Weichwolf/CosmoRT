@@ -59,6 +59,7 @@
     X(157, prctl,             5, do_prctl((int)a1, (unsigned long)a2, (unsigned long)a3, (unsigned long)a4, (unsigned long)a5)) \
     X( 97, getrlimit,         2, do_prlimit64(0, (int)a1, 0, (void *)a2)) \
     /* Stubs */ \
+    X( 73, flock,             2, (long)0) /* advisory locks: noop, single-user */ \
     X(165, mount,             0, 0) \
     X(170, sethostname,       0, 0) \
     X(334, rseq,              0, -ENOSYS) \

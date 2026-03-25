@@ -4,7 +4,7 @@
 
 #include "net.h"
 
-#define MAX_SOCKETS 16
+#define MAX_SOCKETS NET_MAX_SOCKETS
 
 /* Socket state */
 #define SOCK_UNUSED    0
