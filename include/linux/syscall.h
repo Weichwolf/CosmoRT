@@ -26,6 +26,7 @@
 #define SYS_WRITEV          20
 #define SYS_ACCESS          21
 #define SYS_PIPE            22
+#define SYS_SELECT          23
 #define SYS_SCHED_YIELD     24
 #define SYS_MREMAP          25
 #define SYS_MSYNC           26
@@ -63,6 +64,7 @@
 #define SYS_KILL            62
 #define SYS_UNAME           63
 #define SYS_FCNTL           72
+#define SYS_FLOCK           73
 #define SYS_TRUNCATE        76
 #define SYS_FTRUNCATE       77
 #define SYS_GETCWD          79
@@ -78,6 +80,7 @@
 #define SYS_FCHMOD          91
 #define SYS_FCHOWN          93
 #define SYS_LCHOWN          94
+#define SYS_UMASK           95
 #define SYS_GETTIMEOFDAY    96
 #define SYS_GETRLIMIT       97
 #define SYS_GETRUSAGE       98
@@ -91,6 +94,8 @@
 #define SYS_GETPPID         110
 #define SYS_GETPGRP         111
 #define SYS_SETSID          112
+#define SYS_GETGROUPS       115
+#define SYS_SETGROUPS       116
 #define SYS_GETPGID         121
 #define SYS_GETSID          124
 #define SYS_CAPGET          125

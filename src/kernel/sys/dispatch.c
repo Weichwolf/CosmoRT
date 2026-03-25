@@ -181,10 +181,6 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return usock_socketpair((int)a2, (int *)a4);
     }
 
-    /* sendmmsg(307): dispatch to sys_net.c */
-    case 307:
-        return do_sendmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4);
-
     /* futex: user_ok check before dispatch */
     case SYS_FUTEX:
         if (__builtin_expect(!user_ok((uint64_t)a1, 4), 0)) return -EFAULT;
@@ -258,28 +254,6 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         }
         return -EINVAL;
     }
-
-    /* pselect6 / select → sys_event.c */
-    case 270: /* SYS_PSELECT6 */
-    case 23:  /* SYS_SELECT */
-        return do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, num);
-
-    /* ppoll(271) → sys_event.c */
-    case 271:
-        return do_ppoll(a1, a2, a3);
-
-    /* preadv(295) / pwritev(296): readv/writev + file offset */
-    case 295: { /* preadv(fd, iov, iovcnt, offset_lo, offset_hi) */
-        /* For now: ignore offset, delegate to readv (files have internal offset) */
-        return do_readv((int)a1, (const struct iovec *)a2, (int)a3);
-    }
-    case 296: { /* pwritev */
-        return do_writev((int)a1, (const struct iovec *)a2, (int)a3);
-    }
-
-    /* recvmmsg(299) → sys_net.c */
-    case 299:
-        return do_recvmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4);
 
     default: {
         process_t *dp = proc_current();
