@@ -117,6 +117,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 /* ── Forward declarations: sys_proc.c ── */
 void do_exit(int status);
 void do_exit_group(int status);
+long do_reboot(int magic1, int magic2, int cmd);
 long do_clone(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_uname(void *buf);

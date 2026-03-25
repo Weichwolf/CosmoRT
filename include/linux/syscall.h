@@ -165,5 +165,14 @@
 #define SYS_STATX           332
 #define SYS_RSEQ            334
 #define SYS_CLONE3           435
+#define SYS_REBOOT           169
+
+/* reboot() cmd values */
+#define LINUX_REBOOT_CMD_POWER_OFF  0x4321FEDC
+#define LINUX_REBOOT_CMD_RESTART    0x01234567
+#define LINUX_REBOOT_CMD_HALT       0xCDEF0123
+/* reboot() magic numbers */
+#define LINUX_REBOOT_MAGIC1         0xFEE1DEAD
+#define LINUX_REBOOT_MAGIC2         0x28121969
 
 #endif /* COSMO_LINUX_SYSCALL_H */

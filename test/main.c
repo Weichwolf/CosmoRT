@@ -88,6 +88,10 @@ void _start(void) {
     put_int((long)passes); puts(" passed, ");
     put_int((long)failures); puts(" failed ===\n");
     if (failures == 0) puts("ALL PASSED\n");
+
+    /* Power off: reboot(LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, POWER_OFF) */
+    sc3(SYS_REBOOT, (long)0xFEE1DEAD, (long)0x28121969, (long)0x4321FEDC);
+
     sc1(SYS_EXIT_GROUP, (long)failures);
     __builtin_unreachable();
 }

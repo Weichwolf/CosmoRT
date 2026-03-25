@@ -60,6 +60,7 @@
     X( 97, getrlimit,         2, do_prlimit64(0, (int)a1, 0, (void *)a2)) \
     /* Stubs */ \
     X( 73, flock,             2, do_flock((int)a1, (int)a2)) \
+    X(169, reboot,            3, do_reboot((int)a1, (int)a2, (int)a3)) \
     X(165, mount,             0, do_mount()) \
     X(170, sethostname,       0, do_sethostname()) \
     X(334, rseq,              0, do_rseq()) \

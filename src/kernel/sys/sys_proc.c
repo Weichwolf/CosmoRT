@@ -137,6 +137,30 @@ void do_exit_group(int status) {
     arch_cli_halt();
 }
 
+/* ── SYS_reboot (169) ────────────────────────────── */
+
+long do_reboot(int magic1, int magic2, int cmd) {
+    if ((unsigned int)magic1 != LINUX_REBOOT_MAGIC1 || (unsigned int)magic2 != LINUX_REBOOT_MAGIC2)
+        return -EINVAL;
+    switch (cmd) {
+    case LINUX_REBOOT_CMD_POWER_OFF:
+    case LINUX_REBOOT_CMD_HALT:
+        serial_puts("HALT\n");
+        arch_shutdown();
+        arch_cli_halt();
+        return 0; /* unreachable */
+    case LINUX_REBOOT_CMD_RESTART:
+        /* Triple fault → CPU reset */
+        arch_cli();
+        __asm__ volatile("lidt %0" :: "m"((struct { uint16_t l; uint64_t b; }){0, 0}));
+        __asm__ volatile("int3");
+        arch_cli_halt();
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
 /* ── SYS_clone (56) ──────────────────────────────── */
 
 long do_clone(unsigned long flags, void *child_stack,

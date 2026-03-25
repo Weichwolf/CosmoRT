@@ -96,6 +96,9 @@ static inline void arch_cli_halt(void) {
     __asm__ volatile("cli; hlt");
 }
 
+/* Platform shutdown — implemented in qemu.c / hyperv.c */
+void arch_shutdown(void);
+
 static inline void arch_pause(void) {
     __asm__ volatile("pause");
 }

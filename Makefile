@@ -119,7 +119,8 @@ KERN_HW   = $(BUILD)/kernel/hw/cosmo_rt.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
-            $(BUILD)/arch/x86_64/hyperv.o
+            $(BUILD)/arch/x86_64/hyperv.o \
+            $(BUILD)/arch/x86_64/qemu.o
 
 KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
             $(BUILD)/drivers/virtio/virtio_net.o \
