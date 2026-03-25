@@ -10,6 +10,7 @@
 #include "process.h"
 #include "percpu.h"
 #include "arch_x86.h"
+#include "page_alloc.h"
 
 /* Registered NIC driver (set by driver init, e.g., e1000_init) */
 static const nic_driver_t *nic;
@@ -523,6 +524,13 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     uint32_t rseq; net_random(&rseq, (int)sizeof(rseq));
     c->seq = rseq;
     c->rxbuf_pos = c->rxbuf_len = 0;
+    /* Allocate receive buffer */
+    if (!c->rxbuf) {
+        int npages = (NET_TCP_RXBUF + 4095) / 4096;
+        c->rxbuf = (uint8_t *)pages_alloc(npages);
+        if (!c->rxbuf) return -ENOMEM;
+        c->rxbuf_size = npages * 4096;
+    }
 
     /* Send SYN-ACK */
     send_tcp(c, 0x12, 0, 0);
@@ -561,6 +569,13 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->local_port = (uint16_t)((rport % 16384) + 49152);
     c->seq = rseq; c->ack = 0; c->state = 0;
     c->rxbuf_pos = c->rxbuf_len = 0;
+    /* Allocate receive buffer on demand */
+    if (!c->rxbuf) {
+        int npages = (NET_TCP_RXBUF + 4095) / 4096;
+        c->rxbuf = (uint8_t *)pages_alloc(npages);
+        if (!c->rxbuf) return -ENOMEM;
+        c->rxbuf_size = npages * 4096;
+    }
     serial_puts("tcp: dst=");
     for (int i = 0; i < 4; i++) {
         uint8_t b = dst_ip[i];
@@ -609,7 +624,7 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
 }
 
 int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
-    if (c->state != 2) return -1;
+    if (c->state != 2 || !c->rxbuf) return -1;
     int total = 0;
     uint64_t last_data_ms = timer_ms();
     uint64_t timeout_ms = (uint64_t)timeout_iter;
@@ -666,7 +681,7 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_iter) {
 
             if (cp < plen) {
                 int remain = plen - cp;
-                if (remain > NET_TCP_RXBUF) remain = NET_TCP_RXBUF;
+                if (remain > c->rxbuf_size) remain = c->rxbuf_size;
                 mcpy(c->rxbuf, payload + cp, remain);
                 c->rxbuf_pos = 0;
                 c->rxbuf_len = remain;
@@ -699,6 +714,13 @@ void net_tcp_close(net_tcp_t *c) {
         }
     }
     c->state = 0;
+    /* Free receive buffer */
+    if (c->rxbuf) {
+        int npages = (c->rxbuf_size + 4095) / 4096;
+        pages_free(c->rxbuf, npages);
+        c->rxbuf = 0;
+        c->rxbuf_size = 0;
+    }
 }
 
 /* ── HTTP GET ──────────────────────────────────────── */

@@ -37,7 +37,8 @@ typedef struct {
     int      state;
     int      got_rst;    /* set when peer sends RST → ECONNRESET */
     int      got_fin;    /* set when peer sends FIN → EOF */
-    uint8_t  rxbuf[NET_TCP_RXBUF];
+    uint8_t  *rxbuf;       /* dynamically allocated, NET_TCP_RXBUF bytes */
+    int      rxbuf_size;   /* allocated size (0 if not allocated) */
     int      rxbuf_pos;
     int      rxbuf_len;
 } net_tcp_t;
