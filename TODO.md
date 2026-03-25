@@ -262,9 +262,23 @@ Problem: 500MB Node.js Heap = 128.000 4KB-PTEs = TLB-Thrashing.
 - [ ] test: mmap 4MB aligned → 2 Huge Pages in PMD
 - [ ] test: Huge Page + fork → COW split zu 4KB
 
-## Offen (nicht Netzwerk)
+## Job Control — bash/Shell-Interaktion
+
+Problem: Ctrl-C/Ctrl-Z in bash funktionieren nicht. Ohne Job Control ist
+eine interaktive Shell kaum benutzbar. Blocker fuer Self-Hosting.
+
+- [ ] TIOCSPGRP/TIOCGPGRP ioctl: Foreground Process Group pro TTY setzen/lesen
+- [ ] SIGTSTP (Ctrl-Z): Foreground-Prozess stoppen (TASK_STOPPED State)
+- [ ] SIGCONT: Gestoppten Prozess fortsetzen (fg/bg Kommandos)
+- [ ] SIGINT (Ctrl-C): An Foreground Process Group senden (nicht nur PID 1)
+- [ ] SIGQUIT (Ctrl-\): An Foreground Process Group senden
+- [ ] Terminal Driver: Ctrl-C/Z/\ in PTY erkennen → Signal an Foreground PG
+- [ ] waitpid WUNTRACED/WCONTINUED: bash muss gestoppte Kinder erkennen
+- [ ] test: Ctrl-C killt Foreground-Prozess, nicht Shell
+- [ ] test: Ctrl-Z stoppt Prozess, fg setzt fort
+
+## Offen
 
 - [ ] c-ares UDP DNS (c-ares ETIMEOUT trotz korrekter Pakete)
-- [ ] Job Control (TIOCSPGRP, SIGTSTP/SIGCONT)
 - [ ] Dynamic Linker (ld-cosmo.so — CosmoPX)
 - [ ] GPT-Image Boot (Partitions-Support)
