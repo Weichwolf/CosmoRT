@@ -386,8 +386,6 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             /* UDP: check if packets available in global UDP queue */
             if (interest & EPOLLIN) {
                 extern pkt_queue_t q_udp_sock;
-                /* Poll NIC to check for fresh packets */
-                net_poll();
                 if (q_udp_sock.count > 0)
                     ready |= EPOLLIN;
             }
