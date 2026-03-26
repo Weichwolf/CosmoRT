@@ -1,6 +1,7 @@
-/* CosmoRT UDP — Per-Socket Demux, Send/Recv
+/* CosmoRT UDP — Hash-Table Demux, Slab Pool, Send/Recv
  * Extracted from net.c (Phase B).
  * E0: Sleep/Wake statt Busy-Wait.
+ * Skal-C: Hash-table (64 buckets) + slab pool (128 slots).
  */
 
 #include "net/net.h"
@@ -8,51 +9,100 @@
 #include "hw/serial.h"
 #include "core/timer.h"
 #include "core/rt.h"
+#include "mm/slab.h"
 
-/* ── Per-Socket Table ──────────────────────────────── */
+/* ── Slab Pool ───────────────────────────────────────── */
 
-static udp_sock_t udp_socks[NET_UDP_MAX];
-static spinlock_t udp_table_lock = SPINLOCK_INIT;
+static udp_sock_t udp_pool[UDP_POOL_SIZE];
+static slab_t     udp_slab;
+static int        udp_slab_inited;
+
+static void udp_slab_ensure_init(void) {
+    if (__builtin_expect(udp_slab_inited, 1)) return;
+    slab_init(&udp_slab, udp_pool, (int)sizeof(udp_sock_t), UDP_POOL_SIZE);
+    udp_slab_inited = 1;
+}
+
+/* ── Hash Table (port → chain) ───────────────────────── */
+
+static udp_sock_t *udp_hash[UDP_HASH_SIZE];
+static spinlock_t  udp_table_lock = SPINLOCK_INIT;
+
+/* ── Lookup (lock-free, called from RT-Core hot path) ── */
+
+udp_sock_t *udp_find(uint16_t port) {
+    uint32_t idx = port & (UDP_HASH_SIZE - 1);
+    udp_sock_t *s = __atomic_load_n(&udp_hash[idx], __ATOMIC_ACQUIRE);
+    while (s) {
+        if (s->port == port) return s;
+        s = s->hash_next;
+    }
+    return 0;
+}
+
+/* ── Bind / Unbind ───────────────────────────────────── */
 
 udp_sock_t *udp_bind(uint16_t port) {
     uint64_t flags;
+
+    udp_slab_ensure_init();
+
+    /* Pre-alloc outside table lock to avoid nested spinlocks */
+    udp_sock_t *fresh = (udp_sock_t *)slab_alloc(&udp_slab);
+
     spin_lock_irq(&udp_table_lock, &flags);
-    /* Check for duplicate */
-    for (int i = 0; i < NET_UDP_MAX; i++) {
-        if (udp_socks[i].port == port) {
+
+    /* Duplicate check in hash chain */
+    uint32_t idx = port & (UDP_HASH_SIZE - 1);
+    for (udp_sock_t *s = udp_hash[idx]; s; s = s->hash_next) {
+        if (s->port == port) {
             spin_unlock_irq(&udp_table_lock, flags);
-            return &udp_socks[i]; /* already bound — reuse */
+            if (fresh) slab_free(&udp_slab, fresh);
+            return s; /* already bound — reuse */
         }
     }
-    /* Find free slot */
-    for (int i = 0; i < NET_UDP_MAX; i++) {
-        if (udp_socks[i].port == 0) {
-            udp_socks[i].port = port;
-            udp_socks[i].q = (pkt_queue_t)PKT_QUEUE_INIT;
-            spin_unlock_irq(&udp_table_lock, flags);
-            return &udp_socks[i];
-        }
+
+    if (!fresh) {
+        spin_unlock_irq(&udp_table_lock, flags);
+        return 0; /* pool exhausted */
     }
+
+    fresh->port = port;
+    fresh->q = (pkt_queue_t)PKT_QUEUE_INIT;
+    fresh->wait_thread = 0;
+
+    /* Insert at head of hash chain */
+    fresh->hash_next = udp_hash[idx];
+    __atomic_store_n(&udp_hash[idx], fresh, __ATOMIC_RELEASE);
+
     spin_unlock_irq(&udp_table_lock, flags);
-    return 0; /* table full */
+    return fresh;
 }
 
 void udp_unbind(udp_sock_t *s) {
     if (!s) return;
     uint64_t flags;
     spin_lock_irq(&udp_table_lock, &flags);
+
+    uint32_t idx = s->port & (UDP_HASH_SIZE - 1);
+    udp_sock_t **pp = &udp_hash[idx];
+    while (*pp) {
+        if (*pp == s) {
+            *pp = s->hash_next;
+            break;
+        }
+        pp = &(*pp)->hash_next;
+    }
+
     s->port = 0;
+    s->hash_next = 0;
     s->q.head = 0;
     s->q.count = 0;
-    spin_unlock_irq(&udp_table_lock, flags);
-}
+    s->wait_thread = 0;
 
-udp_sock_t *udp_find(uint16_t port) {
-    for (int i = 0; i < NET_UDP_MAX; i++) {
-        if (__atomic_load_n(&udp_socks[i].port, __ATOMIC_ACQUIRE) == port)
-            return &udp_socks[i];
-    }
-    return 0;
+    spin_unlock_irq(&udp_table_lock, flags);
+
+    slab_free(&udp_slab, s);
 }
 
 /* ── UDP Input (from dispatcher) ───────────────────── */

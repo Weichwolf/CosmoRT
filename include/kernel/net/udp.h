@@ -1,4 +1,4 @@
-/* CosmoRT UDP — Per-Socket Demux, extracted from net.c (Phase B) */
+/* CosmoRT UDP — Hash-Table Demux, Slab-backed Socket Pool */
 #ifndef UDP_H
 #define UDP_H
 
@@ -10,14 +10,16 @@ struct thread; /* forward declaration for wait_thread */
 
 /* ── Config ────────────────────────────────────────── */
 
-#define NET_UDP_MAX 16
+#define UDP_POOL_SIZE 128          /* max concurrent UDP sockets       */
+#define UDP_HASH_SIZE  64          /* buckets, must be power of 2      */
 
 /* ── Per-Socket UDP Queue ──────────────────────────── */
 
-typedef struct {
-    uint16_t   port;       /* host byte order, 0 = unused */
+typedef struct udp_sock {
+    uint16_t   port;               /* host byte order, 0 = unused      */
     pkt_queue_t q;
-    struct thread *wait_thread;  /* thread blocked on recv, or NULL */
+    struct thread *wait_thread;    /* thread blocked on recv, or NULL   */
+    struct udp_sock *hash_next;    /* hash-chain link                   */
 } udp_sock_t;
 
 /* ── UDP Registration ──────────────────────────────── */

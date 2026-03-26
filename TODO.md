@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 668 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 679 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -218,11 +218,11 @@ unbenutzbar.
 - [x] NET_TCP_MAX erhoehen (256)
 - [x] test: 8 gleichzeitige TCP-Connections, Kollisions-Resilience, Unregister
 
-### Skal-C: UDP Socket-Tabelle (MITTEL)
+### Skal-C: UDP Socket-Tabelle (MITTEL) ✓
 
-- [ ] udp_socks[]: Hash-Tabelle (Port → Socket) statt lineares Array[16]
-- [ ] NET_UDP_MAX erhoehen oder dynamisch
-- [ ] test: 32+ gleichzeitige UDP-Sockets
+- [x] udp_socks[]: Hash-Tabelle (64 Buckets, Chaining) + Slab-Pool (128 Slots)
+- [x] NET_UDP_MAX → UDP_POOL_SIZE 128 (Slab-backed)
+- [x] test: 32 gleichzeitige UDP-Sockets, rebind, hash-collision
 
 ### Skal-D: ARP Cache (MITTEL)
 
