@@ -1,6 +1,6 @@
 # CosmoRT
 
-Neue Session: `tree -P '*.md' --prune` lesen fuer Kontext (DESIGN.md, TODO.md, notes/).
+Neue Session: `tree -L 3 --prune` fuer Verzeichnisstruktur + `tree -P '*.md' --prune` fuer Docs.
 
 Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
 C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
