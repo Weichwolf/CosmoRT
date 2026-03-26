@@ -61,11 +61,13 @@ static inline int fd_find_free(fd_table_t *fdt, int minfd) {
     int bit  = minfd % 64;
     /* First word: mask out bits below minfd */
     uint64_t w = fdt->free_bitmap[word] & (~0ULL << bit);
-    for (; word < FD_BITMAP_WORDS; word++, w = fdt->free_bitmap[word]) {
+    while (word < FD_BITMAP_WORDS) {
         if (w) {
             int fd = word * 64 + __builtin_ctzll(w);
             return (fd < FD_MAX) ? fd : -1;
         }
+        if (++word < FD_BITMAP_WORDS)
+            w = fdt->free_bitmap[word];
     }
     return -1;
 }
