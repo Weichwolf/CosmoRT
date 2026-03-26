@@ -237,11 +237,58 @@ unbenutzbar.
 - [x] timer_wheel_active_count() O(1) Arithmetik statt O(n) Zaehlschleife
 - [x] test: 128 Timer gleichzeitig, Cancel/Re-Alloc Roundtrip
 
-### Skal-F: FD-Tabelle (NIEDRIG)
+### Skal-F: FD-Tabelle
 
-- [ ] fd_table.entries[]: Free-List Index fuer O(1) fd_alloc
-- [ ] FD_MAX erhoehen (256 → 1024) oder dynamisch
+- [ ] fd_alloc(): Free-Bitmap + __builtin_ctzll fuer O(1) + POSIX lowest-fd
+- [ ] FD_MAX erhoehen (256 → 1024)
 - [ ] test: 512+ offene FDs pro Prozess
+
+### Skal-G: PTY Pool
+
+- [ ] pty_alloc(): O(4) mit Lock/Iteration → Bitmap oder Free-Stack O(1)
+- [ ] Single Lock statt Lock-per-Slot
+- [ ] PTY_MAX erhoehen (4 → 16+)
+- [ ] test: 8+ PTYs gleichzeitig
+
+### Skal-H: epoll_ctl Lookup
+
+- [ ] epoll_ctl ADD/MOD/DEL: 3×O(64) linearer Scan → FD-Hash pro epoll O(1)
+- [ ] EPOLL_MAX_FDS erhoehen (64 → 256+)
+- [ ] test: epoll mit 128+ FDs
+
+### Skal-I: Unix Socket Pool
+
+- [ ] usock_alloc(): O(32) + Byte-Loop-Zeromem → Slab + memset O(1)
+- [ ] USOCK_MAX erhoehen (32 → 128)
+- [ ] test: 64+ AF_UNIX Sockets
+
+### Skal-J: IPC Endpoint Pool
+
+- [ ] ipc_create_endpoint(): O(64) → Free-List O(1)
+- [ ] IPC_MAX_ENDPOINTS erhoehen (64 → 256)
+
+### Skal-K: procfs FD Pool
+
+- [ ] procfs_fd_alloc(): O(32) → Bitmap + ctz O(1)
+- [ ] PROCFS_FD_MAX erhoehen (32 → 64)
+
+### Skal-L: epoll Sleeper Array
+
+- [ ] epoll_sleepers: Array[32] → Linked-List (kein Zeroout unter Lock)
+- [ ] EPOLL_SLEEPER_MAX eliminieren (dynamisch)
+
+### Skal-M: Process-Limit
+
+- [ ] PROC_MAX=16 → dynamisch (Slab fuer process_t)
+- [ ] pid_table[] dynamisch oder groesser (256 → 1024)
+- [ ] Process-Group Hash (pgid → Prozessliste) fuer kill_pgrp O(1)
+
+### Skal-N: Event-Pool Limits
+
+- [ ] EPOLL_POOL_MAX=16 → Slab
+- [ ] TIMERFD_POOL_MAX=16 → Slab
+- [ ] INOTIFY_POOL_MAX=16 → Slab
+- [ ] timerfd_any_expired(): O(n) → Min-Heap oder nearest-expire Tracking
 
 ## VT — Font-Rendering optimieren
 
