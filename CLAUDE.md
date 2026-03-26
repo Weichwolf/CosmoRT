@@ -1,7 +1,5 @@
 # CosmoRT
 
-Neue Session: `tree -P '*.md'` ausfuehren → zeigt komplette Verzeichnisstruktur + alle Docs.
-
 Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
 C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
 
