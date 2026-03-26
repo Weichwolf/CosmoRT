@@ -46,18 +46,4 @@
 #define SIG_DFL         ((void *)0)
 #define SIG_IGN         ((void *)1)
 
-/* waitpid/wait4 option flags */
-#define WNOHANG         1
-#define WUNTRACED       2
-#define WCONTINUED      8
-
-/* waitpid/wait4 status macros */
-#define WIFEXITED(s)    (((s) & 0x7F) == 0)
-#define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
-#define WIFSIGNALED(s)  (((s) & 0x7F) > 0 && ((s) & 0x7F) < 0x7F)
-#define WTERMSIG(s)     ((s) & 0x7F)
-#define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)
-#define WSTOPSIG(s)     (((s) >> 8) & 0xFF)
-#define WIFCONTINUED(s) ((s) == 0xFFFF)
-
 #endif /* COSMO_LINUX_SIGNAL_H */

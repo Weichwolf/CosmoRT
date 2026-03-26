@@ -1624,9 +1624,7 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                      (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
         return -EFAULT;
 
-    int wnohang    = options & 1;  /* WNOHANG = 1 */
-    int wuntraced  = options & 2;  /* WUNTRACED = 2 */
-    int wcontinued = options & 8;  /* WCONTINUED = 8 */
+    int wnohang = options & 1; /* WNOHANG = 1 */
 
     /* Scan for matching child */
     for (;;) {
@@ -1640,28 +1638,6 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
             if (pid == 0 || pid == -1) { /* wait for any child */ }
 
             found_child = 1;
-
-            /* WUNTRACED: report stopped children */
-            if (wuntraced && child->stop_pending) {
-                child->stop_pending = 0;
-                int child_pid = (int)child->pid;
-                if (wstatus) {
-                    int kstatus = ((child->stop_signal & 0xFF) << 8) | 0x7F;
-                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
-                }
-                return child_pid;
-            }
-
-            /* WCONTINUED: report continued children */
-            if (wcontinued && child->cont_pending) {
-                child->cont_pending = 0;
-                int child_pid = (int)child->pid;
-                if (wstatus) {
-                    int kstatus = 0xFFFF;
-                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
-                }
-                return child_pid;
-            }
 
             if (child->state == PROC_ZOMBIE) {
                 int child_pid = (int)child->pid;
@@ -1686,38 +1662,11 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
 
         /* Block: child exists but hasn't exited.
          * Child exit (exit_kill_process) wakes parent threads.
-         *
-         * Lost-wakeup prevention: set BLOCKED *before* re-checking,
-         * so exit_kill_process on another core sees BLOCKED and wakes us.
-         * If child already exited between scan and here, undo the block. */
+         * Syscall restart: rewind RIP to `syscall` instruction. */
         save_user_state_for_block(cur, 0);
         cur->rip -= 2;       /* back to `syscall` instruction (0F 05) */
         cur->rax = 61;       /* SYS_WAIT4 — re-execute on wakeup */
-        __sync_synchronize();
         cur->state = THREAD_BLOCKED;
-        __sync_synchronize();
-
-        /* Re-check: did a child exit while we were setting up the block? */
-        {
-            int missed = 0;
-            for (int j = 0; j < PROC_MAX; j++) {
-                process_t *c2 = &proc_pool[j];
-                if (c2->state == PROC_FREE) continue;
-                if (c2->parent_pid != parent->pid) continue;
-                if (pid > 0 && c2->pid != (uint32_t)pid) continue;
-                if (c2->state == PROC_ZOMBIE ||
-                    (wuntraced && c2->stop_pending) ||
-                    (wcontinued && c2->cont_pending)) {
-                    missed = 1;
-                    break;
-                }
-            }
-            if (missed) {
-                cur->state = THREAD_RUNNING;
-                continue; /* re-enter main loop, will find the zombie */
-            }
-        }
-
         arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(cur);
         return 0; /* unreachable */
