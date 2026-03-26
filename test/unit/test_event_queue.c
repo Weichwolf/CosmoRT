@@ -1,0 +1,129 @@
+#include "ktest.h"
+
+/* event_queue.h inline operations — no kernel dependencies needed */
+#include "core/event_queue.h"
+
+static void test_event_queue(void) {
+    puts("\n[Event Queue]\n");
+
+    event_queue_t eq;
+
+    /* ── init ── */
+    event_queue_init(&eq);
+    check_val("init: pending=0", (long)event_pending(&eq), 0);
+
+    /* ── push + pop roundtrip ── */
+    eq_push(&eq, EQ_CHILD_EXITED, 42);
+    check_val("push: pending=1", (long)event_pending(&eq), 1);
+
+    event_t ev;
+    int r = eq_pop(&eq, &ev);
+    check_val("pop: return 0", (long)r, 0);
+    check_val("pop: type=CHILD_EXITED", (long)ev.type, EQ_CHILD_EXITED);
+    check_val("pop: data=42", (long)ev.data, 42);
+    check_val("pop: pending=0", (long)event_pending(&eq), 0);
+
+    /* ── pop empty ── */
+    r = eq_pop(&eq, &ev);
+    check_val("pop empty: return -1", (long)r, -1);
+
+    /* ── push before pop (post before wait) ── */
+    eq_push(&eq, EQ_PIPE_DATA, 100);
+    eq_push(&eq, EQ_FUTEX_WAKE, 200);
+    check_val("2 push: pending=2", (long)event_pending(&eq), 2);
+
+    r = eq_pop(&eq, &ev);
+    check_val("fifo pop 1: return 0", (long)r, 0);
+    check_val("fifo pop 1: type=PIPE_DATA", (long)ev.type, EQ_PIPE_DATA);
+    check_val("fifo pop 1: data=100", (long)ev.data, 100);
+
+    r = eq_pop(&eq, &ev);
+    check_val("fifo pop 2: return 0", (long)r, 0);
+    check_val("fifo pop 2: type=FUTEX_WAKE", (long)ev.type, EQ_FUTEX_WAKE);
+    check_val("fifo pop 2: data=200", (long)ev.data, 200);
+
+    /* ── FIFO order with multiple events ── */
+    event_queue_init(&eq);
+    for (int i = 0; i < 8; i++)
+        eq_push(&eq, EQ_SOCKET_DATA, (uint64_t)i);
+    check_val("8 push: pending=8", (long)event_pending(&eq), 8);
+
+    int fifo_ok = 1;
+    for (int i = 0; i < 8; i++) {
+        eq_pop(&eq, &ev);
+        if (ev.type != EQ_SOCKET_DATA || ev.data != (uint64_t)i)
+            fifo_ok = 0;
+    }
+    check("8 events FIFO order", fifo_ok);
+
+    /* ── Queue full: oldest overwritten ── */
+    event_queue_init(&eq);
+    for (int i = 0; i < EQ_MAX_EVENTS + 4; i++)
+        eq_push(&eq, EQ_TIMEOUT, (uint64_t)i);
+
+    check_val("overflow: pending=16", (long)event_pending(&eq), EQ_MAX_EVENTS);
+
+    /* Oldest 4 should be dropped, first pop should be event #4 */
+    eq_pop(&eq, &ev);
+    check_val("overflow: first pop data=4", (long)ev.data, 4);
+
+    /* ── event_drain: selective extraction ── */
+    event_queue_init(&eq);
+    eq_push(&eq, EQ_PIPE_DATA, 10);
+    eq_push(&eq, EQ_CHILD_EXITED, 20);
+    eq_push(&eq, EQ_PIPE_DATA, 30);
+    eq_push(&eq, EQ_FUTEX_WAKE, 40);
+    eq_push(&eq, EQ_PIPE_DATA, 50);
+
+    event_t drained[8];
+    int count = event_drain(&eq, EQ_PIPE_DATA, drained, 8);
+    check_val("drain PIPE_DATA: count=3", (long)count, 3);
+    check_val("drain[0].data=10", (long)drained[0].data, 10);
+    check_val("drain[1].data=30", (long)drained[1].data, 30);
+    check_val("drain[2].data=50", (long)drained[2].data, 50);
+
+    /* Remaining: CHILD_EXITED(20) + FUTEX_WAKE(40) */
+    check_val("after drain: pending=2", (long)event_pending(&eq), 2);
+    eq_pop(&eq, &ev);
+    check_val("after drain: first=CHILD_EXITED", (long)ev.type, EQ_CHILD_EXITED);
+    check_val("after drain: first.data=20", (long)ev.data, 20);
+    eq_pop(&eq, &ev);
+    check_val("after drain: second=FUTEX_WAKE", (long)ev.type, EQ_FUTEX_WAKE);
+    check_val("after drain: second.data=40", (long)ev.data, 40);
+
+    /* ── event_drain with max limit ── */
+    event_queue_init(&eq);
+    for (int i = 0; i < 6; i++)
+        eq_push(&eq, EQ_SOCKET_DATA, (uint64_t)(i + 1));
+
+    count = event_drain(&eq, EQ_SOCKET_DATA, drained, 2);
+    check_val("drain max=2: count=2", (long)count, 2);
+    check_val("drain max=2: [0].data=1", (long)drained[0].data, 1);
+    check_val("drain max=2: [1].data=2", (long)drained[1].data, 2);
+    check_val("drain max=2: remaining=4", (long)event_pending(&eq), 4);
+
+    /* ── fork + wait: event_wait integration via existing wait4 ── */
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Child: exit with code 7 */
+        sc1(SYS_EXIT, 7);
+    }
+    check("fork succeeded", pid > 0);
+
+    int wstatus = 0;
+    long wp = sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+    check_val("wait4 returns child pid", wp, pid);
+    check_val("wait4 exit code 7", (long)((wstatus >> 8) & 0xFF), 7);
+
+    /* ── Timeout test via nanosleep ── */
+    struct k_timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10ms */
+    struct k_timespec before, after;
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&before);
+    sc2(SYS_NANOSLEEP, (long)&ts, 0);
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
+    long elapsed_ms = (after.tv_sec - before.tv_sec) * 1000
+                    + (after.tv_nsec - before.tv_nsec) / 1000000;
+    check("nanosleep 10ms elapsed >= 5ms", elapsed_ms >= 5);
+}
+
+TEST("event_queue", test_event_queue);

@@ -77,6 +77,7 @@ thread_t *thread_alloc(void) {
         if (t->tid < TID_TABLE_MAX)
             tid_table[t->tid] = t;
         spin_unlock_irq(&pid_lock, flags);
+        event_queue_init(&t->eq);
     }
     return t;
 }

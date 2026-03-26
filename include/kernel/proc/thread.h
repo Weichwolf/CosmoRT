@@ -7,6 +7,7 @@
 #define THREAD_H
 
 #include <stdint.h>
+#include "core/event_queue.h"
 
 /* Thread states */
 #define THREAD_FREE      0
@@ -106,6 +107,9 @@ typedef struct thread {
     uint64_t sigalt_sp;       /* ss_sp: base of alternate signal stack */
     uint64_t sigalt_size;     /* ss_size: size of alternate signal stack */
     int      sigalt_flags;    /* ss_flags: SS_DISABLE etc. */
+
+    /* ── Event Queue (per-thread, for blocking syscalls) ── */
+    event_queue_t eq;
 
     /* ── FPU/SSE state (FXSAVE/FXRSTOR) ── */
     uint8_t fxsave_area[512] __attribute__((aligned(16)));
