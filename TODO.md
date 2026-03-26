@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 663 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 668 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -204,11 +204,12 @@ unbenutzbar.
 
 ### Skal-A: Socket Pool (HOCH)
 
-- [ ] sockets[] (socket.c): Slab-Allokation statt static socket_t[64]
-- [ ] Free-List fuer O(1) Allokation/Freigabe
-- [ ] NET_MAX_SOCKETS erhoehen oder eliminieren (Slab-Limit)
-- [ ] sock_alloc/sock_free anpassen
-- [ ] test: 128+ gleichzeitige Sockets
+- [x] sockets[] (socket.c): Slab-Allokation statt static socket_t[64]
+- [x] Free-List fuer O(1) Allokation/Freigabe
+- [x] NET_MAX_SOCKETS 64→256 (Slab-Kapazitaet)
+- [x] sock_alloc/sock_free anpassen
+- [x] Active-List (doppelt verkettet) fuer Port-Conflict-Iteration
+- [x] test: 128+ gleichzeitige Sockets (test_socket_scale.c)
 
 ### Skal-B: TCP Hash-Tabelle (HOCH)
 

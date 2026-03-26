@@ -3,8 +3,9 @@
 #define SOCKET_H
 
 #include "net/net.h"
+#include "mm/slab.h"
 
-#define MAX_SOCKETS NET_MAX_SOCKETS
+#define SOCK_SLAB_CAP NET_MAX_SOCKETS
 
 /* Socket state */
 #define SOCK_UNUSED    0
@@ -59,6 +60,10 @@ struct socket {
     accept_conn_t accept_q[ACCEPT_QUEUE_MAX];
     int           accept_head;
     int           accept_count;
+
+    /* Active-list linkage (intrusive doubly-linked) */
+    socket_t     *next_active;
+    socket_t     *prev_active;
 };
 
 /* Syscall implementations */
@@ -77,6 +82,14 @@ long do_getsockname(int fd, void *addr, int *addrlen);
 long do_getpeername(int fd, void *addr, int *addrlen);
 long do_shutdown(int fd, int how);
 long do_poll(void *fds, int nfds, int timeout);
+
+/* Slab pool + active list (defined in socket.c) */
+extern slab_t sock_slab;
+extern socket_t *sock_active_head;
+
+/* Alloc/free (O(1) via slab + active list) */
+socket_t *sock_alloc(void);
+void sock_free(socket_t *s);
 
 /* Called from do_read/do_write/do_close for FD_SOCKET */
 long socket_read(int fd, void *buf, long count);

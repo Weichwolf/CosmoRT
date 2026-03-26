@@ -50,25 +50,57 @@ struct k_sockaddr_in {
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
 
-/* Socket pool */
-static socket_t sockets[MAX_SOCKETS];
+/* Socket pool — slab-backed with active list */
+static socket_t sock_pool[SOCK_SLAB_CAP];
+slab_t sock_slab;
+socket_t *sock_active_head;
 static spinlock_t sock_lock = SPINLOCK_INIT;
+static int sock_slab_inited;
 
-static socket_t *sock_alloc(void) {
+static void sock_slab_ensure_init(void) {
+    if (__builtin_expect(sock_slab_inited, 1)) return;
+    slab_init(&sock_slab, sock_pool, (int)sizeof(socket_t), SOCK_SLAB_CAP);
+    sock_active_head = 0;
+    sock_slab_inited = 1;
+}
+
+/* Insert into active list (caller holds sock_lock) */
+static void sock_list_add(socket_t *s) {
+    s->prev_active = 0;
+    s->next_active = sock_active_head;
+    if (sock_active_head) sock_active_head->prev_active = s;
+    sock_active_head = s;
+}
+
+/* Remove from active list (caller holds sock_lock) */
+static void sock_list_del(socket_t *s) {
+    if (s->prev_active) s->prev_active->next_active = s->next_active;
+    else                 sock_active_head = s->next_active;
+    if (s->next_active) s->next_active->prev_active = s->prev_active;
+    s->next_active = 0;
+    s->prev_active = 0;
+}
+
+socket_t *sock_alloc(void) {
     uint64_t flags;
     spin_lock_irq(&sock_lock, &flags);
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        if (sockets[i].state == SOCK_UNUSED) {
-            /* Zero entire struct */
-            for (int j = 0; j < (int)sizeof(socket_t); j++)
-                ((uint8_t *)&sockets[i])[j] = 0;
-            sockets[i].state = SOCK_CREATED;
-            spin_unlock_irq(&sock_lock, flags);
-            return &sockets[i];
-        }
+    sock_slab_ensure_init();
+    socket_t *s = (socket_t *)slab_alloc(&sock_slab);
+    if (s) {
+        s->state = SOCK_CREATED;
+        sock_list_add(s);
     }
     spin_unlock_irq(&sock_lock, flags);
-    return 0;
+    return s;
+}
+
+void sock_free(socket_t *s) {
+    if (!s) return;
+    uint64_t flags;
+    spin_lock_irq(&sock_lock, &flags);
+    sock_list_del(s);
+    slab_free(&sock_slab, s);
+    spin_unlock_irq(&sock_lock, flags);
 }
 
 static socket_t *sock_from_fd(int fd) {
@@ -103,14 +135,14 @@ long do_socket(int domain, int type, int protocol) {
     s->is_dgram = (base_type == 2); /* SOCK_DGRAM */
 
     process_t *p = proc_current();
-    if (!p) { s->state = SOCK_UNUSED; return -EFAULT; }
+    if (!p) { sock_free(s); return -EFAULT; }
 
     int flags = 0x02; /* O_RDWR */
     if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC -> O_CLOEXEC */
     if (type & 0x800) flags |= 0x800;          /* SOCK_NONBLOCK -> O_NONBLOCK */
 
     int fd = fd_alloc(&p->fds, FD_SOCKET, s, flags);
-    if (fd < 0) { s->state = SOCK_UNUSED; return -EMFILE; }
+    if (fd < 0) { sock_free(s); return -EMFILE; }
     return fd;
 }
 
@@ -376,7 +408,7 @@ long socket_close(int fd) {
     }
     if (s->state == SOCK_CONNECTED && !s->is_dgram)
         net_tcp_close(&s->tcp);
-    s->state = SOCK_UNUSED;
+    sock_free(s);
 
     process_t *p = proc_current();
     if (p) fd_close(&p->fds, fd);
@@ -407,9 +439,8 @@ long do_bind(int fd, const void *addr, int addrlen) {
     /* Check for port conflict (unless SO_REUSEADDR) */
     uint64_t lflags;
     spin_lock_irq(&sock_lock, &lflags);
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        socket_t *o = &sockets[i];
-        if (o == s || o->state == SOCK_UNUSED) continue;
+    for (socket_t *o = sock_active_head; o; o = o->next_active) {
+        if (o == s) continue;
         if (o->local_port == k_addr.sin_port &&
             (o->local_ip == k_addr.sin_addr || k_addr.sin_addr == 0 || o->local_ip == 0)) {
             if (!(s->sockflags & SOCKF_REUSEADDR)) {
@@ -470,41 +501,36 @@ long do_accept(int fd, void *addr, int *addrlen) {
     uint64_t flags;
     spin_lock_irq(&sock_lock, &flags);
     if (ls->accept_count > 0) {
-        accept_conn_t *ac = &ls->accept_q[ls->accept_head];
+        accept_conn_t ac;
+        kmemcpy(&ac, &ls->accept_q[ls->accept_head], sizeof(accept_conn_t));
         ls->accept_head = (ls->accept_head + 1) % ACCEPT_QUEUE_MAX;
         ls->accept_count--;
-
-        socket_t *ns = 0;
-        for (int i = 0; i < MAX_SOCKETS; i++) {
-            if (sockets[i].state == SOCK_UNUSED) {
-                for (int j = 0; j < (int)sizeof(socket_t); j++)
-                    ((uint8_t *)&sockets[i])[j] = 0;
-                ns = &sockets[i];
-                break;
-            }
-        }
-        if (!ns) { spin_unlock_irq(&sock_lock, flags); return -EMFILE; }
-
-        kmemcpy(&ns->tcp, &ac->tcp, sizeof(net_tcp_t));
-        ns->state = SOCK_CONNECTED;
-        ns->refcount = 1;
-        ns->local_ip = ls->local_ip;
-        ns->local_port = ls->local_port;
-        ns->remote_ip = ac->remote_ip;
-        ns->remote_port = ac->remote_port;
+        uint32_t ls_local_ip = ls->local_ip;
+        uint16_t ls_local_port = ls->local_port;
         spin_unlock_irq(&sock_lock, flags);
 
+        socket_t *ns = sock_alloc();
+        if (!ns) return -EMFILE;
+
+        kmemcpy(&ns->tcp, &ac.tcp, sizeof(net_tcp_t));
+        ns->state = SOCK_CONNECTED;
+        ns->refcount = 1;
+        ns->local_ip = ls_local_ip;
+        ns->local_port = ls_local_port;
+        ns->remote_ip = ac.remote_ip;
+        ns->remote_port = ac.remote_port;
+
         p = proc_current();
-        if (!p) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EFAULT; }
+        if (!p) { sock_free(ns); return -EFAULT; }
         int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
-        if (newfd < 0) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EMFILE; }
+        if (newfd < 0) { sock_free(ns); return -EMFILE; }
 
         if (addr && addrlen) {
             struct k_sockaddr_in sa;
             for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
             sa.sin_family = 2;
-            sa.sin_port = ac->remote_port;
-            sa.sin_addr = ac->remote_ip;
+            sa.sin_port = ac.remote_port;
+            sa.sin_addr = ac.remote_ip;
             copy_to_user(addr, &sa, sizeof(sa));
             int len = (int)sizeof(struct k_sockaddr_in);
             copy_to_user(addrlen, &len, sizeof(int));
@@ -539,17 +565,8 @@ long do_accept(int fd, void *addr, int *addrlen) {
 
     /* Handshake complete — allocate new socket */
     q_tcp_wait_thread = 0;
-    socket_t *ns = 0;
-    spin_lock_irq(&sock_lock, &flags);
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        if (sockets[i].state == SOCK_UNUSED) {
-            for (int j = 0; j < (int)sizeof(socket_t); j++)
-                ((uint8_t *)&sockets[i])[j] = 0;
-            ns = &sockets[i];
-            break;
-        }
-    }
-    if (!ns) { spin_unlock_irq(&sock_lock, flags); return -EMFILE; }
+    socket_t *ns = sock_alloc();
+    if (!ns) return -EMFILE;
 
     kmemcpy(&ns->tcp, &ls->tcp, sizeof(net_tcp_t));
     ns->tcp.wait_thread = 0;
@@ -562,15 +579,14 @@ long do_accept(int fd, void *addr, int *addrlen) {
                     ((uint32_t)ls->tcp.dst_ip[2] << 16) |
                     ((uint32_t)ls->tcp.dst_ip[3] << 24);
     ns->remote_port = bswap16(ls->tcp.remote_port);
-    spin_unlock_irq(&sock_lock, flags);
 
     /* Reset listener's scratch tcp for next accept */
     kmemset(&ls->tcp, 0, sizeof(net_tcp_t));
 
     p = proc_current();
-    if (!p) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EFAULT; }
+    if (!p) { sock_free(ns); return -EFAULT; }
     int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
-    if (newfd < 0) { ns->refcount = 0; ns->state = SOCK_UNUSED; return -EMFILE; }
+    if (newfd < 0) { sock_free(ns); return -EMFILE; }
 
     if (addr && addrlen) {
         struct k_sockaddr_in sa;
