@@ -176,7 +176,7 @@ Tests:
 - TEST() fuer Unit-Tests, CRASH_TEST() fuer Adversarial-Tests
 - Self-Registering via Linker-Section — kein main.c anfassen
 - Kein Test darf haengen: wenn ein Test blockiert, ist das ein Kernel-Bug, kein Test-Bug
-- QEMU Serial-Log: /tmp/cosmo-serial.log (fuer Debugging nach test-hw)
+- QEMU Serial-Log: /tmp/cosmo-serial.log (User beobachtet das in Echtzeit)
 
 TODO.md:
 - Immer aktuell halten. Nach jedem Commit pruefen.
