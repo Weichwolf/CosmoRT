@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 679 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 686 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -226,8 +226,9 @@ unbenutzbar.
 
 ### Skal-D: ARP Cache (MITTEL)
 
-- [ ] arp_cache[]: Hash-Tabelle (IP → MAC) statt lineares Array[16]
-- [ ] test: 32+ ARP-Eintraege ohne Performance-Degradation
+- [x] arp_cache[]: Hash-Tabelle (64 Buckets, Chaining) + Pool (128 Entries)
+- [x] arp_cache_lookup() O(1) amortisiert, Round-Robin Eviction
+- [x] test: 64 Eintraege, Kollision, Pool-Overflow (7 Tests)
 
 ### Skal-E: Timer-Wheel Pool (MITTEL)
 
