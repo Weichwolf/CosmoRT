@@ -1,0 +1,140 @@
+/* CosmoRT Process — wait4, process cleanup */
+
+#include "proc/proc_internal.h"
+
+/* ── Process cleanup (2.3) ───────────────────────── */
+
+void proc_cleanup(process_t *p) {
+    if (!p) return;
+
+    /* Close all FDs — decrement refcount, free when last ref */
+    for (int i = 0; i < FD_MAX; i++) {
+        int type = p->fds.entries[i].type;
+        if (type == FD_FILE) {
+            vfs_file_free_obj(p->fds.entries[i].obj);
+        } else if (type != FD_NONE && type != FD_SERIAL) {
+            fd_cleanup_entry(type, p->fds.entries[i].obj);
+        }
+        p->fds.entries[i].type = FD_NONE;
+        p->fds.entries[i].obj = 0;
+    }
+    /* Reset bitmap: all free */
+    for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
+
+    /* Free all threads */
+    thread_t *t = p->threads;
+    while (t) {
+        thread_t *next = t->proc_next;
+        t->state = THREAD_DEAD;
+        thread_free(t);
+        t = next;
+    }
+    p->threads = 0;
+    p->main_thread = 0;
+    p->thread_count = 0;
+
+    /* Shared VMA pages belong to the allocator — clear PTEs so
+     * free_address_space doesn't double-free them. */
+    unmap_shared_vmas(p->vma_root, p->pml4);
+
+    /* Free address space (pages + page tables) */
+    free_address_space(p->pml4);
+    p->pml4 = 0;
+
+    /* Free VMAs */
+    vma_free_tree(p->vma_root);
+    p->vma_root = 0;
+
+    /* Clear lookup table entry */
+    if (p->pid < PID_TABLE_MAX)
+        pid_table[p->pid] = 0;
+
+    /* Free process struct */
+    slab_free(&proc_slab, p);
+}
+
+/* ── wait4 (2.2) ─────────────────────────────────── */
+
+long do_wait4(int pid, int *wstatus, int options, void *rusage) {
+    (void)rusage;
+
+    thread_t *cur = thread_current();
+    if (!cur || !cur->proc) return -EFAULT;
+    process_t *parent = cur->proc;
+
+    if (wstatus && !((uint64_t)wstatus < 0x800000000000ULL &&
+                     (uint64_t)wstatus + sizeof(int) <= 0x800000000000ULL &&
+                     (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
+        return -EFAULT;
+
+    int wnohang    = options & 1;  /* WNOHANG = 1 */
+    int wuntraced  = options & 2;  /* WUNTRACED = 2 */
+    int wcontinued = options & 8;  /* WCONTINUED = 8 */
+
+    /* Scan for matching child */
+    for (;;) {
+        int found_child = 0;
+
+        for (int i = 1; i < PID_TABLE_MAX; i++) {
+            process_t *child = pid_table[i];
+            if (!child || child->state == PROC_FREE) continue;
+            if (child->pid != (uint32_t)i) continue;
+            if (child->parent_pid != parent->pid) continue;
+            if (pid > 0 && child->pid != (uint32_t)pid) continue;
+            if (pid == 0 || pid == -1) { /* wait for any child */ }
+
+            found_child = 1;
+
+            /* WUNTRACED: report stopped children */
+            if (wuntraced && child->stop_signal) {
+                int child_pid = (int)child->pid;
+                int stop_sig = child->stop_signal;
+                child->stop_signal = 0; /* consume — one report per stop */
+                if (wstatus) {
+                    int kstatus = (stop_sig << 8) | 0x7F; /* WIFSTOPPED */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
+                return child_pid;
+            }
+
+            /* WCONTINUED: report continued children */
+            if (wcontinued && child->was_continued) {
+                int child_pid = (int)child->pid;
+                child->was_continued = 0; /* consume */
+                if (wstatus) {
+                    int kstatus = 0xFFFF; /* WIFCONTINUED */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
+                return child_pid;
+            }
+
+            if (child->state == PROC_ZOMBIE) {
+                int child_pid = (int)child->pid;
+                int exit_status = child->exit_code;
+
+                if (wstatus) {
+                    int kstatus;
+                    if (child->exit_signal)
+                        kstatus = child->exit_signal & 0x7F; /* killed by signal */
+                    else
+                        kstatus = (exit_status & 0xFF) << 8;  /* normal exit */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
+
+                proc_cleanup(child);
+                return child_pid;
+            }
+        }
+
+        if (!found_child) return -ECHILD;
+        if (wnohang) return 0;
+
+        /* Block: child exists but hasn't exited/stopped/continued.
+         * event_post wakes us. event_wait either blocks (syscall restart)
+         * or returns immediately (event queued). Loop re-scans children. */
+        {
+            event_t ev;
+            event_wait(&cur->eq, &ev, -1);
+        }
+    }
+}

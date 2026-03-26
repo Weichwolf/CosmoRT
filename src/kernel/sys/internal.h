@@ -150,13 +150,18 @@ long do_sched_getparam(int pid, void *param);
 
 /* ── Forward declarations: sys_signal.c ── */
 void check_pending_signals(void);
-void check_signals_syscall_path(long *result_ptr, long num);
-long do_rt_sigaction(int sig, const void *act, void *oldact, size_t sigsetsize);
 long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset, size_t sigsetsize);
-long do_rt_sigreturn(void);
 long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
+
+/* ── Forward declarations: sys_signal_frame.c ── */
+void deliver_signal(thread_t *t, int signo);
+long do_rt_sigreturn(void);
+
+/* ── Forward declarations: sys_signal_handler.c ── */
+void check_signals_syscall_path(long *result_ptr, long num);
+long do_rt_sigaction(int sig, const void *act, void *oldact, size_t sigsetsize);
 long do_sigaltstack(const void *ss, void *oss);
 long do_alarm(unsigned int seconds);
 

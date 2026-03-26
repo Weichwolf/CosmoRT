@@ -71,6 +71,10 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/dedup.o
 
 KERN_PROC = $(BUILD)/kernel/proc/process.o \
+            $(BUILD)/kernel/proc/process_lazy.o \
+            $(BUILD)/kernel/proc/process_fork.o \
+            $(BUILD)/kernel/proc/process_exec.o \
+            $(BUILD)/kernel/proc/process_wait.o \
             $(BUILD)/kernel/proc/elf.o
 
 KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
@@ -80,6 +84,8 @@ KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_proc.o \
              $(BUILD)/kernel/sys/sys_sched.o \
              $(BUILD)/kernel/sys/sys_signal.o \
+             $(BUILD)/kernel/sys/sys_signal_frame.o \
+             $(BUILD)/kernel/sys/sys_signal_handler.o \
              $(BUILD)/kernel/sys/sys_time.o \
              $(BUILD)/kernel/sys/sys_ipc.o \
              $(BUILD)/kernel/sys/sys_net.o \
@@ -93,6 +99,11 @@ KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
             $(BUILD)/kernel/ipc/net_port.o
 
 KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
+            $(BUILD)/kernel/fs/vfs_lookup.o \
+            $(BUILD)/kernel/fs/vfs_rw.o \
+            $(BUILD)/kernel/fs/vfs_dirops.o \
+            $(BUILD)/kernel/fs/vfs_ioctls.o \
+            $(BUILD)/kernel/fs/vfs_symlink.o \
             $(BUILD)/kernel/fs/cosmofs.o \
             $(BUILD)/kernel/fs/btree.o \
             $(BUILD)/kernel/fs/bcache.o \
