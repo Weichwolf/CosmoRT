@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 686 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 882 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -232,9 +232,10 @@ unbenutzbar.
 
 ### Skal-E: Timer-Wheel Pool (MITTEL)
 
-- [ ] tw.entries[]: Free-List oder Bitmap statt O(n) lineare Suche
-- [ ] TW_MAX_TIMERS erhoehen (64 → 256+)
-- [ ] test: 128+ aktive Timer
+- [x] tw_alloc/tw_free: O(1) Free-Stack statt O(n) lineare Suche
+- [x] TW_MAX_TIMERS bereits 256
+- [x] timer_wheel_active_count() O(1) Arithmetik statt O(n) Zaehlschleife
+- [x] test: 128 Timer gleichzeitig, Cancel/Re-Alloc Roundtrip
 
 ### Skal-F: FD-Tabelle (NIEDRIG)
 

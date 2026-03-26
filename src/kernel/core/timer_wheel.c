@@ -15,6 +15,11 @@
 static timer_wheel_t tw;
 static uint64_t tw_last_ms;
 
+/* ── Free-Stack: O(1) alloc/free ────────────────── */
+
+static int free_stack[TW_MAX_TIMERS];
+static int free_top;  /* points to next free slot (stack grows upward) */
+
 /* ── Timer Request Ring (Compute→RT) ─────────────── */
 
 #define TW_REQ_RING_SIZE 1024   /* power of 2 */
@@ -34,6 +39,11 @@ void timer_wheel_init(void) {
         tw.entries[i].slot = -1;
     }
 
+    /* Fill free-stack: all indices available, pop from top */
+    for (int i = 0; i < TW_MAX_TIMERS; i++)
+        free_stack[i] = i;
+    free_top = TW_MAX_TIMERS;
+
     tw.current_tick = 0;
     tw.current_slot = 0;
     tw_last_ms = timer_ms();
@@ -47,17 +57,17 @@ void timer_wheel_init(void) {
 /* ── Pool alloc/free ─────────────────────────────── */
 
 static int tw_alloc_entry(void) {
-    for (int i = 0; i < TW_MAX_TIMERS; i++) {
-        if (!tw.entries[i].active)
-            return i;
-    }
-    return -1;
+    if (__builtin_expect(free_top == 0, 0))
+        return -1;
+    int idx = free_stack[--free_top];
+    return idx;
 }
 
 static void tw_free_entry(int idx) {
     tw.entries[idx].active = 0;
     tw.entries[idx].next = -1;
     tw.entries[idx].slot = -1;
+    free_stack[free_top++] = idx;
 }
 
 /* ── Remove entry from its slot list ─────────────── */
@@ -217,10 +227,7 @@ int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms) {
 uint64_t timer_wheel_current_tick(void) { return tw.current_tick; }
 
 int timer_wheel_active_count(void) {
-    int n = 0;
-    for (int i = 0; i < TW_MAX_TIMERS; i++)
-        if (tw.entries[i].active) n++;
-    return n;
+    return TW_MAX_TIMERS - free_top;
 }
 
 /* ── rt_poll handler ─────────────────────────────── */

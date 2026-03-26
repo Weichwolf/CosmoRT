@@ -112,4 +112,64 @@ static void test_timer_wheel(void) {
     check_val("cancel nonexistent returns 0", cancelled, 0);
 }
 
+static void test_timer_wheel_pool(void) {
+    puts("\n[timer_wheel_pool]\n");
+
+    /* Let any prior activity settle */
+    msleep(500);
+    long base = tw_count();
+
+    /* ── 128+ timers simultaneously active ── */
+    #define POOL_N 128
+    for (int i = 0; i < POOL_N; i++) {
+        long ctx = 0xF000000 + i;
+        long r = tw_set(TW_ACTION_TCP_RETRANSMIT, ctx, 30000);
+        check_val("pool set ok", r, 0);
+    }
+
+    /* Wait for all to be drained into wheel */
+    for (int i = 0; i < 3000; i += 20) {
+        if (tw_count() >= base + POOL_N) break;
+        msleep(20);
+    }
+    long cnt = tw_count();
+    check("128 timers active", cnt >= base + POOL_N);
+
+    /* ── Alloc/free/re-alloc roundtrip ── */
+    /* Cancel half, then re-add — exercises free-stack recycling */
+    for (int i = 0; i < POOL_N / 2; i++) {
+        long ctx = 0xF000000 + i;
+        tw_cancel(ctx);
+    }
+    cnt = tw_count();
+    check("64 remain after half cancel", cnt >= base + POOL_N / 2);
+
+    /* Re-add the cancelled ones */
+    for (int i = 0; i < POOL_N / 2; i++) {
+        long ctx = 0xF100000 + i;
+        long r = tw_set(TW_ACTION_TCP_RETRANSMIT, ctx, 30000);
+        check_val("re-alloc ok", r, 0);
+    }
+
+    for (int i = 0; i < 3000; i += 20) {
+        if (tw_count() >= base + POOL_N) break;
+        msleep(20);
+    }
+    cnt = tw_count();
+    check("128 timers active after re-alloc", cnt >= base + POOL_N);
+
+    /* Cleanup: cancel all */
+    for (int i = POOL_N / 2; i < POOL_N; i++) {
+        long ctx = 0xF000000 + i;
+        tw_cancel(ctx);
+    }
+    for (int i = 0; i < POOL_N / 2; i++) {
+        long ctx = 0xF100000 + i;
+        tw_cancel(ctx);
+    }
+    cnt = tw_count();
+    check_val("all pool timers cleaned", cnt, base);
+}
+
 TEST("timer_wheel", test_timer_wheel);
+TEST("timer_wheel_pool", test_timer_wheel_pool);

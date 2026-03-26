@@ -16,7 +16,7 @@
 /* ── Timer Wheel Config ──────────────────────────── */
 
 #define TW_SLOTS      256       /* 1ms per slot → 256ms full revolution */
-#define TW_MAX_TIMERS 64        /* max concurrent active timers */
+#define TW_MAX_TIMERS 256       /* max concurrent active timers */
 
 /* ── Timer Actions ───────────────────────────────── */
 
