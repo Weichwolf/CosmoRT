@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 951 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 960 ktest PASS, 0 FAIL.
 
 ---
 
@@ -38,21 +38,14 @@ arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
 - [ ] Mehrere Prozesse koennen gleiche Datei MAP_SHARED mappen
 - [ ] test: MAP_SHARED write + read von zweitem Prozess
 
-### SH-D: Signale vervollstaendigen
+### SH-D: Signale — erledigt
 
-- [ ] SIGPIPE: write auf geschlossene Pipe/Socket → SIGPIPE an Writer
-- [ ] SIGALRM: alarm() / setitimer() Syscall
-- [ ] SIGCHLD: korrekt an Parent bei Child-Exit (fuer wait-Loops)
-- [ ] SIGWINCH: Terminal-Resize an Foreground-Prozess
-- [ ] test: write auf geschlossene Pipe → SIGPIPE
-- [ ] test: alarm(1) → SIGALRM nach 1s
+SIGPIPE (Pipe+Socket+Unix), SIGALRM (alarm Syscall), SIGCHLD (Child-Exit),
+SIGWINCH (TIOCSWINSZ). 13 Tests.
 
-### SH-E: Terminal-Groesse
+### SH-E: Terminal-Groesse — erledigt
 
-- [ ] ioctl TIOCGWINSZ: Terminal-Breite/Hoehe abfragen
-- [ ] ioctl TIOCSWINSZ: Terminal-Groesse setzen
-- [ ] SIGWINCH bei Groessenaenderung an Foreground Process Group
-- [ ] test: TIOCGWINSZ liefert korrekte Spalten/Zeilen
+TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
 ### SH-F: /proc erweitern
 
