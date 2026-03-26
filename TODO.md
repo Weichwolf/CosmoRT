@@ -33,20 +33,43 @@ arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
 
 Problem: 15+ Stellen im Kernel setzen THREAD_BLOCKED + thread_return_to_kernel
 direkt. Jede Stelle ist ein potentieller Hang-Bug (Wake verloren, Race, State-Fehler).
-Netzwerk hat Sleep/Wake ueber sock_block_thread, aber wait4, futex, pipe, epoll,
-unix_socket nutzen ad-hoc Blocking.
+Job Control musste reverted werden weil wait4 nach fork+setpgid haengt.
 
-- [ ] event_queue_t pro Thread: Lock-free Queue fuer Wake-Events
-- [ ] event_post(queue, type, data): Event in Queue, sched_wake (nie verloren)
-- [ ] event_wait(queue, timeout): Queue leer → sleep, wird von event_post geweckt
-- [ ] wait4 → event_wait (CHILD_EXITED Events von exit_kill_process)
-- [ ] futex_wait → event_wait (FUTEX_WAKE Events)
-- [ ] pipe_read blocking → event_wait (PIPE_DATA Events von pipe_write)
-- [ ] epoll_wait → event_wait (EPOLL_READY Events)
-- [ ] unix_socket accept/recv → event_wait
-- [ ] sock_block_thread vereinheitlichen (aktuell Sonderfall fuer Netzwerk)
-- [ ] Alle 15+ THREAD_BLOCKED-Stellen auf event_wait umstellen
-- [ ] test: kein Test darf haengen — jeder blocking Pfad muss korrekt aufwachen
+### EQ-A: event_queue_t Infrastruktur
+
+- [ ] include/kernel/core/event_queue.h: event_queue_t (Lock-free SPSC oder kleine Queue)
+- [ ] event_queue_init(eq): Queue initialisieren (pro Thread, nicht pro Prozess)
+- [ ] event_post(eq, type, data): Event in Queue + sched_wake (atomar, nie verloren)
+- [ ] event_wait(eq, timeout_ms): Queue leer → sleep, Event da → return sofort
+- [ ] event_poll(eq): Non-blocking check (fuer WNOHANG etc.)
+- [ ] Thread-State: THREAD_BLOCKED nur ueber event_wait, nie direkt setzen
+- [ ] Timeout: Timer-Wheel Integration (event_wait mit Deadline)
+- [ ] test: post+wait Roundtrip, post vor wait (sofort return), Timeout
+
+### EQ-B: Alle blocking Syscalls umstellen
+
+15+ Stellen von ad-hoc THREAD_BLOCKED auf event_wait:
+- [ ] wait4 → event_wait(CHILD_EXITED) / event_post aus exit_kill_process
+- [ ] futex_wait → event_wait(FUTEX_WAKE) / event_post aus futex_wake
+- [ ] pipe_read → event_wait(PIPE_DATA) / event_post aus pipe_write
+- [ ] epoll_wait → event_wait(EPOLL_READY) / event_post aus epoll_wake
+- [ ] unix_socket recv/accept → event_wait / event_post aus send/connect
+- [ ] sock_block_thread → event_wait (Netzwerk vereinheitlichen)
+- [ ] do_poll → event_wait
+- [ ] sock_block_thread in socket.c eliminieren (durch event_wait ersetzen)
+- [ ] Alle thread_return_to_kernel Aufrufe ausser in event_wait eliminieren
+- [ ] test: kein Test darf haengen, 975+ PASS
+
+### EQ-C: Job Control (auf Event-Queue Basis)
+
+Abhaengigkeit: EQ-A + EQ-B muessen fertig sein.
+- [ ] TIOCSPGRP/TIOCGPGRP: Foreground Process Group pro TTY
+- [ ] SIGTSTP (Ctrl-Z): Foreground-Prozess stoppen (THREAD_STOPPED)
+- [ ] SIGCONT: Gestoppten Prozess fortsetzen
+- [ ] SIGINT (Ctrl-C): An Foreground Process Group senden
+- [ ] Terminal Driver: Ctrl-C/Z/\ → Signal an Foreground PG
+- [ ] waitpid WUNTRACED/WCONTINUED via event_wait(CHILD_STOPPED/CONTINUED)
+- [ ] test: Ctrl-C killt Foreground, Ctrl-Z stoppt, fg setzt fort
 
 ## Offen — Self-Hosting Blocker
 
