@@ -189,9 +189,128 @@ static void test_demand_paging_shared(void) {
     sc1(SYS_UNLINK, (long)"/tmp/dptest_sh");
 }
 
+/* test_msync_write_back: write via MAP_SHARED mmap, msync, verify via read() */
+static void test_msync_write_back(void) {
+    puts("\n[msync write_back]\n");
+
+    long fd = create_test_file("/tmp/msync_test", 0xAAAAAAAAAAAAAAAAULL);
+    check("create file", fd >= 0);
+    sc1(SYS_CLOSE, fd);
+
+    fd = sc3(SYS_OPEN, (long)"/tmp/msync_test", O_RDWR, 0);
+    check("reopen", fd >= 0);
+
+    long addr = sc6(SYS_MMAP, 0, PAGE, PROT_RW, MAP_SHARED, fd, 0);
+    check("mmap shared", addr > 0x1000);
+
+    /* Write through mmap */
+    volatile uint64_t *p = (volatile uint64_t *)addr;
+    *p = 0xDEADBEEFDEADBEEFULL;
+
+    /* msync to flush dirty pages to file */
+    long rc = sc3(SYS_MSYNC, addr, PAGE, MS_SYNC);
+    check("msync", rc == 0);
+
+    /* Read file via read() to verify write-back */
+    sc3(SYS_LSEEK, fd, 0, SEEK_SET);
+    uint64_t buf[PAGE / 8];
+    long rd = sc3(SYS_READ, fd, (long)buf, PAGE);
+    check("read", rd == PAGE);
+    check_val("data written back", (long)buf[0], (long)0xDEADBEEFDEADBEEFULL);
+    /* Other words should still have original pattern */
+    check_val("other data intact", (long)buf[1], (long)0xAAAAAAAAAAAAAAAAULL);
+
+    sc2(SYS_MUNMAP, addr, PAGE);
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/msync_test");
+}
+
+/* test_dirty_tracking: only written pages are dirty, others stay clean */
+static void test_dirty_tracking(void) {
+    puts("\n[dirty_tracking]\n");
+
+    /* Create 3-page file with known pattern */
+    long fd = sc3(SYS_OPEN, (long)"/tmp/dirty_track", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check("create file", fd >= 0);
+
+    uint64_t buf[PAGE / 8];
+    for (int pg = 0; pg < 3; pg++) {
+        for (int i = 0; i < PAGE / 8; i++)
+            buf[i] = 0x1111111111111111ULL * (uint64_t)(pg + 1);
+        sc3(SYS_WRITE, fd, (long)buf, PAGE);
+    }
+    sc1(SYS_CLOSE, fd);
+
+    fd = sc3(SYS_OPEN, (long)"/tmp/dirty_track", O_RDWR, 0);
+    check("reopen", fd >= 0);
+
+    long addr = sc6(SYS_MMAP, 0, 3 * PAGE, PROT_RW, MAP_SHARED, fd, 0);
+    check("mmap 3 pages", addr > 0x1000);
+
+    /* Only write to page 1 (middle page) */
+    volatile uint64_t *p1 = (volatile uint64_t *)(addr + PAGE);
+    *p1 = 0xBBBBBBBBBBBBBBBBULL;
+
+    /* msync all 3 pages */
+    long rc = sc3(SYS_MSYNC, addr, 3 * PAGE, MS_SYNC);
+    check("msync", rc == 0);
+
+    /* Read back and verify: page 0 unchanged, page 1 modified, page 2 unchanged */
+    sc3(SYS_LSEEK, fd, 0, SEEK_SET);
+    uint64_t rbuf[PAGE / 8];
+
+    sc3(SYS_READ, fd, (long)rbuf, PAGE);
+    check_val("page0 unchanged", (long)rbuf[0], (long)0x1111111111111111ULL);
+
+    sc3(SYS_READ, fd, (long)rbuf, PAGE);
+    check_val("page1 written", (long)rbuf[0], (long)0xBBBBBBBBBBBBBBBBULL);
+
+    sc3(SYS_READ, fd, (long)rbuf, PAGE);
+    check_val("page2 unchanged", (long)rbuf[0], (long)0x3333333333333333ULL);
+
+    sc2(SYS_MUNMAP, addr, 3 * PAGE);
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/dirty_track");
+}
+
+/* test_munmap_implicit_writeback: dirty pages written back on munmap */
+static void test_munmap_implicit_writeback(void) {
+    puts("\n[munmap_implicit_writeback]\n");
+
+    long fd = create_test_file("/tmp/munmap_wb", 0x5555555555555555ULL);
+    check("create file", fd >= 0);
+    sc1(SYS_CLOSE, fd);
+
+    fd = sc3(SYS_OPEN, (long)"/tmp/munmap_wb", O_RDWR, 0);
+    check("reopen", fd >= 0);
+
+    long addr = sc6(SYS_MMAP, 0, PAGE, PROT_RW, MAP_SHARED, fd, 0);
+    check("mmap shared", addr > 0x1000);
+
+    /* Write through mmap, no explicit msync */
+    volatile uint64_t *p = (volatile uint64_t *)addr;
+    *p = 0x9999999999999999ULL;
+
+    /* munmap should implicitly write-back dirty pages */
+    sc2(SYS_MUNMAP, addr, PAGE);
+
+    /* Verify via read() */
+    sc3(SYS_LSEEK, fd, 0, SEEK_SET);
+    uint64_t buf[PAGE / 8];
+    long rd = sc3(SYS_READ, fd, (long)buf, PAGE);
+    check("read", rd == PAGE);
+    check_val("implicit writeback", (long)buf[0], (long)0x9999999999999999ULL);
+
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/munmap_wb");
+}
+
 TEST("shared_mmap_basic", test_shared_mmap_basic);
 TEST("shared_mmap_fork", test_shared_mmap_fork);
 TEST("shared_mmap_two_maps", test_shared_mmap_two_maps);
 TEST("demand_paging_file", test_demand_paging_file);
 TEST("demand_paging_sparse", test_demand_paging_sparse);
 TEST("demand_paging_shared", test_demand_paging_shared);
+TEST("msync_write_back", test_msync_write_back);
+TEST("dirty_tracking", test_dirty_tracking);
+TEST("munmap_implicit_writeback", test_munmap_implicit_writeback);

@@ -233,9 +233,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                 uint64_t phys = 0;
                                 if (k_shared)
                                     phys = page_cache_lookup(k_file_ino, foff);
+                                /* Shared writable: map read-only for dirty tracking */
+                                int kmap_prot = kprot;
+                                if (k_shared && (kprot & PROT_WRITE))
+                                    kmap_prot = kprot & ~PROT_WRITE;
                                 if (phys) {
                                     page_incref(phys);
-                                    if (map_user_page(kp->pml4, kpage_addr, phys, kprot) == 0)
+                                    if (map_user_page(kp->pml4, kpage_addr, phys, kmap_prot) == 0)
                                         return;
                                     page_free(phys_to_virt(phys));
                                 } else {
@@ -246,7 +250,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                         phys = virt_to_phys(kpg);
                                         if (k_shared)
                                             page_cache_insert(k_file_ino, foff, phys);
-                                        if (map_user_page(kp->pml4, kpage_addr, phys, kprot) == 0)
+                                        if (map_user_page(kp->pml4, kpage_addr, phys, kmap_prot) == 0)
                                             return;
                                         page_free(kpg);
                                     }
@@ -425,9 +429,14 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         /* MAP_SHARED: check page cache first */
                         if (dp_shared)
                             phys = page_cache_lookup(dp_file_ino, foff);
+                        /* MAP_SHARED + writable: map read-only for dirty tracking.
+                         * Write faults will enable PTE_WRITE; CPU sets PTE_DIRTY. */
+                        int map_prot = dp_prot;
+                        if (dp_shared && (dp_prot & PROT_WRITE))
+                            map_prot = dp_prot & ~PROT_WRITE;
                         if (phys) {
                             page_incref(phys);
-                            if (map_user_page(p->pml4, page_addr, phys, dp_prot) == 0)
+                            if (map_user_page(p->pml4, page_addr, phys, map_prot) == 0)
                                 return;
                             page_free(phys_to_virt(phys));
                         } else {
@@ -438,7 +447,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                 phys = virt_to_phys(pg);
                                 if (dp_shared)
                                     page_cache_insert(dp_file_ino, foff, phys);
-                                if (map_user_page(p->pml4, page_addr, phys, dp_prot) == 0)
+                                if (map_user_page(p->pml4, page_addr, phys, map_prot) == 0)
                                     return;
                                 page_free(pg);
                             }

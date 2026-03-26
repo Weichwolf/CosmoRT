@@ -134,7 +134,8 @@ void vma_free_tree(vma_t *node) {
 }
 
 /* Clear PTEs for shared VMAs without freeing physical pages (owner frees them).
- * Must run BEFORE free_address_space which frees every present page. */
+ * Must run BEFORE free_address_space which frees every present page.
+ * Write-back dirty pages for file-backed shared VMAs before clearing PTEs. */
 void unmap_shared_vmas(vma_t *node, uint64_t *user_pml4) {
     if (!node || !user_pml4) return;
     unmap_shared_vmas(node->left, user_pml4);
@@ -150,6 +151,15 @@ void unmap_shared_vmas(vma_t *node, uint64_t *user_pml4) {
             if (!(pd[pdi] & PTE_PRESENT)) continue;
             uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
             int pti = (va >> 12) & 0x1FF;
+            uint64_t pte = pt[pti];
+            /* Write-back dirty file-backed pages before clearing */
+            if ((pte & PTE_PRESENT) && (pte & PTE_DIRTY) && node->file_ino) {
+                uint64_t phys = pte & PTE_ADDR_MASK;
+                uint64_t foff = node->file_offset + (va - node->start);
+                extern long vfs_pwrite_by_ino(int, uint64_t, const void *, size_t, size_t);
+                vfs_pwrite_by_ino(node->file_backend, node->file_ino,
+                                  phys_to_virt(phys), (size_t)foff, 4096);
+            }
             pt[pti] = 0;  /* clear PTE, don't free the page */
         }
     }

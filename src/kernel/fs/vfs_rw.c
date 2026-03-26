@@ -257,6 +257,27 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
     return (long)len;
 }
 
+/* Write by inode (for msync / dirty page write-back) */
+
+long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len) {
+    if (backend == VFS_BACKEND_COSMOFS) {
+        extern int cosmofs_write(uint64_t ino, const void *buf, size_t offset, size_t len);
+        return (long)cosmofs_write(ino, buf, offset, len);
+    }
+    /* ramfs: find node by inode, write to its data buffer */
+    extern struct vfs_node *vfs_root_node;
+    struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
+    if (!node || node->type != VFS_FILE) return -ENOENT;
+    size_t end = offset + len;
+    if (end > node->capacity) {
+        if (grow_file(node, end) < 0) return -ENOMEM;
+    }
+    if (node->data)
+        kmemcpy(node->data + offset, buf, len);
+    if (end > node->size) node->size = end;
+    return (long)len;
+}
+
 long vfs_lseek(int fd, long offset, int whence) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

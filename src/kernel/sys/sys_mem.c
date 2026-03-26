@@ -579,6 +579,46 @@ long do_munmap(unsigned long addr, size_t length) {
     uint64_t start = addr;
     uint64_t end = addr + length;
 
+    /* Write-back dirty pages for shared file-backed VMAs before unmapping.
+     * Snapshot VMA info under lock, release, write-back, re-acquire. */
+    {
+        uint64_t irqf_wb;
+        spin_lock_irq(&p->lock, &irqf_wb);
+        /* Find overlapping shared file-backed VMAs (max 4 for typical use) */
+        struct { uint64_t start, end, file_ino, file_offset; int backend; } wb[4];
+        int nwb = 0;
+        for (uint64_t probe = start; probe < end && nwb < 4; ) {
+            vma_t *v = vma_find(p->vma_root, probe);
+            if (!v) { probe += 4096; continue; }
+            if ((v->flags & VMA_SHARED) && v->file_ino) {
+                wb[nwb].start = probe > v->start ? probe : v->start;
+                wb[nwb].end = end < v->end ? end : v->end;
+                wb[nwb].file_ino = v->file_ino;
+                wb[nwb].file_offset = v->file_offset;
+                wb[nwb].backend = v->file_backend;
+                /* Adjust file_offset for partial VMA overlap */
+                if (probe > v->start)
+                    wb[nwb].file_offset += probe - v->start;
+                nwb++;
+            }
+            probe = v->end;
+        }
+        spin_unlock_irq(&p->lock, irqf_wb);
+        for (int i = 0; i < nwb; i++) {
+            extern long vfs_pwrite_by_ino(int, uint64_t, const void *, size_t, size_t);
+            for (uint64_t va = wb[i].start; va < wb[i].end; va += 4096) {
+                extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
+                uint64_t pte = read_pte_pub(p->pml4, va);
+                if ((pte & PTE_PRESENT) && (pte & PTE_DIRTY)) {
+                    uint64_t phys = pte & PTE_ADDR_MASK;
+                    uint64_t foff = wb[i].file_offset + (va - wb[i].start);
+                    vfs_pwrite_by_ino(wb[i].backend, wb[i].file_ino,
+                                      phys_to_virt(phys), (size_t)foff, 4096);
+                }
+            }
+        }
+    }
+
     uint64_t irqf;
     spin_lock_irq(&p->lock, &irqf);
 
@@ -900,4 +940,96 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
     spin_unlock_irq(&p->lock, irqf);
     return (long)new_va;
+}
+
+/* ── Dirty page write-back for shared file-backed VMAs ── */
+
+/* Write back dirty pages in [start, end) for a shared file-backed VMA.
+ * Caller must NOT hold p->lock (we walk page tables directly). */
+static void writeback_dirty_pages(uint64_t *user_pml4, uint64_t start, uint64_t end,
+                                  int file_backend, uint64_t file_ino,
+                                  uint64_t file_offset, uint64_t vma_start) {
+    extern long vfs_pwrite_by_ino(int, uint64_t, const void *, size_t, size_t);
+    for (uint64_t va = start; va < end; va += 4096) {
+        int pml4i = (va >> 39) & 0x1FF;
+        if (!(user_pml4[pml4i] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 39) - 1));
+            continue;
+        }
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
+        int pdpti = (va >> 30) & 0x1FF;
+        if (!(pdpt[pdpti] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 30) - 1));
+            continue;
+        }
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+        int pdi = (va >> 21) & 0x1FF;
+        if (!(pd[pdi] & PTE_PRESENT)) {
+            va = (va | ((1ULL << 21) - 1));
+            continue;
+        }
+        if (pd[pdi] & PTE_PS) continue; /* huge pages not used for file-backed */
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+        int pti = (va >> 12) & 0x1FF;
+        uint64_t pte = pt[pti];
+        if ((pte & PTE_PRESENT) && (pte & PTE_DIRTY)) {
+            uint64_t phys = pte & PTE_ADDR_MASK;
+            uint64_t foff = file_offset + (va - vma_start);
+            vfs_pwrite_by_ino(file_backend, file_ino,
+                              phys_to_virt(phys), (size_t)foff, 4096);
+            /* Clear dirty bit — page is now clean */
+            pt[pti] = pte & ~PTE_DIRTY;
+            arch_invlpg(va);
+        }
+    }
+}
+
+/* ── SYS_msync (26) ──────────────────────────────── */
+
+long do_msync(unsigned long addr, size_t length, int flags) {
+    if (addr & 0xFFF) return -EINVAL;
+    if (length == 0) return -EINVAL;
+    int valid = MS_ASYNC | MS_SYNC | MS_INVALIDATE;
+    if (flags & ~valid) return -EINVAL;
+    if ((flags & MS_ASYNC) && (flags & MS_SYNC)) return -EINVAL;
+    if (!(flags & (MS_ASYNC | MS_SYNC))) return -EINVAL;
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    length = (length + 0xFFF) & ~0xFFFULL;
+    uint64_t start = addr;
+    uint64_t end = addr + length;
+
+    /* Walk pages in the range, find shared file-backed VMAs, write dirty pages */
+    for (uint64_t va = start; va < end; ) {
+        uint64_t irqf;
+        spin_lock_irq(&p->lock, &irqf);
+        vma_t *vma = vma_find(p->vma_root, va);
+        if (!vma) {
+            spin_unlock_irq(&p->lock, irqf);
+            /* Skip to next page — no VMA at this address */
+            va += 4096;
+            continue;
+        }
+        /* Snapshot VMA fields under lock */
+        uint64_t v_start = vma->start;
+        uint64_t v_end = vma->end;
+        int v_flags = vma->flags;
+        uint64_t v_file_ino = vma->file_ino;
+        uint64_t v_file_offset = vma->file_offset;
+        int v_file_backend = vma->file_backend;
+        spin_unlock_irq(&p->lock, irqf);
+
+        /* Only write-back shared file-backed VMAs */
+        if ((v_flags & VMA_SHARED) && v_file_ino) {
+            uint64_t wb_start = va > v_start ? va : v_start;
+            uint64_t wb_end = end < v_end ? end : v_end;
+            writeback_dirty_pages(p->pml4, wb_start, wb_end,
+                                  v_file_backend, v_file_ino,
+                                  v_file_offset, v_start);
+        }
+        va = v_end; /* advance past this VMA */
+    }
+    return 0;
 }

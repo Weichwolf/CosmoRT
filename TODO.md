@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1072 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1091 ktest PASS, 0 FAIL.
 
 ---
 
@@ -72,16 +72,12 @@ msync mit Signatur (addr, len, flags) + Validierung (Write-Back: SH-C3).
 MS_ASYNC/MS_SYNC/MS_INVALIDATE in linux/mman.h. VMA-Splits propagieren File-Felder.
 19 Tests (3 alt + 16 neue Checks).
 
-#### SH-C3: Dirty Tracking + Write-Back
+#### SH-C3: Dirty Tracking + Write-Back — erledigt
 
-- [ ] PTE_DIRTY Tracking: Write-Fault auf shared file-backed → PTE_DIRTY setzen
-- [ ] Dirty-Bitmap pro VMA oder PTE-Scan bei msync
-- [ ] msync(MS_SYNC): dirty Pages per vfs_pwrite zurueckschreiben
-- [ ] msync(MS_ASYNC): dirty Pages fuer spaeteres Write-Back markieren
-- [ ] munmap/exit: implizites msync auf dirty shared file-backed VMAs
-- [ ] Concurrent Writers: Locking pro (inode, offset) Page
-- [ ] test: mmap MAP_SHARED write → msync → read() sieht Aenderung
-- [ ] test: zwei Prozesse MAP_SHARED write → gegenseitig sichtbar
+Demand-paged shared file-backed Pages read-only gemappt. Write-Fault setzt
+PTE_WRITE, CPU setzt PTE_DIRTY. msync(MS_SYNC) scannt PTEs, schreibt dirty
+Pages per vfs_pwrite_by_ino zurueck, cleared PTE_DIRTY. munmap/exit: implizites
+Write-Back vor Page-Freigabe. 19 Tests.
 
 ### SH-D: Signale — erledigt
 

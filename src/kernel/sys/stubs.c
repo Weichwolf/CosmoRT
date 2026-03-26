@@ -15,18 +15,7 @@ long do_flock(int fd, int operation) {
     return 0;
 }
 
-/* msync: validate parameters, actual write-back deferred to SH-C3 */
-long do_msync(unsigned long addr, size_t length, int flags) {
-    if (addr & 0xFFF) return -EINVAL;
-    if (length == 0) return -EINVAL;
-    int valid = MS_ASYNC | MS_SYNC | MS_INVALIDATE;
-    if (flags & ~valid) return -EINVAL;
-    /* MS_ASYNC and MS_SYNC are mutually exclusive */
-    if ((flags & MS_ASYNC) && (flags & MS_SYNC)) return -EINVAL;
-    /* Must specify one of MS_ASYNC or MS_SYNC */
-    if (!(flags & (MS_ASYNC | MS_SYNC))) return -EINVAL;
-    return 0; /* actual write-back: SH-C3 */
-}
+/* msync: moved to sys_mem.c (SH-C3: dirty tracking + write-back) */
 /* TODO: implement if needed */
 long do_sendfile(void) { return -ENOSYS; }
 /* single-user: noop */
