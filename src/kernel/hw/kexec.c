@@ -107,9 +107,9 @@ static void flush_filesystem(void) {
 
 static void kill_all_processes(void) {
     serial_puts("kexec: killing all processes\n");
-    for (int i = 0; i < PROC_MAX; i++) {
-        process_t *p = &proc_pool[i];
-        if (p->state != PROC_ALIVE) continue;
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *p = proc_find((uint32_t)i);
+        if (!p) continue;
 
         /* Mark all threads dead */
         thread_t *t = p->threads;

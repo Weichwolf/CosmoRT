@@ -116,10 +116,7 @@ typedef struct thread {
     uint8_t fxsave_area[512] __attribute__((aligned(16)));
 } thread_t;
 
-#define THREAD_MAX 64
-
-/* Thread pool */
-extern thread_t thread_pool[];
+/* Thread pool — dynamically allocated via slab */
 
 /* Allocate/free threads from slab pool */
 thread_t *thread_alloc(void);

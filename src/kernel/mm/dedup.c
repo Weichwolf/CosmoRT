@@ -145,10 +145,11 @@ void mm_age_pages(void) {
 
     int remaining = AGE_MAX_WORK;
 
-    for (int pass = 0; pass < PROC_MAX && remaining > 0; pass++) {
-        int idx = (age_proc_idx + pass) % PROC_MAX;
-        process_t *p = &proc_pool[idx];
-        if (p->state != PROC_ALIVE) continue;
+    for (int pass = 0; pass < PID_TABLE_MAX && remaining > 0; pass++) {
+        int idx = (age_proc_idx + pass) % PID_TABLE_MAX;
+        if (idx == 0) idx = 1; /* skip PID 0 */
+        process_t *p = proc_find((uint32_t)idx);
+        if (!p) continue;
 
         uint64_t cursor = (pass == 0) ? age_va_cursor : 0;
         int done = age_walk_process(p, &cursor, remaining);
@@ -165,7 +166,7 @@ void mm_age_pages(void) {
         }
     }
     /* Full cycle done */
-    age_proc_idx = 0;
+    age_proc_idx = 1;
     age_va_cursor = 0;
 }
 
@@ -208,9 +209,9 @@ int mm_dedup_scan_next(uint64_t *phys_out) {
 int mm_dedup_merge(uint64_t keep_phys, uint64_t victim_phys) {
     int rewritten = 0;
 
-    for (int pi = 0; pi < PROC_MAX; pi++) {
-        process_t *p = &proc_pool[pi];
-        if (p->state != PROC_ALIVE || !p->pml4) continue;
+    for (int pi = 1; pi < PID_TABLE_MAX; pi++) {
+        process_t *p = proc_find((uint32_t)pi);
+        if (!p || !p->pml4) continue;
 
         uint64_t *pml4 = p->pml4;
 

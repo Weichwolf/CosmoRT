@@ -413,10 +413,7 @@ long do_sysinfo(void *info_) {
     ksi.totalram = (unsigned long)page_alloc_total() * 4096;
     ksi.freeram  = (unsigned long)page_alloc_free()  * 4096;
     /* Count live processes */
-    unsigned short nprocs = 0;
-    for (int i = 0; i < PROC_MAX; i++)
-        if (proc_pool[i].state == PROC_ALIVE) nprocs++;
-    ksi.procs = nprocs;
+    ksi.procs = (unsigned short)proc_count_alive();
     ksi.mem_unit = 1;
     { int r = copy_to_user(info, &ksi, sizeof(ksi)); if (r) return r; }
     return 0;

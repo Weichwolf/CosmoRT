@@ -667,9 +667,9 @@ static long kill_one(process_t *target, int sig) {
 /* Send signal to all processes in a process group. */
 static long kill_pgrp(uint32_t pgid, int sig) {
     int found = 0;
-    for (int i = 0; i < PROC_MAX; i++) {
-        process_t *p = &proc_pool[i];
-        if (p->state == PROC_ALIVE && p->pgid == pgid) {
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *p = proc_find((uint32_t)i);
+        if (p && p->pgid == pgid) {
             kill_one(p, sig);
             found = 1;
         }
@@ -693,12 +693,11 @@ long do_kill(int pid, int sig) {
         return kill_pgrp(self->pgid, sig);
     } else if (pid == -1) {
         /* Signal to all processes except init (pid 1) and self */
-        extern process_t proc_pool[];
         process_t *self = proc_current();
         int found = 0;
-        for (int i = 0; i < PROC_MAX; i++) {
-            process_t *p = &proc_pool[i];
-            if (p->state != PROC_ALIVE) continue;
+        for (int i = 1; i < PID_TABLE_MAX; i++) {
+            process_t *p = proc_find((uint32_t)i);
+            if (!p) continue;
             if (p->pid <= 1) continue; /* skip init */
             kill_one(p, sig);
             found = 1;

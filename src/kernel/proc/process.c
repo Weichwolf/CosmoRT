@@ -45,9 +45,6 @@ static uint64_t prot_to_pte(int prot) {
 
 /* ── Slab pools ─────────────────────────────────── */
 
-process_t proc_pool[PROC_MAX];
-thread_t  thread_pool[THREAD_MAX];
-
 static slab_t proc_slab;
 static slab_t thread_slab;
 static int next_pid = 1;
@@ -55,17 +52,36 @@ static int next_tid = 1;
 static spinlock_t pid_lock = SPINLOCK_INIT;
 
 /* O(1) lookup tables — indexed by PID/TID, entries set at alloc, cleared at free */
-#define PID_TABLE_MAX 256
-#define TID_TABLE_MAX 512
 static process_t *pid_table[PID_TABLE_MAX];
 static thread_t  *tid_table[TID_TABLE_MAX];
 
 extern uint64_t pml4[]; /* kernel page table from entry.asm */
 
 void proc_init(void) {
-    slab_init(&proc_slab, proc_pool, sizeof(process_t), PROC_MAX);
-    slab_init(&thread_slab, thread_pool, sizeof(thread_t), THREAD_MAX);
-    serial_puts("proc: init (slab)\n");
+    slab_init_dynamic(&proc_slab, (int)sizeof(process_t), 32);
+    slab_init_dynamic(&thread_slab, (int)sizeof(thread_t), 64);
+    serial_puts("proc: init (dynamic slab)\n");
+}
+
+/* ── Process iteration via pid_table ─────────────── */
+
+void proc_for_each(proc_iter_fn fn, void *ctx) {
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *p = pid_table[i];
+        if (p && p->state != PROC_FREE && p->pid == (uint32_t)i) {
+            if (fn(p, ctx)) return;
+        }
+    }
+}
+
+int proc_count_alive(void) {
+    int count = 0;
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *p = pid_table[i];
+        if (p && p->state == PROC_ALIVE && p->pid == (uint32_t)i)
+            count++;
+    }
+    return count;
 }
 
 thread_t *thread_alloc(void) {
@@ -73,10 +89,20 @@ thread_t *thread_alloc(void) {
     if (t) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
-        t->tid = next_tid++;
-        if (next_tid >= TID_TABLE_MAX) next_tid = 2; /* wrap */
-        if (t->tid < TID_TABLE_MAX)
-            tid_table[t->tid] = t;
+        /* Find free TID slot (skip collisions from wrapping) */
+        int tid = -1;
+        for (int try = 0; try < TID_TABLE_MAX - 2; try++) {
+            int candidate = next_tid++;
+            if (next_tid >= TID_TABLE_MAX) next_tid = 2;
+            if (!tid_table[candidate]) { tid = candidate; break; }
+        }
+        if (tid < 0) {
+            spin_unlock_irq(&pid_lock, flags);
+            slab_free(&thread_slab, t);
+            return 0; /* TID table full */
+        }
+        t->tid = tid;
+        tid_table[tid] = t;
         spin_unlock_irq(&pid_lock, flags);
         event_queue_init(&t->eq);
     }
@@ -97,10 +123,20 @@ static process_t *proc_alloc(void) {
     if (p) {
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
-        p->pid = (uint32_t)next_pid++;
-        if (next_pid >= (int)PID_TABLE_MAX) next_pid = 2; /* wrap */
-        if (p->pid < PID_TABLE_MAX)
-            pid_table[p->pid] = p;
+        /* Find free PID slot (skip collisions from wrapping) */
+        int pid = -1;
+        for (int try = 0; try < PID_TABLE_MAX - 2; try++) {
+            int candidate = next_pid++;
+            if (next_pid >= (int)PID_TABLE_MAX) next_pid = 2;
+            if (!pid_table[candidate]) { pid = candidate; break; }
+        }
+        if (pid < 0) {
+            spin_unlock_irq(&pid_lock, flags);
+            slab_free(&proc_slab, p);
+            return 0; /* PID table full */
+        }
+        p->pid = (uint32_t)pid;
+        pid_table[pid] = p;
         spin_unlock_irq(&pid_lock, flags);
         p->state = PROC_ALIVE;
     }
@@ -1634,9 +1670,10 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     for (;;) {
         int found_child = 0;
 
-        for (int i = 0; i < PROC_MAX; i++) {
-            process_t *child = &proc_pool[i];
-            if (child->state == PROC_FREE) continue;
+        for (int i = 1; i < PID_TABLE_MAX; i++) {
+            process_t *child = pid_table[i];
+            if (!child || child->state == PROC_FREE) continue;
+            if (child->pid != (uint32_t)i) continue;
             if (child->parent_pid != parent->pid) continue;
             if (pid > 0 && child->pid != (uint32_t)pid) continue;
             if (pid == 0 || pid == -1) { /* wait for any child */ }

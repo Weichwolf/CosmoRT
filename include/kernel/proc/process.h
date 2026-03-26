@@ -84,7 +84,16 @@ typedef struct process {
     spinlock_t  lock;
 } process_t;
 
-extern process_t proc_pool[PROC_MAX];
+/* PID/TID lookup table sizes */
+#define PID_TABLE_MAX 4096
+#define TID_TABLE_MAX 4096
+
+/* Iterate all live processes via pid_table. Callback returns 0 to continue, nonzero to stop. */
+typedef int (*proc_iter_fn)(process_t *p, void *ctx);
+void proc_for_each(proc_iter_fn fn, void *ctx);
+
+/* Count live processes */
+int proc_count_alive(void);
 
 /* Initialize process subsystem (slab pools) */
 void proc_init(void);

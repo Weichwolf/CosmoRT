@@ -15,7 +15,6 @@ static inline uint64_t ensure_high(uint64_t addr) {
 }
 
 /* Process */
-#define PROC_MAX         16
 #define KSTACK_SIZE      (64 * 1024)
 
 /* SMP */

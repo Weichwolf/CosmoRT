@@ -101,11 +101,11 @@ static void send_signal_to_fg(pty_t *p, int sig) {
     if (pgid <= 0) pgid = p->slave_pid;
     if (pgid <= 0) return;
 
-    extern process_t proc_pool[];
+    extern process_t *proc_find(uint32_t pid);
     extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    for (int i = 0; i < PROC_MAX; i++) {
-        process_t *proc = &proc_pool[i];
-        if (proc->state != PROC_ALIVE) continue;
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *proc = proc_find((uint32_t)i);
+        if (!proc) continue;
         if ((int)proc->pgid != pgid) continue;
         proc->sig_pending |= (1ULL << sig);
         /* Wake blocked threads for signal delivery */
