@@ -250,6 +250,74 @@ Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
 - [ ] test/net/test_net_tls.c — HTTPS via Node.js
 - [ ] test/net/test_net_npm_registry.c — HTTPS GET registry.npmjs.org
 
+## Security Hardening
+
+### Sec-A: ASLR
+
+- [ ] Stack-Base Randomisierung (22 Bit Entropie) bei execve
+- [ ] mmap-Base Randomisierung (28 Bit) pro Prozess
+- [ ] PIE-Base Randomisierung (28 Bit) fuer ET_DYN ELF
+- [ ] Heap (brk) Randomisierung (13 Bit)
+- [ ] KASLR: Kernel-Base bei Boot randomisieren (9 Bit)
+- [ ] Quelle: getrandom() / RDRAND
+- [ ] test: zwei execve gleicher Binary → unterschiedliche Stack-Adressen
+
+### Sec-B: SMEP + SMAP
+
+- [ ] CR4.SMEP=1 bei Boot (Kernel kann keinen User-Code ausfuehren)
+- [ ] CR4.SMAP=1 bei Boot (Kernel kann keine User-Pages lesen)
+- [ ] STAC/CLAC um copy_from_user/copy_to_user (expliziter User-Zugriff)
+- [ ] Fehlen bei CPUID → Boot-Panic
+- [ ] test: Kernel-Zugriff auf User-Page ohne STAC → #PF
+
+### Sec-C: W^X Enforcement
+
+- [ ] mmap(PROT_WRITE|PROT_EXEC) = -EINVAL
+- [ ] mprotect: WRITE→EXEC ok, aber nicht gleichzeitig
+- [ ] Kernel .text: Read+Exec. Kernel .data/.bss: Read+Write. Nie beides.
+- [ ] test: mmap WX → EINVAL, mmap W → mprotect X → ok
+
+### Sec-D: Stack Guard Pages
+
+- [ ] Unmapped Page am Ende jeder Stack-VMA
+- [ ] Thread-Stacks: Guard Page bei clone/pthread_create
+- [ ] test: Rekursion bis Stack-Ende → SIGSEGV (nicht Corruption)
+
+### Sec-E: Spectre/Meltdown
+
+- [ ] Retpoline (-mindirect-branch=thunk) im Build
+- [ ] IBPB bei jedem Kontextwechsel (User→User)
+- [ ] KPTI: Separate User/Kernel Page-Tables (geplant)
+
+## Netzwerk — IPv6
+
+- [ ] RFC 8200: IPv6 Header, Extension Headers
+- [ ] RFC 4861: Neighbor Discovery (NDP, ersetzt ARP fuer IPv6)
+- [ ] RFC 4862: SLAAC (Stateless Address Autoconfiguration)
+- [ ] Dual-Stack: IPv4 + IPv6 gleichzeitig
+- [ ] AF_INET6 Socket-Support
+- [ ] test: IPv6 TCP Connect + Transfer
+
+## Moderne Syscalls
+
+- [ ] io_uring (setup/enter/register): Async I/O (Node.js 22+, libuv)
+- [ ] memfd_create: Anonymer fd (Chrome, Wayland, SharedArrayBuffer)
+- [ ] copy_file_range: Kernel-seitige Dateikopie
+- [ ] close_range: Bulk fd-Close (exec Cleanup)
+- [ ] pidfd_open + pidfd_send_signal: Race-freies Process-Management
+- [ ] SO_REUSEPORT: Multi-Process Server (Node.js Cluster)
+- [ ] MSG_ZEROCOPY: Zero-Copy Send
+- [ ] test: io_uring read/write Roundtrip
+- [ ] test: memfd_create + mmap + fork
+
+## Observability
+
+- [ ] /proc/pid/maps: Memory-Mappings (gdb, strace)
+- [ ] /proc/pid/status: Name, State, VmRSS
+- [ ] /proc/pid/cmdline: Kommandozeile (ps, htop)
+- [ ] /proc/meminfo: Freier/Belegter Speicher
+- [ ] perf_event_open: Hardware Performance Counters (geplant)
+
 ## Skalierung — Statische Arrays → Slab/Free-List/Hash
 
 Problem: Statische Arrays mit O(n) Suche und festen Limits. Bei 1000+ Connections

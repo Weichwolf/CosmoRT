@@ -52,7 +52,17 @@ Entscheidung: Alle IRQs auf Core 0 (RT-Core). Kein IRQ-Balancing.
 Entscheidung: SSE2 maximum (WASM SIMD Limit). Kein AVX/AVX-512, kein XSAVE.
 Kernel: -mno-sse (außer sha256.c). RT-Core: SSE frei (kein User-FPU).
 
-### 1.5 TSC / Timer
+### 1.5 CPU Security Features
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 §4.6 | SMEP (Supervisor Mode Execution Prevention) | CR4.SMEP=1: Kernel kann keinen User-Code ausfuehren |
+| Intel SDM Vol 3 §4.6 | SMAP (Supervisor Mode Access Prevention) | CR4.SMAP=1: Kernel kann keine User-Pages lesen/schreiben (außer explizit) |
+| Intel SDM Vol 3 §6.15 | NX/XD Bit | No-Execute: Daten-Pages nicht ausfuehrbar |
+
+Entscheidung: SMEP + SMAP + NX mandatory bei Boot. Fehlen = Panic.
+
+### 1.6 TSC / Timer
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
@@ -158,7 +168,8 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | POSIX.1-2017 Sockets | IEEE 1003.1 | socket, bind, listen, accept, connect |
 | Linux socket | man 2 socket | AF_INET, AF_UNIX, SOCK_STREAM, SOCK_DGRAM |
 | Linux sendmsg/recvmsg | man 2 sendmsg | struct msghdr, AF_UNIX/AF_INET Dispatch |
-| Linux setsockopt | man 2 setsockopt | SO_REUSEADDR, SO_KEEPALIVE, TCP_NODELAY |
+| Linux setsockopt | man 2 setsockopt | SO_REUSEADDR, SO_REUSEPORT, SO_KEEPALIVE, TCP_NODELAY |
+| Linux MSG_ZEROCOPY | man 7 socket | Zero-Copy Send (kein memcpy im TX-Pfad) |
 
 ### 3.10 Time
 
@@ -195,8 +206,11 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | RFC 791 | Internet Protocol | IPv4 Header, Checksum, TTL |
 | RFC 1071 | Computing the Internet Checksum | One's Complement Sum |
 | RFC 1122 | Requirements for Internet Hosts | Host Requirements |
+| RFC 8200 | Internet Protocol Version 6 | IPv6 Header, Extension Headers |
+| RFC 4861 | Neighbor Discovery for IPv6 | NDP (replaces ARP for IPv6) |
+| RFC 4862 | IPv6 Stateless Address Autoconfiguration | SLAAC |
 
-Entscheidung: IPv4 only (IPv6 geplant).
+Entscheidung: Dual-Stack (IPv4 + IPv6).
 
 ### 4.2 TCP
 
@@ -263,44 +277,134 @@ RT-Core Hash-Engine: SSE-Register frei (kein User-FPU auf Core 0).
 
 ---
 
-## 6. Hardware / Treiber
+## 6. Security Hardening
 
-### 6.1 PCI
+### 6.1 Address Space Layout Randomization (ASLR)
+
+| Feature | Entropie | Scope |
+|---------|----------|-------|
+| Stack-Base | 22 Bit | Jeder Prozess |
+| mmap-Base | 28 Bit | Jeder Prozess |
+| PIE-Base (ET_DYN) | 28 Bit | Position-Independent Executables |
+| Heap (brk) | 13 Bit | Jeder Prozess |
+| KASLR | 9 Bit | Kernel-Base bei Boot |
+
+Quelle: getrandom() / RDRAND.
+
+### 6.2 W^X (Write XOR Execute)
+
+Keine Page gleichzeitig Writable und Executable.
+- mmap(PROT_WRITE|PROT_EXEC) = -EINVAL (oder: WRITE zuerst, dann mprotect zu EXEC)
+- JIT (V8): alloc RW → write Code → mprotect RX → execute. Nie gleichzeitig WX.
+- Kernel-Code: Read+Execute. Kernel-Daten: Read+Write. Nie beides.
+
+### 6.3 Stack Guard Pages
+
+Unmapped Page am Ende jeder Stack-VMA.
+Stack-Overflow → #PF auf Guard Page → SIGSEGV. Keine Silent Corruption.
+
+### 6.4 Syscall Hardening
+
+- fault_recover fuer alle Kernel-Mode Exceptions (nicht nur #PF)
+- sigreturn: MXCSR sanitized, Handler-Adresse validiert
+- Range-Checks auf alle mlock/mprotect/madvise Ranges
+- copy_from_user/copy_to_user: immer user_ok() Pruefung
+
+### 6.5 Spectre/Meltdown
+
+| Mitigation | Spec | CosmoRT Scope |
+|-----------|------|---------------|
+| KPTI (Kernel Page Table Isolation) | — | Separate User/Kernel Page-Tables (geplant) |
+| Retpoline | — | Indirect Branch Mitigation (-mindirect-branch=thunk) |
+| IBRS/IBPB | Intel SDM | Indirect Branch Prediction Barrier |
+| SSBD | Intel SDM | Speculative Store Bypass Disable |
+
+Entscheidung: Minimum Retpoline + IBPB bei Kontextwechsel. KPTI geplant.
+
+---
+
+## 7. Moderne Syscalls
+
+Zusaetzlich zu den Linux-ABI Basics (Sektion 3):
+
+| Syscall | Referenz | CosmoRT Scope |
+|---------|----------|---------------|
+| io_uring_setup/enter/register | man 2 io_uring_setup | Async I/O (libuv/Node.js 22+) |
+| memfd_create | man 2 memfd_create | Anonymer fd (Chrome, Wayland, SharedArrayBuffer) |
+| copy_file_range | man 2 copy_file_range | Kernel-seitige Dateikopie (cp, rsync) |
+| close_range | man 2 close_range | Bulk fd-Close (exec Cleanup, glibc 2.34+) |
+| pidfd_open | man 2 pidfd_open | Race-freies Process-Management |
+| pidfd_send_signal | man 2 pidfd_send_signal | Signal via pidfd (kein PID-Reuse Race) |
+
+Entscheidung: io_uring ist Pflicht (Node.js Performance). memfd_create ist Pflicht (Chrome/Wayland).
+
+---
+
+## 8. Observability
+
+| Feature | Referenz | CosmoRT Scope |
+|---------|----------|---------------|
+| /proc/pid/maps | Linux procfs | Memory-Mappings pro Prozess (gdb, strace) |
+| /proc/pid/status | Linux procfs | Prozess-Status (Name, State, VmRSS) |
+| /proc/pid/cmdline | Linux procfs | Kommandozeile (ps, htop) |
+| /proc/meminfo | Linux procfs | Systemweiter Speicher-Status |
+| /proc/ksm | CosmoRT | KSM Dedup Statistik |
+| perf_event_open | man 2 perf_event_open | Hardware Performance Counters (geplant) |
+
+---
+
+## 9. Hardware / Treiber
+
+Kernel: nur 5 Primitives (MMIO, DMA, IRQ, PCI, FW) via cosmort.h.
+Alle Geraetetreiber in Userspace oder als Kernel-Module ueber cosmort.h.
+
+### 9.1 PCI
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | PCI Local Bus Spec 3.0 | PCI-SIG | Config Space (Port I/O 0xCF8/0xCFC) |
 | PCIe Base Spec 5.0 | PCI-SIG | MMIO Config, MSI-X (geplant) |
 
-### 6.2 VirtIO
+### 9.2 VirtIO
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | VirtIO Spec 1.2 | https://docs.oasis-open.org/virtio/ | virtio-net, virtio-blk, virtio-gpu, virtio-input |
 | VirtIO PCI Transport | VirtIO Spec §4.1 | Capability Structure, Notify, ISR |
 
-### 6.3 E1000
+### 9.3 E1000
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Intel 82540EM (E1000) | Intel Datasheet | TX/RX Descriptors, MMIO Registers |
 
-### 6.4 Hyper-V
+### 9.4 Hyper-V
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Hyper-V TLFS 6.0b | Microsoft Top-Level Functional Spec | Hypercall Page, SynIC, VMBus, MSRs |
 | VMBus Protocol | TLFS Chapter 11 | Channel Offer/Open/Close, GPA Direct |
 
-### 6.5 Serial
+### 9.5 Serial
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | 16550 UART | National Semiconductor | COM1 (0x3F8), Polling TX/RX |
 
+### 9.6 Userspace-Treiber (via cosmort.h)
+
+| Spec | Referenz | Treiber |
+|------|----------|---------|
+| NVMe Spec 2.0 | NVM Express | Moderne SSDs, Submission/Completion Queues |
+| xHCI Spec 1.2 | USB-IF | USB 3.x Host Controller, Device Enumeration |
+| Intel HD Audio Spec | Intel | Audio Codec, Streams, DMA Buffer Descriptor List |
+| AHCI Spec 1.3.1 | Intel | SATA Controller (Legacy-SSDs/HDDs) |
+
+Entscheidung: Alle Geraetetreiber ausser NIC/CosmoFS in Userspace via cosmort.h.
+
 ---
 
-## 7. Terminal / VT
+## 10. Terminal / VT
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
@@ -314,16 +418,16 @@ Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
 
 ---
 
-## 8. Dateisystem
+## 11. Dateisystem
 
-### 8.1 VFS
+### 11.1 VFS
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | POSIX.1-2017 File System | IEEE 1003.1 | Path Resolution, Symlinks, Permissions |
 | Linux procfs | Documentation/filesystems/proc.rst | /proc/pid/*, /proc/meminfo, /proc/ksm |
 
-### 8.2 CosmoFS v2 (geplant)
+### 11.2 CosmoFS v2 (geplant)
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
@@ -333,7 +437,7 @@ Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
 
 ---
 
-## 9. Architektur-Entscheidungen
+## 12. Architektur-Entscheidungen
 
 Nicht aus einem Standard, sondern CosmoRT-eigen.
 
@@ -354,7 +458,7 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 
 ---
 
-## 10. Abweichungen von Linux
+## 13. Abweichungen von Linux
 
 Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 
