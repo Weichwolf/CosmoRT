@@ -94,11 +94,27 @@ pty_t *pty_get(int id) {
 
 /* ── Master write: keyboard → line discipline → input buffer ── */
 
-static void send_signal(pty_t *p, int sig) {
-    if (p->slave_pid > 0) {
-        process_t *target = proc_find((uint32_t)p->slave_pid);
-        if (target)
-            target->sig_pending |= (1ULL << sig);
+/* Send signal to foreground process group (or slave_pid fallback).
+ * IRQ-safe: only sets sig_pending + event_post, no do_kill. */
+static void send_signal_to_fg(pty_t *p, int sig) {
+    int pgid = p->fg_pgid;
+    if (pgid <= 0) pgid = p->slave_pid;
+    if (pgid <= 0) return;
+
+    extern process_t proc_pool[];
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+    for (int i = 0; i < PROC_MAX; i++) {
+        process_t *proc = &proc_pool[i];
+        if (proc->state != PROC_ALIVE) continue;
+        if ((int)proc->pgid != pgid) continue;
+        proc->sig_pending |= (1ULL << sig);
+        /* Wake blocked threads for signal delivery */
+        thread_t *t = proc->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED)
+                event_post(t, 4 /* EQ_PIPE_DATA */, 0);
+            t = t->proc_next;
+        }
     }
 }
 
@@ -123,12 +139,22 @@ int pty_master_write(int id, const char *buf, int len) {
     for (int i = 0; i < len; i++) {
         char c = buf[i];
 
-        /* Ctrl+C → SIGINT */
-        if (c == 3) {
-            send_signal(p, SIGINT);
-            if (p->echo) pty_output_str(p, "^C\n");
-            p->line_pos = 0;
-            continue;
+        /* Canonical mode signal chars — only in cooked mode */
+        if (p->canon) {
+            /* Ctrl+C → SIGINT */
+            if (c == 3) {
+                send_signal_to_fg(p, SIGINT);
+                if (p->echo) pty_output_str(p, "^C\n");
+                p->line_pos = 0;
+                continue;
+            }
+            /* Ctrl+Z → SIGTSTP */
+            if (c == 26) {
+                send_signal_to_fg(p, SIGTSTP);
+                if (p->echo) pty_output_str(p, "^Z\n");
+                p->line_pos = 0;
+                continue;
+            }
         }
         /* Ctrl+D → EOF (flush line or signal EOF) */
         if (c == 4) {
@@ -144,9 +170,9 @@ int pty_master_write(int id, const char *buf, int len) {
             pty_output_str(p, "\033[2J\033[H");
             continue;
         }
-        /* Ctrl+\\ → SIGQUIT */
-        if (c == 28) {
-            send_signal(p, SIGQUIT);
+        /* Ctrl+\\ → SIGQUIT (only in canonical mode) */
+        if (c == 28 && p->canon) {
+            send_signal_to_fg(p, SIGQUIT);
             if (p->echo) pty_output_str(p, "^\\\n");
             p->line_pos = 0;
             continue;

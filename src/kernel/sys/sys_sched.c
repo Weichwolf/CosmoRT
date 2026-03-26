@@ -7,9 +7,32 @@
 long do_sched_yield(void) {
     /* Real yield: save user state, enqueue at tail, longjmp to sched_loop.
      * sched_pick returns the next thread (FIFO round-robin), so other
-     * threads (e1000d, shell) get CPU time before we run again. */
+     * threads (e1000d, shell) get CPU time before we run again.
+     *
+     * sched_yield longjmps via thread_return_to_kernel, so
+     * check_signals_syscall_path in dispatch.c is never reached.
+     * Check signals explicitly before yielding. Stop signals
+     * (SIGTSTP/SIGSTOP) call thread_return_to_kernel themselves
+     * and never reach the yield code below. */
     thread_t *t = thread_current();
     if (!t) return 0;
+
+    /* sched_yield longjmps via thread_return_to_kernel, so the normal
+     * check_signals_syscall_path in dispatch.c is never reached.
+     * Check stop signals explicitly before yielding. We must save user
+     * state first (check_pending_signals reads percpu->syscall_frame for
+     * stop signals and calls thread_return_to_kernel which never comes
+     * back). For non-stop signals, we skip — they'll be delivered via
+     * the timer preempt path (sched_tick). */
+    if (t->proc) {
+        uint64_t pending = t->proc->sig_pending & ~t->sig_blocked;
+        /* Only handle stop (19-22) and fatal signals via check_pending_signals.
+         * SIGKILL (9) must also be handled since sched_yield bypasses dispatch. */
+        if (pending & ((1ULL << 9) | (1ULL << 19) | (1ULL << 20) |
+                       (1ULL << 21) | (1ULL << 22)))
+            check_pending_signals();
+    }
+
     extern uint64_t pml4[];
     extern void sched_add(thread_t *t);
     save_user_state_for_block(t, 0); /* saves state, sets rax=0 */

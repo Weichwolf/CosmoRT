@@ -15,6 +15,7 @@
 #define THREAD_RUNNING   2
 #define THREAD_BLOCKED   3
 #define THREAD_DEAD      4
+#define THREAD_STOPPED   5
 
 /* Scheduling policies (POSIX) */
 #define SCHED_OTHER  0   /* Default: fair timesharing */

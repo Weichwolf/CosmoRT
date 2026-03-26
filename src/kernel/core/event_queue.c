@@ -115,6 +115,20 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     epoll_sleeper_add_ext(cur);
 
     cur->state = THREAD_BLOCKED;
+
+    /* Close race: event_post writes event then sched_wake(CAS BLOCKED→RUNNABLE).
+     * If event arrived between our fast-path check and BLOCKED, sched_wake saw
+     * RUNNING/... and was a no-op. Re-check after BLOCKED. mfence ensures our
+     * BLOCKED store is globally visible before we read head (so event_post on
+     * another core sees BLOCKED and its sched_wake succeeds). */
+    __asm__ volatile("mfence" ::: "memory");
+    if (arch_load_acquire(&eq->head) != eq->tail) {
+        /* Event arrived — undo block, let scheduler re-run us */
+        cur->state = THREAD_RUNNABLE;
+        extern void sched_add(thread_t *t);
+        sched_add(cur);
+    }
+
     arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(cur);
     return 0; /* unreachable */

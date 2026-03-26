@@ -1626,7 +1626,9 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                      (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
         return -EFAULT;
 
-    int wnohang = options & 1; /* WNOHANG = 1 */
+    int wnohang    = options & 1;  /* WNOHANG = 1 */
+    int wuntraced  = options & 2;  /* WUNTRACED = 2 */
+    int wcontinued = options & 8;  /* WCONTINUED = 8 */
 
     /* Scan for matching child */
     for (;;) {
@@ -1640,6 +1642,29 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
             if (pid == 0 || pid == -1) { /* wait for any child */ }
 
             found_child = 1;
+
+            /* WUNTRACED: report stopped children */
+            if (wuntraced && child->stop_signal) {
+                int child_pid = (int)child->pid;
+                int stop_sig = child->stop_signal;
+                child->stop_signal = 0; /* consume — one report per stop */
+                if (wstatus) {
+                    int kstatus = (stop_sig << 8) | 0x7F; /* WIFSTOPPED */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
+                return child_pid;
+            }
+
+            /* WCONTINUED: report continued children */
+            if (wcontinued && child->was_continued) {
+                int child_pid = (int)child->pid;
+                child->was_continued = 0; /* consume */
+                if (wstatus) {
+                    int kstatus = 0xFFFF; /* WIFCONTINUED */
+                    kmemcpy(wstatus, &kstatus, sizeof(kstatus));
+                }
+                return child_pid;
+            }
 
             if (child->state == PROC_ZOMBIE) {
                 int child_pid = (int)child->pid;
@@ -1662,15 +1687,12 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (!found_child) return -ECHILD;
         if (wnohang) return 0;
 
-        /* Block: child exists but hasn't exited.
-         * Child exit (exit_kill_process) will event_post(EQ_CHILD_EXITED).
-         * event_wait either blocks (syscall restarts, loop re-enters) or
-         * returns immediately (event already queued, loop continues). */
+        /* Block: child exists but hasn't exited/stopped/continued.
+         * event_post wakes us. event_wait either blocks (syscall restart)
+         * or returns immediately (event queued). Loop re-scans children. */
         {
             event_t ev;
             event_wait(&cur->eq, &ev, -1);
         }
-        /* If event_wait returned (event was queued), loop back and re-scan.
-         * If it blocked, this is unreachable (syscall restarts). */
     }
 }

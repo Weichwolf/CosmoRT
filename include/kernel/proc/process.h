@@ -29,6 +29,10 @@ typedef struct process {
     int         exit_code;
     int         exit_signal;       /* 0 = normal exit, >0 = killed by signal */
 
+    /* Job control state — consumed by wait4(WUNTRACED/WCONTINUED) */
+    int         stop_signal;       /* signal that stopped the process (0 = not stopped) */
+    int         was_continued;     /* 1 = continued since last wait4(WCONTINUED) */
+
     /* Address space */
     uint64_t   *pml4;
 

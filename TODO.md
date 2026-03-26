@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1010 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1033 ktest PASS, 0 FAIL.
 
 ---
 
@@ -45,16 +45,12 @@ event_wait (blocking mit Timeout), event_drain (WNOHANG). 35 Tests.
 15 Consumer + 12 Producer auf event_wait/event_post. sock_block_thread eliminiert.
 THREAD_BLOCKED nur noch in event_wait. Netto -47 Zeilen.
 
-### EQ-C: Job Control (auf Event-Queue Basis)
+### EQ-C: Job Control (auf Event-Queue Basis) — erledigt
 
-Abhaengigkeit: EQ-A + EQ-B muessen fertig sein.
-- [ ] TIOCSPGRP/TIOCGPGRP: Foreground Process Group pro TTY
-- [ ] SIGTSTP (Ctrl-Z): Foreground-Prozess stoppen (THREAD_STOPPED)
-- [ ] SIGCONT: Gestoppten Prozess fortsetzen
-- [ ] SIGINT (Ctrl-C): An Foreground Process Group senden
-- [ ] Terminal Driver: Ctrl-C/Z/\ → Signal an Foreground PG
-- [ ] waitpid WUNTRACED/WCONTINUED via event_wait(CHILD_STOPPED/CONTINUED)
-- [ ] test: Ctrl-C killt Foreground, Ctrl-Z stoppt, fg setzt fort
+THREAD_STOPPED State, TIOCSPGRP/TIOCGPGRP, Terminal Ctrl-C/Z/\ an fg_pgid,
+SIGTSTP/SIGSTOP → THREAD_STOPPED, SIGCONT → resume, wait4 WUNTRACED/WCONTINUED
+via process_t stop_signal/was_continued Flags (nicht event_drain — Race mit Queue
+Corruption). sched_yield Signal-Check fuer Stop/Kill. 23 Tests.
 
 ## Offen — Self-Hosting Blocker
 
@@ -91,15 +87,7 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 - [ ] CosmoFS: rwx Bits speichern (chmod), nur +x enforced
 - [ ] test: Symlink-Chain 3 Ebenen, chmod +x → exec
 
-### Job Control
-
-- [ ] TIOCSPGRP/TIOCGPGRP ioctl: Foreground Process Group pro TTY
-- [ ] SIGTSTP (Ctrl-Z): Foreground-Prozess stoppen
-- [ ] SIGCONT: Gestoppten Prozess fortsetzen
-- [ ] SIGINT (Ctrl-C): An Foreground Process Group senden
-- [ ] Terminal Driver: Ctrl-C/Z/\ → Signal an Foreground PG
-- [ ] waitpid WUNTRACED/WCONTINUED
-- [ ] test: Ctrl-C killt Foreground, nicht Shell
+### Job Control — erledigt (EQ-C)
 
 ### Boot-Config — /etc/cosmo.conf
 

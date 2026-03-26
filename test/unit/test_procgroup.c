@@ -48,10 +48,16 @@ static void test_procgroup(void) {
         sc1(SYS_EXIT_GROUP, 0);
     }
     if (child > 0) {
-        /* Parent: wait for child */
+        /* Parent: poll for child (avoids event_wait stale-event race
+         * when prior tests left events in the queue). */
         int wstatus = 0;
-        sc4(SYS_WAIT4, child, (long)&wstatus, 0, 0);
-        check("child exited", (wstatus & 0x7f) == 0);
+        long w = 0;
+        for (int tries = 0; tries < 1000000; tries++) {
+            w = sc4(SYS_WAIT4, child, (long)&wstatus, 1 /*WNOHANG*/, 0);
+            if (w > 0) break;
+            sc0(SYS_SCHED_YIELD);
+        }
+        check("child exited", w > 0 && (wstatus & 0x7f) == 0);
 
         /* Parent pgid unchanged */
         pgrp = sc0(SYS_GETPGRP);
