@@ -28,6 +28,10 @@ typedef struct process {
     uint32_t    sid;            /* Session ID */
     int         exit_code;
     int         exit_signal;       /* 0 = normal exit, >0 = killed by signal */
+    int         stopped;           /* 1 = process is currently stopped */
+    int         stop_signal;       /* signal that caused stop (for WIFSTOPPED status) */
+    int         stop_pending;      /* 1 = stop event not yet reported via WUNTRACED */
+    int         cont_pending;      /* 1 = continue event not yet reported via WCONTINUED */
 
     /* Address space */
     uint64_t   *pml4;

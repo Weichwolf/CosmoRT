@@ -12,7 +12,7 @@ _Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
 
 extern void sched_add(thread_t *t);
 
-/* SIGINT, SIGQUIT — from linux.h (via process.h chain) */
+/* SIGINT, SIGQUIT, SIGTSTP — from linux.h (via process.h chain) */
 
 static pty_t pty_pool[PTY_MAX];
 
@@ -94,11 +94,30 @@ pty_t *pty_get(int id) {
 
 /* ── Master write: keyboard → line discipline → input buffer ── */
 
-static void send_signal(pty_t *p, int sig) {
-    if (p->slave_pid > 0) {
-        process_t *target = proc_find((uint32_t)p->slave_pid);
-        if (target)
-            target->sig_pending |= (1ULL << sig);
+/* Send signal to the foreground process group of this PTY.
+ * Sets sig_pending on all matching processes — safe from IRQ/spinlock context.
+ * Actual signal delivery happens on return to userspace (check_pending_signals). */
+static void send_signal_fg(pty_t *p, int sig) {
+    int use_pgid = (p->fg_pgid > 0);
+    uint32_t id = use_pgid ? (uint32_t)p->fg_pgid : (uint32_t)p->slave_pid;
+    if (id == 0) return;
+
+    extern process_t proc_pool[];
+    for (int i = 0; i < PROC_MAX; i++) {
+        process_t *proc = &proc_pool[i];
+        if (proc->state != PROC_ALIVE) continue;
+        /* fg_pgid set: match process group. Otherwise: match single PID. */
+        if (use_pgid ? (proc->pgid != id) : (proc->pid != id)) continue;
+        proc->sig_pending |= (1ULL << sig);
+        /* Wake blocked threads so they can deliver the signal */
+        thread_t *t = proc->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED) {
+                t->state = THREAD_RUNNING;
+                sched_add(t);
+            }
+            t = t->proc_next;
+        }
     }
 }
 
@@ -123,12 +142,29 @@ int pty_master_write(int id, const char *buf, int len) {
     for (int i = 0; i < len; i++) {
         char c = buf[i];
 
-        /* Ctrl+C → SIGINT */
-        if (c == 3) {
-            send_signal(p, SIGINT);
-            if (p->echo) pty_output_str(p, "^C\n");
-            p->line_pos = 0;
-            continue;
+        /* In canonical mode: handle signal-generating characters */
+        if (p->canon) {
+            /* Ctrl+C → SIGINT to foreground process group */
+            if (c == 3) {
+                send_signal_fg(p, SIGINT);
+                if (p->echo) pty_output_str(p, "^C\n");
+                p->line_pos = 0;
+                continue;
+            }
+            /* Ctrl+Z → SIGTSTP to foreground process group */
+            if (c == 26) {
+                send_signal_fg(p, SIGTSTP);
+                if (p->echo) pty_output_str(p, "^Z\n");
+                p->line_pos = 0;
+                continue;
+            }
+            /* Ctrl+\\ → SIGQUIT to foreground process group */
+            if (c == 28) {
+                send_signal_fg(p, SIGQUIT);
+                if (p->echo) pty_output_str(p, "^\\\n");
+                p->line_pos = 0;
+                continue;
+            }
         }
         /* Ctrl+D → EOF (flush line or signal EOF) */
         if (c == 4) {
@@ -142,13 +178,6 @@ int pty_master_write(int id, const char *buf, int len) {
         /* Ctrl+L → clear screen */
         if (c == 12) {
             pty_output_str(p, "\033[2J\033[H");
-            continue;
-        }
-        /* Ctrl+\\ → SIGQUIT */
-        if (c == 28) {
-            send_signal(p, SIGQUIT);
-            if (p->echo) pty_output_str(p, "^\\\n");
-            p->line_pos = 0;
             continue;
         }
 

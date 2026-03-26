@@ -339,12 +339,84 @@ void check_pending_signals(void) {
             case 28: /* SIGWINCH */
             case 29: /* SIGIO */
                 continue;
-            /* Stop (SIGTSTP, SIGTTIN, SIGTTOU) — ignore for now (no job control) */
-            case 20: case 21: case 22:
+            /* Stop (SIGTSTP, SIGTTIN, SIGTTOU, SIGSTOP) — stop the process */
+            case 19: case 20: case 21: case 22: {
+                extern void sched_add(thread_t *t);
+                extern uint64_t pml4[];
+                serial_puts("DBG: stop sig="); serial_hex64((uint64_t)sig);
+                serial_puts(" pid="); serial_hex64((uint64_t)p->pid); serial_putchar('\n');
+                p->stopped = 1;
+                p->stop_signal = sig;
+                p->stop_pending = 1;
+                /* Stop all threads */
+                thread_t *st = p->threads;
+                while (st) {
+                    if (st->state == THREAD_RUNNABLE || st->state == THREAD_RUNNING)
+                        st->state = THREAD_STOPPED;
+                    st = st->proc_next;
+                }
+                /* Notify parent via SIGCHLD */
+                if (p->parent_pid) {
+                    process_t *parent = proc_find(p->parent_pid);
+                    if (parent) {
+                        parent->sig_pending |= (1ULL << SIGCHLD);
+                        uint64_t pflags;
+                        spin_lock_irq(&parent->lock, &pflags);
+                        thread_t *pt = parent->threads;
+                        while (pt) {
+                            if (pt->state == THREAD_BLOCKED) {
+                                pt->state = THREAD_RUNNING;
+                                sched_add(pt);
+                            }
+                            pt = pt->proc_next;
+                        }
+                        spin_unlock_irq(&parent->lock, pflags);
+                    }
+                }
+                /* Current thread stops. Registers are already in thread_t
+                 * (saved by check_signals_syscall_path or timer IRQ handler).
+                 * Just mark stopped and yield to scheduler. */
+                t->state = THREAD_STOPPED;
+                arch_set_cr3(virt_to_phys(pml4));
+                thread_return_to_kernel(t);
+                return; /* unreachable */
+            }
+            /* Continue (SIGCONT) — resume stopped process */
+            case 18: {
+                extern void sched_add(thread_t *t);
+                if (p->stopped) {
+                    p->stopped = 0;
+                    p->cont_pending = 1;
+                    /* Resume all stopped threads */
+                    thread_t *st = p->threads;
+                    while (st) {
+                        if (st->state == THREAD_STOPPED) {
+                            st->state = THREAD_RUNNING;
+                            sched_add(st);
+                        }
+                        st = st->proc_next;
+                    }
+                    /* Notify parent */
+                    if (p->parent_pid) {
+                        process_t *parent = proc_find(p->parent_pid);
+                        if (parent) {
+                            parent->sig_pending |= (1ULL << SIGCHLD);
+                            uint64_t pflags;
+                            spin_lock_irq(&parent->lock, &pflags);
+                            thread_t *pt = parent->threads;
+                            while (pt) {
+                                if (pt->state == THREAD_BLOCKED) {
+                                    pt->state = THREAD_RUNNING;
+                                    sched_add(pt);
+                                }
+                                pt = pt->proc_next;
+                            }
+                            spin_unlock_irq(&parent->lock, pflags);
+                        }
+                    }
+                }
                 continue;
-            /* Continue (SIGCONT) — ignore for now (no job control) */
-            case 18:
-                continue;
+            }
             /* Terminate: everything else with SIG_DFL */
             default:
                 p->exit_signal = sig;
@@ -489,10 +561,69 @@ static long kill_one(process_t *target, int sig) {
     if (handler == SIG_DFL) {
         /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
-        /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
-        if (sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) return 0;
-        /* Continue: SIGCONT — ignore for now */
-        if (sig == SIGCONT) return 0;
+
+        /* Stop: SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU — stop the process */
+        if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
+            /* Set pending — actual stop happens in check_pending_signals
+             * on the target's next timer tick or syscall return. */
+            target->sig_pending |= (1ULL << sig);
+            /* Wake blocked threads so they can observe the stop signal */
+            {
+                extern void sched_add(thread_t *t);
+                uint64_t tflags;
+                spin_lock_irq(&target->lock, &tflags);
+                thread_t *t = target->threads;
+                while (t) {
+                    if (t->state == THREAD_BLOCKED) {
+                        t->state = THREAD_RUNNING;
+                        sched_add(t);
+                    }
+                    t = t->proc_next;
+                }
+                spin_unlock_irq(&target->lock, tflags);
+            }
+            return 0;
+        }
+
+        /* Continue: SIGCONT — resume stopped process */
+        if (sig == SIGCONT) {
+            /* Cancel any pending stop signals */
+            target->sig_pending &= ~((1ULL << SIGSTOP) | (1ULL << SIGTSTP) |
+                                     (1ULL << SIGTTIN) | (1ULL << SIGTTOU));
+            if (target->stopped) {
+                target->stopped = 0;
+                target->cont_pending = 1;
+                /* Resume all stopped threads */
+                extern void sched_add(thread_t *t);
+                thread_t *t = target->threads;
+                while (t) {
+                    if (t->state == THREAD_STOPPED) {
+                        t->state = THREAD_RUNNING;
+                        sched_add(t);
+                    }
+                    t = t->proc_next;
+                }
+                /* Notify parent */
+                if (target->parent_pid) {
+                    process_t *parent = proc_find(target->parent_pid);
+                    if (parent) {
+                        parent->sig_pending |= (1ULL << SIGCHLD);
+                        uint64_t pflags;
+                        spin_lock_irq(&parent->lock, &pflags);
+                        thread_t *pt = parent->threads;
+                        while (pt) {
+                            if (pt->state == THREAD_BLOCKED) {
+                                pt->state = THREAD_RUNNING;
+                                sched_add(pt);
+                            }
+                            pt = pt->proc_next;
+                        }
+                        spin_unlock_irq(&parent->lock, pflags);
+                    }
+                }
+            }
+            return 0;
+        }
 
         /* Everything else: terminate */
         target->exit_signal = sig;
@@ -623,10 +754,10 @@ long do_tgkill(int tgid, int tid, int sig) {
     if (handler == SIG_DFL) {
         /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
-        /* Stop: SIGTSTP, SIGTTIN, SIGTTOU — ignore for now */
-        if (sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) return 0;
-        /* Continue: SIGCONT — ignore for now */
-        if (sig == SIGCONT) return 0;
+        /* Stop/Continue: delegate to kill_one which handles the full logic */
+        if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU ||
+            sig == SIGCONT)
+            return kill_one(p, sig);
 
         /* Everything else: terminate */
         p->exit_signal = sig;
