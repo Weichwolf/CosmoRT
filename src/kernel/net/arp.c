@@ -1,5 +1,6 @@
-/* CosmoRT ARP — Cache + Resolution
- * Extracted from net.c (Phase C).
+/* CosmoRT ARP — Hash-Table Cache + Resolution
+ * Skal-D: O(1) amortised lookup via hash-table + slab pool.
+ * Replaces linear array (Phase C).
  */
 
 #include "net/arp.h"
@@ -7,69 +8,136 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
+#include "mm/slab.h"
 
-/* ── ARP Cache ─────────────────────────────────────── */
+/* ── Helpers ──────────────────────────────────────── */
 
-typedef struct {
-    uint8_t ip[4];
-    uint8_t mac[6];
-    uint8_t valid;
-} arp_entry_t;
+static inline uint32_t ip_to_u32(const uint8_t *ip) {
+    return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
+           ((uint32_t)ip[2] << 8)  |  (uint32_t)ip[3];
+}
 
-static arp_entry_t arp_cache[NET_ARP_CACHE];
-static int arp_cache_next;  /* round-robin evict index */
+/* ── Slab Pool ────────────────────────────────────── */
+
+static arp_entry_t arp_pool[ARP_POOL_SIZE];
+static slab_t      arp_slab;
+static int         arp_slab_inited;
+
+static void arp_slab_ensure_init(void) {
+    if (__builtin_expect(arp_slab_inited, 1)) return;
+    slab_init(&arp_slab, arp_pool, (int)sizeof(arp_entry_t), ARP_POOL_SIZE);
+    arp_slab_inited = 1;
+}
+
+/* ── Hash Table (IP → chain) ─────────────────────── */
+
+static arp_entry_t *arp_hash[ARP_HASH_SIZE];
+static int          arp_evict_bucket;  /* round-robin bucket for eviction */
+
+static inline int bucket_idx(uint32_t key) {
+    return (int)(key & (ARP_HASH_SIZE - 1));
+}
+
+/* ── Cache Reset ──────────────────────────────────── */
+
+void arp_cache_reset(void) {
+    for (int i = 0; i < ARP_HASH_SIZE; i++)
+        arp_hash[i] = 0;
+    arp_evict_bucket = 0;
+    arp_slab_inited = 0;
+    arp_slab_ensure_init();
+}
+
+/* ── Lookup: O(1) amortised ──────────────────────── */
 
 int arp_cache_lookup(const uint8_t *ip, uint8_t *mac_out) {
-    for (int i = 0; i < NET_ARP_CACHE; i++) {
-        if (arp_cache[i].valid &&
-            arp_cache[i].ip[0] == ip[0] && arp_cache[i].ip[1] == ip[1] &&
-            arp_cache[i].ip[2] == ip[2] && arp_cache[i].ip[3] == ip[3]) {
-            mcpy(mac_out, arp_cache[i].mac, 6);
+    uint32_t key = ip_to_u32(ip);
+    int idx = bucket_idx(key);
+    for (arp_entry_t *e = arp_hash[idx]; e; e = e->hash_next) {
+        if (e->ip_key == key) {
+            mcpy(mac_out, e->mac, 6);
             return 0;
         }
     }
     return -1;
 }
 
-void arp_cache_insert(const uint8_t *ip, const uint8_t *mac) {
-    /* Update existing entry if present */
-    for (int i = 0; i < NET_ARP_CACHE; i++) {
-        if (arp_cache[i].valid &&
-            arp_cache[i].ip[0] == ip[0] && arp_cache[i].ip[1] == ip[1] &&
-            arp_cache[i].ip[2] == ip[2] && arp_cache[i].ip[3] == ip[3]) {
-            mcpy(arp_cache[i].mac, mac, 6);
+/* ── Evict one entry from a bucket (tail of chain) ── */
+
+static void evict_one(void) {
+    /* Round-robin across buckets to find a non-empty one */
+    for (int tries = 0; tries < ARP_HASH_SIZE; tries++) {
+        int b = arp_evict_bucket % ARP_HASH_SIZE;
+        arp_evict_bucket = b + 1;
+        arp_entry_t *e = arp_hash[b];
+        if (!e) continue;
+
+        /* Remove tail of chain (simplest LRU approximation) */
+        if (!e->hash_next) {
+            /* Single entry in bucket */
+            arp_hash[b] = 0;
+            slab_free(&arp_slab, e);
             return;
         }
+        arp_entry_t *prev = e;
+        while (prev->hash_next->hash_next)
+            prev = prev->hash_next;
+        slab_free(&arp_slab, prev->hash_next);
+        prev->hash_next = 0;
+        return;
     }
-    /* Find free slot */
-    for (int i = 0; i < NET_ARP_CACHE; i++) {
-        if (!arp_cache[i].valid) {
-            mcpy(arp_cache[i].ip, ip, 4);
-            mcpy(arp_cache[i].mac, mac, 6);
-            arp_cache[i].valid = 1;
-            return;
-        }
-    }
-    /* Evict round-robin */
-    int idx = arp_cache_next % NET_ARP_CACHE;
-    mcpy(arp_cache[idx].ip, ip, 4);
-    mcpy(arp_cache[idx].mac, mac, 6);
-    arp_cache[idx].valid = 1;
-    arp_cache_next = idx + 1;
 }
+
+/* ── Insert / Update ─────────────────────────────── */
+
+void arp_cache_insert(const uint8_t *ip, const uint8_t *mac) {
+    arp_slab_ensure_init();
+
+    uint32_t key = ip_to_u32(ip);
+    int idx = bucket_idx(key);
+
+    /* Update existing? */
+    for (arp_entry_t *e = arp_hash[idx]; e; e = e->hash_next) {
+        if (e->ip_key == key) {
+            mcpy(e->mac, mac, 6);
+            return;
+        }
+    }
+
+    /* Allocate new entry */
+    arp_entry_t *n = slab_alloc(&arp_slab);
+    if (!n) {
+        /* Pool full — evict one, retry */
+        evict_one();
+        n = slab_alloc(&arp_slab);
+        if (!n) return;  /* should not happen */
+    }
+    n->ip_key = key;
+    mcpy(n->mac, mac, 6);
+    n->valid = 1;
+    n->hash_next = arp_hash[idx];
+    arp_hash[idx] = n;
+}
+
+/* ── Evict by IP ─────────────────────────────────── */
 
 void arp_cache_evict(const uint8_t *ip) {
-    for (int i = 0; i < NET_ARP_CACHE; i++) {
-        if (arp_cache[i].valid &&
-            arp_cache[i].ip[0] == ip[0] && arp_cache[i].ip[1] == ip[1] &&
-            arp_cache[i].ip[2] == ip[2] && arp_cache[i].ip[3] == ip[3]) {
-            arp_cache[i].valid = 0;
+    arp_slab_ensure_init();
+
+    uint32_t key = ip_to_u32(ip);
+    int idx = bucket_idx(key);
+    arp_entry_t *prev = 0;
+    for (arp_entry_t *e = arp_hash[idx]; e; prev = e, e = e->hash_next) {
+        if (e->ip_key == key) {
+            if (prev) prev->hash_next = e->hash_next;
+            else      arp_hash[idx] = e->hash_next;
+            slab_free(&arp_slab, e);
             return;
         }
     }
 }
 
-/* ── ARP Input (from dispatcher) ───────────────────── */
+/* ── ARP Input (from dispatcher) ──────────────────── */
 
 void arp_input(const uint8_t *pkt, int len) {
     if (len < 42) return;
@@ -117,7 +185,7 @@ void arp_input(const uint8_t *pkt, int len) {
     }
 }
 
-/* ── ARP Resolve (blocking) ────────────────────────── */
+/* ── ARP Resolve (blocking) ───────────────────────── */
 
 int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     /* Cache hit? */
