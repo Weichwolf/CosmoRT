@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 938 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 951 ktest PASS, 0 FAIL.
 
 ---
 
@@ -172,7 +172,11 @@ arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
 
 ### Font-B: Font aus ramfs
 
-- [ ] .font Binaerformat, /lib/fonts/default.font
+- [ ] .font Binaerformat (Header + Glyph-Map + Bitmap)
+- [ ] tools/mkfont.py: generiert benannte .font Dateien (z.B. iosevka-19.font)
+- [ ] Font-Verzeichnis: /lib/fonts/*.font
+- [ ] /etc/cosmo.conf: vt.font = /lib/fonts/iosevka-19.font (konfigurierbar)
+- [ ] fb_init(): laedt Font aus config-Pfad, Fallback auf ersten .font in /lib/fonts/
 
 ---
 
