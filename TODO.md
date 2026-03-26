@@ -89,6 +89,15 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
 ### Job Control — erledigt (EQ-C)
 
+### Parallele Test-Ausfuehrung
+
+- [ ] test/main.c: fork pro Test, max N gleichzeitig (z.B. 4)
+- [ ] Jeder Test in eigenem Prozess (Isolation, kein Shared State)
+- [ ] Output-Buffering: Child puffert PASS/FAIL, schreibt Block am Ende
+- [ ] Parent: wait4 Loop, sammelt Ergebnisse, zaehlt PASS/FAIL
+- [ ] Timer/Netzwerk-Tests schlafen → andere Tests laufen waehrenddessen
+- [ ] Gleichzeitig Kernel-Stresstest (Races, SMP-Contention)
+
 ### Boot-Config — /etc/cosmo.conf
 
 - [ ] config_load/config_get/config_get_int Parser
