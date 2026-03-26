@@ -1,423 +1,370 @@
 # CosmoRT Design Specification
 
-Referenz-Dokument. Code muss diesem Dokument entsprechen.
-Abweichungen sind Bugs.
+Spec-Tree. Definiert korrektes Verhalten durch externe Standards + Architektur-Entscheidungen.
+Code wird gegen dieses Dokument verifiziert. Abweichungen sind Bugs.
+
+Keine Implementierungsdetails — die stehen im Code.
 
 ---
 
-## 1. Hardware-Modell
+## 1. CPU / Architecture
 
-### 1.1 Core-Topologie
+### 1.1 x86_64 Baseline
 
-| Core | Rolle | IRQs | Userspace | Locks |
-|------|-------|------|-----------|-------|
-| 0 | RT-Core | Alle | Nie | Nie shared mit Compute |
-| 1..N | Compute | Keine | Immer | Frei |
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 1-4 | Intel 64 and IA-32 Architectures Software Developer's Manual | Paging, Exceptions, APIC, MSRs, TSC |
+| AMD64 Architecture Programmer's Manual | AMD Vol 1-5 | Equivalent, AMD-spezifische MSRs |
+| System V ABI AMD64 | https://gitlab.com/x86-psABIs/x86-64-ABI | Calling Convention, Stack Layout, Register Usage |
 
-ARINC 653 Partitionierung:
-- RT-Core (Partition A): Bounded WCET, kein Dynamic Alloc, kein Shared Lock
-- Compute (Partition B): Best-Effort, COW, Demand-Paging, Slab
+Entscheidung: x86_64 only (ARM64/RISC-V geplant via src/arch/).
 
-Partition-Grenze = SPSC Lock-free Channels. Kein Code-Pfad kreuzt die Grenze.
+### 1.2 Paging
 
-### 1.2 RT-Core Prioritaeten
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 Chapter 4 | 4-Level Paging (PML4) | 4KB Pages + 2MB Huge Pages (PS-Bit) |
+| Intel SDM Vol 3 §4.6 | Access/Dirty Bits | Page-Age Tracking (KSM) |
+| Intel SDM Vol 3 §4.7 | Page-Fault Exception (#PF) | COW, Demand-Paging, THP |
 
-```
-P0  Audio          <5ms     1 Callback/Tick
-P1  Input/HID      <1ms     Drain all
-P2  Net-RX         <10ms    max 64 Pakete
-P3  Net-TX         <10ms    max 64 Pakete
-P4  VSync/DMA      Frame    1 Event
-P5  Timer-Wheel    1ms      Alle faelligen
-P6  Hash-Engine    Idle     max N Jobs
-P7  Page-Age       Idle     max N Pages
-P8  KSM Dedup      Idle     max N Pages
-```
+PTE Software-Bits:
+- Bit 9: PTE_COW (Copy-on-Write)
+- Bit 10: PTE_LAZYFREE (MADV_FREE reclaimable)
 
-Handler returniert work_done. Restart von P0 bei work_done > 0. Max 4 Restarts.
+### 1.3 Interrupts / APIC
 
-### 1.3 RT/Compute Kommunikation
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 Chapter 10 | Local APIC | Timer (Periodic, Vector 32), EOI, ICR (IPI) |
+| Intel SDM Vol 3 §10.6 | I/O APIC | IRQ Routing (alle auf Core 0) |
+| Intel SDM Vol 3 §10.12 | IPI (Inter-Processor Interrupt) | rt_wake: Vector 0xFD, Fixed Delivery |
 
-```
-rt_channel_t: SPSC Lock-free Ringbuffer
-  - Monoton steigende head/tail (uint32_t Wrap-Arithmetik)
-  - arch_store_release/arch_load_acquire
-  - Power-of-2 Buffer, Modulo via Bitmask
-  - 4-Byte Length-Header + Payload pro Message
+Entscheidung: Alle IRQs auf Core 0 (RT-Core). Kein IRQ-Balancing.
 
-Richtungen:
-  RX:  RT → Compute  (Netzwerk-Daten, Hash-Results)
-  TX:  Compute → RT  (Netzwerk-Pakete, Hash-Jobs, Timer-Requests)
+### 1.4 SIMD / FPU
 
-IPI: rt_wake(core_id) fuer Cross-Core Wakeup
-  - APIC ICR Write, Vector 0xFD, fire-and-forget
-  - sched_wake(thread_t *t): atomic BLOCKED→RUNNABLE + IPI
-```
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 1 Chapter 10 | SSE/SSE2 | Userspace + RT-Core Hash-Engine |
+| Intel SDM Vol 1 §10.5 | FXSAVE/FXRSTOR (512 Bytes) | Context Switch, fork, Signal |
+| Intel SDM Vol 2 | MXCSR Register | Init 0x1F80, sanitized bei sigreturn |
 
-### 1.4 Memory Barriers
+Entscheidung: SSE2 maximum (WASM SIMD Limit). Kein AVX/AVX-512, kein XSAVE.
+Kernel: -mno-sse (außer sha256.c). RT-Core: SSE frei (kein User-FPU).
 
-```
-x86 TSO:
-  arch_store_release  = Compiler-Barrier (__asm__ volatile("" ::: "memory"))
-  arch_load_acquire   = Compiler-Barrier
-  arch_wmb/rmb        = Compiler-Barrier
-  arch_mb             = mfence
+### 1.5 TSC / Timer
 
-ARM64 (geplant):
-  arch_store_release  = stlr
-  arch_load_acquire   = ldar
-  arch_wmb            = dmb ishst
-  arch_rmb            = dmb ishld
-  arch_mb             = dmb ish
-
-DMA:
-  arch_dma_sync_for_device  x86: No-Op (PCIe cache-koharent)
-  arch_dma_sync_for_cpu     x86: No-Op
-```
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 §17.17 | Time-Stamp Counter (TSC) | timer_ms(), Calibration via LAPIC |
+| Intel SDM Vol 3 §10.5.4 | LAPIC Timer | Periodic, Divider 16, Init 10000000 |
 
 ---
 
-## 2. Memory Management
+## 2. Boot
 
-### 2.1 Physische Pages
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| UEFI Specification 2.10 | https://uefi.org/specifications | Boot Services, GOP, Memory Map, Exit Boot Services |
+| ACPI Specification 6.5 | https://uefi.org/specifications | PM1a_CNT (Shutdown), S5 Sleep State |
+| GNU-EFI | https://sourceforge.net/projects/gnu-efi/ | EFI Application Build |
 
-Buddy-Allocator. Order 0-9 (4KB-2MB).
-
-```
-page_alloc(n)     → 2^ceil(log2(n)) Pages, aligned
-page_free(ptr, n) → Buddy-Merge
-page_incref(phys) → Atomic uint16_t Refcount
-page_decref(phys) → Atomic, Free bei 0
-```
-
-OOM-Pfad: lazyfree_reclaim(16) → Retry.
-
-### 2.2 Copy-on-Write
-
-PTE_COW = Bit 9 (x86 Software-Bit).
-
-```
-fork():
-  Fuer jede User-Page:
-    Parent PTE: -WRITE +COW
-    Child  PTE: -WRITE +COW (kopiert)
-    page_incref(phys)
-  TLB Flush beider Prozesse
-
-Write-Fault auf COW-Page:
-  refcount == 1 → PTE +WRITE -COW (kein Kopieren)
-  refcount >  1 → neue Page, memcpy, PTE replace, page_decref(old)
-```
-
-### 2.3 MADV_FREE
-
-PTE_LAZYFREE = Bit 10 (x86 Software-Bit).
-
-```
-madvise(MADV_FREE):
-  Fuer jede Page im Range:
-    PTE +LAZYFREE -DIRTY
-    Page bleibt gemappt
-
-Erneuter Write:
-  CPU setzt DIRTY → Page automatisch gerettet
-
-OOM Reclaim:
-  Scan: LAZYFREE + !DIRTY → page_free, PTE=0
-
-Zugriff auf freigegebene Page:
-  Demand-Paging → Zero-Page
-
-fork():
-  LAZYFREE-Bit gestrippt (COW hat Vorrang)
-```
-
-### 2.4 Transparent Huge Pages
-
-PTE_PS = Bit 7 (x86 Hardware). 2MB PMD-Entry, keine Page-Table.
-
-```
-mmap(MAP_ANONYMOUS, >= 2MB):
-  VMA_HUGEPAGE Flag
-
-Page-Fault an 2MB-Boundary in VMA_HUGEPAGE:
-  huge_page_alloc() (Order-9 Buddy)
-  Erfolg → PMD-Entry mit PS-Bit
-  Fail   → Fallback 4KB
-
-COW-Fault auf Huge Page:
-  split_huge_pmd() → 512 × 4KB PTEs
-  Dann normaler COW-Fault auf 4KB
-
-munmap/mprotect auf Teil einer Huge Page:
-  split_huge_pmd() zuerst, dann Operation auf 4KB
-```
-
-### 2.5 KSM (Kernel Same-page Merging)
-
-Laeuft auf RT-Core, niedrigste Prioritaet (P7 Age, P8 Dedup).
-
-```
-Interface: MM kennt kein Hashing. Dedup kennt keine PTEs.
-
-MM exportiert:
-  mm_dedup_scan_next(phys_out)    Naechste anonyme Cold Page
-  mm_dedup_merge(keep, victim)    PTEs umschreiben, page_decref
-
-Dedup exportiert:
-  dedup_on_page_free(phys)        Hash invalidieren
-  dedup_on_cow_break(old, new)    Hash invalidieren
-
-Page-Age (2-Bit Counter pro Page):
-  Scan: Accessed=1 → age=0 (HOT), clear Accessed
-  Scan: Accessed=0 → age++ (WARM → COLD)
-  Nur PAGE_COLD + !DIRTY werden gehasht
-
-Dedup-Scan:
-  scan_next → skip hot → SHA-256 → hash_table_lookup → memcmp → merge
-```
+Entscheidung: UEFI-only (kein Legacy BIOS). GPT Partitioning.
 
 ---
 
-## 3. Prozess-Modell
+## 3. Linux ABI
 
-### 3.1 Linux ABI
+### 3.1 Syscall ABI
 
-x86_64 ELF. Syscall via `syscall` Instruction.
-Register-Konvention: rdi, rsi, rdx, r10, r8, r9 = a1-a6. rax = Syscall-Nr + Return.
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Linux syscall table x86_64 | arch/x86/entry/syscalls/syscall_64.tbl | Nr 0-471 + CosmoRT 0x10000+ |
+| Linux syscall convention | man 2 syscall | rax=nr, rdi/rsi/rdx/r10/r8/r9=args, rax=return |
+| Linux errno | include/uapi/asm-generic/errno.h | EPERM(1) bis ECONNREFUSED(111) |
 
-Alle SYS_* Nummern exakt Linux x86_64. CosmoRT-eigene ab 0x10000.
+Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 
-### 3.2 FPU/SIMD
+### 3.2 ELF
 
-FXSAVE/FXRSTOR (512 Bytes). Deckt x87 + MMX + SSE + SSE2 ab.
-Kein XSAVE (kein AVX). Ziel: SSE2/NEON (WASM SIMD Limit).
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| ELF Specification (TIS) | Tool Interface Standard, Portable Formats | ET_EXEC, ET_DYN, PT_LOAD, PT_INTERP, PT_PHDR |
+| Linux ELF Auxiliary Vector | include/uapi/linux/auxvec.h | AT_PHDR, AT_ENTRY, AT_BASE, AT_PAGESZ |
 
-```
-Context Switch: fxsave(current) → fxrstor(next)
-fork/clone:     fxsave(parent) → memcpy → child
-execve:         Reset (MXCSR=0x1F80)
-Signal:         fxsave in ucontext, fxrstor bei sigreturn
-RT-Core:        Kein Userspace → SSE-Register frei fuer Hash-Engine
-```
+### 3.3 Signals
 
-### 3.3 Permissions
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 §2.4 | Signal Concepts | 31 Standard-Signale |
+| Linux sigaction | man 2 rt_sigaction | SA_RESTART, SA_SIGINFO, SA_NOCLDSTOP |
+| Linux signal frame x86_64 | arch/x86/kernel/signal.c | ucontext_t, siginfo_t, FXSAVE in fpstate |
 
-Single-User (UID 0). rwx-Bits gespeichert (chmod), nur +x enforced (exec).
-Default: Dirs 0755, Files 0644.
+### 3.4 Process
 
----
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 fork/exec/wait | IEEE 1003.1 | fork, execve, wait4, exit_group |
+| Linux clone | man 2 clone | CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_THREAD |
+| Linux clone3 | man 2 clone3 | struct clone_args |
+| Linux prctl | man 2 prctl | PR_SET_NAME, PR_SET_PDEATHSIG |
+| Linux arch_prctl | man 2 arch_prctl | ARCH_SET_FS, ARCH_SET_GS (TLS) |
 
-## 4. Netzwerk
+### 3.5 Memory
 
-### 4.1 Architektur
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 mmap | IEEE 1003.1 | MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED |
+| Linux mmap | man 2 mmap | MAP_SHARED (TODO), MAP_NORESERVE |
+| Linux madvise | man 2 madvise | MADV_DONTNEED, MADV_FREE |
+| Linux brk | man 2 brk | Heap Management |
+| Linux mlock | man 2 mlock | mlockall(MCL_CURRENT\|MCL_FUTURE) |
 
-```
-src/kernel/net/
-  dispatch.c   NIC IRQ → EtherType → Protokoll-Handler
-  tcp.c        TCP State-Machine, Per-Socket Ringbuffer
-  udp.c        UDP Per-Socket Demux
-  arp.c        ARP Cache (Hash 64 Buckets + Pool 128)
-  ip.c         IP Header, Checksum, Send
-  dns.c        DNS Resolver (Kernel-Boot)
-  dhcp.c       DHCP Client (Kernel-Boot)
-  socket.c     BSD Socket API
-  unix_socket.c  AF_UNIX
-```
+### 3.6 File I/O
 
-### 4.2 TCP (RFC 793 + modern)
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 File I/O | IEEE 1003.1 | open, read, write, close, lseek, stat |
+| Linux openat | man 2 openat | AT_FDCWD, O_CLOEXEC |
+| Linux *at Syscalls | man 2 openat, mkdirat, etc. | Legacy delegiert an *at-Varianten |
+| Linux fcntl | man 2 fcntl | F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL |
+| Linux ioctl | man 2 ioctl | TIOCGWINSZ, TIOCSWINSZ, TIOCSPGRP (TODO) |
+| Linux getdents64 | man 2 getdents64 | Directory Iteration |
+| Linux statx | man 2 statx | Extended stat |
 
-10 States (RFC 793):
-```
-CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT1 → FIN_WAIT2 → TIME_WAIT → CLOSED
-                     ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
-```
+### 3.7 IPC
 
-Per-Socket RX-Ringbuffer (64KB, dynamisch alloziert via Buddy).
-Hash-Tabelle (256 Buckets, Chaining) fuer tcp_find().
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 Pipes | IEEE 1003.1 | pipe, pipe2 |
+| Linux futex | man 2 futex | FUTEX_WAIT, FUTEX_WAKE |
+| Linux eventfd | man 2 eventfd2 | EFD_NONBLOCK, EFD_CLOEXEC |
+| Linux timerfd | man 2 timerfd_create | CLOCK_MONOTONIC, CLOCK_REALTIME |
+| Linux signalfd | man 2 signalfd4 | Signal als fd |
+| Linux inotify | man 2 inotify_init1 | Filesystem Monitoring |
 
-### 4.3 Congestion Control: CUBIC (RFC 8312)
+### 3.8 Event Polling
 
-```
-W_cubic(t) = C × (t - K)³ + W_max
-C = 0.4, Beta = 0.7
-K = cbrt(W_max × Beta / C)
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Linux epoll | man 7 epoll | epoll_create1, epoll_ctl, epoll_wait, EPOLLIN/OUT/ET |
+| Linux poll | man 2 poll | POLLIN, POLLOUT, POLLERR |
+| Linux select/pselect | man 2 pselect6 | Kompatibilitaet |
 
-Integer-Arithmetik: alle Werte ×1024 fixed-point.
-Integer-Kubikwurzel via Newton-Iteration.
+### 3.9 Sockets
 
-Initial Window: 10 × MSS (RFC 6928)
-Fast Retransmit: 3 DupACKs → sofort retransmit (RFC 5681 §3.2)
-Fast Recovery: cwnd = ssthresh + 3*MSS, inflate bei DupACK
-```
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 Sockets | IEEE 1003.1 | socket, bind, listen, accept, connect |
+| Linux socket | man 2 socket | AF_INET, AF_UNIX, SOCK_STREAM, SOCK_DGRAM |
+| Linux sendmsg/recvmsg | man 2 sendmsg | struct msghdr, AF_UNIX/AF_INET Dispatch |
+| Linux setsockopt | man 2 setsockopt | SO_REUSEADDR, SO_KEEPALIVE, TCP_NODELAY |
 
-### 4.4 SACK (RFC 2018)
+### 3.10 Time
 
-SYN: SACK Permitted Option (Kind=4).
-ACK: SACK Blocks (Kind=5) bei OOO-Empfang.
-Parsing: sack_blocks[4] in net_tcp_t.
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 Clocks | IEEE 1003.1 | clock_gettime, clock_getres |
+| Linux clock IDs | man 2 clock_gettime | CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_BOOTTIME |
+| Linux nanosleep | man 2 nanosleep | High-Resolution Sleep |
 
-### 4.5 Window Scaling (RFC 7323)
+### 3.11 Scheduling
 
-SYN: Window Scale Option (Kind=3, Shift=7).
-Max Window: 64KB × 2^7 = 8MB.
-snd_wnd/rcv_wnd als uint32_t (nicht uint16_t).
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 Scheduling | IEEE 1003.1 | sched_yield, sched_setaffinity |
+| Linux SCHED_OTHER/FIFO/RR | man 7 sched | CFS-equivalent auf Compute-Cores |
 
-### 4.6 Out-of-Order Buffering
+### 3.12 System
 
-4 OOO-Slots pro Connection. ooo_insert bei seq != rcv_nxt.
-ooo_drain nach in-order Segment. DupACK bei OOO.
-
-### 4.7 Keepalive
-
-SO_KEEPALIVE via setsockopt. Timer-Wheel auf RT-Core.
-Interval: 75s. Max Probes: 9. Probe: seq=snd_nxt-1.
-
-### 4.8 TX-Pfad
-
-```
-Compute-Core: send() → tcp_send() → ip_send_raw()
-  rt_is_current_rt()? → direkt nic->send()
-  sonst              → tx_ring_push(frame)
-
-RT-Core: net_poll() / timer_tick → tx_ring_drain() → nic->send()
-```
-
-### 4.9 RX-Pfad
-
-```
-RT-Core: NIC IRQ → net_poll() → dispatch
-  → tcp_input() → tcp_find() → rxring_push → sched_wake(wait_thread)
-
-Compute-Core: recv() → rxring_pop()
-  Leer → sock_block_thread() → schlafen bis IRQ weckt
-```
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Linux uname | man 2 uname | sysname="CosmoRT" |
+| Linux sysinfo | man 2 sysinfo | Uptime, RAM, Processes |
+| Linux getrandom | man 2 getrandom | GRND_NONBLOCK |
+| Linux reboot | man 2 reboot | LINUX_REBOOT_CMD_POWER_OFF, RESTART, HALT |
 
 ---
 
-## 5. Skalierung
+## 4. Netzwerk Protokolle
 
-Alle Allokationen O(1). Alle Lookups O(1) amortisiert (Hash) oder O(log n) (AVL).
+### 4.1 IP
 
-| Subsystem | Struktur | Lookup | Alloc | Kapazitaet |
-|-----------|----------|--------|-------|-----------|
-| Socket Pool | Slab + Active-DLL | O(1) | O(1) | 256 |
-| TCP Hash | 256 Buckets, Chaining | O(1) avg | O(1) | 256 |
-| UDP Hash | 64 Buckets, Chaining + Pool | O(1) avg | O(1) | 128 |
-| ARP Cache | 64 Buckets, Chaining + Pool | O(1) avg | O(1) | 128 |
-| Timer-Wheel | Free-Stack | — | O(1) | 256 |
-| FD-Tabelle | Bitmap + ctzll | — | O(1) POSIX lowest | 1024 |
-| VMA | AVL-Tree | O(log n) | O(1) Slab | 8192 |
-| PID/TID | Direct-Index Table | O(1) | O(1) | 256/512 |
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 791 | Internet Protocol | IPv4 Header, Checksum, TTL |
+| RFC 1071 | Computing the Internet Checksum | One's Complement Sum |
+| RFC 1122 | Requirements for Internet Hosts | Host Requirements |
 
----
+Entscheidung: IPv4 only (IPv6 geplant).
 
-## 6. Crypto
+### 4.2 TCP
 
-### 6.1 SHA-256 (FIPS 180-4)
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 793 | Transmission Control Protocol | 10-State Machine, SEQ/ACK, Flow Control |
+| RFC 8312 | CUBIC Congestion Control | W(t)=C×(t-K)³+Wmax, Beta=0.7, Integer-Arithmetik |
+| RFC 5681 | TCP Congestion Control | Slow-Start, Fast Retransmit §3.2, Fast Recovery |
+| RFC 6928 | Increasing TCP Initial Window | IW=10 (14600 Bytes) |
+| RFC 2018 | TCP Selective Acknowledgment (SACK) | SACK Permitted + Blocks, 4 Slots |
+| RFC 7323 | TCP Extensions (Window Scaling) | Shift=7, max 8MB Window |
+| RFC 6298 | Computing TCP Retransmission Timer | RTO Calculation |
+| RFC 1122 §4.2 | TCP Requirements | Keepalive (75s, 9 Probes) |
 
-Implementierung: src/arch/x86_64/sha256.c (ohne -mno-sse compiliert).
-Scalar C. SHA-NI Upgrade geplant (sha256rnds2).
+Entscheidung: Kein Nagle (immer TCP_NODELAY-Verhalten). Kein Timestamps (RFC 7323 Timestamps).
+Kein ECN (RFC 3168). Kein TFO (TCP Fast Open).
 
-Hash-Engine auf RT-Core (P6). Jobs via SPSC Channel.
-Drei Konsumenten: KSM Dedup, CosmoFS Block-Dedup, Cloud-Sync.
+### 4.3 UDP
 
----
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 768 | User Datagram Protocol | Stateless Send/Recv |
 
-## 7. Timer
+### 4.4 ARP
 
-### 7.1 Timer-Wheel
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 826 | Address Resolution Protocol | Request/Reply, Cache (128 Entries) |
 
-256 Slots, 1ms Granularitaet. Free-Stack fuer O(1) Alloc.
-Laeuft auf RT-Core (P5). Compute postet Requests via SPSC Channel.
+### 4.5 ICMP
 
-Actions: TCP Retransmit, TCP Keepalive.
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 792 | Internet Control Message Protocol | Echo Reply (Kernel), Echo Request (Userspace) |
 
-### 7.2 LAPIC Timer
+### 4.6 DHCP
 
-Periodic Mode, Vector 32. Divider 16, Init 10000000.
-Feuert auf jedem Core. RT-Core: rt_poll_run(). Compute: sched_preempt().
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 2131 | Dynamic Host Configuration Protocol | DISCOVER/OFFER/REQUEST/ACK |
+| RFC 2132 | DHCP Options | Option 3 (Gateway), Option 6 (DNS) |
 
----
+### 4.7 DNS
 
-## 8. Treiber-Modell
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| RFC 1035 | Domain Names — Implementation | A-Record Query, Response Parsing, Name Compression |
 
-### 8.1 API (cosmort.h)
-
-5 Primitives + Registration:
-```
-cosmo_mmio_map, cosmo_dma_alloc, cosmo_irq_register
-cosmo_pci_config_read, cosmo_fw_load
-nic_driver_t + net_nic_register
-blk_driver_t + blk_register
-```
-
-Kernel-Treiber: direkter Funktionsaufruf.
-Userspace-Treiber: Syscall (0x10000+), HW_CAP_CHECK (is_driver).
-
-### 8.2 Bus-Sortierung
-
-```
-src/drivers/
-  virtio/    Transport + Geraete (net, blk, gpu, input)
-  hyperv/    VMBus + Geraete (netvsc, storvsc, fb, kbd, mouse)
-  pci/       Standalone (e1000)
-```
-
-### 8.3 Plattform-Support
-
-```
-src/arch/x86_64/
-  hyperv.c   Hyper-V Detection, MSRs, SynIC, Hypercall-Page
-  qemu.c     ACPI Shutdown (PM1a_CNT Ports)
-  sha256.c   SHA-256 (ohne -mno-sse)
-```
+Entscheidung: Kernel-DNS nur fuer Boot. Userspace-DNS fuer alles andere.
 
 ---
 
-## 9. Dateisystem
+## 5. Crypto
 
-### 9.1 VFS
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| FIPS 180-4 | Secure Hash Standard (SHA-256) | Block-Hashing, KSM, CosmoFS Dedup |
+| FIPS 197 | AES | Geplant (CosmoFS Encryption) |
+| Intel SHA Extensions | SHA-NI (sha256rnds2, sha256msg1/2) | Geplant (CPUID Check) |
 
-Kernel: CosmoFS (Root), ramfs, procfs.
-Userspace: FAT32, ext4, NTFS, NFS, SMB (ueber Block-I/O).
-
-### 9.2 CosmoFS v2 (geplant)
-
-Content-Addressed COW. SHA-256 pro 4KB Block.
-Keine Journaling (COW = crash-safe). Inline Dedup. Snapshots O(1).
-Cloud-Sync: Hash-Diff gegen S3-kompatibles Backend.
+Entscheidung: SHA-256 als universelle Hash-Funktion. Integer-Arithmetik, kein FP.
+RT-Core Hash-Engine: SSE-Register frei (kein User-FPU auf Core 0).
 
 ---
 
-## 10. Security
+## 6. Hardware / Treiber
 
-### 10.1 Syscall-Haertung
+### 6.1 PCI
 
-- fault_recover (setjmp/longjmp) fuer alle Kernel-Mode Exceptions
-- sigreturn: MXCSR sanitized vor fxrstor
-- rt_sigaction: Handler-Adresse validiert (keine Kernel-Adressen)
-- mlock/mprotect/madvise: Range-Checks + VMA-Skip (keine O(n) Spin mit IRQs aus)
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| PCI Local Bus Spec 3.0 | PCI-SIG | Config Space (Port I/O 0xCF8/0xCFC) |
+| PCIe Base Spec 5.0 | PCI-SIG | MMIO Config, MSI-X (geplant) |
 
-### 10.2 Test-Strategie
+### 6.2 VirtIO
 
-```
-make test-hw      Unit-Tests: Happy Path + Edge Cases (912+ Tests)
-make test-crash   Adversarial: Kernel darf nie crashen (11+ Tests)
-make test-fuzz    Random Syscalls: Survival-Test (1+ Tests)
-```
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| VirtIO Spec 1.2 | https://docs.oasis-open.org/virtio/ | virtio-net, virtio-blk, virtio-gpu, virtio-input |
+| VirtIO PCI Transport | VirtIO Spec §4.1 | Capability Structure, Notify, ISR |
 
-Unit wird bei jedem Feature implementiert.
-Crash/Fuzz = Red-Teaming: Agent versucht FAIL zu produzieren.
+### 6.3 E1000
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel 82540EM (E1000) | Intel Datasheet | TX/RX Descriptors, MMIO Registers |
+
+### 6.4 Hyper-V
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Hyper-V TLFS 6.0b | Microsoft Top-Level Functional Spec | Hypercall Page, SynIC, VMBus, MSRs |
+| VMBus Protocol | TLFS Chapter 11 | Channel Offer/Open/Close, GPA Direct |
+
+### 6.5 Serial
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| 16550 UART | National Semiconductor | COM1 (0x3F8), Polling TX/RX |
 
 ---
 
-## 11. Boot
+## 7. Terminal / VT
 
-UEFI → BOOTX64.EFI → Kernel → VFS → CosmoFS → /etc/cosmo.conf → Init
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| ECMA-48 | Control Functions for Coded Character Sets | CSI Sequences, SGR (Colors) |
+| VT100/VT220 | DEC Terminal Reference | Cursor Movement, Scrolling, Erase |
+| XTerm Control Sequences | https://invisible-island.net/xterm/ | Alternate Screen (?1049h/l, geplant) |
+| Unicode 15.0 | https://unicode.org | UTF-8 Decoding, Glyph Mapping |
+| Linux Input Events | include/uapi/linux/input-event-codes.h | KEY_*, REL_*, ABS_* |
 
-### 11.1 Shutdown
+Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
 
-SYS_REBOOT (169) mit LINUX_REBOOT_MAGIC1/2.
-POWER_OFF: arch_shutdown() → ACPI S5 (PM1a_CNT).
-RESTART: Triple-Fault → CPU Reset.
+---
+
+## 8. Dateisystem
+
+### 8.1 VFS
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| POSIX.1-2017 File System | IEEE 1003.1 | Path Resolution, Symlinks, Permissions |
+| Linux procfs | Documentation/filesystems/proc.rst | /proc/pid/*, /proc/meminfo, /proc/ksm |
+
+### 8.2 CosmoFS v2 (geplant)
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Merkle Tree / Content-Addressing | — | SHA-256 pro 4KB Block |
+| Copy-on-Write B+ Tree | — | Crash-Safe ohne Journal |
+| S3 API | https://docs.aws.amazon.com/s3/ | Cloud-Sync Backend |
+
+---
+
+## 9. Architektur-Entscheidungen
+
+Nicht aus einem Standard, sondern CosmoRT-eigen.
+
+| Entscheidung | Begruendung |
+|-------------|-------------|
+| 1 RT-Core + N Compute-Cores | Deterministische I/O-Latenz, kein Lock zwischen Partitionen |
+| ARINC 653 Partitionierung | RT-Core formal bounded, Compute best-effort |
+| SPSC Channels (kein Shared Lock) | Lock-free, kein Priority Inversion, WCET berechenbar |
+| Alle Allokationen O(1) | Slab, Free-List, Bitmap — kein O(n) Scan |
+| Alle Lookups O(1) oder O(log n) | Hash-Tabellen, AVL-Tree — kein linearer Scan |
+| SSE2 Maximum (kein AVX) | WASM SIMD Limit, FXSAVE reicht |
+| Single-User | Kein UID/GID Enforcement, Permissions gespeichert aber nur +x enforced |
+| Kernel-DNS/DHCP nur Boot | Anwendungsprotokolle gehoeren in Userspace |
+| CosmoFS einziger Kernel-FS | Externe FS (FAT32, ext4, NTFS) als Userspace-Daemons |
+| SHA-256 als universeller Hash | KSM, CosmoFS Dedup, Cloud-Sync — eine Engine, drei Konsumenten |
+| CUBIC statt Reno | Modern, RFC 8312, bessere Performance bei hoher Bandbreite |
+| Kein Swap | MADV_FREE + KSM-Dedup + THP statt Disk-Swap |
+
+---
+
+## 10. Abweichungen von Linux
+
+Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
+
+| Feature | Linux | CosmoRT | Grund |
+|---------|-------|---------|-------|
+| IRQ-Verteilung | RSS/RPS/RFS | Alle auf Core 0 | RT-Core Modell |
+| Scheduler | CFS (fair) | EDF + Priority | Realtime-faehig |
+| Page-Reclaim | kswapd + Direct Reclaim | MADV_FREE Lazy + KSM | Kein Swap-Device |
+| Netfilter | iptables/nftables | Keiner | Single-User, kein Firewall im Kernel |
+| Namespaces | cgroups + namespaces | Keine | Single-User |
+| Security Modules | SELinux/AppArmor | Keiner | Single-User |
+| SysV IPC | shmget/semget/msgget | Nicht implementiert | Pipes/Unix-Sockets/Futex reichen |
+| Filesystem Journaling | ext4 Journal | CosmoFS COW (kein Journal) | COW = crash-safe by design |
+| Dynamic Linker | ld-linux.so | ld-cosmo.so (CosmoPX) | Eigene libc |
