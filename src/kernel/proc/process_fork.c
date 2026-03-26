@@ -73,6 +73,9 @@ static void copy_one_vma(vma_t *v, void *arg) {
     /* Insert VMA into child's tree */
     vma_t *cv = vma_insert(ctx->dst_root, v->start, v->end, v->prot, v->flags);
     if (!cv) { ctx->err = 1; return; }
+    cv->file_ino = v->file_ino;
+    cv->file_offset = v->file_offset;
+    cv->file_backend = v->file_backend;
 
     /* MAP_SHARED anonymous: share same physical pages (no copy) */
     int shared = (v->flags & VMA_SHARED);

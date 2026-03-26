@@ -9,6 +9,7 @@
 #include "config.h"
 #include "mm/vma.h"
 #include "mm/page_alloc.h"
+#include "mm/page_cache.h"
 #include "core/smp.h"
 #include "spinlock.h"
 #include "arch/arch.h"
@@ -218,16 +219,47 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         int kprot = kvma ? kvma->prot : 0;
                         int knp = kvma && !(error & 1);
                         int kcow = kvma && (error & 1) && (error & 2) && (kprot & PROT_WRITE);
+                        uint64_t k_file_ino = kvma ? kvma->file_ino : 0;
+                        uint64_t k_file_offset = kvma ? kvma->file_offset : 0;
+                        int k_file_backend = kvma ? kvma->file_backend : 0;
+                        int k_shared = kvma ? (kvma->flags & VMA_SHARED) : 0;
+                        uint64_t k_vma_start = kvma ? kvma->start : 0;
                         spin_unlock_irq(&kp->lock, kflags);
                         if (knp) {
                             uint64_t kpage_addr = cr2 & ~0xFFFULL;
-                            uint64_t *kpage = alloc_page();
-                            if (kpage) {
-                                if (map_user_page(kp->pml4, kpage_addr,
-                                                  virt_to_phys(kpage), kprot) == 0) {
-                                    return; /* resume kernel code */
+                            if (k_file_ino) {
+                                /* File-backed demand page in kernel access path */
+                                uint64_t foff = k_file_offset + (kpage_addr - k_vma_start);
+                                uint64_t phys = 0;
+                                if (k_shared)
+                                    phys = page_cache_lookup(k_file_ino, foff);
+                                if (phys) {
+                                    page_incref(phys);
+                                    if (map_user_page(kp->pml4, kpage_addr, phys, kprot) == 0)
+                                        return;
+                                    page_free(phys_to_virt(phys));
+                                } else {
+                                    uint64_t *kpg = alloc_page();
+                                    if (kpg) {
+                                        extern long vfs_pread_by_ino(int, uint64_t, void *, size_t, size_t);
+                                        vfs_pread_by_ino(k_file_backend, k_file_ino, kpg, (size_t)foff, 4096);
+                                        phys = virt_to_phys(kpg);
+                                        if (k_shared)
+                                            page_cache_insert(k_file_ino, foff, phys);
+                                        if (map_user_page(kp->pml4, kpage_addr, phys, kprot) == 0)
+                                            return;
+                                        page_free(kpg);
+                                    }
                                 }
-                                page_free(kpage);
+                            } else {
+                                uint64_t *kpage = alloc_page();
+                                if (kpage) {
+                                    if (map_user_page(kp->pml4, kpage_addr,
+                                                      virt_to_phys(kpage), kprot) == 0) {
+                                        return; /* resume kernel code */
+                                    }
+                                    page_free(kpage);
+                                }
                             }
                         }
                         /* Kernel write to COW user page */
@@ -379,10 +411,42 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     int dp_huge = (vma->flags & VMA_HUGEPAGE);
                     uint64_t vma_start = vma->start;
                     uint64_t vma_end = vma->end;
+                    uint64_t dp_file_ino = vma->file_ino;
+                    uint64_t dp_file_offset = vma->file_offset;
+                    int dp_file_backend = vma->file_backend;
+                    int dp_shared = (vma->flags & VMA_SHARED);
                     spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
 
-                    /* Try 2MB huge page if VMA is eligible and aligned */
+                    /* File-backed demand paging */
+                    if (__builtin_expect(dp_file_ino != 0, 0)) {
+                        uint64_t foff = dp_file_offset + (page_addr - vma_start);
+                        uint64_t phys = 0;
+                        /* MAP_SHARED: check page cache first */
+                        if (dp_shared)
+                            phys = page_cache_lookup(dp_file_ino, foff);
+                        if (phys) {
+                            page_incref(phys);
+                            if (map_user_page(p->pml4, page_addr, phys, dp_prot) == 0)
+                                return;
+                            page_free(phys_to_virt(phys));
+                        } else {
+                            uint64_t *pg = alloc_page();
+                            if (pg) {
+                                extern long vfs_pread_by_ino(int, uint64_t, void *, size_t, size_t);
+                                vfs_pread_by_ino(dp_file_backend, dp_file_ino, pg, (size_t)foff, 4096);
+                                phys = virt_to_phys(pg);
+                                if (dp_shared)
+                                    page_cache_insert(dp_file_ino, foff, phys);
+                                if (map_user_page(p->pml4, page_addr, phys, dp_prot) == 0)
+                                    return;
+                                page_free(pg);
+                            }
+                        }
+                        goto kill_process;
+                    }
+
+                    /* Anonymous: try 2MB huge page if VMA is eligible and aligned */
                     if (dp_huge) {
                         uint64_t huge_base = cr2 & ~0x1FFFFFULL;
                         if (huge_base >= vma_start &&

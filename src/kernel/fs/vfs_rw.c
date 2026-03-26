@@ -228,6 +228,35 @@ long vfs_write(int fd, const void *buf, size_t count) {
     return (long)count;
 }
 
+/* ── Read by inode (for demand paging in page fault handler) ── */
+
+static struct vfs_node *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) {
+    if (!node) return 0;
+    if (node->ino == ino) return node;
+    for (struct vfs_node *c = node->children; c; c = c->next) {
+        struct vfs_node *r = ramfs_find_by_ino(c, ino);
+        if (r) return r;
+    }
+    return 0;
+}
+
+long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len) {
+    if (backend == VFS_BACKEND_COSMOFS) {
+        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
+        return (long)cosmofs_read(ino, buf, offset, len);
+    }
+    /* ramfs: find node by inode, read from its data buffer */
+    extern struct vfs_node *vfs_root_node;
+    struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
+    if (!node || node->type != VFS_FILE) return -ENOENT;
+    if (offset >= node->size) return 0;
+    size_t avail = node->size - offset;
+    if (len > avail) len = avail;
+    if (node->data)
+        kmemcpy(buf, node->data + offset, len);
+    return (long)len;
+}
+
 long vfs_lseek(int fd, long offset, int whence) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

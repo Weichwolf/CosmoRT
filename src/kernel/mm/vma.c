@@ -131,6 +131,9 @@ vma_t *vma_insert(vma_t **root, uint64_t start, uint64_t end, int prot, int flag
     v->end = end;
     v->prot = prot;
     v->flags = flags;
+    v->file_ino = 0;
+    v->file_offset = 0;
+    v->file_backend = 0;
     v->left = 0;
     v->right = 0;
     v->height = 1;

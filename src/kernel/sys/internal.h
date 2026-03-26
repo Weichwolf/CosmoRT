@@ -223,7 +223,7 @@ long do_rseq(void);
 long do_capget(void);
 long do_capset(void);
 long do_flock(int fd, int operation);
-long do_msync(void);
+long do_msync(unsigned long addr, size_t length, int flags);
 long do_sendfile(void);
 long do_lchown(void);
 long do_sched_get_priority_max(int policy);

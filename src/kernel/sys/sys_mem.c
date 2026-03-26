@@ -480,12 +480,21 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 uint64_t orig_end = ov->end;
                 int saved_prot = ov->prot;
                 int saved_flags = ov->flags;
+                uint64_t split_foff = ov->file_ino ? ov->file_offset + (vaddr + length - ov->start) : 0;
                 ov->end = vaddr;
-                vma_insert(&p->vma_root, vaddr + length, orig_end,
+                vma_t *sv = vma_insert(&p->vma_root, vaddr + length, orig_end,
                            saved_prot, saved_flags);
+                if (sv && ov->file_ino) {
+                    sv->file_ino = ov->file_ino;
+                    sv->file_offset = split_foff;
+                    sv->file_backend = ov->file_backend;
+                }
             } else if (ov->start < vaddr) {
                 ov->end = vaddr;
             } else if (ov->end > vaddr + length) {
+                /* Trim from left: adjust file_offset if file-backed */
+                if (ov->file_ino)
+                    ov->file_offset += (vaddr + length) - ov->start;
                 ov->start = vaddr + length;
             } else {
                 vma_remove(&p->vma_root, ov);
@@ -535,55 +544,16 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         return -ENOMEM;
     }
 
-    /* File-backed mmap: allocate pages and read file content.
-     * Release lock during I/O (vfs_pread may block), then re-acquire
-     * and verify the VMA still exists before returning. */
+    /* File-backed mmap: lazy — just store file metadata in VMA.
+     * Pages are loaded on demand by the page fault handler. */
     if (is_file) {
-        uint64_t saved_vaddr = vaddr;
-        uint64_t saved_length = length;
-        int shared = (vma_flags & VMA_SHARED);
-        /* Determine inode number for page cache key */
         uint64_t ino = vf->cosmofs_ino;
         if (!ino && vf->node) ino = vf->node->ino;
+        v->file_ino = ino;
+        v->file_offset = (uint64_t)offset;
+        v->file_backend = vf->backend;
         spin_unlock_irq(&p->lock, irqf);
-        extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t off);
-        uint64_t file_off = (uint64_t)offset;
-        for (uint64_t va = saved_vaddr; va < saved_vaddr + saved_length; va += 4096) {
-            uint64_t phys = 0;
-            /* MAP_SHARED file-backed: look up page cache first */
-            if (shared && ino)
-                phys = page_cache_lookup(ino, file_off);
-            if (phys) {
-                /* Shared page already cached — reuse it */
-                page_incref(phys);
-            } else {
-                uint64_t *pg = alloc_page(); /* zeroed */
-                if (!pg) return -ENOMEM;
-                long nread = vfs_pread(vf, pg, 4096, file_off);
-                (void)nread; /* short read is fine — rest is zero */
-                phys = virt_to_phys(pg);
-                if (shared && ino)
-                    page_cache_insert(ino, file_off, phys);
-            }
-            if (map_user_page(p->pml4, va, phys, prot) < 0) {
-                page_free(phys_to_virt(phys));
-                return -ENOMEM;
-            }
-            if (file_off > UINT64_MAX - 4096) break; /* overflow guard */
-            file_off += 4096;
-        }
-        /* Re-acquire lock and verify VMA wasn't torn down by concurrent munmap */
-        spin_lock_irq(&p->lock, &irqf);
-        vma_t *check = vma_find(p->vma_root, saved_vaddr);
-        if (!check || check->start > saved_vaddr ||
-            check->end < saved_vaddr + saved_length) {
-            /* VMA was torn down — unmap pages we just mapped to prevent leak */
-            unmap_range(p->pml4, saved_vaddr, saved_vaddr + saved_length);
-            spin_unlock_irq(&p->lock, irqf);
-            return -ENOMEM;
-        }
-        spin_unlock_irq(&p->lock, irqf);
-        return (long)saved_vaddr;
+        return (long)vaddr;
     }
 
     /* Anonymous: pre-fault if locked or MAP_POPULATE */
@@ -629,12 +599,21 @@ long do_munmap(unsigned long addr, size_t length) {
         } else if (v->start < start && v->end > end) {
             /* VMA straddles both sides — split */
             uint64_t orig_end = v->end;
+            uint64_t split_foff = v->file_ino ? v->file_offset + (end - v->start) : 0;
             v->end = start;
-            vma_insert(&p->vma_root, end, orig_end, v->prot, v->flags);
+            vma_t *rv = vma_insert(&p->vma_root, end, orig_end, v->prot, v->flags);
+            if (rv && v->file_ino) {
+                rv->file_ino = v->file_ino;
+                rv->file_offset = split_foff;
+                rv->file_backend = v->file_backend;
+            }
             break;
         } else if (v->start < start) {
             v->end = start;
         } else {
+            /* Trim from left: adjust file_offset if file-backed */
+            if (v->file_ino)
+                v->file_offset += end - v->start;
             v->start = end;
         }
     }
@@ -679,15 +658,27 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
             uint64_t orig_end = v->end;
             int orig_prot = v->prot;
             int orig_flags = v->flags;
+            uint64_t split_foff = v->file_ino ? v->file_offset + (start - v->start) : 0;
             v->end = start;
-            vma_insert(&p->vma_root, start, orig_end, orig_prot, orig_flags);
+            vma_t *sv = vma_insert(&p->vma_root, start, orig_end, orig_prot, orig_flags);
+            if (sv && v->file_ino) {
+                sv->file_ino = v->file_ino;
+                sv->file_offset = split_foff;
+                sv->file_backend = v->file_backend;
+            }
             continue; /* re-probe */
         }
         if (v->end > end) {
             /* Split: right part keeps old prot */
             int orig_prot = v->prot;
             int orig_flags = v->flags;
-            vma_insert(&p->vma_root, end, v->end, orig_prot, orig_flags);
+            uint64_t split_foff = v->file_ino ? v->file_offset + (end - v->start) : 0;
+            vma_t *sv = vma_insert(&p->vma_root, end, v->end, orig_prot, orig_flags);
+            if (sv && v->file_ino) {
+                sv->file_ino = v->file_ino;
+                sv->file_offset = split_foff;
+                sv->file_backend = v->file_backend;
+            }
             v->end = end;
         }
         v->prot = prot;
@@ -883,10 +874,16 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
     int v_prot = v->prot;
     int v_flags = v->flags;
+    uint64_t v_file_ino = v->file_ino;
+    uint64_t v_file_offset = v->file_offset;
+    int v_file_backend = v->file_backend;
 
     /* Create new VMA */
     vma_t *nv = vma_insert(&p->vma_root, new_va, new_va + new_size, v_prot, v_flags);
     if (!nv) { spin_unlock_irq(&p->lock, irqf); return -ENOMEM; }
+    nv->file_ino = v_file_ino;
+    nv->file_offset = v_file_offset;
+    nv->file_backend = v_file_backend;
 
     /* Copy existing pages to new location */
     copy_user_pages(p->pml4, new_va, old_addr, old_size, v_prot);

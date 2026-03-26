@@ -30,4 +30,9 @@
 #define MCL_CURRENT     1
 #define MCL_FUTURE      2
 
+/* msync flags */
+#define MS_ASYNC        1
+#define MS_INVALIDATE   2
+#define MS_SYNC         4
+
 #endif /* COSMO_LINUX_MMAN_H */

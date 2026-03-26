@@ -83,7 +83,7 @@
     X(SYS_GETGROUPS, getgroups, do_getgroups()) \
     X(SYS_SETGROUPS, setgroups, do_setgroups()) \
     /* Stubs for npm/node compatibility */ \
-    X(SYS_MSYNC, msync, do_msync()) \
+    X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \
     X(SYS_LCHOWN, lchown, do_lchown()) \
     X(SYS_SCHED_GET_PRIORITY_MAX, sched_get_priority_max, do_sched_get_priority_max((int)a1)) \

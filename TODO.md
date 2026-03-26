@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1053 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1072 ktest PASS, 0 FAIL.
 
 ---
 
@@ -63,14 +63,14 @@ Page Cache (1024 Buckets, Slab, Spinlock): (inode, offset) → physische Page.
 MAP_SHARED file-backed nutzt Page Cache, fork teilt Pages, page_free evicted bei Refcount 0.
 14 Tests.
 
-#### SH-C2: VMA File-Backing + Demand Paging
+#### SH-C2: VMA File-Backing + Demand Paging — erledigt
 
-- [ ] vma_t erweitern: backing_file, file_offset Felder
-- [ ] mmap file-backed: Pages nicht sofort lesen, nur VMA anlegen
-- [ ] Page Fault Handler: file-backed VMA → vfs_pread bei Fault
-- [ ] msync Stub durch echte Signatur ersetzen (addr, len, flags)
-- [ ] MS_ASYNC/MS_SYNC/MS_INVALIDATE Konstanten in linux/mman.h
-- [ ] test: mmap grosse Datei, nur erste Page lesen → nur eine Page alloziert
+vma_t um file_ino, file_offset, file_backend erweitert. File-backed mmap lazy
+(nur VMA anlegen, keine Pages). Page Fault Handler liest per vfs_pread_by_ino
+bei Not-Present auf file-backed VMA (shared: Page Cache, private: eigene Kopie).
+msync mit Signatur (addr, len, flags) + Validierung (Write-Back: SH-C3).
+MS_ASYNC/MS_SYNC/MS_INVALIDATE in linux/mman.h. VMA-Splits propagieren File-Felder.
+19 Tests (3 alt + 16 neue Checks).
 
 #### SH-C3: Dirty Tracking + Write-Back
 
