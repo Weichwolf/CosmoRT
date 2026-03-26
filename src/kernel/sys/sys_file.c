@@ -627,6 +627,16 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (request == TIOCGWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
         struct winsize *ws = (struct winsize *)arg;
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            pty_t *pt = pty_get((int)(long)fde->obj);
+            if (pt) {
+                ws->ws_row = pt->ws.ws_row;
+                ws->ws_col = pt->ws.ws_col;
+                ws->ws_xpixel = pt->ws.ws_xpixel;
+                ws->ws_ypixel = pt->ws.ws_ypixel;
+                return 0;
+            }
+        }
         ws->ws_row = (uint16_t)vt_rows();
         ws->ws_col = (uint16_t)vt_cols();
         ws->ws_xpixel = 0;
@@ -635,14 +645,18 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     }
     if (request == TIOCSWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
-        /* Accept the new size; send SIGWINCH to foreground process group.
-         * Find fg_pgid from PTY if available, else use caller's pgid. */
+        const struct winsize *nws = (const struct winsize *)arg;
         uint32_t fg_pgid = p->pgid;
-        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
-            pty_t *pt = (pty_t *)fde->obj;
-            if (pt->fg_pgid > 0) fg_pgid = (uint32_t)pt->fg_pgid;
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            pty_t *pt = pty_get((int)(long)fde->obj);
+            if (pt) {
+                pt->ws.ws_row = nws->ws_row;
+                pt->ws.ws_col = nws->ws_col;
+                pt->ws.ws_xpixel = nws->ws_xpixel;
+                pt->ws.ws_ypixel = nws->ws_ypixel;
+                if (pt->fg_pgid > 0) fg_pgid = (uint32_t)pt->fg_pgid;
+            }
         }
-        /* Send SIGWINCH to foreground process group via kill(-pgid, SIGWINCH) */
         do_kill(-(int)fg_pgid, SIGWINCH);
         return 0;
     }
@@ -656,21 +670,18 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (request == TIOCSPGRP) {
         int32_t pgid;
         { int r = copy_from_user(&pgid, (const void *)arg, 4); if (r) return r; }
-        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
-            pty_t *pt = (pty_t *)fde->obj;
-            pt->fg_pgid = pgid;
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            pty_t *pt = pty_get((int)(long)fde->obj);
+            if (pt) pt->fg_pgid = pgid;
         }
         return 0;
     }
     if (request == TIOCGPGRP) {
-        int32_t pgid;
-        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
-            pty_t *pt = (pty_t *)fde->obj;
-            pgid = (int32_t)pt->fg_pgid;
-            /* If not yet set, return caller's pgid so bash thinks it's foreground */
-            if (pgid == 0) pgid = (int32_t)p->pgid;
-        } else {
-            pgid = (int32_t)p->pgid;
+        int32_t pgid = (int32_t)p->pgid;
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            pty_t *pt = pty_get((int)(long)fde->obj);
+            if (pt && pt->fg_pgid != 0)
+                pgid = (int32_t)pt->fg_pgid;
         }
         return copy_to_user((void *)arg, &pgid, 4);
     }

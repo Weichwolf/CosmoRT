@@ -34,6 +34,11 @@ typedef struct {
     int      in_use;
     int      fg_pgid;       /* foreground process group (TIOCSPGRP/TIOCGPGRP) */
 
+    /* Terminal dimensions */
+    struct pty_winsize {
+        uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel;
+    } ws;
+
     /* Blocked reader (thread waiting for input data) */
     struct thread *blocked_reader;
 

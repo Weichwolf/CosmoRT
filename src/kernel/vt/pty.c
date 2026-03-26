@@ -1,6 +1,7 @@
 /* CosmoRT PTY — pseudo-terminal pairs with line discipline */
 
 #include "vt/pty.h"
+#include "vt/vt.h"
 #include "memops.h"
 #include "hw/serial.h"
 #include "proc/process.h"
@@ -74,6 +75,10 @@ int pty_alloc(void) {
             pty_pool[i].blocked_reader = 0;
             pty_pool[i].echo = 1;
             pty_pool[i].canon = 1;
+            pty_pool[i].ws.ws_col = (uint16_t)vt_cols();
+            pty_pool[i].ws.ws_row = (uint16_t)vt_rows();
+            pty_pool[i].ws.ws_xpixel = 0;
+            pty_pool[i].ws.ws_ypixel = 0;
             spin_unlock_irq(&pty_pool[i].lock, flags);
             return i;
         }
