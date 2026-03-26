@@ -29,6 +29,25 @@ arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
 
 ---
 
+## Blocking eliminieren — Event-Queue fuer alle Syscalls
+
+Problem: 15+ Stellen im Kernel setzen THREAD_BLOCKED + thread_return_to_kernel
+direkt. Jede Stelle ist ein potentieller Hang-Bug (Wake verloren, Race, State-Fehler).
+Netzwerk hat Sleep/Wake ueber sock_block_thread, aber wait4, futex, pipe, epoll,
+unix_socket nutzen ad-hoc Blocking.
+
+- [ ] event_queue_t pro Thread: Lock-free Queue fuer Wake-Events
+- [ ] event_post(queue, type, data): Event in Queue, sched_wake (nie verloren)
+- [ ] event_wait(queue, timeout): Queue leer → sleep, wird von event_post geweckt
+- [ ] wait4 → event_wait (CHILD_EXITED Events von exit_kill_process)
+- [ ] futex_wait → event_wait (FUTEX_WAKE Events)
+- [ ] pipe_read blocking → event_wait (PIPE_DATA Events von pipe_write)
+- [ ] epoll_wait → event_wait (EPOLL_READY Events)
+- [ ] unix_socket accept/recv → event_wait
+- [ ] sock_block_thread vereinheitlichen (aktuell Sonderfall fuer Netzwerk)
+- [ ] Alle 15+ THREAD_BLOCKED-Stellen auf event_wait umstellen
+- [ ] test: kein Test darf haengen — jeder blocking Pfad muss korrekt aufwachen
+
 ## Offen — Self-Hosting Blocker
 
 ### SH-C: MAP_SHARED mmap
