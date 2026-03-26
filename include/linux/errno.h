@@ -40,6 +40,8 @@
 #define ENOTCONN        107
 #define ETIMEDOUT       110
 #define ENODATA         61
+#define EINPROGRESS     115
 #define ECONNREFUSED    111
+#define EALREADY        114
 
 #endif /* COSMO_LINUX_ERRNO_H */

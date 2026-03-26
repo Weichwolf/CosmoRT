@@ -142,9 +142,11 @@ static void tw_fire(tw_entry_t *e) {
         net_tcp_retransmit(e->ctx);
         break;
     }
-    case RT_TIMER_TCP_KEEPALIVE:
-        /* Placeholder — keepalive not yet implemented */
+    case RT_TIMER_TCP_KEEPALIVE: {
+        extern void net_tcp_keepalive_probe(void *conn);
+        net_tcp_keepalive_probe(e->ctx);
         break;
+    }
     default:
         break;
     }

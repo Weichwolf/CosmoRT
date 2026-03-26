@@ -397,8 +397,17 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
                 if (rxring_used(&s->tcp.rx) > 0 || q_tcp.count > 0)
                     ready |= EPOLLIN;
             }
-            if ((interest & EPOLLOUT) && s->state == SOCK_CONNECTED)
-                ready |= EPOLLOUT;
+            if (interest & EPOLLOUT) {
+                if (s->state == SOCK_CONNECTED)
+                    ready |= EPOLLOUT;
+                /* Non-blocking connect completed */
+                if ((s->sockflags & SOCKF_CONNECTING) &&
+                    s->tcp.state == TCP_ESTABLISHED)
+                    ready |= EPOLLOUT;
+            }
+            /* Non-blocking connect failed */
+            if ((s->sockflags & SOCKF_CONNECTING) && s->tcp.got_rst)
+                ready |= EPOLLERR;
         }
         break;
     }

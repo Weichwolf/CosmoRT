@@ -15,6 +15,7 @@
 #include "event/epoll.h"
 #include "arch/arch.h"
 #include "core/rt.h"
+#include "core/timer_wheel.h"
 
 /* Blocking helpers — save user state, rewind to syscall insn, block thread.
  * On wake, the syscall is re-executed from userspace. */
@@ -164,6 +165,21 @@ long do_connect(int fd, const void *addr, int addrlen) {
     if (s->state == SOCK_CONNECTED && !s->is_dgram) return -EISCONN;
     if (s->state == SOCK_LISTENING) return -EISCONN;
 
+    /* Non-blocking connect in progress: check if completed */
+    if (s->sockflags & SOCKF_CONNECTING) {
+        if (s->tcp.state == TCP_ESTABLISHED) {
+            s->state = SOCK_CONNECTED;
+            s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+            s->tcp.wait_thread = 0;
+            return 0;
+        }
+        if (s->tcp.got_rst) {
+            s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+            return -ECONNREFUSED;
+        }
+        return -EALREADY;
+    }
+
     /* Copy sockaddr to kernel to prevent TOCTOU */
     struct k_sockaddr_in k_addr;
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
@@ -201,9 +217,21 @@ long do_connect(int fd, const void *addr, int addrlen) {
         s->remote_ip = k_addr.sin_addr;
         s->remote_port = k_addr.sin_port;
         s->tcp.wait_thread = 0;
+        s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
         return 0;
     }
     if (r == -11) { /* -EAGAIN: SYN sent, waiting for SYN-ACK */
+        /* Non-blocking: return EINPROGRESS, epoll will signal EPOLLOUT */
+        int nonblock = 0;
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+        if (nonblock) {
+            s->sockflags |= SOCKF_CONNECTING;
+            s->remote_ip = k_addr.sin_addr;
+            s->remote_port = k_addr.sin_port;
+            return -EINPROGRESS;
+        }
         sock_block_thread(SYS_CONNECT, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
         return -ETIMEDOUT; /* unreachable */
     }
@@ -342,7 +370,8 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
         if (nonblock) return -EAGAIN;
-        sock_block_thread(SYS_RECVFROM, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
+        uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
+        sock_block_thread(SYS_RECVFROM, &s->tcp.wait_thread, timeo);
         return -EAGAIN; /* unreachable */
     }
     s->tcp.wait_thread = 0;
@@ -369,7 +398,8 @@ long socket_read(int fd, void *buf, long count) {
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
         if (nonblock) return -EAGAIN;
-        sock_block_thread(SYS_READ, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
+        uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
+        sock_block_thread(SYS_READ, &s->tcp.wait_thread, timeo);
         return -EAGAIN; /* unreachable */
     }
     s->tcp.wait_thread = 0;
@@ -620,9 +650,46 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
             else     s->sockflags &= ~(uint32_t)SOCKF_REUSEADDR;
             return 0;
         case SO_KEEPALIVE:
-            if (val) s->sockflags |= SOCKF_KEEPALIVE;
-            else     s->sockflags &= ~(uint32_t)SOCKF_KEEPALIVE;
+            if (val) {
+                s->sockflags |= SOCKF_KEEPALIVE;
+                s->tcp.keepalive = 1;
+                s->tcp.keepalive_probes = 0;
+                /* Schedule first keepalive probe via timer wheel */
+                if (s->tcp.state == TCP_ESTABLISHED) {
+                    extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
+                    rt_timer_request(RT_TIMER_TCP_KEEPALIVE, &s->tcp,
+                                     NET_TCP_KEEPALIVE_INTERVAL_MS);
+                    extern uint64_t timer_ms(void);
+                    s->tcp.keepalive_next = timer_ms() + NET_TCP_KEEPALIVE_INTERVAL_MS;
+                }
+            } else {
+                s->sockflags &= ~(uint32_t)SOCKF_KEEPALIVE;
+                s->tcp.keepalive = 0;
+            }
             return 0;
+        case SO_RCVTIMEO: {
+            /* val is pointer to struct timeval, but Linux also accepts int ms
+             * via SOL_SOCKET. We accept timeval (16 bytes) or int (4 bytes). */
+            if (optlen >= 16) {
+                /* struct timeval { long tv_sec; long tv_usec; } */
+                long tv[2];
+                { int r = copy_from_user(tv, optval, 16); if (r) return r; }
+                s->tcp.rcv_timeo_ms = (uint64_t)tv[0] * 1000 + (uint64_t)tv[1] / 1000;
+            } else {
+                s->tcp.rcv_timeo_ms = (uint64_t)(val > 0 ? val : 0);
+            }
+            return 0;
+        }
+        case SO_SNDTIMEO: {
+            if (optlen >= 16) {
+                long tv[2];
+                { int r = copy_from_user(tv, optval, 16); if (r) return r; }
+                s->tcp.snd_timeo_ms = (uint64_t)tv[0] * 1000 + (uint64_t)tv[1] / 1000;
+            } else {
+                s->tcp.snd_timeo_ms = (uint64_t)(val > 0 ? val : 0);
+            }
+            return 0;
+        }
         default:
             return 0; /* silently accept unknown SOL_SOCKET opts */
         }
@@ -654,6 +721,29 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
         switch (optname) {
         case SO_REUSEADDR: val = (s->sockflags & SOCKF_REUSEADDR) ? 1 : 0; break;
         case SO_KEEPALIVE: val = (s->sockflags & SOCKF_KEEPALIVE) ? 1 : 0; break;
+        case SO_ERROR:
+            /* Return and clear connect error for non-blocking connect */
+            if (s->sockflags & SOCKF_CONNECTING) {
+                if (s->tcp.got_rst) val = ECONNREFUSED;
+                else if (s->tcp.state == TCP_ESTABLISHED) val = 0;
+                else val = EINPROGRESS;
+            }
+            break;
+        case SO_RCVTIMEO: {
+            /* Return as struct timeval */
+            long tv[2] = { (long)(s->tcp.rcv_timeo_ms / 1000),
+                           (long)((s->tcp.rcv_timeo_ms % 1000) * 1000) };
+            { int r = copy_to_user(optval, tv, 16); if (r) return r; }
+            { int len = 16; int r = copy_to_user(optlen, &len, sizeof(int)); if (r) return r; }
+            return 0;
+        }
+        case SO_SNDTIMEO: {
+            long tv[2] = { (long)(s->tcp.snd_timeo_ms / 1000),
+                           (long)((s->tcp.snd_timeo_ms % 1000) * 1000) };
+            { int r = copy_to_user(optval, tv, 16); if (r) return r; }
+            { int len = 16; int r = copy_to_user(optlen, &len, sizeof(int)); if (r) return r; }
+            return 0;
+        }
         default: break;
         }
     } else if (level == IPPROTO_TCP) {

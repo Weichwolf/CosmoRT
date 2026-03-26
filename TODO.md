@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 887 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 912 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -226,13 +226,13 @@ Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
 
 ## Net Phase E — Robustheit
 
-- [ ] Out-of-Order Segment Buffering
-- [ ] Slow-Start + AIMD Congestion Control
-- [ ] Non-Blocking TCP Connect (EINPROGRESS)
-- [ ] SO_RCVTIMEO / SO_SNDTIMEO pro Socket
-- [ ] TCP Keepalive
-- [ ] test/net/test_tcp_ooo.c
-- [ ] test/net/test_net_multi_conn.c
+- [x] Out-of-Order Segment Buffering (ooo[4] Slots, DupACK, drain bei rcv_nxt)
+- [x] Slow-Start + AIMD Congestion Control (RFC 5681: cwnd, ssthresh, 3-DupACK loss)
+- [x] Non-Blocking TCP Connect (EINPROGRESS + EPOLLOUT/EPOLLERR + EALREADY)
+- [x] SO_RCVTIMEO / SO_SNDTIMEO pro Socket (timeval-Format, per-socket Timeout)
+- [x] TCP Keepalive (SO_KEEPALIVE → Timer-Wheel Probes, 75s Interval, 9 Probes)
+- [x] test/net/test_tcp_ooo.c (large transfer, reset)
+- [x] test/net/test_net_multi_conn.c (4 parallele Connections, mixed)
 
 ## Net Tests — End-to-End (gegen echte Server)
 

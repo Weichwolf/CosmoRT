@@ -21,6 +21,7 @@
 #define SOCKF_REUSEADDR  (1 << 0)
 #define SOCKF_KEEPALIVE  (1 << 1)
 #define SOCKF_NODELAY    (1 << 2)
+#define SOCKF_CONNECTING (1 << 3) /* non-blocking connect in progress */
 
 typedef struct socket socket_t;
 

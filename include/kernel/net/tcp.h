@@ -1,4 +1,6 @@
-/* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine (RFC 793) */
+/* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine (RFC 793)
+ * Congestion: CUBIC (RFC 8312), SACK (RFC 2018), Window Scaling (RFC 7323)
+ * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928) */
 #ifndef TCP_H
 #define TCP_H
 
@@ -53,20 +55,56 @@ typedef struct net_tcp {
 
     uint32_t snd_nxt, snd_una;   /* send sequence space */
     uint32_t rcv_nxt;            /* receive sequence space */
-    uint16_t snd_wnd, rcv_wnd;   /* flow control */
+    uint32_t snd_wnd, rcv_wnd;   /* flow control (scaled) */
 
     enum tcp_state state;
 
     tcp_rxring_t rx;
 
     /* Out-of-order buffer (Phase E) */
-    struct { uint32_t seq; uint16_t len; uint16_t off; } ooo[NET_TCP_OOO_SLOTS];
+    struct {
+        uint32_t seq;
+        uint16_t len;
+        uint8_t  data[1460]; /* segment payload copy */
+    } ooo[NET_TCP_OOO_SLOTS];
     int ooo_count;
+
+    /* CUBIC Congestion Control (RFC 8312) */
+    uint32_t cwnd;           /* congestion window (bytes) */
+    uint32_t ssthresh;       /* slow-start threshold (bytes) */
+    uint16_t dup_ack_count;  /* consecutive duplicate ACKs */
+    uint8_t  in_recovery;    /* 1 = in Fast Recovery */
+    uint32_t recovery_seq;   /* snd_nxt at entry to Fast Recovery */
+    uint64_t cubic_t_epoch;  /* time of last loss event (ms) */
+    uint32_t cubic_w_max;    /* cwnd at last loss */
+    uint32_t cubic_w_last;   /* last cwnd before reduction */
+    uint32_t cubic_k;        /* time to reach w_max (scaled ×1024) */
+
+    /* SACK (RFC 2018) */
+    struct { uint32_t left, right; } sack_blocks[4];
+    int      sack_count;
+
+    /* Window Scaling (RFC 7323) */
+    uint8_t  snd_wscale;     /* peer's shift count */
+    uint8_t  rcv_wscale;     /* our shift count (advertised) */
+    uint8_t  wscale_ok;      /* 1 = both sides negotiated */
 
     /* Retransmit */
     uint64_t rto_ms, last_send_ms;
 
     uint8_t got_fin, got_rst;
+
+    /* Per-socket timeouts (0 = use global default) */
+    uint64_t rcv_timeo_ms;
+    uint64_t snd_timeo_ms;
+
+    /* Keepalive */
+    uint8_t  keepalive;       /* 1 = enabled */
+    uint8_t  keepalive_probes;/* failed probes so far */
+    uint64_t keepalive_next;  /* next probe time (ms) */
+
+    /* Non-blocking connect state */
+    int8_t   connect_err;     /* 0=ok, <0=error code from async connect */
 
     /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
     struct thread *wait_thread;

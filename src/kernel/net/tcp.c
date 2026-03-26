@@ -1,6 +1,7 @@
 /* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine, Hash-Lookup
  * Extracted from net.c (Phase A).
  * E0: Sleep/Wake statt Busy-Wait — sched_wake statt net_idle.
+ * E:  OOO Buffering, Slow-Start + AIMD (RFC 5681), Keepalive.
  */
 
 #include "net/tcp.h"
@@ -172,6 +173,73 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     net_send_raw(pkt, (uint16_t)(34 + tt));
 }
 
+/* ── OOO Buffer Helpers (called on RT-Core, no locks) ── */
+
+static void ooo_insert(net_tcp_t *c, uint32_t seq, const uint8_t *data, int len) {
+    if (len <= 0 || len > 1460) return;
+    for (int i = 0; i < c->ooo_count; i++)
+        if (c->ooo[i].seq == seq) return; /* duplicate */
+
+    int slot;
+    if (c->ooo_count < NET_TCP_OOO_SLOTS) {
+        slot = c->ooo_count++;
+    } else {
+        slot = 0;
+        for (int i = 1; i < NET_TCP_OOO_SLOTS; i++)
+            if ((int32_t)(c->ooo[i].seq - c->ooo[slot].seq) < 0)
+                slot = i;
+    }
+    c->ooo[slot].seq = seq;
+    c->ooo[slot].len = (uint16_t)len;
+    mcpy(c->ooo[slot].data, data, len);
+}
+
+static int ooo_drain(net_tcp_t *c) {
+    int drained = 0, progress = 1;
+    while (progress && c->ooo_count > 0) {
+        progress = 0;
+        for (int i = 0; i < c->ooo_count; i++) {
+            if (c->ooo[i].seq == c->rcv_nxt) {
+                rxring_push(&c->rx, c->ooo[i].data, c->ooo[i].len);
+                c->rcv_nxt += c->ooo[i].len;
+                drained += c->ooo[i].len;
+                c->ooo_count--;
+                if (i < c->ooo_count)
+                    c->ooo[i] = c->ooo[c->ooo_count];
+                progress = 1;
+                break;
+            }
+        }
+    }
+    return drained;
+}
+
+/* ── Congestion Control (RFC 5681 simplified) ──────── */
+
+static void cc_init(net_tcp_t *c) {
+    c->cwnd = 1460;
+    c->ssthresh = 65535;
+    c->dup_ack_count = 0;
+}
+
+static void cc_on_ack(net_tcp_t *c, uint32_t bytes_acked) {
+    if (bytes_acked == 0) return;
+    c->dup_ack_count = 0;
+    if (c->cwnd < c->ssthresh)
+        c->cwnd += 1460; /* Slow-Start */
+    else {
+        uint32_t inc = (1460u * 1460u) / c->cwnd;
+        if (inc < 1) inc = 1;
+        c->cwnd += inc; /* Congestion Avoidance */
+    }
+}
+
+static void cc_on_loss(net_tcp_t *c) {
+    c->ssthresh = c->cwnd / 2;
+    if (c->ssthresh < 1460) c->ssthresh = 1460;
+    c->cwnd = 1460;
+}
+
 /* ── TCP Input (from dispatcher) ───────────────────── */
 
 void tcp_input(const uint8_t *pkt, int len) {
@@ -183,9 +251,7 @@ void tcp_input(const uint8_t *pkt, int len) {
 
     net_tcp_t *c = tcp_find(dport, sport, src_ip);
     if (!c) {
-        /* No connection found — push to global q_tcp for accept/connect */
         q_push(&q_tcp, pkt, len);
-        /* Wake thread waiting on q_tcp (accept/connect handshake) */
         struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
         if (wt) sched_wake(wt);
         return;
@@ -201,51 +267,84 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (plen < 0) plen = 0;
     uint32_t tseq = get32(pkt + 38);
 
-    /* SYN-ACK for outgoing connect (SYN_SENT → ESTABLISHED) */
+    /* SYN-ACK for outgoing connect */
     if (c->state == TCP_SYN_SENT && (flags & 0x12) == 0x12) {
         c->rcv_nxt = tseq + 1;
         c->snd_nxt++;
         c->snd_una = c->snd_nxt;
-        send_tcp(c, 0x10, 0, 0); /* ACK */
+        send_tcp(c, 0x10, 0, 0);
         c->state = TCP_ESTABLISHED;
+        c->connect_err = 0;
+        cc_init(c);
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
         if (wt) sched_wake(wt);
         return;
     }
 
-    /* RST → connection reset */
+    /* RST */
     if (flags & 0x04) {
         c->state = TCP_CLOSED;
         c->got_rst = 1;
+        c->connect_err = -1;
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
         if (wt) sched_wake(wt);
         return;
+    }
+
+    /* ACK processing */
+    if (flags & 0x10) {
+        uint32_t ack_num = get32(pkt + 42);
+        int state_changed = 0;
+
+        if ((int32_t)(ack_num - c->snd_una) > 0) {
+            uint32_t bytes_acked = ack_num - c->snd_una;
+            c->snd_una = ack_num;
+            cc_on_ack(c, bytes_acked);
+        } else if (ack_num == c->snd_una && plen == 0) {
+            c->dup_ack_count++;
+            if (c->dup_ack_count == 3) cc_on_loss(c);
+        }
+
+        c->snd_wnd = get16(pkt + 48);
+
+        if (c->state == TCP_FIN_WAIT1 && ack_num == c->snd_nxt) {
+            c->state = TCP_FIN_WAIT2; state_changed = 1;
+        } else if (c->state == TCP_CLOSING && ack_num == c->snd_nxt) {
+            c->state = TCP_TIME_WAIT; state_changed = 1;
+        } else if (c->state == TCP_LAST_ACK && ack_num == c->snd_nxt) {
+            c->state = TCP_CLOSED; tcp_unregister(c); state_changed = 1;
+        }
+        if (state_changed) {
+            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+            if (wt) sched_wake(wt);
+        }
     }
 
     /* Data */
     if (plen > 0) {
-        if (tseq != c->rcv_nxt) {
-            /* Out-of-order: ACK to trigger retransmit */
-            send_tcp(c, 0x10, 0, 0);
-            return;
-        }
-        c->rcv_nxt = tseq + (uint32_t)plen;
         const uint8_t *payload = pkt + 14 + 20 + doff;
-        rxring_push(&c->rx, payload, plen);
-        send_tcp(c, 0x10, 0, 0);
-        /* Wake thread blocked on recv */
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (tseq == c->rcv_nxt) {
+            c->rcv_nxt = tseq + (uint32_t)plen;
+            rxring_push(&c->rx, payload, plen);
+            ooo_drain(c);
+            send_tcp(c, 0x10, 0, 0);
+            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+            if (wt) sched_wake(wt);
+        } else if ((int32_t)(tseq - c->rcv_nxt) > 0) {
+            ooo_insert(c, tseq, payload, plen);
+            send_tcp(c, 0x10, 0, 0); /* DupACK */
+        }
     }
 
     /* FIN */
     if (flags & 0x01) {
-        if (plen == 0 && tseq != c->rcv_nxt) return;
+        uint32_t fin_seq = tseq + (uint32_t)plen;
+        if (fin_seq != c->rcv_nxt) return;
         c->got_fin = 1;
         c->rcv_nxt++;
         if (c->state == TCP_ESTABLISHED) {
             c->state = TCP_CLOSE_WAIT;
-            send_tcp(c, 0x10, 0, 0);  /* ACK the FIN */
+            send_tcp(c, 0x10, 0, 0);
         } else if (c->state == TCP_FIN_WAIT1) {
             c->state = TCP_CLOSING;
             send_tcp(c, 0x10, 0, 0);
@@ -257,49 +356,28 @@ void tcp_input(const uint8_t *pkt, int len) {
         if (wt) sched_wake(wt);
     }
 
-    /* ACK processing for close states */
-    if (flags & 0x10) {
-        uint32_t ack_num = get32(pkt + 42);
-        int state_changed = 0;
-        if (c->state == TCP_FIN_WAIT1 && ack_num == c->snd_nxt) {
-            c->state = TCP_FIN_WAIT2;
-            state_changed = 1;
-        } else if (c->state == TCP_CLOSING && ack_num == c->snd_nxt) {
-            c->state = TCP_TIME_WAIT;
-            state_changed = 1;
-        } else if (c->state == TCP_LAST_ACK && ack_num == c->snd_nxt) {
-            c->state = TCP_CLOSED;
-            tcp_unregister(c);
-            state_changed = 1;
-        }
-        /* Track snd_una */
-        if ((int32_t)(ack_num - c->snd_una) > 0)
-            c->snd_una = ack_num;
-        /* Wake thread blocked on close */
-        if (state_changed) {
-            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-            if (wt) sched_wake(wt);
-        }
+    /* Keepalive: reset probe timer on any valid packet */
+    if (c->keepalive) {
+        c->keepalive_next = timer_ms() + NET_TCP_KEEPALIVE_INTERVAL_MS;
+        c->keepalive_probes = 0;
     }
 }
 
 /* ── TCP Accept ────────────────────────────────────── */
 
 int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
-    (void)timeout_ms; /* timeout handled by caller via thread blocking */
-
-    /* Phase 2 resume: if SYN-ACK already sent, check for ACK */
+    (void)timeout_ms;
     if (c->state == TCP_SYN_RCVD) {
         uint8_t pkt[Q_PKT];
         int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) return -11; /* -EAGAIN */
+        if (len < 54) return -11;
         if (get16(pkt + 36) != c->local_port ||
             get16(pkt + 34) != c->remote_port) {
             q_push(&q_tcp, pkt, len);
-            return -11; /* -EAGAIN */
+            return -11;
         }
         uint8_t fl = pkt[47];
-        if (fl & 0x04) { c->state = TCP_CLOSED; return -1; } /* RST */
+        if (fl & 0x04) { c->state = TCP_CLOSED; return -1; }
         if (fl & 0x10) {
             uint32_t ack_num = get32(pkt + 42);
             if (ack_num == c->snd_nxt + 1) {
@@ -310,25 +388,17 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
                 return 0;
             }
         }
-        return -11; /* -EAGAIN */
+        return -11;
     }
 
-    /* Phase 1: try to pop a SYN from q_tcp */
     uint8_t pkt[Q_PKT];
     int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-    if (len < 54) return -11; /* -EAGAIN — caller blocks */
+    if (len < 54) return -11;
     uint16_t dport = get16(pkt + 36);
-    if (dport != local_port) {
-        q_push(&q_tcp, pkt, len);
-        return -11; /* -EAGAIN */
-    }
+    if (dport != local_port) { q_push(&q_tcp, pkt, len); return -11; }
     uint8_t fl = pkt[47];
-    if (!((fl & 0x02) && !(fl & 0x10))) {
-        q_push(&q_tcp, pkt, len);
-        return -11; /* -EAGAIN — not a SYN */
-    }
+    if (!((fl & 0x02) && !(fl & 0x10))) { q_push(&q_tcp, pkt, len); return -11; }
 
-    /* Initialize connection from SYN */
     mzero(c, sizeof(*c));
     rxring_init(&c->rx);
     mcpy(c->dst_mac, pkt + 6, 6);
@@ -342,26 +412,18 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     c->snd_nxt = rseq;
     c->snd_una = rseq;
     c->rcv_wnd = 8192;
-
-    /* Send SYN-ACK */
     send_tcp(c, 0x12, 0, 0);
     c->state = TCP_SYN_RCVD;
-    return -11; /* -EAGAIN — wait for ACK, caller blocks */
+    return -11;
 }
 
 /* ── TCP Connect ───────────────────────────────────── */
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
-    /* If already connected (syscall restart after wake), return success */
     if (c->state == TCP_ESTABLISHED) return 0;
-
-    /* If SYN already sent (restart but not yet established), return EAGAIN */
-    if (c->state == TCP_SYN_SENT) return -11; /* -EAGAIN */
-
-    /* If RST received during handshake */
+    if (c->state == TCP_SYN_SENT) return -11;
     if (c->got_rst) return -1;
 
-    /* First call: init and send SYN */
     mzero(c, sizeof(*c));
     rxring_init(&c->rx);
     mcpy(c->dst_ip, dst_ip, 4);
@@ -376,16 +438,14 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->rcv_nxt = 0;
     c->rcv_wnd = 8192;
     c->state = TCP_CLOSED;
+    cc_init(c);
 
     if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
 
-    /* Register in hash BEFORE sending SYN so tcp_input() can find us */
     c->state = TCP_SYN_SENT;
     tcp_register(c);
-
     send_tcp(c, 0x02, 0, 0);
-
-    return -11; /* -EAGAIN — caller blocks, tcp_input handles SYN-ACK */
+    return -11;
 }
 
 /* ── TCP Send ──────────────────────────────────────── */
@@ -394,9 +454,17 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
     if (c->state != TCP_ESTABLISHED) return -1;
     const uint8_t *p = data;
     int sent = 0;
+    uint32_t eff_wnd = c->cwnd;
+    if (c->snd_wnd && c->snd_wnd < eff_wnd) eff_wnd = c->snd_wnd;
+    if (eff_wnd < 1460) eff_wnd = 1460;
+
     while (sent < len) {
         int ch = len - sent;
         if (ch > 1400) ch = 1400;
+        uint32_t in_flight = c->snd_nxt - c->snd_una;
+        if (in_flight >= eff_wnd) {
+            if (sent > 0) break;
+        }
         send_tcp(c, 0x18, p + sent, ch);
         c->snd_nxt += (uint32_t)ch;
         sent += ch;
@@ -407,26 +475,19 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
 /* ── TCP Recv ──────────────────────────────────────── */
 
 int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms) {
-    (void)timeout_ms; /* timeout handled by caller via thread blocking */
-
+    (void)timeout_ms;
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) {
         if (c->state == TCP_CLOSED && (c->got_fin || c->got_rst)) {
-            /* Connection already closed — drain ringbuffer */
             int n = rxring_pop(&c->rx, buf, bufsize);
             return n > 0 ? n : (c->got_rst ? -1 : 0);
         }
         return -1;
     }
-
-    /* Try ringbuffer — tcp_input() deposits data here via rxring_push */
     int got = rxring_pop(&c->rx, buf, bufsize);
     if (got > 0) return got;
-
-    /* Check FIN/RST set by tcp_input() */
-    if (c->got_fin) return 0;   /* EOF */
-    if (c->got_rst) return -1;  /* reset */
-
-    return -11; /* -EAGAIN — caller blocks thread */
+    if (c->got_fin) return 0;
+    if (c->got_rst) return -1;
+    return -11;
 }
 
 /* ── TCP Close ─────────────────────────────────────── */
@@ -436,16 +497,11 @@ void net_tcp_close(net_tcp_t *c) {
         send_tcp(c, 0x11, 0, 0);
         c->snd_nxt++;
         c->state = TCP_FIN_WAIT1;
-        /* tcp_input() handles ACK/FIN and advances state via sched_wake.
-         * Don't wait — caller (socket_close) doesn't block on close. */
     } else if (c->state == TCP_CLOSE_WAIT) {
         send_tcp(c, 0x11, 0, 0);
         c->snd_nxt++;
         c->state = TCP_LAST_ACK;
     }
-    /* For active close states (FIN_WAIT1/2, LAST_ACK, TIME_WAIT):
-     * tcp_input() will handle the final ACK and unregister.
-     * We unregister here as well for safety (idempotent). */
     tcp_unregister(c);
     rxring_destroy(&c->rx);
     c->state = TCP_CLOSED;
@@ -456,8 +512,29 @@ void net_tcp_close(net_tcp_t *c) {
 void net_tcp_retransmit(void *conn) {
     net_tcp_t *c = (net_tcp_t *)conn;
     if (!c || c->state != TCP_ESTABLISHED) return;
-
-    /* No retransmit buffer yet — send duplicate ACK to probe.
-     * Full retransmit with saved segments is Phase E work. */
+    cc_on_loss(c);
     send_tcp(c, 0x10, 0, 0);
+}
+
+/* ── TCP Keepalive Probe (called from Timer Wheel on RT-Core) ── */
+
+void net_tcp_keepalive_probe(void *conn) {
+    net_tcp_t *c = (net_tcp_t *)conn;
+    if (!c || !c->keepalive) return;
+    if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return;
+
+    c->keepalive_probes++;
+    if (c->keepalive_probes >= NET_TCP_KEEPALIVE_MAX_PROBES) {
+        c->state = TCP_CLOSED;
+        c->got_rst = 1;
+        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) sched_wake(wt);
+        return;
+    }
+
+    uint32_t saved = c->snd_nxt;
+    c->snd_nxt = saved - 1;
+    send_tcp(c, 0x10, 0, 0);
+    c->snd_nxt = saved;
+    c->keepalive_next = timer_ms() + NET_TCP_KEEPALIVE_INTERVAL_MS;
 }

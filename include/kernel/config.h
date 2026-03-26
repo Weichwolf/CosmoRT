@@ -45,5 +45,7 @@ static inline uint64_t ensure_high(uint64_t addr) {
 #define NET_TCP_INIT_RTO_MS 1000   /* initial retransmit timeout */
 #define NET_TCP_MAX_RTO_MS  60000  /* max retransmit timeout */
 #define NET_TX_RING_SIZE   131072  /* TX ring per NIC (128KB, power of 2) */
+#define NET_TCP_KEEPALIVE_INTERVAL_MS 75000  /* keepalive probe interval (75s) */
+#define NET_TCP_KEEPALIVE_MAX_PROBES  9      /* probes before connection dead */
 
 #endif

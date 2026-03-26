@@ -12,6 +12,9 @@
 #define SOL_SOCKET      1
 #define SO_REUSEADDR    2
 #define SO_KEEPALIVE    9
+#define SO_RCVTIMEO     20
+#define SO_SNDTIMEO     21
+#define SO_ERROR        4
 #define IPPROTO_TCP     6
 #define TCP_NODELAY     1
 
