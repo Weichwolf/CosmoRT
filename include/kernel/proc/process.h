@@ -99,6 +99,7 @@ void save_user_state_for_block(thread_t *t, long return_value);
 /* Page table helpers */
 uint64_t *alloc_page(void);
 int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
+int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
 
 /* Process fork/exec */
 long do_fork(void);

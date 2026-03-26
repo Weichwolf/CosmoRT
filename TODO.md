@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-25. 638 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 663 ktest PASS, 0 FAIL.
 SMP 2. RT+Compute Core-Modell.
 Node.js v22.14.0 + Claude Code 2.1.81 + npm 10.9.2 laufen.
 DHCP, DNS (lookup), HTTPS (incl. registry.npmjs.org) ok.
@@ -283,17 +283,13 @@ Font ist Userspace-Daten, nicht Kernel-Code.
 
 ## MM — Transparent Huge Pages (2MB)
 
-Problem: 500MB Node.js Heap = 128.000 4KB-PTEs = TLB-Thrashing.
-2MB Huge Pages reduzieren auf ~250 PTEs.
-
-- [ ] 2MB-Page-Allocator (Buddy oder freelist fuer order-9 Pages)
-- [ ] PTE-Promotion: 512 zusammenhaengende 4KB-Pages mit gleichen Flags → 1 PMD-Entry (2MB)
-- [ ] Automatische Promotion bei mmap(MAP_ANONYMOUS) >= 2MB-aligned
-- [ ] Page-Fault auf 2MB-Page: direkt 2MB allozieren wenn alignment+size passen
-- [ ] Fallback auf 4KB wenn 2MB nicht verfuegbar (keine Fragmentierung)
-- [ ] COW-Interaktion: COW-Fault auf Huge Page → erst zu 4KB splitten, dann COW
-- [ ] test: mmap 4MB aligned → 2 Huge Pages in PMD
-- [ ] test: Huge Page + fork → COW split zu 4KB
+- [x] huge_page_alloc/free: Order-9 Buddy-Allokation (512 Pages = 2MB)
+- [x] PMD PS-Bit: Demand-Paging alloziert 2MB bei VMA_HUGEPAGE + 2MB-aligned
+- [x] Automatisch: mmap(MAP_ANONYMOUS) >= 2MB → VMA_HUGEPAGE
+- [x] Fallback auf 4KB bei Fragmentierung
+- [x] COW-Split: fork zerlegt Huge Pages in 512×4KB COW-PTEs
+- [x] split_huge_pmd(): munmap/mprotect/madvise auf Teilen splitten automatisch
+- [x] 8 Tests: basic, 4mb, fallback, cow_split, partial_munmap, mprotect, stress, alignment
 
 ## VT — Terminal-Usability
 

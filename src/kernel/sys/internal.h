@@ -47,12 +47,15 @@ typedef struct {
 #define PTE_PRESENT (1ULL << 0)
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
+#define PTE_PS       (1ULL << 7)   /* Page Size: 2MB huge page in PMD */
 #define PTE_NX       (1ULL << 63)
 #define PTE_COW      (1ULL << 9)
 #define PTE_LAZYFREE (1ULL << 10)
 #define PTE_DIRTY    (1ULL << 6)
 #define PTE_ACCESSED (1ULL << 5)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define HUGE_PAGE_SIZE  (2ULL * 1024 * 1024)
+#define HUGE_PAGE_MASK  (~(HUGE_PAGE_SIZE - 1))
 
 /* iovec for readv/writev (POSIX: iov_base is void*, not const void*) */
 struct iovec { void *iov_base; size_t iov_len; };

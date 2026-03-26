@@ -4,13 +4,43 @@
 
 /* ── Static page-table helpers (callees first) ──── */
 
+/* Split a 2MB huge page PMD entry into 512 × 4KB PTEs.
+ * pd[pdi] must be a present entry with PTE_PS set.
+ * After split: pd[pdi] points to a new PT, PS bit cleared.
+ * prot_flags: PTE flags to apply (PTE_PRESENT|PTE_USER|...).
+ *             If 0, inherits from the PMD entry flags. */
+static int split_huge_pmd(uint64_t *pd, int pdi, uint64_t prot_override) {
+    uint64_t pmd = pd[pdi];
+    if (!(pmd & PTE_PRESENT) || !(pmd & PTE_PS)) return -1;
+
+    uint64_t huge_phys = pmd & HUGE_PAGE_MASK;
+    /* Inherit permission flags from PMD if no override */
+    uint64_t flags = prot_override;
+    if (!flags)
+        flags = pmd & (PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX | PTE_COW);
+
+    /* Allocate PT page */
+    uint64_t *pt = alloc_page();
+    if (!pt) return -1;
+
+    /* Fill 512 PTEs pointing to individual 4KB sub-pages */
+    for (int i = 0; i < 512; i++) {
+        uint64_t sub_phys = huge_phys + (uint64_t)i * 4096;
+        pt[i] = sub_phys | flags;
+        /* Each sub-page inherits the refcount of the huge page.
+         * The huge page already has refcount set on all 512 sub-pages. */
+    }
+
+    /* Replace PMD entry: now points to PT, no PS bit */
+    pd[pdi] = virt_to_phys(pt) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    return 0;
+}
+
 static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
-    /* PTE physical address mask: bits 12..51 (strips NX, available bits) */
     const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
     for (uint64_t va = start; va < end; ) {
         int pml4i = (va >> 39) & 0x1FF;
         if (!(user_pml4[pml4i] & PTE_PRESENT)) {
-            /* Skip to next 512GB boundary */
             va = (va | ((1ULL << 39) - 1)) + 1;
             continue;
         }
@@ -28,11 +58,35 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
             va = (va | ((1ULL << 21) - 1)) + 1;
             continue;
         }
+
+        /* Huge page (2MB PMD entry with PS bit) */
+        if (pd[pdi] & PTE_PS) {
+            uint64_t huge_base = va & HUGE_PAGE_MASK;
+            /* Full 2MB unmap: free entire huge page */
+            if (start <= huge_base && end >= huge_base + HUGE_PAGE_SIZE) {
+                uint64_t phys = pd[pdi] & HUGE_PAGE_MASK;
+                pd[pdi] = 0;
+                /* Free all 512 sub-pages via page_free (respects refcount) */
+                for (int i = 0; i < 512; i++) {
+                    page_free(phys_to_virt(phys + (uint64_t)i * 4096));
+                    arch_invlpg(huge_base + (uint64_t)i * 4096);
+                }
+                va = huge_base + HUGE_PAGE_SIZE;
+                continue;
+            }
+            /* Partial unmap: split first, then unmap individual 4KB pages */
+            if (split_huge_pmd(pd, pdi, 0) < 0) {
+                va = huge_base + HUGE_PAGE_SIZE;
+                continue;
+            }
+            /* Fall through to 4KB path */
+        }
+
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
         if (pt[pti] & PTE_PRESENT) {
-            uint64_t phys = pt[pti] & 0x000FFFFFFFFFF000ULL; /* bits 12..51 */
+            uint64_t phys = pt[pti] & PHYS_MASK;
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
             arch_invlpg(va);
@@ -73,6 +127,28 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
             va = (va | ((1ULL << 21) - 1)) + 1;
             continue;
         }
+
+        /* Huge page: if entire 2MB range covered, update PMD in-place.
+         * Otherwise split first. */
+        if (pd[pdi] & PTE_PS) {
+            uint64_t huge_base = va & HUGE_PAGE_MASK;
+            if (start <= huge_base && end >= huge_base + HUGE_PAGE_SIZE) {
+                /* Full 2MB mprotect: update PMD flags directly */
+                uint64_t phys = pd[pdi] & HUGE_PAGE_MASK;
+                pd[pdi] = phys | new_flags | PTE_PS;
+                for (uint64_t a = huge_base; a < huge_base + HUGE_PAGE_SIZE; a += 4096)
+                    arch_invlpg(a);
+                va = huge_base + HUGE_PAGE_SIZE;
+                continue;
+            }
+            /* Partial mprotect: split, then update individual PTEs */
+            if (split_huge_pmd(pd, pdi, 0) < 0) {
+                va = huge_base + HUGE_PAGE_SIZE;
+                continue;
+            }
+            /* Fall through to 4KB path */
+        }
+
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
 
         int pti = (va >> 12) & 0x1FF;
@@ -112,6 +188,14 @@ static void copy_user_pages(uint64_t *user_pml4, uint64_t dst, uint64_t src,
             uint64_t next = ((va | ((1ULL << 21) - 1)) + 1) - src;
             off = (next > off) ? next : len;
             continue;
+        }
+        /* Huge page: split before copying individual pages */
+        if (pd[pdi] & PTE_PS) {
+            split_huge_pmd(pd, pdi, 0);
+            if (pd[pdi] & PTE_PS) { /* split failed */
+                off += HUGE_PAGE_SIZE;
+                continue;
+            }
         }
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
         int pti = (va >> 12) & 0x1FF;
@@ -167,13 +251,28 @@ void prefault_range(uint64_t *user_pml4, uint64_t start, uint64_t end, int prot)
                 uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
                 int pdi = (va >> 21) & 0x1FF;
                 if (pd[pdi] & PTE_PRESENT) {
-                    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
-                    int pti = (va >> 12) & 0x1FF;
-                    if (pt[pti] & PTE_PRESENT) mapped = 1;
+                    if (pd[pdi] & PTE_PS) { mapped = 1; } /* huge page */
+                    else {
+                        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+                        int pti = (va >> 12) & 0x1FF;
+                        if (pt[pti] & PTE_PRESENT) mapped = 1;
+                    }
                 }
             }
         }
         if (!mapped) {
+            /* Try huge page if aligned and enough remaining space */
+            uint64_t huge_base = va & HUGE_PAGE_MASK;
+            if (va == huge_base && va + HUGE_PAGE_SIZE <= end) {
+                void *hp = huge_page_alloc();
+                if (hp) {
+                    if (map_user_huge_page(user_pml4, va, virt_to_phys(hp), prot) == 0) {
+                        va += HUGE_PAGE_SIZE - 4096; /* loop adds 4096 */
+                        continue;
+                    }
+                    huge_page_free(hp);
+                }
+            }
             uint64_t *page = alloc_page();
             if (page)
                 map_user_page(user_pml4, va, virt_to_phys(page), prot);
@@ -421,6 +520,9 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     /* Create VMA */
     int vma_flags = flags;
     if (p->mlockall_flags & MCL_FUTURE) vma_flags |= VMA_LOCKED;
+    /* Mark large anonymous mappings as eligible for transparent huge pages */
+    if ((flags & MAP_ANONYMOUS) && length >= HUGE_PAGE_SIZE)
+        vma_flags |= VMA_HUGEPAGE;
     vma_t *v = vma_insert(&p->vma_root, vaddr, vaddr + length, prot, vma_flags);
     if (!v) {
         spin_unlock_irq(&p->lock, irqf);
@@ -599,6 +701,13 @@ static void mark_lazyfree_range(uint64_t *user_pml4, uint64_t start, uint64_t en
         if (!(pd[pdi] & PTE_PRESENT)) {
             va = (va | ((1ULL << 21) - 1)) + 1;
             continue;
+        }
+        /* Huge page: split before marking individual pages as lazyfree */
+        if (pd[pdi] & PTE_PS) {
+            if (split_huge_pmd(pd, pdi, 0) < 0) {
+                va = (va & HUGE_PAGE_MASK) + HUGE_PAGE_SIZE;
+                continue;
+            }
         }
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
         int pti = (va >> 12) & 0x1FF;

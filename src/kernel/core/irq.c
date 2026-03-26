@@ -376,8 +376,29 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                  * PROT_NONE VMAs must NOT be demand-paged — access = SIGSEGV. */
                 if (!(error & 1) && (vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) {
                     int dp_prot = vma->prot;
+                    int dp_huge = (vma->flags & VMA_HUGEPAGE);
+                    uint64_t vma_start = vma->start;
+                    uint64_t vma_end = vma->end;
                     spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
+
+                    /* Try 2MB huge page if VMA is eligible and aligned */
+                    if (dp_huge) {
+                        uint64_t huge_base = cr2 & ~0x1FFFFFULL;
+                        if (huge_base >= vma_start &&
+                            huge_base + 0x200000ULL <= vma_end) {
+                            void *hp = huge_page_alloc();
+                            if (hp) {
+                                if (map_user_huge_page(p->pml4, huge_base,
+                                                       virt_to_phys(hp), dp_prot) == 0) {
+                                    return; /* resume execution */
+                                }
+                                huge_page_free(hp);
+                            }
+                            /* Fallback to 4KB */
+                        }
+                    }
+
                     uint64_t *page = alloc_page();
                     if (page) {
                         if (map_user_page(p->pml4, page_addr,

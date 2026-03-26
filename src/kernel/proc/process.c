@@ -150,11 +150,42 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) 
     uint64_t *pd = get_or_alloc_level(pdpt, pdpt_idx);
     if (!pd) return -1;
 
+    /* If PD entry is a 2MB huge page, split it into 512 × 4KB PTEs first */
+    if ((pd[pd_idx] & PTE_PRESENT) && (pd[pd_idx] & PTE_PS)) {
+        uint64_t pmd = pd[pd_idx];
+        uint64_t huge_phys = pmd & 0x000FFFFFFFE00000ULL;
+        uint64_t flags = pmd & (PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX | PTE_COW);
+        uint64_t *pt_new = alloc_page();
+        if (!pt_new) return -1;
+        for (int i = 0; i < 512; i++)
+            pt_new[i] = (huge_phys + (uint64_t)i * 4096) | flags;
+        pd[pd_idx] = virt_to_phys(pt_new) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    }
+
     uint64_t *pt = get_or_alloc_level(pd, pd_idx);
     if (!pt) return -1;
 
     /* Only the leaf PTE restricts access based on prot */
     pt[pt_idx] = phys | prot_to_pte(prot);
+    return 0;
+}
+
+int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) {
+    if (vaddr >= 0x800000000000ULL) return -1;
+    if (vaddr & (0x200000ULL - 1)) return -1;  /* must be 2MB-aligned */
+    if (phys  & (0x200000ULL - 1)) return -1;
+
+    uint64_t *pdpt = get_or_alloc_level(user_pml4, (vaddr >> 39) & 0x1FF);
+    if (!pdpt) return -1;
+    uint64_t *pd = get_or_alloc_level(pdpt, (vaddr >> 30) & 0x1FF);
+    if (!pd) return -1;
+
+    int pd_idx = (vaddr >> 21) & 0x1FF;
+    /* PMD entry with PS bit — direct 2MB mapping, no PT */
+    uint64_t flags = PTE_PS | PTE_PRESENT | PTE_USER;
+    if (prot & PROT_WRITE) flags |= PTE_WRITE;
+    if (!(prot & PROT_EXEC)) flags |= PTE_NX;
+    pd[pd_idx] = phys | flags;
     return 0;
 }
 
@@ -237,6 +268,15 @@ void free_address_space(uint64_t *user_pml4) {
 
             for (int k = 0; k < 512; k++) {
                 if (!(pd[k] & PTE_PRESENT)) continue;
+
+                /* Huge page (2MB PMD with PS bit): free 512 sub-pages */
+                if (pd[k] & PTE_PS) {
+                    uint64_t huge_phys = pd[k] & 0x000FFFFFFFE00000ULL;
+                    for (int l = 0; l < 512; l++)
+                        page_free(phys_to_virt(huge_phys + (uint64_t)l * 4096));
+                    continue; /* no PT to free */
+                }
+
                 uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
 
                 for (int l = 0; l < 512; l++) {
@@ -494,7 +534,9 @@ thread_t *thread_find_by_tid(int tid) {
 
 /* ── Address space helpers ───────────────────────── */
 
-/* Read PTE for a user virtual address. Returns 0 if not mapped. */
+/* Read PTE for a user virtual address. Returns 0 if not mapped.
+ * For 2MB huge pages (PS bit in PMD): returns a synthetic PTE with
+ * the correct sub-page physical address and PTE_PS set. */
 uint64_t read_pte_pub(uint64_t *user_pml4, uint64_t va) {
     int pml4i = (va >> 39) & 0x1FF;
     if (!(user_pml4[pml4i] & PTE_PRESENT)) return 0;
@@ -504,6 +546,13 @@ uint64_t read_pte_pub(uint64_t *user_pml4, uint64_t va) {
     uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
     int pdi = (va >> 21) & 0x1FF;
     if (!(pd[pdi] & PTE_PRESENT)) return 0;
+    /* Huge page: PMD entry directly maps 2MB */
+    if (pd[pdi] & PTE_PS) {
+        uint64_t huge_phys = pd[pdi] & 0x000FFFFFFFE00000ULL;
+        uint64_t offset = va & 0x1FFFFFULL;
+        uint64_t flags = pd[pdi] & ~0x000FFFFFFFE00000ULL;
+        return (huge_phys + offset) | (flags & ~PTE_PS);
+    }
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
     int pti = (va >> 12) & 0x1FF;
     return pt[pti];
@@ -559,6 +608,11 @@ int lazyfree_reclaim(int count) {
                     va = (va | ((1ULL << 21) - 1));
                     continue;
                 }
+                /* Huge pages are never LAZYFREE (split before marking) — skip */
+                if (pd[pdi] & PTE_PS) {
+                    va = (va | ((1ULL << 21) - 1));
+                    continue;
+                }
                 uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
                 int pti = (va >> 12) & 0x1FF;
                 uint64_t pte = pt[pti];
@@ -599,12 +653,41 @@ static int write_pte_raw(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) 
     return 0;
 }
 
-/* Set PTE for a virtual address in-place (must already be mapped). */
+/* Set PTE for a virtual address in-place (must already be mapped at 4KB level).
+ * Caller must ensure huge pages are split beforehand. */
 static void set_pte_inplace(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) {
     uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[(vaddr >> 39) & 0x1FF] & PTE_ADDR_MASK);
     uint64_t *pd   = (uint64_t *)phys_to_virt(pdpt[(vaddr >> 30) & 0x1FF] & PTE_ADDR_MASK);
+    /* Huge page sanity check: caller must split before calling */
+    if (pd[(vaddr >> 21) & 0x1FF] & PTE_PS) return;
     uint64_t *pt   = (uint64_t *)phys_to_virt(pd[(vaddr >> 21) & 0x1FF] & PTE_ADDR_MASK);
     pt[(vaddr >> 12) & 0x1FF] = pte_val;
+}
+
+/* Split a 2MB huge page PMD entry into 512 4KB PTEs in parent's page tables.
+ * Called during COW fork so each sub-page gets individual COW tracking. */
+static int fork_split_huge_pmd(uint64_t *pml4, uint64_t va_base) {
+    int pml4i = (va_base >> 39) & 0x1FF;
+    if (!(pml4[pml4i] & PTE_PRESENT)) return -1;
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[pml4i] & PTE_ADDR_MASK);
+    int pdpti = (va_base >> 30) & 0x1FF;
+    if (!(pdpt[pdpti] & PTE_PRESENT)) return -1;
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+    int pdi = (va_base >> 21) & 0x1FF;
+    if (!(pd[pdi] & PTE_PRESENT) || !(pd[pdi] & PTE_PS)) return -1;
+
+    uint64_t pmd = pd[pdi];
+    uint64_t huge_phys = pmd & 0x000FFFFFFFE00000ULL;
+    uint64_t flags = pmd & (PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX | PTE_COW);
+
+    uint64_t *pt = alloc_page();
+    if (!pt) return -1;
+
+    for (int i = 0; i < 512; i++)
+        pt[i] = (huge_phys + (uint64_t)i * 4096) | flags;
+
+    pd[pdi] = virt_to_phys(pt) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    return 0;
 }
 
 /* Copy a single VMA's pages from parent to child (COW for private, share for shared) */
@@ -620,6 +703,23 @@ static void copy_one_vma(vma_t *v, void *arg) {
 
     /* MAP_SHARED anonymous: share same physical pages (no copy) */
     int shared = (v->flags & VMA_SHARED);
+
+    /* Split any huge pages in the parent before COW iteration.
+     * This ensures 4KB-granularity COW tracking. */
+    if (!shared) {
+        for (uint64_t va = v->start; va < v->end; va += 0x200000) {
+            uint64_t aligned = va & 0xFFFFFFFFFFE00000ULL;
+            int p4i = (aligned >> 39) & 0x1FF;
+            if (!(ctx->src_pml4[p4i] & PTE_PRESENT)) continue;
+            uint64_t *pdpt = (uint64_t *)phys_to_virt(ctx->src_pml4[p4i] & PTE_ADDR_MASK);
+            int pi = (aligned >> 30) & 0x1FF;
+            if (!(pdpt[pi] & PTE_PRESENT)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pi] & PTE_ADDR_MASK);
+            int di = (aligned >> 21) & 0x1FF;
+            if ((pd[di] & PTE_PRESENT) && (pd[di] & PTE_PS))
+                fork_split_huge_pmd(ctx->src_pml4, aligned);
+        }
+    }
 
     for (uint64_t va = v->start; va < v->end; va += 4096) {
         uint64_t pte = read_pte(ctx->src_pml4, va);

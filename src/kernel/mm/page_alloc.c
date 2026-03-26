@@ -388,6 +388,51 @@ void pages_free(void *base, int n) {
     spin_unlock_irq(&buddy_lock, flags);
 }
 
+void *huge_page_alloc(void) {
+    /* Order 9 = 512 pages = 2MB, naturally 2MB-aligned by buddy */
+    uint64_t flags;
+    spin_lock_irq(&buddy_lock, &flags);
+    void *p = buddy_alloc_order(9);
+    spin_unlock_irq(&buddy_lock, flags);
+    if (!p) {
+        /* OOM: try reclaiming LAZYFREE pages */
+        extern int lazyfree_reclaim(int count);
+        int reclaimed = lazyfree_reclaim(512);
+        if (reclaimed > 0) {
+            spin_lock_irq(&buddy_lock, &flags);
+            p = buddy_alloc_order(9);
+            spin_unlock_irq(&buddy_lock, flags);
+        }
+    }
+    if (p) {
+        pages_zero(p, 512);
+        uint64_t pfn = virt_to_phys(p) >> PAGE_SHIFT;
+        for (uint64_t i = 0; i < 512 && pfn + i < max_pfn; i++)
+            __atomic_store_n(&page_refcounts[pfn + i], 1, __ATOMIC_RELAXED);
+    }
+    return p;
+}
+
+void huge_page_free(void *page) {
+    if (!page) return;
+    uint64_t pfn = virt_to_phys(page) >> PAGE_SHIFT;
+    /* Decrement refcount on first page; only free if reaches 0 */
+    uint16_t old = __atomic_load_n(&page_refcounts[pfn], __ATOMIC_ACQUIRE);
+    if (old > 1) {
+        for (uint64_t i = 0; i < 512 && pfn + i < max_pfn; i++)
+            __atomic_fetch_sub(&page_refcounts[pfn + i], 1, __ATOMIC_ACQ_REL);
+        return;
+    }
+    for (uint64_t i = 0; i < 512 && pfn + i < max_pfn; i++)
+        __atomic_store_n(&page_refcounts[pfn + i], 0, __ATOMIC_RELEASE);
+    extern void dedup_on_page_free(uint64_t phys);
+    dedup_on_page_free(pfn << PAGE_SHIFT);
+    uint64_t flags;
+    spin_lock_irq(&buddy_lock, &flags);
+    buddy_free_order(page, 9);
+    spin_unlock_irq(&buddy_lock, flags);
+}
+
 int page_alloc_total(void) { return (int)total_pages; }
 int page_alloc_free(void)  { return (int)(total_pages - alloc_count); }
 uint64_t page_alloc_max_pfn(void) { return max_pfn; }

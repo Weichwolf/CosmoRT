@@ -27,6 +27,13 @@ void *pages_alloc(int n);
 /* Free N contiguous pages (must match the n passed to pages_alloc) */
 void pages_free(void *base, int n);
 
+/* Allocate one 2MB huge page (512 contiguous 4KB pages, 2MB-aligned).
+ * Returns kernel-virtual (direct-mapped), zeroed. NULL on failure. */
+void *huge_page_alloc(void);
+
+/* Free a 2MB huge page returned by huge_page_alloc */
+void huge_page_free(void *page);
+
 /* Stats */
 int page_alloc_total(void);
 int page_alloc_free(void);
