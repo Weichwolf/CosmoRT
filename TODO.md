@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 975 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1010 ktest PASS, 0 FAIL.
 
 ---
 
@@ -35,30 +35,15 @@ Problem: 15+ Stellen im Kernel setzen THREAD_BLOCKED + thread_return_to_kernel
 direkt. Jede Stelle ist ein potentieller Hang-Bug (Wake verloren, Race, State-Fehler).
 Job Control musste reverted werden weil wait4 nach fork+setpgid haengt.
 
-### EQ-A: event_queue_t Infrastruktur
+### EQ-A: event_queue_t Infrastruktur — erledigt
 
-- [ ] include/kernel/core/event_queue.h: event_queue_t (Lock-free SPSC oder kleine Queue)
-- [ ] event_queue_init(eq): Queue initialisieren (pro Thread, nicht pro Prozess)
-- [ ] event_post(eq, type, data): Event in Queue + sched_wake (atomar, nie verloren)
-- [ ] event_wait(eq, timeout_ms): Queue leer → sleep, Event da → return sofort
-- [ ] event_poll(eq): Non-blocking check (fuer WNOHANG etc.)
-- [ ] Thread-State: THREAD_BLOCKED nur ueber event_wait, nie direkt setzen
-- [ ] Timeout: Timer-Wheel Integration (event_wait mit Deadline)
-- [ ] test: post+wait Roundtrip, post vor wait (sofort return), Timeout
+event_queue_t pro Thread (16-Slot Ringbuffer). event_post (IRQ-safe, race-free),
+event_wait (blocking mit Timeout), event_drain (WNOHANG). 35 Tests.
 
-### EQ-B: Alle blocking Syscalls umstellen
+### EQ-B: Alle blocking Syscalls umgestellt — erledigt
 
-15+ Stellen von ad-hoc THREAD_BLOCKED auf event_wait:
-- [ ] wait4 → event_wait(CHILD_EXITED) / event_post aus exit_kill_process
-- [ ] futex_wait → event_wait(FUTEX_WAKE) / event_post aus futex_wake
-- [ ] pipe_read → event_wait(PIPE_DATA) / event_post aus pipe_write
-- [ ] epoll_wait → event_wait(EPOLL_READY) / event_post aus epoll_wake
-- [ ] unix_socket recv/accept → event_wait / event_post aus send/connect
-- [ ] sock_block_thread → event_wait (Netzwerk vereinheitlichen)
-- [ ] do_poll → event_wait
-- [ ] sock_block_thread in socket.c eliminieren (durch event_wait ersetzen)
-- [ ] Alle thread_return_to_kernel Aufrufe ausser in event_wait eliminieren
-- [ ] test: kein Test darf haengen, 975+ PASS
+15 Consumer + 12 Producer auf event_wait/event_post. sock_block_thread eliminiert.
+THREAD_BLOCKED nur noch in event_wait. Netto -47 Zeilen.
 
 ### EQ-C: Job Control (auf Event-Queue Basis)
 
