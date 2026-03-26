@@ -202,6 +202,9 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return secs;
     }
 
+    /* alarm(2): per-process SIGALRM timer */
+    case SYS_ALARM: return do_alarm((unsigned int)a1);
+
     /* xattr: return -ENODATA ("no attributes") instead of -ENOSYS */
     case SYS_SETXATTR:  case SYS_LSETXATTR:  case SYS_FSETXATTR:
     case SYS_GETXATTR:  case SYS_LGETXATTR:  case SYS_FGETXATTR:

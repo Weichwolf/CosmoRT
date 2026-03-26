@@ -580,6 +580,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
 #define TIOCGPGRP  0x540F
 #define TIOCSPGRP  0x5410
 #define TIOCGWINSZ 0x5413
+#define TIOCSWINSZ 0x5414
 #define FIONREAD   0x541B
 #define TIOCNOTTY  0x5422
 #define TIOCGPTN   0x80045430
@@ -630,6 +631,19 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         ws->ws_col = (uint16_t)vt_cols();
         ws->ws_xpixel = 0;
         ws->ws_ypixel = 0;
+        return 0;
+    }
+    if (request == TIOCSWINSZ) {
+        if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;
+        /* Accept the new size; send SIGWINCH to foreground process group.
+         * Find fg_pgid from PTY if available, else use caller's pgid. */
+        uint32_t fg_pgid = p->pgid;
+        if ((fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) && fde->obj) {
+            pty_t *pt = (pty_t *)fde->obj;
+            if (pt->fg_pgid > 0) fg_pgid = (uint32_t)pt->fg_pgid;
+        }
+        /* Send SIGWINCH to foreground process group via kill(-pgid, SIGWINCH) */
+        do_kill(-(int)fg_pgid, SIGWINCH);
         return 0;
     }
     /* Terminal set: accept and ignore (no real termios backend) */

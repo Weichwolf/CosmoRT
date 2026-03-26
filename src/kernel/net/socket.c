@@ -13,6 +13,8 @@
 #include "config.h"
 #include "core/percpu.h"
 #include "event/epoll.h"
+
+extern long send_sigpipe(void);
 #include "arch/arch.h"
 #include "core/rt.h"
 #include "core/timer_wheel.h"
@@ -246,7 +248,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->shut_wr) return -EPIPE;
+    if (s->shut_wr) return send_sigpipe();
 
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
@@ -411,7 +413,7 @@ long socket_read(int fd, void *buf, long count) {
 long socket_write(int fd, const void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->shut_wr) return -EPIPE;
+    if (s->shut_wr) return send_sigpipe();
     /* DGRAM: delegate to sendto (uses stored connect addr) */
     if (s->is_dgram) return do_sendto(fd, buf, count, 0, 0, 0);
     if (s->state != SOCK_CONNECTED) return -EBADF;

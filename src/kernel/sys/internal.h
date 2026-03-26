@@ -158,6 +158,11 @@ long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
 long do_sigaltstack(const void *ss, void *oss);
+long do_alarm(unsigned int seconds);
+
+/* Send SIGPIPE to current process. Returns -EPIPE always.
+ * If handler is SIG_IGN, just returns -EPIPE without signal. */
+long send_sigpipe(void);
 
 /* k_timeval — from linux.h (via syscall.h) */
 

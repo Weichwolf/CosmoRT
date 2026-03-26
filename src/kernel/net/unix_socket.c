@@ -14,6 +14,8 @@
 #include "cosmort.h"
 #include "arch/arch.h"
 
+extern long send_sigpipe(void);
+
 /* ── Pool ─────────────────────────────────────── */
 
 static unix_socket_t usock_pool[USOCK_MAX];
@@ -386,13 +388,13 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
 long usock_write(int fd, const void *buf, long count) {
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state != USOCK_CONNECTED) return -EPIPE;
+    if (s->state != USOCK_CONNECTED) return send_sigpipe();
 
     /* Snapshot peer under lock — peer can be NULLed by concurrent close */
     uint64_t irqf;
     spin_lock_irq(&usock_lock, &irqf);
     unix_socket_t *peer = s->peer;
-    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return -EPIPE; }
+    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
 
     /* Write into peer's receive buffer (under lock — protects ring) */
     int n = ring_write(peer, (const uint8_t *)buf, (int)count);
@@ -457,7 +459,7 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
 
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state != USOCK_CONNECTED || !s->peer) return -EPIPE;
+    if (s->state != USOCK_CONNECTED || !s->peer) return send_sigpipe();
 
     /* Copy msghdr to kernel */
     struct k_msghdr kmsg;
@@ -474,7 +476,7 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     uint64_t irqf;
     spin_lock_irq(&usock_lock, &irqf);
     unix_socket_t *peer = s->peer;
-    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return -EPIPE; }
+    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
     spin_unlock_irq(&usock_lock, irqf);
 
     long total = 0;

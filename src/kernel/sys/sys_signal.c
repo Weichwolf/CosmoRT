@@ -296,6 +296,21 @@ void check_pending_signals(void) {
     if (!t || !t->proc) return;
     process_t *p = t->proc;
 
+    /* Check per-process alarm timer */
+    if (p->alarm_deadline_ms > 0 && timer_ms() >= p->alarm_deadline_ms) {
+        p->alarm_deadline_ms = 0;
+        /* Deliver SIGALRM like kill(getpid(), SIGALRM) */
+        void *handler = p->sig_actions[SIGALRM].sa_handler;
+        if (handler == SIG_IGN) { /* ignore */ }
+        else if (handler == SIG_DFL) {
+            p->exit_signal = SIGALRM;
+            do_exit(128 + SIGALRM);
+            return;
+        } else {
+            p->sig_pending |= (1ULL << SIGALRM);
+        }
+    }
+
     /* If returning from rt_sigsuspend, restore the original mask before
      * delivering the signal so the ucontext captures the pre-sigsuspend mask. */
     if (t->in_sigsuspend) {
@@ -779,6 +794,41 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     return -EINTR; /* unreachable */
 }
 
+/* ── send_sigpipe — SIGPIPE for pipe/socket write on broken end ── */
+
+long send_sigpipe(void) {
+    process_t *p = proc_current();
+    if (p) {
+        void *handler = p->sig_actions[SIGPIPE].sa_handler;
+        if (handler != SIG_IGN)
+            p->sig_pending |= (1ULL << SIGPIPE);
+    }
+    return -EPIPE;
+}
+
+/* ── SYS_ALARM (37) ─────────────────────────────── */
+
+long do_alarm(unsigned int seconds) {
+    process_t *p = proc_current();
+    if (!p) return 0;
+
+    uint64_t now = timer_ms();
+    unsigned int remaining = 0;
+
+    /* Calculate remaining seconds from previous alarm */
+    if (p->alarm_deadline_ms > 0 && p->alarm_deadline_ms > now)
+        remaining = (unsigned int)((p->alarm_deadline_ms - now + 999) / 1000);
+
+    if (seconds == 0) {
+        /* Cancel */
+        p->alarm_deadline_ms = 0;
+    } else {
+        p->alarm_deadline_ms = now + (uint64_t)seconds * 1000;
+    }
+
+    return (long)remaining;
+}
+
 /* Check and deliver signals in the SYSCALL return path.
  * Syncs percpu syscall frame <-> thread_t around delivery.
  * Called from syscall_entry.asm between sys_handler return and SYSRET.
@@ -799,6 +849,21 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     thread_t *t = thread_current();
     if (!t || !t->proc) return;
     process_t *p = t->proc;
+
+    /* Check alarm before deliverable test — alarm may set a new pending bit */
+    if (p->alarm_deadline_ms > 0 && timer_ms() >= p->alarm_deadline_ms) {
+        p->alarm_deadline_ms = 0;
+        void *handler = p->sig_actions[SIGALRM].sa_handler;
+        if (handler == SIG_IGN) { /* ignore */ }
+        else if (handler == SIG_DFL) {
+            p->exit_signal = SIGALRM;
+            do_exit(128 + SIGALRM);
+            return;
+        } else {
+            p->sig_pending |= (1ULL << SIGALRM);
+        }
+    }
+
     uint64_t deliverable = p->sig_pending & ~t->sig_blocked;
     if (!deliverable) return;
 

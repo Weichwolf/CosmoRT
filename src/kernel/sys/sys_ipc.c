@@ -62,7 +62,7 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     spin_lock_irq(&pp->lock, &flags);
     if (!pp->read_open) {
         spin_unlock_irq(&pp->lock, flags);
-        return -EPIPE;
+        return send_sigpipe();
     }
     size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
     size_t n = count > space ? space : count;
@@ -167,7 +167,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
     }
     if (!pp->read_open) {
         spin_unlock_irq(&pp->lock, irqf);
-        return -EPIPE;
+        return send_sigpipe();
     }
     pp->blocked_writer = t;
     spin_unlock_irq(&pp->lock, irqf);
