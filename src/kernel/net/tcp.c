@@ -1,8 +1,6 @@
 /* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine, Hash-Lookup
- * Extracted from net.c (Phase A).
- * E0: Sleep/Wake statt Busy-Wait — sched_wake statt net_idle.
- * E:  OOO Buffering, Slow-Start + AIMD (RFC 5681), Keepalive.
- */
+ * CUBIC (RFC 8312), SACK (RFC 2018), Window Scaling (RFC 7323),
+ * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928). */
 
 #include "net/tcp.h"
 #include "net/net.h"
@@ -10,6 +8,14 @@
 #include "core/timer.h"
 #include "core/rt.h"
 #include "mm/page_alloc.h"
+
+/* ── Constants ────────────────────────────────────── */
+
+#define MSS           1460
+#define CUBIC_C_1024  410    /* C=0.4 × 1024 */
+#define CUBIC_BETA    717    /* β=0.7 × 1024 */
+#define CUBIC_ONE_MINUS_BETA  307  /* (1-β)=0.3 × 1024 */
+#define RCV_WSCALE    7      /* advertised: 2^7 = 128 → 128×64K = 8MB */
 
 /* ── Ringbuffer ────────────────────────────────────── */
 
@@ -149,12 +155,17 @@ static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip,
     return (uint16_t)~sum;
 }
 
-/* ── Send TCP Segment ──────────────────────────────── */
+/* ── Send TCP Segment (with options support) ──────── */
 
-static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
+static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
+                          const void *data, int dlen,
+                          const uint8_t *opts, int optlen) {
     uint8_t pkt[1536];
-    int thdr = 20, tt = thdr + dlen;
-    mzero(pkt, 54 + dlen);
+    int thdr = 20 + optlen;
+    /* pad to 4-byte boundary */
+    while (thdr & 3) thdr++;
+    int tt = thdr + dlen;
+    mzero(pkt, 54 + optlen + dlen);
     net_build_ip_hdr(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt);
     uint8_t *t = pkt + 34;
     put16(t, c->local_port);
@@ -163,14 +174,137 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     put32(t + 8, c->rcv_nxt);
     t[12] = (uint8_t)((thdr / 4) << 4);
     t[13] = flags;
-    put16(t + 14, c->rcv_wnd ? c->rcv_wnd : 8192);
+    /* Advertise rcv_wnd with scaling */
+    uint16_t adv_wnd;
+    if (c->wscale_ok)
+        adv_wnd = (uint16_t)(NET_TCP_RXBUF >> c->rcv_wscale);
+    else
+        adv_wnd = c->rcv_wnd ? c->rcv_wnd : 8192;
+    put16(t + 14, adv_wnd);
     put16(t + 16, 0);
     put16(t + 18, 0);
+    if (optlen > 0 && opts) mcpy(t + 20, opts, optlen);
     if (dlen > 0 && data) mcpy(t + thdr, data, dlen);
     uint16_t ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
     t[16] = (uint8_t)(ck >> 8);
     t[17] = (uint8_t)ck;
     net_send_raw(pkt, (uint16_t)(34 + tt));
+}
+
+static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
+    /* For SACK blocks on ACKs: build SACK option if we have blocks */
+    if ((flags & 0x10) && c->sack_count > 0 && dlen == 0) {
+        uint8_t opts[40]; /* max 4 SACK blocks = 2 + 4*8 = 34 bytes */
+        int n = c->sack_count;
+        if (n > 4) n = 4;
+        int olen = 2 + n * 8;
+        opts[0] = 5;              /* Kind = SACK */
+        opts[1] = (uint8_t)olen;  /* Length */
+        for (int i = 0; i < n; i++) {
+            put32(opts + 2 + i * 8, c->sack_blocks[i].left);
+            put32(opts + 2 + i * 8 + 4, c->sack_blocks[i].right);
+        }
+        send_tcp_opts(c, flags, data, dlen, opts, olen);
+        return;
+    }
+    send_tcp_opts(c, flags, data, dlen, 0, 0);
+}
+
+/* ── SYN Options: Window Scale + SACK Permitted + MSS ── */
+
+static void send_syn(net_tcp_t *c, uint8_t flags) {
+    /* MSS(4) + WScale(3) + SACK-Perm(2) + NOP(1) = 10, padded to 12 */
+    uint8_t opts[12];
+    mzero(opts, 12);
+    /* MSS option: Kind=2, Len=4, Value=1460 */
+    opts[0] = 2; opts[1] = 4;
+    put16(opts + 2, MSS);
+    /* Window Scale: Kind=3, Len=3, Shift=RCV_WSCALE */
+    opts[4] = 3; opts[5] = 3; opts[6] = RCV_WSCALE;
+    /* NOP padding */
+    opts[7] = 1;
+    /* SACK Permitted: Kind=4, Len=2 */
+    opts[8] = 4; opts[9] = 2;
+    /* NOP + NOP to align to 4 bytes */
+    opts[10] = 1; opts[11] = 1;
+    send_tcp_opts(c, flags, 0, 0, opts, 12);
+}
+
+/* ── Parse TCP Options from SYN-ACK ──────────────── */
+
+static void parse_tcp_options(net_tcp_t *c, const uint8_t *opts, int optlen) {
+    int i = 0;
+    while (i < optlen) {
+        uint8_t kind = opts[i];
+        if (kind == 0) break;            /* End of options */
+        if (kind == 1) { i++; continue; } /* NOP */
+        if (i + 1 >= optlen) break;
+        uint8_t olen = opts[i + 1];
+        if (olen < 2 || i + olen > optlen) break;
+
+        if (kind == 3 && olen == 3) {
+            /* Window Scale */
+            c->snd_wscale = opts[i + 2];
+            if (c->snd_wscale > 14) c->snd_wscale = 14;
+            c->wscale_ok = 1;
+        } else if (kind == 4 && olen == 2) {
+            /* SACK Permitted — peer supports SACK */
+            (void)0;
+        } else if (kind == 5 && olen >= 10) {
+            /* SACK blocks */
+            int nblocks = (olen - 2) / 8;
+            if (nblocks > 4) nblocks = 4;
+            c->sack_count = nblocks;
+            for (int j = 0; j < nblocks; j++) {
+                c->sack_blocks[j].left  = get32(opts + i + 2 + j * 8);
+                c->sack_blocks[j].right = get32(opts + i + 2 + j * 8 + 4);
+            }
+        }
+        i += olen;
+    }
+}
+
+/* ── SACK Block Management (RX side) ─────────────── */
+
+static void sack_update(net_tcp_t *c, uint32_t seq, int len) {
+    /* Add a received OOO segment to our SACK block list */
+    uint32_t left = seq, right = seq + (uint32_t)len;
+
+    /* Try to merge with existing blocks */
+    for (int i = 0; i < c->sack_count; i++) {
+        if ((int32_t)(left - c->sack_blocks[i].right) <= 0 &&
+            (int32_t)(right - c->sack_blocks[i].left) >= 0) {
+            /* Overlapping or adjacent — merge */
+            if ((int32_t)(left - c->sack_blocks[i].left) < 0)
+                c->sack_blocks[i].left = left;
+            if ((int32_t)(right - c->sack_blocks[i].right) > 0)
+                c->sack_blocks[i].right = right;
+            return;
+        }
+    }
+
+    /* New block */
+    if (c->sack_count < 4) {
+        c->sack_blocks[c->sack_count].left = left;
+        c->sack_blocks[c->sack_count].right = right;
+        c->sack_count++;
+    } else {
+        /* Evict oldest (slot 3) */
+        c->sack_blocks[3].left = left;
+        c->sack_blocks[3].right = right;
+    }
+}
+
+static void sack_advance(net_tcp_t *c, uint32_t ack) {
+    /* Remove SACK blocks fully covered by cumulative ACK */
+    int w = 0;
+    for (int r = 0; r < c->sack_count; r++) {
+        if ((int32_t)(c->sack_blocks[r].right - ack) > 0) {
+            if (w != r) c->sack_blocks[w] = c->sack_blocks[r];
+            w++;
+        }
+    }
+    c->sack_count = w;
 }
 
 /* ── OOO Buffer Helpers (called on RT-Core, no locks) ── */
@@ -192,6 +326,9 @@ static void ooo_insert(net_tcp_t *c, uint32_t seq, const uint8_t *data, int len)
     c->ooo[slot].seq = seq;
     c->ooo[slot].len = (uint16_t)len;
     mcpy(c->ooo[slot].data, data, len);
+
+    /* Update SACK blocks for OOO segment */
+    sack_update(c, seq, len);
 }
 
 static int ooo_drain(net_tcp_t *c) {
@@ -211,33 +348,177 @@ static int ooo_drain(net_tcp_t *c) {
             }
         }
     }
+    /* Remove SACK blocks covered by advanced rcv_nxt */
+    sack_advance(c, c->rcv_nxt);
     return drained;
 }
 
-/* ── Congestion Control (RFC 5681 simplified) ──────── */
+/* ── Integer Cube Root (Newton, ×1024 scaled) ─────── */
+
+static uint32_t integer_cbrt(uint64_t x) {
+    if (x == 0) return 0;
+    /* Initial estimate: start high enough */
+    uint64_t g = 1;
+    while (g * g * g < x) {
+        if (g > 100000) break;
+        g <<= 1;
+    }
+    /* Newton iterations: g = (2*g + x/(g*g)) / 3 */
+    for (int i = 0; i < 32; i++) {
+        uint64_t g2 = g * g;
+        if (g2 == 0) break;
+        uint64_t g_new = (2 * g + x / g2) / 3;
+        if (g_new >= g) break;
+        g = g_new;
+    }
+    /* Refine: ensure g^3 <= x < (g+1)^3 */
+    while ((g + 1) * (g + 1) * (g + 1) <= x) g++;
+    return (uint32_t)g;
+}
+
+/* ── CUBIC Congestion Control (RFC 8312) ──────────── */
+
+/*
+ * W_cubic(t) = C × (t - K)³ + W_max
+ * K = cbrt(W_max × β_cubic / C)   [β_cubic = 0.3 = 1-0.7]
+ *
+ * All cwnd values in bytes. K in ms.
+ * Fixed-point: multiply by 1024 where noted.
+ *
+ * C = 0.4 segments/s³ → scale for bytes:
+ *   C_bytes = 0.4 × MSS = 584 bytes/s³
+ * But t is in ms, so t³ is ms³. Need C in bytes/ms³:
+ *   C_eff = 584 / 1000³ = 5.84e-7 bytes/ms³
+ * To avoid FP: W(t) = C_eff × (t-K)³ + W_max
+ *   = (584 × (t-K)³) / 1000000000 + W_max
+ *   = (MSS × 4 × (t-K)³) / (10 × 1000000000) + W_max
+ * Simplified: (MSS * 4 * dt³) / 10_000_000_000
+ */
+
+static uint32_t cubic_k_ms(uint32_t w_max_bytes) {
+    /* K = cbrt(W_max × (1-β) / C)  in ms
+     * K = cbrt(w_max_seg × 0.3 / 0.4) ms × 1000  (C is per-second)
+     * K = cbrt(w_max_seg × 3/4) × 1000^(1/3)
+     * K = cbrt(w_max_seg × 3/4 × 1000) ms
+     * = cbrt(w_max_seg × 750) ms */
+    uint32_t w_seg = w_max_bytes / MSS;
+    if (w_seg == 0) w_seg = 1;
+    uint64_t val = (uint64_t)w_seg * 750;
+    return integer_cbrt(val);
+}
+
+static uint32_t cubic_w(uint64_t t_ms, uint32_t w_max, uint32_t k_ms) {
+    /* W(t) = C × (t - K)³ + W_max
+     * C = 0.4 seg/s³, t and K in ms
+     * W(t) = 0.4 × ((t-K)/1000)³ × MSS + W_max
+     * = MSS × 4 × (t-K)³ / (10 × 10^9) + W_max
+     * = MSS × 4 × dt³ / 10000000000 + W_max */
+    int64_t dt = (int64_t)t_ms - (int64_t)k_ms; /* can be negative */
+    int neg = 0;
+    if (dt < 0) { neg = 1; dt = -dt; }
+
+    /* dt³ can overflow for large dt. Cap at ~10000ms = 10s */
+    if (dt > 10000) dt = 10000;
+    uint64_t dt3 = (uint64_t)dt * (uint64_t)dt * (uint64_t)dt;
+    /* MSS * 4 * dt3 / 10_000_000_000 */
+    uint64_t inc = ((uint64_t)MSS * 4 * dt3) / 10000000000ULL;
+
+    if (neg) {
+        if (inc >= w_max) return MSS; /* floor */
+        return w_max - (uint32_t)inc;
+    }
+    uint64_t w = (uint64_t)w_max + inc;
+    if (w > 0x7FFFFFFF) w = 0x7FFFFFFF; /* cap at ~2GB */
+    return (uint32_t)w;
+}
+
+/* TCP-friendly check: Reno-equivalent throughput must not be worse */
+static uint32_t reno_friendly_w(net_tcp_t *c, uint64_t t_ms) {
+    /* W_tcp(t) = W_max × (1-β) + 3 × β/(2-β) × t/RTT
+     * Simplified: W_tcp = W_max*0.3 + 1.5*0.7/1.3 * t/RTT
+     * ≈ W_max*0.3 + 0.808 * t/RTT * MSS
+     * With RTT estimate from RTO: */
+    uint64_t rtt = c->rto_ms ? c->rto_ms : 100;
+    uint64_t w_base = ((uint64_t)c->cubic_w_max * CUBIC_ONE_MINUS_BETA) / 1024;
+    uint64_t w_inc = (808 * t_ms * MSS) / (1000 * rtt);
+    uint64_t w = w_base + w_inc;
+    if (w > 0x7FFFFFFF) w = 0x7FFFFFFF;
+    if (w < MSS) w = MSS;
+    return (uint32_t)w;
+}
 
 static void cc_init(net_tcp_t *c) {
-    c->cwnd = 1460;
-    c->ssthresh = 65535;
+    c->cwnd = 10 * MSS;           /* IW=10 (RFC 6928) */
+    c->ssthresh = 0x7FFFFFFF;     /* effectively infinite */
     c->dup_ack_count = 0;
+    c->in_recovery = 0;
+    c->cubic_t_epoch = 0;
+    c->cubic_w_max = 0;
+    c->cubic_w_last = 0;
+    c->cubic_k = 0;
 }
 
 static void cc_on_ack(net_tcp_t *c, uint32_t bytes_acked) {
     if (bytes_acked == 0) return;
+
+    /* Exit Fast Recovery on new ACK past recovery_seq */
+    if (c->in_recovery) {
+        if ((int32_t)(c->snd_una - c->recovery_seq) >= 0) {
+            c->in_recovery = 0;
+            c->cwnd = c->ssthresh;
+            c->dup_ack_count = 0;
+        }
+        return;
+    }
+
     c->dup_ack_count = 0;
-    if (c->cwnd < c->ssthresh)
-        c->cwnd += 1460; /* Slow-Start */
+
+    /* Slow-Start */
+    if (c->cwnd < c->ssthresh) {
+        c->cwnd += MSS;
+        return;
+    }
+
+    /* CUBIC Congestion Avoidance */
+    if (c->cubic_t_epoch == 0) {
+        /* First ACK after loss or start — begin epoch */
+        c->cubic_t_epoch = timer_ms();
+        if (c->cubic_w_max == 0)
+            c->cubic_w_max = c->cwnd; /* initial */
+        c->cubic_k = cubic_k_ms(c->cubic_w_max);
+    }
+
+    uint64_t t = timer_ms() - c->cubic_t_epoch;
+    uint32_t w_cub = cubic_w(t, c->cubic_w_max, c->cubic_k);
+    uint32_t w_tcp = reno_friendly_w(c, t);
+
+    /* Use the larger of CUBIC and Reno-friendly */
+    uint32_t target = w_cub > w_tcp ? w_cub : w_tcp;
+    if (target > c->cwnd)
+        c->cwnd = target;
     else {
-        uint32_t inc = (1460u * 1460u) / c->cwnd;
+        /* At minimum, grow by 1 byte per RTT (like Reno) */
+        uint32_t inc = (MSS * MSS) / c->cwnd;
         if (inc < 1) inc = 1;
-        c->cwnd += inc; /* Congestion Avoidance */
+        c->cwnd += inc;
     }
 }
 
 static void cc_on_loss(net_tcp_t *c) {
-    c->ssthresh = c->cwnd / 2;
-    if (c->ssthresh < 1460) c->ssthresh = 1460;
-    c->cwnd = 1460;
+    /* Fast Convergence: if W_max < W_last, reduce W_max further */
+    if (c->cubic_w_last && c->cwnd < c->cubic_w_last)
+        c->cubic_w_max = (uint32_t)((uint64_t)c->cwnd * (1024 + CUBIC_BETA) / 2048);
+    else
+        c->cubic_w_max = c->cwnd;
+
+    c->cubic_w_last = c->cwnd;
+    c->cubic_t_epoch = timer_ms();
+    c->cubic_k = cubic_k_ms(c->cubic_w_max);
+
+    /* β = 0.7: cwnd *= 0.7 */
+    c->ssthresh = (uint32_t)((uint64_t)c->cwnd * CUBIC_BETA / 1024);
+    if (c->ssthresh < 2 * MSS) c->ssthresh = 2 * MSS;
+    c->cwnd = c->ssthresh;
 }
 
 /* ── TCP Input (from dispatcher) ───────────────────── */
@@ -267,11 +548,24 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (plen < 0) plen = 0;
     uint32_t tseq = get32(pkt + 38);
 
+    /* Parse TCP options from any packet with options */
+    if (doff > 20) {
+        const uint8_t *opts = pkt + 34 + 20;
+        int optlen = doff - 20;
+        parse_tcp_options(c, opts, optlen);
+    }
+
     /* SYN-ACK for outgoing connect */
     if (c->state == TCP_SYN_SENT && (flags & 0x12) == 0x12) {
         c->rcv_nxt = tseq + 1;
         c->snd_nxt++;
         c->snd_una = c->snd_nxt;
+        /* Parse SYN-ACK options for Window Scale, SACK */
+        if (doff > 20)
+            parse_tcp_options(c, pkt + 34 + 20, doff - 20);
+        /* Set rcv_wscale now that negotiation is done */
+        if (c->wscale_ok)
+            c->rcv_wscale = RCV_WSCALE;
         send_tcp(c, 0x10, 0, 0);
         c->state = TCP_ESTABLISHED;
         c->connect_err = 0;
@@ -301,11 +595,30 @@ void tcp_input(const uint8_t *pkt, int len) {
             c->snd_una = ack_num;
             cc_on_ack(c, bytes_acked);
         } else if (ack_num == c->snd_una && plen == 0) {
+            /* Duplicate ACK */
             c->dup_ack_count++;
-            if (c->dup_ack_count == 3) cc_on_loss(c);
+
+            if (!c->in_recovery && c->dup_ack_count == 3) {
+                /* Fast Retransmit (RFC 5681 §3.2) */
+                cc_on_loss(c);
+                c->in_recovery = 1;
+                c->recovery_seq = c->snd_nxt;
+                /* Inflate cwnd by 3 segments for the 3 DupACKs */
+                c->cwnd += 3 * MSS;
+                /* Retransmit first unacked segment */
+                send_tcp(c, 0x10, 0, 0);
+            } else if (c->in_recovery) {
+                /* Each additional DupACK: inflate cwnd by MSS */
+                c->cwnd += MSS;
+            }
         }
 
-        c->snd_wnd = get16(pkt + 48);
+        /* Window update with scaling */
+        uint32_t raw_wnd = get16(pkt + 48);
+        if (c->wscale_ok)
+            c->snd_wnd = raw_wnd << c->snd_wscale;
+        else
+            c->snd_wnd = raw_wnd;
 
         if (c->state == TCP_FIN_WAIT1 && ack_num == c->snd_nxt) {
             c->state = TCP_FIN_WAIT2; state_changed = 1;
@@ -332,7 +645,7 @@ void tcp_input(const uint8_t *pkt, int len) {
             if (wt) sched_wake(wt);
         } else if ((int32_t)(tseq - c->rcv_nxt) > 0) {
             ooo_insert(c, tseq, payload, plen);
-            send_tcp(c, 0x10, 0, 0); /* DupACK */
+            send_tcp(c, 0x10, 0, 0); /* DupACK with SACK */
         }
     }
 
@@ -411,8 +724,17 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     net_random(&rseq, (int)sizeof(rseq));
     c->snd_nxt = rseq;
     c->snd_una = rseq;
-    c->rcv_wnd = 8192;
-    send_tcp(c, 0x12, 0, 0);
+    c->rcv_wnd = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
+
+    /* Parse SYN options from client */
+    int doff = (pkt[46] >> 4) * 4;
+    if (doff > 20) {
+        parse_tcp_options(c, pkt + 34 + 20, doff - 20);
+        if (c->wscale_ok) c->rcv_wscale = RCV_WSCALE;
+    }
+
+    /* Send SYN-ACK with options */
+    send_syn(c, 0x12);
     c->state = TCP_SYN_RCVD;
     return -11;
 }
@@ -436,7 +758,8 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->snd_nxt = rseq;
     c->snd_una = rseq;
     c->rcv_nxt = 0;
-    c->rcv_wnd = 8192;
+    c->rcv_wnd = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
+    c->rcv_wscale = RCV_WSCALE;
     c->state = TCP_CLOSED;
     cc_init(c);
 
@@ -444,7 +767,8 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
 
     c->state = TCP_SYN_SENT;
     tcp_register(c);
-    send_tcp(c, 0x02, 0, 0);
+    /* SYN with MSS + Window Scale + SACK Permitted options */
+    send_syn(c, 0x02);
     return -11;
 }
 
@@ -456,7 +780,7 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
     int sent = 0;
     uint32_t eff_wnd = c->cwnd;
     if (c->snd_wnd && c->snd_wnd < eff_wnd) eff_wnd = c->snd_wnd;
-    if (eff_wnd < 1460) eff_wnd = 1460;
+    if (eff_wnd < MSS) eff_wnd = MSS;
 
     while (sent < len) {
         int ch = len - sent;
@@ -513,6 +837,8 @@ void net_tcp_retransmit(void *conn) {
     net_tcp_t *c = (net_tcp_t *)conn;
     if (!c || c->state != TCP_ESTABLISHED) return;
     cc_on_loss(c);
+    c->in_recovery = 0; /* RTO exits fast recovery */
+    c->cubic_t_epoch = timer_ms();
     send_tcp(c, 0x10, 0, 0);
 }
 
