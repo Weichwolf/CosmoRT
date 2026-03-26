@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1033 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1039 ktest PASS, 0 FAIL.
 
 ---
 
@@ -26,6 +26,7 @@ range checks, mlock DoS).
 
 Restrukturierung: include/linux/, include/kernel/ (Subsystem-Spiegel), src/kernel/sys/,
 arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
+Phase 1 File-Split: vfs.c→6, process.c→5, sys_signal.c→3 (4495→14 Dateien + 2 interne Header).
 
 ---
 
@@ -56,10 +57,34 @@ Corruption). sched_yield Signal-Check fuer Stop/Kill. 23 Tests.
 
 ### SH-C: MAP_SHARED mmap
 
-- [ ] MAP_SHARED: Aenderungen am mmap-Bereich schreibt in die Datei
-- [ ] msync: Flush von shared Mappings
-- [ ] Mehrere Prozesse koennen gleiche Datei MAP_SHARED mappen
-- [ ] test: MAP_SHARED write + read von zweitem Prozess
+#### SH-C1: File-backed Shared Pages (Read-Only Coherency)
+
+- [ ] MAP_SHARED file-backed nicht mehr zu MAP_PRIVATE degradieren
+- [ ] Page-Identity-Table: (inode, offset) → physische Page
+- [ ] Zweiter mmap auf gleiche Datei mappt gleiche physische Pages
+- [ ] fork: shared file-backed Pages teilen (kein COW)
+- [ ] munmap: page_decref, Page erst freigeben wenn kein Mapper mehr
+- [ ] test: zwei Prozesse mappen gleiche Datei, lesen gleiche Daten
+
+#### SH-C2: VMA File-Backing + Demand Paging
+
+- [ ] vma_t erweitern: backing_file, file_offset Felder
+- [ ] mmap file-backed: Pages nicht sofort lesen, nur VMA anlegen
+- [ ] Page Fault Handler: file-backed VMA → vfs_pread bei Fault
+- [ ] msync Stub durch echte Signatur ersetzen (addr, len, flags)
+- [ ] MS_ASYNC/MS_SYNC/MS_INVALIDATE Konstanten in linux/mman.h
+- [ ] test: mmap grosse Datei, nur erste Page lesen → nur eine Page alloziert
+
+#### SH-C3: Dirty Tracking + Write-Back
+
+- [ ] PTE_DIRTY Tracking: Write-Fault auf shared file-backed → PTE_DIRTY setzen
+- [ ] Dirty-Bitmap pro VMA oder PTE-Scan bei msync
+- [ ] msync(MS_SYNC): dirty Pages per vfs_pwrite zurueckschreiben
+- [ ] msync(MS_ASYNC): dirty Pages fuer spaeteres Write-Back markieren
+- [ ] munmap/exit: implizites msync auf dirty shared file-backed VMAs
+- [ ] Concurrent Writers: Locking pro (inode, offset) Page
+- [ ] test: mmap MAP_SHARED write → msync → read() sieht Aenderung
+- [ ] test: zwei Prozesse MAP_SHARED write → gegenseitig sichtbar
 
 ### SH-D: Signale — erledigt
 
