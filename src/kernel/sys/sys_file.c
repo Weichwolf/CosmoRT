@@ -65,7 +65,8 @@ long do_write(int fd, const void *buf, size_t count) {
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
-        if (devid == DEV_NULL) return (long)count; /* swallow */
+        if (devid == DEV_NULL || devid == DEV_ZERO || devid == DEV_URANDOM)
+            return (long)count; /* discard */
         if (devid == DEV_TTY)  { /* write to serial */
             size_t actual = count > 0x10000 ? 0x10000 : count;
             uint8_t kbuf[256]; size_t pos = 0;

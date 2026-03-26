@@ -434,6 +434,16 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
     }
 
+    /* /dev/zero mmap → treat as MAP_ANONYMOUS (zero-filled pages) */
+    if (fd >= 0 && !(flags & MAP_ANONYMOUS)) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (fde && fde->type == FD_DEVICE &&
+            (int)(uintptr_t)fde->obj == 2 /*DEV_ZERO*/) {
+            flags |= MAP_ANONYMOUS;
+            fd = -1;
+        }
+    }
+
     /* Validate file-backed mmap parameters */
     int is_file = (fd >= 0 && !(flags & MAP_ANONYMOUS));
     struct vfs_file *vf = 0;
