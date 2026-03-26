@@ -346,6 +346,9 @@ void page_free(void *page) {
     /* Notify dedup engine: remove hash from table */
     extern void dedup_on_page_free(uint64_t phys);
     dedup_on_page_free(pfn << PAGE_SHIFT);
+    /* Evict from page cache if this was a shared file-backed page */
+    extern void page_cache_evict(uint64_t phys);
+    page_cache_evict(pfn << PAGE_SHIFT);
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(page, 0);

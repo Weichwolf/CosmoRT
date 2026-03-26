@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1039 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 1053 ktest PASS, 0 FAIL.
 
 ---
 
@@ -57,14 +57,11 @@ Corruption). sched_yield Signal-Check fuer Stop/Kill. 23 Tests.
 
 ### SH-C: MAP_SHARED mmap
 
-#### SH-C1: File-backed Shared Pages (Read-Only Coherency)
+#### SH-C1: File-backed Shared Pages (Read-Only Coherency) — erledigt
 
-- [ ] MAP_SHARED file-backed nicht mehr zu MAP_PRIVATE degradieren
-- [ ] Page-Identity-Table: (inode, offset) → physische Page
-- [ ] Zweiter mmap auf gleiche Datei mappt gleiche physische Pages
-- [ ] fork: shared file-backed Pages teilen (kein COW)
-- [ ] munmap: page_decref, Page erst freigeben wenn kein Mapper mehr
-- [ ] test: zwei Prozesse mappen gleiche Datei, lesen gleiche Daten
+Page Cache (1024 Buckets, Slab, Spinlock): (inode, offset) → physische Page.
+MAP_SHARED file-backed nutzt Page Cache, fork teilt Pages, page_free evicted bei Refcount 0.
+14 Tests.
 
 #### SH-C2: VMA File-Backing + Demand Paging
 

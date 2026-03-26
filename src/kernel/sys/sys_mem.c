@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — memory management syscalls */
 
 #include "internal.h"
+#include "mm/page_cache.h"
 
 /* ── Static page-table helpers (callees first) ──── */
 
@@ -424,15 +425,10 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
 
-    /* MAP_SHARED|MAP_ANONYMOUS: mark VMA as shared so fork maps the same
-     * physical pages instead of copying (changes visible across processes).
-     * File-backed MAP_SHARED not supported — silently downgrade to PRIVATE. */
-    if (flags & MAP_SHARED) {
-        if (flags & MAP_ANONYMOUS)
-            flags |= VMA_SHARED;
-        else
-            flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
-    }
+    /* MAP_SHARED: mark VMA so fork shares physical pages (not COW).
+     * File-backed MAP_SHARED uses page cache for cross-process sharing. */
+    if (flags & MAP_SHARED)
+        flags |= VMA_SHARED;
 
     /* /dev/zero mmap → treat as MAP_ANONYMOUS (zero-filled pages) */
     if (fd >= 0 && !(flags & MAP_ANONYMOUS)) {
@@ -545,17 +541,32 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     if (is_file) {
         uint64_t saved_vaddr = vaddr;
         uint64_t saved_length = length;
+        int shared = (vma_flags & VMA_SHARED);
+        /* Determine inode number for page cache key */
+        uint64_t ino = vf->cosmofs_ino;
+        if (!ino && vf->node) ino = vf->node->ino;
         spin_unlock_irq(&p->lock, irqf);
         extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t off);
         uint64_t file_off = (uint64_t)offset;
         for (uint64_t va = saved_vaddr; va < saved_vaddr + saved_length; va += 4096) {
-            uint64_t *pg = alloc_page(); /* zeroed */
-            if (!pg) return -ENOMEM;
-            /* Read up to 4096 bytes from file at current offset */
-            long nread = vfs_pread(vf, pg, 4096, file_off);
-            (void)nread; /* short read is fine — rest is zero */
-            if (map_user_page(p->pml4, va, virt_to_phys(pg), prot) < 0) {
-                page_free(pg);
+            uint64_t phys = 0;
+            /* MAP_SHARED file-backed: look up page cache first */
+            if (shared && ino)
+                phys = page_cache_lookup(ino, file_off);
+            if (phys) {
+                /* Shared page already cached — reuse it */
+                page_incref(phys);
+            } else {
+                uint64_t *pg = alloc_page(); /* zeroed */
+                if (!pg) return -ENOMEM;
+                long nread = vfs_pread(vf, pg, 4096, file_off);
+                (void)nread; /* short read is fine — rest is zero */
+                phys = virt_to_phys(pg);
+                if (shared && ino)
+                    page_cache_insert(ino, file_off, phys);
+            }
+            if (map_user_page(p->pml4, va, phys, prot) < 0) {
+                page_free(phys_to_virt(phys));
                 return -ENOMEM;
             }
             if (file_off > UINT64_MAX - 4096) break; /* overflow guard */
