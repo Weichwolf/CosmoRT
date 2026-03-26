@@ -233,6 +233,14 @@ Eine Hash-Engine, drei Konsumenten: RAM-Dedup, FS-Dedup, Cloud-Sync.
 - [x] TCP Keepalive (SO_KEEPALIVE → Timer-Wheel Probes, 75s Interval, 9 Probes)
 - [x] test/net/test_tcp_ooo.c (large transfer, reset)
 - [x] test/net/test_net_multi_conn.c (4 parallele Connections, mixed)
+- [x] CUBIC (RFC 8312) statt AIMD, Integer-Kubikwurzel, Beta=0.7
+- [x] SACK (RFC 2018) Parsing + Blocks senden bei OOO
+- [x] Window Scaling (RFC 7323) Shift=7, SYN-Negotiation
+- [x] Fast Retransmit + Recovery (RFC 5681 §3.2)
+- [x] Initial Window 10 (RFC 6928)
+- [ ] TCP Timestamps (RFC 7323): RTTM + PAWS — noetig fuer WScale >16MB
+- [ ] ECN (RFC 3168): IP ECN Bits + TCP CWR/ECE, CUBIC reagiert frueher
+- [ ] TFO (TCP Fast Open, RFC 7413): Daten im SYN, 1 RTT gespart, Cookie-Management
 
 ## Net Tests — End-to-End (gegen echte Server)
 

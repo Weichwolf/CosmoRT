@@ -207,12 +207,13 @@ Entscheidung: IPv4 only (IPv6 geplant).
 | RFC 5681 | TCP Congestion Control | Slow-Start, Fast Retransmit §3.2, Fast Recovery |
 | RFC 6928 | Increasing TCP Initial Window | IW=10 (14600 Bytes) |
 | RFC 2018 | TCP Selective Acknowledgment (SACK) | SACK Permitted + Blocks, 4 Slots |
-| RFC 7323 | TCP Extensions (Window Scaling) | Shift=7, max 8MB Window |
+| RFC 7323 | TCP Extensions (Window Scaling, Timestamps) | WScale Shift=7, Timestamps fuer RTTM + PAWS |
+| RFC 3168 | Explicit Congestion Notification (ECN) | IP ECN Bits + TCP CWR/ECE Flags |
+| RFC 7413 | TCP Fast Open (TFO) | Daten im SYN, Cookie-Management |
 | RFC 6298 | Computing TCP Retransmission Timer | RTO Calculation |
 | RFC 1122 §4.2 | TCP Requirements | Keepalive (75s, 9 Probes) |
 
-Entscheidung: Kein Nagle (immer TCP_NODELAY-Verhalten). Kein Timestamps (RFC 7323 Timestamps).
-Kein ECN (RFC 3168). Kein TFO (TCP Fast Open).
+Entscheidung: Kein Nagle (immer TCP_NODELAY-Verhalten).
 
 ### 4.3 UDP
 
