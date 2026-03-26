@@ -145,20 +145,18 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (!dp) return -EFAULT;
         fd_entry_t *dold = fd_get(&dp->fds, (int)a1);
         if (!dold) return -EBADF;
-        for (int di = 0; di < FD_MAX; di++) {
-            if (dp->fds.entries[di].type == FD_NONE) {
-                dp->fds.entries[di] = *dold;
-                if (dold->type == FD_FILE && dold->obj) {
-                    extern void vfs_file_incref(struct vfs_file *f);
-                    vfs_file_incref((struct vfs_file *)dold->obj);
-                } else if (dold->obj) {
-                    fd_obj_incref(dold->type, dold->obj);
-                }
-                if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
-                return di;
-            }
+        int di = fd_find_free(&dp->fds, 0);
+        if (di < 0) return -EMFILE;
+        dp->fds.entries[di] = *dold;
+        fd_mark_used(&dp->fds, di);
+        if (dold->type == FD_FILE && dold->obj) {
+            extern void vfs_file_incref(struct vfs_file *f);
+            vfs_file_incref((struct vfs_file *)dold->obj);
+        } else if (dold->obj) {
+            fd_obj_incref(dold->type, dold->obj);
         }
-        return -EMFILE;
+        if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
+        return di;
     }
 
     /* dup2: special case oldfd==newfd */

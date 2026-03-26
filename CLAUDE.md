@@ -89,6 +89,13 @@ RT-Core = I/O-Prozessor. Deterministisch, <2% Last, mlockall.
 Compute-Cores = ungestoerter Userspace. Keine IRQs, kein I/O-Polling.
 Kommunikation nur ueber Lock-free Ringbuffer. RT ↔ Compute: nie.
 
+Architektur-Ziel: ARINC 653 Partitionierung.
+RT-Core (Partition A): Formal bounded WCET. Kein Shared Lock mit Compute,
+kein Dynamic Alloc zur Laufzeit, kein IPI-Wait. Beweisbar deterministisch.
+Compute-Cores (Partition B): Best-Effort Desktop. COW, Demand-Paging, Slab.
+Keine Einschraenkung, volle Performance.
+Partition-Grenze = SPSC Lock-free Channels. Kein Code-Pfad kreuzt die Grenze.
+
 | Cores | RT | Compute |
 |-------|-----|---------|
 | 2     | 1   | 1       |
@@ -114,7 +121,7 @@ src/kernel/
   core/          main, irq, sched, timer, smp, tss, percpu
   mm/            page_alloc, paging, vma, slab, random
   proc/          process, elf
-  syscall/       dispatch, sys_{file,mem,proc,signal,time,ipc}
+  sys/           dispatch, sys_{file,fs,mem,proc,sched,signal,time,ipc,net,event,id,cosmo}, stubs
   ipc/           futex, pipe, net_port
   fs/            vfs, cosmofs, procfs
   net/           TCP/IP, socket, unix_socket
@@ -125,7 +132,7 @@ src/drivers/     NUR include/public/ (kein Zugriff auf Kernel-Interna)
 src/boot/        UEFI Bootloader
 src/user/        init, ktest, ld-cosmo.so, e1000d, svcmgr
 test/            unit/ + crash/ (Self-Registering: TEST/CRASH_TEST Macros)
-tools/           mkfs, cosmo_cp, mkimage.sh, mkfont.py
+tools/           mkfs, cosmocp, mkimage.sh, mkfont.py
 ```
 
 ## Build

@@ -391,6 +391,7 @@ long do_dup3(int oldfd, int newfd, int flags) {
 
     /* Copy the fd entry and bump refcount */
     p->fds.entries[newfd] = *old;
+    fd_mark_used(&p->fds, newfd);
     if (old->type == FD_FILE && old->obj) {
         extern void vfs_file_incref(struct vfs_file *f);
         vfs_file_incref((struct vfs_file *)old->obj);
@@ -692,22 +693,19 @@ long do_fcntl(int fd, int cmd, long arg) {
     }
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        /* Find lowest fd >= arg */
-        for (int i = (int)arg; i < FD_MAX; i++) {
-            if (!fd_get(&p->fds, i) || p->fds.entries[i].type == FD_NONE) {
-                p->fds.entries[i] = *fde;
-                if (cmd == F_DUPFD_CLOEXEC)
-                    p->fds.entries[i].flags |= O_CLOEXEC;
-                if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
-                /* Increment refcount for vfs_file if needed */
-                if (fde->type == FD_FILE && fde->obj) {
-                    extern void vfs_file_incref(struct vfs_file *f);
-                    vfs_file_incref((struct vfs_file *)fde->obj);
-                }
-                return i;
-            }
+        int i = fd_find_free(&p->fds, (int)arg);
+        if (i < 0) return -EMFILE;
+        p->fds.entries[i] = *fde;
+        fd_mark_used(&p->fds, i);
+        if (cmd == F_DUPFD_CLOEXEC)
+            p->fds.entries[i].flags |= O_CLOEXEC;
+        if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
+        /* Increment refcount for vfs_file if needed */
+        if (fde->type == FD_FILE && fde->obj) {
+            extern void vfs_file_incref(struct vfs_file *f);
+            vfs_file_incref((struct vfs_file *)fde->obj);
         }
-        return -EMFILE;
+        return i;
     }
     default: return -EINVAL;
     }

@@ -625,8 +625,7 @@ int vfs_close(int fd) {
             file_free(f);
     }
 
-    fde->type = FD_NONE;
-    fde->obj = 0;
+    fd_close(&p->fds, fd);
     return 0;
 }
 

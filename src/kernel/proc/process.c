@@ -196,6 +196,8 @@ int fd_default_pty = -1;
 
 void fd_table_init(fd_table_t *fdt) {
     for (int i = 0; i < FD_MAX; i++) fdt->entries[i].type = FD_NONE;
+    /* All FDs free */
+    for (int w = 0; w < FD_BITMAP_WORDS; w++) fdt->free_bitmap[w] = ~0ULL;
     if (fd_default_pty >= 0) {
         /* VT available: stdin/stdout/stderr → PTY slave (VT0) */
         void *pty = (void *)(uintptr_t)fd_default_pty;
@@ -208,18 +210,19 @@ void fd_table_init(fd_table_t *fdt) {
         fdt->entries[1] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
         fdt->entries[2] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
     }
+    fd_mark_used(fdt, 0);
+    fd_mark_used(fdt, 1);
+    fd_mark_used(fdt, 2);
     fdt->max_fd = 3;
 }
 
 int fd_alloc(fd_table_t *fdt, int type, void *obj, int flags) {
-    for (int i = 0; i < FD_MAX; i++) {
-        if (fdt->entries[i].type == FD_NONE) {
-            fdt->entries[i] = (fd_entry_t){type, obj, flags};
-            if (i >= fdt->max_fd) fdt->max_fd = i + 1;
-            return i;
-        }
-    }
-    return -1;
+    int fd = fd_find_free(fdt, 0);
+    if (fd < 0) return -EMFILE;
+    fdt->entries[fd] = (fd_entry_t){type, obj, flags};
+    fd_mark_used(fdt, fd);
+    if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;
+    return fd;
 }
 
 int fd_close(fd_table_t *fdt, int fd) {
@@ -227,6 +230,7 @@ int fd_close(fd_table_t *fdt, int fd) {
     if (fdt->entries[fd].type == FD_NONE) return -1;
     fdt->entries[fd].type = FD_NONE;
     fdt->entries[fd].obj = 0;
+    fd_mark_free(fdt, fd);
     return 0;
 }
 
@@ -817,6 +821,8 @@ void proc_cleanup(process_t *p) {
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;
     }
+    /* Reset bitmap: all free */
+    for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
     /* Free all threads */
     thread_t *t = p->threads;
@@ -947,6 +953,8 @@ long do_fork(void) {
         }
     }
     child->fds.max_fd = parent->fds.max_fd;
+    for (int w = 0; w < FD_BITMAP_WORDS; w++)
+        child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
 
     /* Create child thread with parent's saved registers */
     thread_t *ct = thread_alloc();

@@ -57,6 +57,8 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;
     }
+    /* Reset bitmap: all free */
+    for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
     /* Kill other threads */
     thread_t *scan = p->threads;

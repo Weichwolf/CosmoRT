@@ -122,6 +122,51 @@ RT-Core darf nie blockieren, Compute-Cores duerfen nie IRQ-State anfassen.
 - [ ] rt.h abstrahiert ueber Core-Count, hardcoded Core 0 nirgends
 - [ ] Escape-Hatches dokumentiert: Multi-RT, NIC-Offload, Protocol-auf-Compute
 
+## ARINC 653 Partitionierung — RT-Core formal deterministisch
+
+Architektur-Ziel: RT-Core (Partition A) hat bounded WCET. Kein Code-Pfad auf
+dem RT-Core kann von Compute-Core-Aktivitaet beeinflusst werden. Partition-Grenze
+= SPSC Lock-free Channels.
+
+### ARINC-A: Shared Locks eliminieren
+
+- [ ] Audit: alle Spinlocks die RT-Core acquiert auflisten
+- [ ] sock_lock: RT-Core nie acquiren — bind/port-check via Channel an Compute
+- [ ] buddy_lock: RT-Core nie acquiren — page_alloc nur auf Compute
+- [ ] epoll_sleepers.lock: Lock-free Wake-List (atomic Linked-List oder CAS)
+- [ ] slab Locks: RT-Core Pools voralloziert, nie slab_alloc zur Laufzeit
+- [ ] test: RT-Core Code-Pfad Analyse — grep nach spin_lock in rt_poll Callchain
+
+### ARINC-B: Dynamic Alloc auf RT-Core eliminieren
+
+- [ ] Dedup: page_decref/page_free Ergebnis via Channel an Compute posten
+- [ ] Hash-Engine: Kernel-Buffer Alloc nur auf Compute (Syscall-Handler), nicht RT
+- [ ] Timer-Wheel: Pool beim Boot komplett voralloziert (bereits ✓)
+- [ ] rt_channel Buffers: statisch, beim Boot alloziert (bereits ✓)
+- [ ] Audit: kein page_alloc/slab_alloc/pages_alloc in rt_poll Callchain
+
+### ARINC-C: IPI-Isolation
+
+- [ ] TLB-Shootdown IPI: RT-Core filtern (nutzt keine User-PTEs)
+- [ ] Reschedule IPI: RT-Core ignorieren (kein User-Scheduler auf Core 0)
+- [ ] Nur explizite rt_wake() IPIs an RT-Core erlaubt
+- [ ] test: TLB-Flush auf Compute loest keinen RT-Core Handler aus
+
+### ARINC-D: Bounded Data Structures auf RT-Core
+
+- [ ] tcp_find: Hash-Chain max 4 Eintraege (Overflow → Drop + Log)
+- [ ] udp_find: Hash-Chain max 4 Eintraege
+- [ ] rt_channel_push/pop: bereits O(1) ✓
+- [ ] rt_poll Handler: max_work Limits bereits ✓
+- [ ] Formal: WCET(rt_poll) = sum(WCET(handler_i) × max_work_i) berechenbar
+
+### ARINC-E: RT-Core Memory-Isolation
+
+- [ ] Dedizierter RT-Memory-Pool beim Boot carven (z.B. 16MB)
+- [ ] RT-Core alloziert nie aus Compute-Buddy
+- [ ] Compute-Buddy beruehrt RT-Pool nie
+- [ ] Page-Tables fuer RT-Core Kernel-Mappings unveraenderlich nach Boot
+
 ### RT/Compute-G: SIMD Hash-Engine (RT-Core Idle Background-Optimizer)
 
 RT-Core ist >98% idle. Nutze die Idle-Zeit fuer Background-Hashing mit
@@ -237,11 +282,11 @@ unbenutzbar.
 - [x] timer_wheel_active_count() O(1) Arithmetik statt O(n) Zaehlschleife
 - [x] test: 128 Timer gleichzeitig, Cancel/Re-Alloc Roundtrip
 
-### Skal-F: FD-Tabelle
+### Skal-F: FD-Tabelle ✓
 
-- [ ] fd_alloc(): Free-Bitmap + __builtin_ctzll fuer O(1) + POSIX lowest-fd
-- [ ] FD_MAX erhoehen (256 → 1024)
-- [ ] test: 512+ offene FDs pro Prozess
+- [x] fd_alloc(): Free-Bitmap + __builtin_ctzll fuer O(1) + POSIX lowest-fd
+- [x] FD_MAX erhoehen (256 → 1024)
+- [x] test: 512+ offene FDs, lowest-free POSIX, EMFILE (test_fd_scale.c)
 
 ### Skal-G: PTY Pool
 
