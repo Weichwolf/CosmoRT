@@ -490,7 +490,26 @@ int vfs_open(const char *path, int flags, int mode) {
     const char *pname = procfs_name(path);
     if (pname) {
         int handle = procfs_open(pname);
-        if (!handle) return -ENOENT;
+        if (!handle) {
+            /* Try per-PID dynamic path (e.g. /proc/123/stat) */
+            int ptype = procfs_pid_exists(pname);
+            if (ptype == 0) return -ENOENT;
+            if (ptype == 2) return -ELOOP; /* symlink — must readlink, not open */
+
+            procfs_fd_t *pf = procfs_fd_alloc();
+            if (!pf) return -ENOMEM;
+            pf->handle = -2; /* sentinel: per-pid dynamic */
+            pf->offset = 0;
+            int ni = 0;
+            while (ni < 63 && pname[ni]) { pf->name[ni] = pname[ni]; ni++; }
+            pf->name[ni] = 0;
+
+            process_t *p = proc_current();
+            if (!p) { procfs_fd_free(pf); return -EFAULT; }
+            int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+            if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
+            return fd;
+        }
 
         procfs_fd_t *pf = procfs_fd_alloc();
         if (!pf) return -ENOMEM;
@@ -958,9 +977,10 @@ int vfs_stat(const char *path, struct k_stat *buf) {
     const char *pn = procfs_name(path);
     if (pn) {
         int dummy;
-        if (procfs_stat(pn, &dummy) < 0) return -ENOENT;
+        int pid_type = procfs_pid_exists(pn);
+        if (procfs_stat(pn, &dummy) < 0 && !pid_type) return -ENOENT;
         kmemset(buf, 0, sizeof(struct k_stat));
-        buf->st_mode = S_IFREG | S_IRUSR;
+        buf->st_mode = (pid_type == 2) ? (S_IFLNK | 0777) : (S_IFREG | S_IRUSR);
         buf->st_ino = 0xFFFF0001;  /* synthetic inode */
         buf->st_blksize = 4096;
         return 0;
@@ -1311,13 +1331,19 @@ int vfs_symlink(const char *target, const char *linkpath) {
 int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     if (!path || !buf || bufsiz == 0) return -EINVAL;
 
-    /* /proc/self/exe → executable path from process_t */
-    if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
-        path[4]=='c' && path[5]=='/' && path[6]=='s' && path[7]=='e' &&
-        path[8]=='l' && path[9]=='f' && path[10]=='/' &&
-        path[11]=='e' && path[12]=='x' && path[13]=='e' && path[14]==0) {
-        extern process_t *proc_current(void);
-        process_t *p = proc_current();
+    /* /proc/self/exe or /proc/<pid>/exe → executable path from process_t */
+    const char *pn = procfs_name(path);
+    if (pn && procfs_pid_exists(pn) == 2) {
+        process_t *p = 0;
+        if (pn[0]=='s' && pn[1]=='e' && pn[2]=='l' && pn[3]=='f' && pn[4]=='/') {
+            p = proc_current();
+        } else {
+            /* parse numeric pid */
+            int pid = 0;
+            const char *s = pn;
+            while (*s >= '0' && *s <= '9') { pid = pid * 10 + (*s - '0'); s++; }
+            if (*s == '/') p = proc_find((uint32_t)pid);
+        }
         const char *exe = (p && p->exe_path[0]) ? p->exe_path : "/usr/bin/unknown";
         int len = 0;
         while (exe[len]) len++;
@@ -1390,7 +1416,7 @@ static void fill_cosmofs_symlink_stat(uint64_t ino, struct cosmofs_inode *ip, st
 
 int vfs_lstat(const char *path, struct k_stat *buf) {
     const char *pn = procfs_name(path);
-    if (pn) return vfs_stat(path, buf);  /* procfs has no symlinks */
+    if (pn) return vfs_stat(path, buf);  /* vfs_stat handles exe symlinks */
 
     if (!is_ramfs_path(path)) {
         uint64_t ino = cosmofs_walk(path);

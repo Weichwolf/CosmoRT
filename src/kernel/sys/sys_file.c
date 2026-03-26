@@ -194,7 +194,9 @@ long do_read(int fd, void *buf, size_t count) {
         char kbuf[4096];
         int want = (int)count;
         if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
-        int got = procfs_read(pf->handle, kbuf, want, pf->offset);
+        int got = (pf->handle == -2)
+            ? procfs_pid_read(pf->name, kbuf, want, pf->offset)
+            : procfs_read(pf->handle, kbuf, want, pf->offset);
         if (got > 0) {
             copy_to_user(buf, kbuf, (size_t)got);
             pf->offset += got;

@@ -336,6 +336,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->cwd[0] = '/'; p->cwd[1] = '\0';
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }
     { const char *s = "init";  int ii = 0; while (s[ii] && ii < 15)  { p->comm[ii] = s[ii]; ii++; } p->comm[ii] = 0; }
+    { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 1023) { p->cmdline[ii] = s[ii]; ii++; } p->cmdline[ii] = 0; p->cmdline_len = ii + 1; }
     fd_table_init(&p->fds);
 
     /* Create VMA for the stack region with guard page at the bottom.
@@ -1544,6 +1545,27 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         int ei = 0;
         while (ei < 255 && kpath[ei]) { p->exe_path[ei] = kpath[ei]; ei++; }
         p->exe_path[ei] = '\0';
+    }
+
+    /* Store cmdline (null-separated argv) for /proc/pid/cmdline */
+    {
+        int pos = 0;
+        for (int i = 0; i < argc && pos < 1023; i++) {
+            int j = 0;
+            while (kargv[i][j] && pos < 1023) { p->cmdline[pos++] = kargv[i][j++]; }
+            p->cmdline[pos++] = '\0';
+        }
+        p->cmdline_len = pos;
+    }
+
+    /* Set comm from argv[0] basename */
+    {
+        const char *s = kargv[0];
+        const char *base = s;
+        for (int i = 0; s[i]; i++) if (s[i] == '/') base = s + i + 1;
+        int ci = 0;
+        while (ci < 15 && base[ci]) { p->comm[ci] = base[ci]; ci++; }
+        p->comm[ci] = '\0';
     }
 
     /* Close O_CLOEXEC fds */

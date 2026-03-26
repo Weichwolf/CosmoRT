@@ -244,19 +244,6 @@ static void vma_walk_maps(vma_t *node, struct maps_ctx *c) {
     vma_walk_maps(node->right, c);
 }
 
-static int procfs_self_maps(char *buf, int size, int offset, void *ctx) {
-    (void)ctx;
-    process_t *p = proc_current();
-    if (!p) return 0;
-
-    struct maps_ctx c = { buf, size, 0, offset, 0 };
-    uint64_t irqf;
-    spin_lock_irq(&p->lock, &irqf);
-    vma_walk_maps(p->vma_root, &c);
-    spin_unlock_irq(&p->lock, irqf);
-    return c.written;
-}
-
 /* ── procfs_fd_t pool (max 32 open procfs fds) ───── */
 
 #define PROCFS_FD_MAX 32
@@ -291,7 +278,9 @@ static int procfs_self_status(char *buf, int size, int offset, void *ctx) {
 
     char tmp[512];
     int pos = 0;
-    pos = append_str(tmp, pos, 512, "Name:\tnode\n");
+    pos = append_str(tmp, pos, 512, "Name:\t");
+    pos = append_str(tmp, pos, 512, p->comm[0] ? p->comm : "?");
+    pos = append_str(tmp, pos, 512, "\n");
     pos = append_str(tmp, pos, 512, "Pid:\t");
     pos = append_int(tmp, pos, 512, (long)p->pid);
     pos = append_str(tmp, pos, 512, "\nPPid:\t");
@@ -308,15 +297,16 @@ static int procfs_self_status(char *buf, int size, int offset, void *ctx) {
 
 /* ── /proc/self/stat ───────────────────────────────── */
 
-static int procfs_self_stat(char *buf, int size, int offset, void *ctx) {
-    (void)ctx;
-    process_t *p = proc_current();
+static int procfs_pid_stat(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
     if (!p) return 0;
 
     char tmp[256];
     int pos = 0;
     pos = append_int(tmp, pos, 256, (long)p->pid);
-    pos = append_str(tmp, pos, 256, " (node) R ");
+    pos = append_str(tmp, pos, 256, " (");
+    pos = append_str(tmp, pos, 256, p->comm[0] ? p->comm : "?");
+    pos = append_str(tmp, pos, 256, ") R ");
     pos = append_int(tmp, pos, 256, (long)p->parent_pid);
     /* pgid sid tty_nr tpgid flags minflt cminflt majflt cmajflt
      * utime stime cutime cstime priority nice num_threads itrealvalue
@@ -481,6 +471,103 @@ static int procfs_ksm(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/self/cmdline (or /proc/pid/cmdline) ───── */
+
+static int procfs_pid_cmdline(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p || p->cmdline_len <= 0) return 0;
+
+    int len = p->cmdline_len;
+    if (offset >= len) return 0;
+    int avail = len - offset;
+    if (size > avail) size = avail;
+    for (int i = 0; i < size; i++) buf[i] = p->cmdline[offset + i];
+    return size;
+}
+
+/* ── /proc/pid/maps (with process context) ────────── */
+
+static int procfs_pid_maps(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return 0;
+
+    struct maps_ctx c = { buf, size, 0, offset, 0 };
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+    vma_walk_maps(p->vma_root, &c);
+    spin_unlock_irq(&p->lock, irqf);
+    return c.written;
+}
+
+/* ── Per-PID routing: /proc/<pid>/<file> ──────────── */
+
+/* Parse leading decimal digits, return PID or -1 */
+static int parse_pid(const char *s, const char **rest) {
+    if (*s < '0' || *s > '9') return -1;
+    int pid = 0;
+    while (*s >= '0' && *s <= '9') {
+        pid = pid * 10 + (*s - '0');
+        s++;
+    }
+    if (*s != '/') return -1;
+    *rest = s + 1;  /* skip '/' */
+    return pid;
+}
+
+/* Try to handle /proc/<pid>/<file> or /proc/self/<file>.
+ * name = everything after "/proc/" (e.g. "123/stat" or "self/cmdline").
+ * Returns bytes read, or -1 if not a per-pid path. */
+int procfs_pid_read(const char *name, char *buf, int size, int offset) {
+    process_t *p = 0;
+    const char *file = 0;
+
+    /* "self/<file>" */
+    if (name[0]=='s' && name[1]=='e' && name[2]=='l' && name[3]=='f' && name[4]=='/') {
+        p = proc_current();
+        file = name + 5;
+    } else {
+        /* "<pid>/<file>" */
+        int pid = parse_pid(name, &file);
+        if (pid < 0) return -1;
+        p = proc_find((uint32_t)pid);
+    }
+    if (!p || !file) return -1;
+
+    /* Dispatch to handler */
+    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t' && file[4]==0)
+        return procfs_pid_stat(buf, size, offset, p);
+    if (file[0]=='m' && file[1]=='a' && file[2]=='p' && file[3]=='s' && file[4]==0)
+        return procfs_pid_maps(buf, size, offset, p);
+    if (file[0]=='c' && file[1]=='m' && file[2]=='d' && file[3]=='l' &&
+        file[4]=='i' && file[5]=='n' && file[6]=='e' && file[7]==0)
+        return procfs_pid_cmdline(buf, size, offset, p);
+
+    return -1; /* not a per-pid file we handle */
+}
+
+/* Check if a per-pid procfs path exists (for stat/open) */
+int procfs_pid_exists(const char *name) {
+    const char *file = 0;
+
+    if (name[0]=='s' && name[1]=='e' && name[2]=='l' && name[3]=='f' && name[4]=='/') {
+        file = name + 5;
+    } else {
+        int pid = parse_pid(name, &file);
+        if (pid < 0) return 0;
+        if (!proc_find((uint32_t)pid)) return 0;
+    }
+    if (!file) return 0;
+
+    /* Known per-pid files */
+    if (file[0]=='e' && file[1]=='x' && file[2]=='e' && file[3]==0) return 2; /* symlink */
+    if (file[0]=='c' && file[1]=='m' && file[2]=='d' && file[3]=='l' &&
+        file[4]=='i' && file[5]=='n' && file[6]=='e' && file[7]==0) return 1;
+    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t' && file[4]==0) return 1;
+    if (file[0]=='m' && file[1]=='a' && file[2]=='p' && file[3]=='s' && file[4]==0) return 1;
+
+    return 0;
+}
+
 /* ── Init ────────────────────────────────────────── */
 
 __attribute__((cold))
@@ -489,10 +576,11 @@ void procfs_init(void) {
     procfs_register("dmesg", procfs_dmesg, 0);
     procfs_register("meminfo", procfs_meminfo, 0);
     procfs_register("cpuinfo", procfs_cpuinfo, 0);
-    procfs_register("self/maps", procfs_self_maps, 0);
+    procfs_register("self/maps", procfs_pid_maps, 0);
     procfs_register("self/status", procfs_self_status, 0);
-    procfs_register("self/stat", procfs_self_stat, 0);
+    procfs_register("self/stat", procfs_pid_stat, 0);
     procfs_register("self/statm", procfs_self_statm, 0);
+    procfs_register("self/cmdline", procfs_pid_cmdline, 0);
     procfs_register("sys/vm/overcommit_memory", procfs_overcommit, 0);
     procfs_register("self/cgroup", procfs_self_cgroup, 0);
     procfs_register("stat", procfs_global_stat, 0);
@@ -500,5 +588,5 @@ void procfs_init(void) {
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
     procfs_register("ksm", procfs_ksm, 0);
-    serial_puts("procfs: init (14 entries)\n");
+    serial_puts("procfs: init (15 entries)\n");
 }

@@ -59,6 +59,10 @@ typedef struct process {
     /* Executable path (set by execve, read by /proc/self/exe) */
     char        exe_path[256];
 
+    /* Command line (null-separated argv, set by execve, read by /proc/pid/cmdline) */
+    char        cmdline[1024];
+    int         cmdline_len;  /* total bytes including all nulls */
+
     /* Thread name (prctl PR_SET_NAME / PR_GET_NAME) */
     char        comm[16];
 

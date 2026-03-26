@@ -10,8 +10,9 @@ typedef int (*procfs_read_fn)(char *buf, int size, int offset, void *ctx);
 
 /* Per-fd state for an open procfs file */
 typedef struct {
-    int handle;     /* procfs entry index + 1 */
+    int handle;     /* procfs entry index + 1, or -2 for per-pid dynamic */
     int offset;     /* current read position */
+    char name[64];  /* for per-pid dynamic entries (handle == -2) */
 } procfs_fd_t;
 
 /* Register a procfs entry. name is the filename under /proc (e.g. "dmesg"). */
@@ -41,5 +42,12 @@ int procfs_iterate(int offset, int (*cb)(const char *name, void *ctx), void *ctx
 /* Allocate / free procfs_fd_t from a small static pool */
 procfs_fd_t *procfs_fd_alloc(void);
 void procfs_fd_free(procfs_fd_t *pf);
+
+/* Per-PID routing: read /proc/<pid>/<file> or /proc/self/<file>.
+ * Returns bytes read, or -1 if not a per-pid path. */
+int procfs_pid_read(const char *name, char *buf, int size, int offset);
+
+/* Check if a per-pid procfs path exists. Returns 0=no, 1=file, 2=symlink. */
+int procfs_pid_exists(const char *name);
 
 #endif
