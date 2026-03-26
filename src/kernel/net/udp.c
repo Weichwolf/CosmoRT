@@ -8,6 +8,7 @@
 #include "net/net_util.h"
 #include "hw/serial.h"
 #include "core/timer.h"
+#include "core/event_queue.h"
 #include "core/rt.h"
 #include "mm/slab.h"
 
@@ -115,7 +116,7 @@ int udp_input(const uint8_t *pkt, int len) {
     q_push(&s->q, pkt, len);
     /* Wake thread blocked on recv */
     struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
-    if (wt) sched_wake(wt);
+    if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
     return 1;
 }
 

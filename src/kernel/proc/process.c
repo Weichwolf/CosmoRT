@@ -18,6 +18,7 @@
 #include "memops.h"
 #include "sys/syscall.h"
 #include "core/irq.h"
+#include "core/event_queue.h"
 #include "net/socket.h"
 #include "arch/arch.h"
 
@@ -1662,14 +1663,14 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (wnohang) return 0;
 
         /* Block: child exists but hasn't exited.
-         * Child exit (exit_kill_process) wakes parent threads.
-         * Syscall restart: rewind RIP to `syscall` instruction. */
-        save_user_state_for_block(cur, 0);
-        cur->rip -= 2;       /* back to `syscall` instruction (0F 05) */
-        cur->rax = 61;       /* SYS_WAIT4 — re-execute on wakeup */
-        cur->state = THREAD_BLOCKED;
-        arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(cur);
-        return 0; /* unreachable */
+         * Child exit (exit_kill_process) will event_post(EQ_CHILD_EXITED).
+         * event_wait either blocks (syscall restarts, loop re-enters) or
+         * returns immediately (event already queued, loop continues). */
+        {
+            event_t ev;
+            event_wait(&cur->eq, &ev, -1);
+        }
+        /* If event_wait returned (event was queued), loop back and re-scan.
+         * If it blocked, this is unreachable (syscall restarts). */
     }
 }

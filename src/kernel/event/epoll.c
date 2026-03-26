@@ -15,6 +15,7 @@
 #include "config.h"
 #include "memops.h"
 #include "net/net.h"
+#include "core/event_queue.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
@@ -204,9 +205,9 @@ void epoll_wake_all(void) {
     epoll_sleepers.count = 0;
     spin_unlock_irq(&epoll_sleepers.lock, irqf);
 
-    extern void sched_add(thread_t *ts);
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     for (int i = 0; i < n; i++)
-        sched_add(wake[i]);
+        event_post(wake[i], 7 /* EQ_EPOLL_READY */, 0);
 }
 
 /* Check timed-out sleepers. Called from timer IRQ (sched_preempt). */
@@ -225,7 +226,7 @@ void epoll_check_timeouts(void) {
     uint64_t irqf;
     spin_lock_irq(&epoll_sleepers.lock, &irqf);
 
-    extern void sched_add(thread_t *ts);
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     for (int i = 0; i < epoll_sleepers.count; ) {
         thread_t *t = epoll_sleepers.threads[i];
         if (!t) { /* Race: another CPU removed the thread */
@@ -236,7 +237,7 @@ void epoll_check_timeouts(void) {
             /* Remove from list (swap with last) */
             epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
             spin_unlock_irq(&epoll_sleepers.lock, irqf);
-            sched_add(t);
+            event_post(t, 10 /* EQ_TIMEOUT */, 0);
             spin_lock_irq(&epoll_sleepers.lock, &irqf);
             /* Don't increment i — swapped element needs checking */
         } else {
@@ -278,64 +279,59 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         infinite = (timeout < 0);
     }
 
-    /* Scan entries under lock. EPOLLET state must be updated atomically. */
-    uint64_t irqf;
-    spin_lock_irq(&ep->lock, &irqf);
+    for (;;) {
+        /* Scan entries under lock. EPOLLET state must be updated atomically. */
+        uint64_t irqf;
+        spin_lock_irq(&ep->lock, &irqf);
 
-    int nready = 0;
-    for (int i = 0; i < ep->count && nready < maxevents; i++) {
-        epoll_entry_t *ent = &ep->entries[i];
-        uint32_t interest = ent->events & ~EPOLLET; /* strip ET flag for readiness check */
-        uint32_t r = fd_poll_readiness(ent->fd, interest);
-        if (r) {
-            struct epoll_event ev;
-            ev.events = r & interest;
-            ev.events |= r & (EPOLLHUP | EPOLLERR);
-            if (ev.events) {
-                /* Edge-triggered: only report bits that are NEW since last report.
-                 * This is true edge semantics — fires on not-ready→ready transitions,
-                 * not just "is ready". */
-                if (ent->events & EPOLLET) {
-                    uint32_t new_bits = ev.events & ~ent->et_last;
-                    if (!new_bits) continue;
-                    ev.events = new_bits;
-                    ent->et_last = ev.events | ent->et_last;
+        int nready = 0;
+        for (int i = 0; i < ep->count && nready < maxevents; i++) {
+            epoll_entry_t *ent = &ep->entries[i];
+            uint32_t interest = ent->events & ~EPOLLET;
+            uint32_t r = fd_poll_readiness(ent->fd, interest);
+            if (r) {
+                struct epoll_event ev;
+                ev.events = r & interest;
+                ev.events |= r & (EPOLLHUP | EPOLLERR);
+                if (ev.events) {
+                    if (ent->events & EPOLLET) {
+                        uint32_t new_bits = ev.events & ~ent->et_last;
+                        if (!new_bits) continue;
+                        ev.events = new_bits;
+                        ent->et_last = ev.events | ent->et_last;
+                    }
+                    ev.data = ent->data;
+                    copy_to_user(&events[nready], &ev, sizeof(ev));
+                    nready++;
                 }
-                ev.data = ent->data;
-                copy_to_user(&events[nready], &ev, sizeof(ev)); /* user_ok checked at entry */
-                nready++;
-            }
-        } else {
-            /* FD not ready — clear last-reported state for edge re-detection */
-            if (ent->events & EPOLLET) {
-                ent->et_last = 0;
+            } else {
+                if (ent->events & EPOLLET)
+                    ent->et_last = 0;
             }
         }
+
+        spin_unlock_irq(&ep->lock, irqf);
+
+        if (nready > 0) { ct->wake_at = 0; return nready; }
+        if (timeout == 0) return 0;
+        if (!infinite && timer_ms() >= deadline) { ct->wake_at = 0; return 0; }
+
+        /* No events ready — block via event_wait.
+         * epoll_wake_all / epoll_check_timeouts will event_post us.
+         * If event pre-queued (spurious), event_wait returns immediately
+         * and we loop back to re-scan. */
+        {
+            thread_t *t = thread_current();
+            if (!t) return -EFAULT;
+            t->wake_at = infinite ? 0 : deadline;
+            epoll_sleeper_add(t);
+            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
+            if (timeout_ms <= 0 && !infinite) { t->wake_at = 0; return 0; }
+            event_t ev;
+            event_wait(&t->eq, &ev, timeout_ms);
+            /* If blocked, syscall restarts. If returned, loop re-scans. */
+        }
     }
-
-    spin_unlock_irq(&ep->lock, irqf);
-
-    if (nready > 0) { ct->wake_at = 0; return nready; }
-    if (timeout == 0) return 0;
-    if (!infinite && timer_ms() >= deadline) { ct->wake_at = 0; return 0; }
-
-    /* No events ready — block until woken by epoll_wake_all or timeout.
-     * epoll_check_timeouts (called from timer IRQ) wakes sleepers when
-     * timerfd expires or packets arrive. */
-    {
-        extern uint64_t pml4[];
-        thread_t *t = thread_current();
-        if (!t) return -EFAULT;
-        save_user_state_for_block(t, 0);
-        t->rip -= 2;              /* back to syscall instruction */
-        t->rax = SYS_EPOLL_PWAIT; /* retry as epoll_pwait */
-        t->wake_at = infinite ? 0 : deadline;
-        epoll_sleeper_add(t);
-        t->state = THREAD_BLOCKED;
-        arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(t);
-    }
-    return 0; /* unreachable */
 }
 
 void epoll_incref(void *obj) {

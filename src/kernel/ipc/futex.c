@@ -19,6 +19,7 @@
 #include "hw/serial.h"
 #include "config.h"
 #include "arch/arch.h"
+#include "core/event_queue.h"
 
 extern void sched_add(thread_t *t);
 
@@ -136,18 +137,14 @@ static long futex_wait(uint32_t *uaddr, uint32_t val) {
 
     spin_unlock_irq(&futex_hash[bucket].lock, flags);
 
-    /* Save user state — when woken, thread resumes with return value 0 */
-    save_user_state_for_block(t, 0);
-
-    /* Block the thread */
-    t->state = THREAD_BLOCKED;
-
-    /* Switch to kernel page tables and return to scheduler */
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-
-    /* Unreachable — thread resumes via proc_enter_ring3 when woken */
-    return 0;
+    /* Block via event_wait — futex_wake will event_post us.
+     * On wake, syscall restarts: futex_wait re-checks *uaddr.
+     * If value changed (normal case), returns -EAGAIN → caller re-tries lock. */
+    {
+        event_t ev;
+        event_wait(&t->eq, &ev, -1);
+    }
+    return 0; /* unreachable — syscall restarts */
 }
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
@@ -171,9 +168,8 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
         futex_waiter_t *w = *pp;
         if (w->uaddr == (uint64_t)(uintptr_t)uaddr && w->pid == pid) {
             /* Wake this thread */
-            if (w->thread->state == THREAD_BLOCKED) {
-                w->thread->rax = 0; /* return 0 from futex */
-                sched_add(w->thread);
+            {
+                event_post(w->thread, 6 /* EQ_FUTEX_WAKE */, 0);
                 woken++;
             }
             *pp = w->next;
@@ -241,13 +237,11 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
         spin_unlock_irq(&futex_hash[bucket].lock, flags);
 
-        save_user_state_for_block(self, 0);
-        self->state = THREAD_BLOCKED;
-        arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(self);
+        event_t ev;
+        event_wait(&self->eq, &ev, -1);
     }
 
-    return 0;
+    return 0; /* unreachable — syscall restarts */
 }
 
 /* ── FUTEX_UNLOCK_PI ────────────────────────────── */

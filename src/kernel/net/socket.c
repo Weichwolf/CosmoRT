@@ -13,34 +13,14 @@
 #include "config.h"
 #include "core/percpu.h"
 #include "event/epoll.h"
+#include "core/event_queue.h"
 
 extern long send_sigpipe(void);
 #include "arch/arch.h"
 #include "core/rt.h"
 #include "core/timer_wheel.h"
 
-/* Blocking helpers — save user state, rewind to syscall insn, block thread.
- * On wake, the syscall is re-executed from userspace. */
-extern uint64_t pml4[];
-extern void save_user_state_for_block(thread_t *t, long return_value);
-extern void thread_return_to_kernel(thread_t *t);
-
-static void sock_block_thread(int syscall_nr, thread_t **wait_slot, uint64_t timeout_ms) {
-    thread_t *t = thread_current();
-    if (!t) return;
-    __atomic_store_n(wait_slot, t, __ATOMIC_RELEASE);
-    save_user_state_for_block(t, 0);
-    t->rip -= 2;           /* back to `syscall` instruction (0F 05) */
-    t->rax = (uint64_t)syscall_nr;
-    t->wake_at = timeout_ms ? timer_ms() + timeout_ms : 0;
-    /* Register as epoll sleeper for timeout checking */
-    extern void epoll_sleeper_add_ext(thread_t *t);
-    epoll_sleeper_add_ext(t);
-    t->state = THREAD_BLOCKED;
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    /* unreachable — thread resumes via syscall restart */
-}
+/* sock_block_thread eliminated — all blocking uses event_wait now */
 
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
@@ -212,32 +192,40 @@ long do_connect(int fd, const void *addr, int addrlen) {
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -ENETUNREACH;
-    int r = net_tcp_connect(&s->tcp, dst_ip, port);
-    if (r == 0) {
-        /* Connected (SYN-ACK arrived before we blocked, or syscall restart) */
-        s->state = SOCK_CONNECTED;
-        s->remote_ip = k_addr.sin_addr;
-        s->remote_port = k_addr.sin_port;
-        s->tcp.wait_thread = 0;
-        s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
-        return 0;
-    }
-    if (r == -11) { /* -EAGAIN: SYN sent, waiting for SYN-ACK */
-        /* Non-blocking: return EINPROGRESS, epoll will signal EPOLLOUT */
-        int nonblock = 0;
-        { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
-                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        if (nonblock) {
-            s->sockflags |= SOCKF_CONNECTING;
+    uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
+    for (;;) {
+        int r = net_tcp_connect(&s->tcp, dst_ip, port);
+        if (r == 0) {
+            s->state = SOCK_CONNECTED;
             s->remote_ip = k_addr.sin_addr;
             s->remote_port = k_addr.sin_port;
-            return -EINPROGRESS;
+            s->tcp.wait_thread = 0;
+            s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+            return 0;
         }
-        sock_block_thread(SYS_CONNECT, &s->tcp.wait_thread, NET_TCP_TIMEOUT_MS);
-        return -ETIMEDOUT; /* unreachable */
+        if (r == -11) { /* -EAGAIN: SYN sent, waiting for SYN-ACK */
+            int nonblock = 0;
+            { process_t *rp = proc_current();
+              if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                         if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
+            if (nonblock) {
+                s->sockflags |= SOCKF_CONNECTING;
+                s->remote_ip = k_addr.sin_addr;
+                s->remote_port = k_addr.sin_port;
+                return -EINPROGRESS;
+            }
+            if (timer_ms() >= connect_deadline) return -ETIMEDOUT;
+            thread_t *t = thread_current();
+            __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
+            int remain = (int)(connect_deadline - timer_ms());
+            if (remain <= 0) return -ETIMEDOUT;
+            event_t ev;
+            event_wait(&t->eq, &ev, remain);
+            /* If blocked, syscall restarts. If returned, loop re-checks. */
+            continue;
+        }
+        return -ETIMEDOUT;
     }
-    return -ETIMEDOUT;
 }
 
 /* ── SYS_SENDTO (44) ─────────────────────────────── */
@@ -324,62 +312,74 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
         if (!s->udp_local_port) return -EAGAIN;
+        int nonblock_udp = (flags & 0x40);
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock_udp = 1; } }
+        uint64_t udp_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
         uint8_t kbuf[1400];
         uint8_t sip[4];
         uint16_t sport;
-        int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
-                             sip, &sport, 0);
-        if (r < 0) {
-            /* No data — check non-blocking */
-            int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
-            { process_t *rp = proc_current();
-              if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
-                         if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-            if (nonblock) return -EAGAIN;
-            /* Block — udp_input will wake */
-            udp_sock_t *us = udp_find(s->udp_local_port);
-            if (us) {
-                sock_block_thread(SYS_RECVFROM, &us->wait_thread, NET_TCP_TIMEOUT_MS);
+        for (;;) {
+            int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
+                                 sip, &sport, 0);
+            if (r >= 0) {
+                { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
+                if (src_addr && addrlen) {
+                    struct k_sockaddr_in sa;
+                    for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+                    sa.sin_family = 2; /* AF_INET */
+                    sa.sin_port = bswap16(sport);
+                    sa.sin_addr = (uint32_t)sip[0] | ((uint32_t)sip[1] << 8) |
+                                  ((uint32_t)sip[2] << 16) | ((uint32_t)sip[3] << 24);
+                    copy_to_user(src_addr, &sa, sizeof(sa));
+                    int slen = (int)sizeof(struct k_sockaddr_in);
+                    copy_to_user(addrlen, &slen, sizeof(int));
+                }
+                return r;
             }
-            return -EAGAIN; /* unreachable or fallback */
+            if (nonblock_udp) return -EAGAIN;
+            if (timer_ms() >= udp_deadline) return -EAGAIN;
+            udp_sock_t *us = udp_find(s->udp_local_port);
+            if (!us) return -EAGAIN;
+            thread_t *t = thread_current();
+            __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE);
+            int remain = (int)(udp_deadline - timer_ms());
+            if (remain <= 0) return -EAGAIN;
+            event_t ev;
+            event_wait(&t->eq, &ev, remain);
         }
-        { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
-
-        /* Fill src_addr if provided */
-        if (src_addr && addrlen) {
-            struct k_sockaddr_in sa;
-            for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
-            sa.sin_family = 2; /* AF_INET */
-            sa.sin_port = bswap16(sport);
-            sa.sin_addr = (uint32_t)sip[0] | ((uint32_t)sip[1] << 8) |
-                          ((uint32_t)sip[2] << 16) | ((uint32_t)sip[3] << 24);
-            copy_to_user(src_addr, &sa, sizeof(sa));
-            int slen = (int)sizeof(struct k_sockaddr_in);
-            copy_to_user(addrlen, &slen, sizeof(int));
-        }
-        return r;
     }
 
     /* ── TCP (SOCK_STREAM) ── */
     if (s->state != SOCK_CONNECTED) return -EBADF;
-    uint8_t kbuf[4096];
-    int want = (int)len > 4096 ? 4096 : (int)len;
-    int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
-    if (r == -11) { /* -EAGAIN: no data yet */
-        /* Check non-blocking */
-        int nonblock = (flags & 0x40); /* MSG_DONTWAIT */
+    {
+        int nonblock = (flags & 0x40);
         { process_t *rp = proc_current();
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        if (nonblock) return -EAGAIN;
         uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
-        sock_block_thread(SYS_RECVFROM, &s->tcp.wait_thread, timeo);
-        return -EAGAIN; /* unreachable */
+        uint64_t recv_deadline = timer_ms() + timeo;
+        for (;;) {
+            uint8_t kbuf[4096];
+            int want = (int)len > 4096 ? 4096 : (int)len;
+            int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
+            if (r != -11) {
+                s->tcp.wait_thread = 0;
+                if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+                if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
+                return r;
+            }
+            if (nonblock) return -EAGAIN;
+            if (timer_ms() >= recv_deadline) return -EAGAIN;
+            thread_t *t = thread_current();
+            __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
+            int remain = (int)(recv_deadline - timer_ms());
+            if (remain <= 0) return -EAGAIN;
+            event_t ev;
+            event_wait(&t->eq, &ev, remain);
+        }
     }
-    s->tcp.wait_thread = 0;
-    if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
-    if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
-    return r;
 }
 
 /* ── read/write/close via FD_SOCKET ──────────────── */
@@ -388,26 +388,35 @@ long socket_read(int fd, void *buf, long count) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->shut_rd) return 0;
-    /* DGRAM: delegate to recvfrom */
     if (s->is_dgram) return do_recvfrom(fd, buf, count, 0, 0, 0);
     if (s->state != SOCK_CONNECTED) return -EBADF;
-    uint8_t kbuf[4096];
-    int want = (int)count > 4096 ? 4096 : (int)count;
-    int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
-    if (r == -11) { /* -EAGAIN: no data yet */
+    {
         int nonblock = 0;
         { process_t *rp = proc_current();
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        if (nonblock) return -EAGAIN;
         uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
-        sock_block_thread(SYS_READ, &s->tcp.wait_thread, timeo);
-        return -EAGAIN; /* unreachable */
+        uint64_t recv_deadline = timer_ms() + timeo;
+        for (;;) {
+            uint8_t kbuf[4096];
+            int want = (int)count > 4096 ? 4096 : (int)count;
+            int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
+            if (r != -11) {
+                s->tcp.wait_thread = 0;
+                if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
+                if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
+                return r;
+            }
+            if (nonblock) return -EAGAIN;
+            if (timer_ms() >= recv_deadline) return -EAGAIN;
+            thread_t *t = thread_current();
+            __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
+            int remain = (int)(recv_deadline - timer_ms());
+            if (remain <= 0) return -EAGAIN;
+            event_t ev;
+            event_wait(&t->eq, &ev, remain);
+        }
     }
-    s->tcp.wait_thread = 0;
-    if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
-    if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
-    return r;
 }
 
 long socket_write(int fd, const void *buf, long count) {
@@ -582,17 +591,22 @@ long do_accept(int fd, void *addr, int *addrlen) {
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -EAGAIN;
 
-    /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state.
-     * On syscall restart after wake, ls->tcp.state == TCP_SYN_RCVD resumes. */
+    /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state. */
     uint16_t host_port = bswap16(ls->local_port);
-    int r = net_tcp_accept(&ls->tcp, host_port, 0);
-    if (r == -11) { /* -EAGAIN: no SYN yet or waiting for ACK */
-        sock_block_thread(SYS_ACCEPT, &q_tcp_wait_thread, NET_TCP_TIMEOUT_MS);
-        return -EAGAIN; /* unreachable */
-    }
-    if (r < 0) {
-        ls->tcp.state = TCP_CLOSED;
-        return -EAGAIN;
+    uint64_t accept_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
+    for (;;) {
+        int r = net_tcp_accept(&ls->tcp, host_port, 0);
+        if (r != -11) {
+            if (r < 0) { ls->tcp.state = TCP_CLOSED; return -EAGAIN; }
+            break;
+        }
+        if (timer_ms() >= accept_deadline) return -EAGAIN;
+        thread_t *t = thread_current();
+        __atomic_store_n(&q_tcp_wait_thread, t, __ATOMIC_RELEASE);
+        int remain = (int)(accept_deadline - timer_ms());
+        if (remain <= 0) return -EAGAIN;
+        event_t ev;
+        event_wait(&t->eq, &ev, remain);
     }
 
     /* Handshake complete — allocate new socket */
@@ -840,27 +854,24 @@ struct k_pollfd { int fd; short events; short revents; };
 
 long do_poll(void *fds_ptr, int nfds, int timeout) {
     if (nfds <= 0 || nfds > 256) return -EINVAL;
-    /* Bounce user pollfd[] to kernel stack to prevent TOCTOU */
     struct k_pollfd kfds[256];
     { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
 
     int infinite = (timeout < 0);
     uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
-    int ready = 0;
 
-    while (infinite || timer_ms() < deadline) {
-        ready = 0;
+    for (;;) {
+        int ready = 0;
         for (int i = 0; i < nfds; i++) {
             kfds[i].revents = 0;
-            /* Map POLLIN/POLLOUT to EPOLLIN/EPOLLOUT for fd_poll_readiness */
             uint32_t interest = 0;
-            if (kfds[i].events & POLLIN)  interest |= 0x001; /* EPOLLIN */
-            if (kfds[i].events & POLLOUT) interest |= 0x004; /* EPOLLOUT */
+            if (kfds[i].events & POLLIN)  interest |= 0x001;
+            if (kfds[i].events & POLLOUT) interest |= 0x004;
             uint32_t r_ev = fd_poll_readiness(kfds[i].fd, interest);
             if (r_ev & 0x001) kfds[i].revents |= POLLIN;
             if (r_ev & 0x004) kfds[i].revents |= POLLOUT;
-            if (r_ev & 0x010) kfds[i].revents |= 0x0010; /* POLLHUP */
-            if (r_ev & 0x008) kfds[i].revents |= 0x0008; /* POLLERR */
+            if (r_ev & 0x010) kfds[i].revents |= 0x0010;
+            if (r_ev & 0x008) kfds[i].revents |= 0x0008;
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
@@ -868,35 +879,21 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             return ready;
         }
         if (timeout == 0) return 0;
-        arch_halt();
+        if (!infinite && timer_ms() >= deadline) return 0;
+
+        /* Block via event_wait — epoll_wake_all will event_post us.
+         * If event pre-queued, returns immediately → loop re-scans. */
+        {
+            thread_t *t = thread_current();
+            if (!t) return -EFAULT;
+            t->wake_at = infinite ? 0 : deadline;
+            extern void epoll_sleeper_add_ext(thread_t *t);
+            epoll_sleeper_add_ext(t);
+            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
+            if (timeout_ms <= 0 && !infinite) return 0;
+            event_t ev;
+            event_wait(&t->eq, &ev, timeout_ms);
+            /* If blocked, syscall restarts. If returned, loop re-scans. */
+        }
     }
-    if (ready > 0) {
-        copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
-        return ready;
-    }
-    if (timeout == 0) return 0;
-
-    /* No events ready -- block until woken by epoll_wake_all or timeout. */
-    {
-        extern uint64_t pml4[];
-        extern void save_user_state_for_block(thread_t *t, long return_value);
-        extern void thread_return_to_kernel(thread_t *t);
-        extern void epoll_wake_all(void);
-
-        thread_t *t = thread_current();
-        if (!t) return -EFAULT;
-
-        save_user_state_for_block(t, 0);
-        t->rip -= 2;
-        t->rax = SYS_POLL;
-        t->wake_at = infinite ? 0 : deadline; /* 0 = no timeout */
-
-        /* Register as sleeper (shares epoll sleeper list), then block. */
-        extern void epoll_sleeper_add_ext(thread_t *t);
-        epoll_sleeper_add_ext(t);
-        t->state = THREAD_BLOCKED;
-        arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(t);
-    }
-    return 0; /* unreachable */
 }

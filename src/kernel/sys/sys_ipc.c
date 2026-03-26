@@ -2,6 +2,7 @@
 
 #include "internal.h"
 #include "vt/pty.h"
+#include "core/event_queue.h"
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
@@ -48,8 +49,8 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     pp->blocked_writer = 0;
     spin_unlock_irq(&pp->lock, flags);
     if (writer) {
-        extern void sched_add(thread_t *t);
-        sched_add(writer);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
     }
     /* Wake epoll/poll sleepers — pipe now writable */
     extern void epoll_wake_all(void);
@@ -81,8 +82,8 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     pp->blocked_reader = 0;
     spin_unlock_irq(&pp->lock, flags);
     if (reader) {
-        extern void sched_add(thread_t *t);
-        sched_add(reader);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
     }
     /* Wake epoll/poll sleepers — pipe now readable */
     extern void epoll_wake_all(void);
@@ -93,91 +94,84 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
 /* Blocking pipe read: called when pipe_read returned -EAGAIN.
  * Re-checks under lock, blocks if still empty, restarts syscall on wake. */
 long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
-    extern uint64_t pml4[];
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
-    uint64_t irqf;
-    spin_lock_irq(&pp->lock, &irqf);
-    /* Re-check under lock — data may have arrived */
-    if (pp->count > 0) {
-        size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
-        uint8_t *dst = (uint8_t *)buf;
-        for (size_t i = 0; i < n; i++) {
-            dst[i] = pp->buf[pp->read_pos];
-            pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+    for (;;) {
+        uint64_t irqf;
+        spin_lock_irq(&pp->lock, &irqf);
+        /* Re-check under lock — data may have arrived */
+        if (pp->count > 0) {
+            size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
+            uint8_t *dst = (uint8_t *)buf;
+            for (size_t i = 0; i < n; i++) {
+                dst[i] = pp->buf[pp->read_pos];
+                pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+            }
+            pp->count -= (int)n;
+            /* Wake blocked writer */
+            thread_t *writer = pp->blocked_writer;
+            pp->blocked_writer = 0;
+            spin_unlock_irq(&pp->lock, irqf);
+            if (writer)
+                event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+            return (long)n;
         }
-        pp->count -= (int)n;
-        /* Wake blocked writer */
-        thread_t *writer = pp->blocked_writer;
-        pp->blocked_writer = 0;
-        spin_unlock_irq(&pp->lock, irqf);
-        if (writer) {
-            extern void sched_add(thread_t *t);
-            sched_add(writer);
+        if (!pp->write_open) {
+            spin_unlock_irq(&pp->lock, irqf);
+            return 0; /* EOF */
         }
-        return (long)n;
-    }
-    if (!pp->write_open) {
+        pp->blocked_reader = t;
         spin_unlock_irq(&pp->lock, irqf);
-        return 0; /* EOF */
+        /* Block via event_wait — pipe_write/pipe_close will event_post us.
+         * If event pre-queued, returns immediately → loop retries. */
+        event_t ev;
+        event_wait(&t->eq, &ev, -1);
+        /* If blocked, syscall restarts (unreachable).
+         * If returned immediately, loop back and re-check pipe. */
     }
-    pp->blocked_reader = t;
-    spin_unlock_irq(&pp->lock, irqf);
-    /* Block: save user state for syscall restart.
-     * When woken (by pipe_write or pipe_close), re-execute
-     * the read syscall from userspace (rip-=2 → syscall insn). */
-    save_user_state_for_block(t, 0);
-    t->rip -= 2;       /* back to `syscall` instruction (0F 05) */
-    t->rax = SYS_READ; /* syscall number for read */
-    t->state = THREAD_BLOCKED;
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    return -EAGAIN; /* unreachable */
 }
 
 /* Blocking pipe write: called when pipe_write returned -EAGAIN (full).
  * Re-checks under lock, blocks if still full, restarts syscall on wake. */
 long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
-    extern uint64_t pml4[];
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
-    uint64_t irqf;
-    spin_lock_irq(&pp->lock, &irqf);
-    /* Re-check under lock */
-    if (pp->count < PIPE_BUF_SIZE) {
-        size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
-        size_t n = count > space ? space : count;
-        const uint8_t *src = (const uint8_t *)buf;
-        for (size_t i = 0; i < n; i++) {
-            pp->buf[pp->write_pos] = src[i];
-            pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+    for (;;) {
+        uint64_t irqf;
+        spin_lock_irq(&pp->lock, &irqf);
+        /* Re-check under lock */
+        if (pp->count < PIPE_BUF_SIZE) {
+            size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
+            size_t n = count > space ? space : count;
+            const uint8_t *src = (const uint8_t *)buf;
+            for (size_t i = 0; i < n; i++) {
+                pp->buf[pp->write_pos] = src[i];
+                pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+            }
+            pp->count += (int)n;
+            /* Wake blocked reader */
+            thread_t *reader = pp->blocked_reader;
+            pp->blocked_reader = 0;
+            spin_unlock_irq(&pp->lock, irqf);
+            if (reader)
+                event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+            return (long)n;
         }
-        pp->count += (int)n;
-        /* Wake blocked reader */
-        thread_t *reader = pp->blocked_reader;
-        pp->blocked_reader = 0;
-        spin_unlock_irq(&pp->lock, irqf);
-        if (reader) {
-            extern void sched_add(thread_t *t);
-            sched_add(reader);
+        if (!pp->read_open) {
+            spin_unlock_irq(&pp->lock, irqf);
+            return send_sigpipe();
         }
-        return (long)n;
-    }
-    if (!pp->read_open) {
+        pp->blocked_writer = t;
         spin_unlock_irq(&pp->lock, irqf);
-        return send_sigpipe();
+        /* Block via event_wait — pipe_read/pipe_close will event_post us */
+        event_t ev;
+        event_wait(&t->eq, &ev, -1);
+        /* If blocked, syscall restarts. If returned, loop retries. */
     }
-    pp->blocked_writer = t;
-    spin_unlock_irq(&pp->lock, irqf);
-    save_user_state_for_block(t, 0);
-    t->rip -= 2;
-    t->rax = SYS_WRITE;
-    t->state = THREAD_BLOCKED;
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    return -EAGAIN; /* unreachable */
 }
 
 long do_pipe2(int *fds, int flags) {
@@ -266,12 +260,12 @@ long pipe_close(fd_entry_t *fde) {
     spin_unlock_irq(&pp->lock, flags);
 
     if (reader) {
-        extern void sched_add(thread_t *t);
-        sched_add(reader);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 5 /* EQ_PIPE_CLOSED */, 0);
     }
     if (writer) {
-        extern void sched_add(thread_t *t);
-        sched_add(writer);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(writer, 5 /* EQ_PIPE_CLOSED */, 0);
     }
     if (both_closed)
         slab_free(&pipe_slab, pp);

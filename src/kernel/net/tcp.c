@@ -8,6 +8,7 @@
 #include "core/timer.h"
 #include "core/rt.h"
 #include "mm/page_alloc.h"
+#include "core/event_queue.h"
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -534,7 +535,7 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (!c) {
         q_push(&q_tcp, pkt, len);
         struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (wt) event_post(wt, 9 /* EQ_SOCKET_CONNECT */, 0);
         return;
     }
 
@@ -571,7 +572,7 @@ void tcp_input(const uint8_t *pkt, int len) {
         c->connect_err = 0;
         cc_init(c);
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
         return;
     }
 
@@ -581,7 +582,7 @@ void tcp_input(const uint8_t *pkt, int len) {
         c->got_rst = 1;
         c->connect_err = -1;
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
         return;
     }
 
@@ -629,7 +630,7 @@ void tcp_input(const uint8_t *pkt, int len) {
         }
         if (state_changed) {
             struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-            if (wt) sched_wake(wt);
+            if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
         }
     }
 
@@ -642,7 +643,7 @@ void tcp_input(const uint8_t *pkt, int len) {
             ooo_drain(c);
             send_tcp(c, 0x10, 0, 0);
             struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-            if (wt) sched_wake(wt);
+            if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
         } else if ((int32_t)(tseq - c->rcv_nxt) > 0) {
             ooo_insert(c, tseq, payload, plen);
             send_tcp(c, 0x10, 0, 0); /* DupACK with SACK */
@@ -666,7 +667,7 @@ void tcp_input(const uint8_t *pkt, int len) {
             send_tcp(c, 0x10, 0, 0);
         }
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
     }
 
     /* Keepalive: reset probe timer on any valid packet */
@@ -854,7 +855,7 @@ void net_tcp_keepalive_probe(void *conn) {
         c->state = TCP_CLOSED;
         c->got_rst = 1;
         struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
         return;
     }
 

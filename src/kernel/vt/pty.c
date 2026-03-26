@@ -189,7 +189,8 @@ int pty_master_write(int id, const char *buf, int len) {
          ring_count(p->output_head, p->output_tail) > 0)) {
         thread_t *reader = p->blocked_reader;
         p->blocked_reader = 0;
-        sched_add(reader);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 4 /* EQ_PIPE_DATA */, 0);
     }
 
     spin_unlock_irq(&p->lock, flags);

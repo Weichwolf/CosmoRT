@@ -13,6 +13,7 @@
 #include "sys/syscall.h"
 #include "cosmort.h"
 #include "arch/arch.h"
+#include "core/event_queue.h"
 
 extern long send_sigpipe(void);
 
@@ -76,8 +77,8 @@ void usock_decref(void *obj) {
         }
         s->state = USOCK_UNUSED;
         if (reader) {
-            extern void sched_add(thread_t *t);
-            sched_add(reader);
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
         }
     }
 }
@@ -348,41 +349,33 @@ long usock_read(int fd, void *buf, long count) {
  * and O_NONBLOCK is not set. Re-checks buffer, blocks if still empty,
  * restarts syscall on wake. */
 long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
-    extern uint64_t pml4[];
-    extern void save_user_state_for_block(thread_t *t, long return_value);
-    extern void thread_return_to_kernel(thread_t *t);
-    extern void sched_add(thread_t *t);
-
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
-    /* Re-check under spinlock — data may have arrived */
-    uint64_t irqf;
-    spin_lock_irq(&usock_lock, &irqf);
+    for (;;) {
+        /* Re-check under spinlock — data may have arrived */
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
 
-    if (s->count > 0) {
-        /* Data arrived between first check and lock acquire */
-        int n = ring_read(s, (uint8_t *)buf, (int)count);
+        if (s->count > 0) {
+            int n = ring_read(s, (uint8_t *)buf, (int)count);
+            spin_unlock_irq(&usock_lock, irqf);
+            return (long)n;
+        }
+        if (!s->peer) {
+            spin_unlock_irq(&usock_lock, irqf);
+            return 0; /* EOF: peer closed */
+        }
+
+        /* Register as blocked reader — peer's write will event_post us */
+        s->blocked_reader = t;
         spin_unlock_irq(&usock_lock, irqf);
-        return (long)n;
-    }
-    if (!s->peer) {
-        spin_unlock_irq(&usock_lock, irqf);
-        return 0; /* EOF: peer closed */
-    }
 
-    /* Register as blocked reader — peer's write will wake us */
-    s->blocked_reader = t;
-    spin_unlock_irq(&usock_lock, irqf);
-
-    /* Block: save user state for syscall restart */
-    save_user_state_for_block(t, 0);
-    t->rip -= 2;       /* back to `syscall` instruction (0F 05) */
-    t->rax = SYS_READ; /* re-execute on wakeup */
-    t->state = THREAD_BLOCKED;
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    return -EAGAIN; /* unreachable */
+        /* Block via event_wait — usock_write/usock_decref will event_post */
+        event_t ev;
+        event_wait(&t->eq, &ev, -1);
+        /* If blocked, syscall restarts. If returned, loop retries. */
+    }
 }
 
 long usock_write(int fd, const void *buf, long count) {
@@ -408,8 +401,8 @@ long usock_write(int fd, const void *buf, long count) {
     }
     spin_unlock_irq(&usock_lock, irqf);
     if (reader) {
-        extern void sched_add(thread_t *t);
-        sched_add(reader);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
     }
 
     /* Wake epoll/poll */

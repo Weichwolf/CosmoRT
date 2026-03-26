@@ -80,15 +80,12 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
             /* SIGCHLD delivery (Linux ABI) */
             __sync_fetch_and_or(&parent->sig_pending, 1ULL << SIGCHLD);
 
-            extern void sched_add(thread_t *t);
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             uint64_t pflags;
             spin_lock_irq(&parent->lock, &pflags);
             thread_t *pt = parent->threads;
             while (pt) {
-                if (pt->state == THREAD_BLOCKED) {
-                    pt->state = THREAD_RUNNING;
-                    sched_add(pt);
-                }
+                event_post(pt, 1 /* EQ_CHILD_EXITED */, (uint64_t)p->pid);
                 pt = pt->proc_next;
             }
             spin_unlock_irq(&parent->lock, pflags);

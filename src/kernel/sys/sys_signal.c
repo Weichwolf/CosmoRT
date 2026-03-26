@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — signal handling */
 
 #include "internal.h"
+#include "core/event_queue.h"
 
 /* sigaltstack flags */
 #define SS_ONSTACK 1
@@ -514,15 +515,12 @@ static long kill_one(process_t *target, int sig) {
         if (target->parent_pid) {
             process_t *parent = proc_find(target->parent_pid);
             if (parent) {
-                extern void sched_add(thread_t *t);
+                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 uint64_t pflags;
                 spin_lock_irq(&parent->lock, &pflags);
                 thread_t *pt = parent->threads;
                 while (pt) {
-                    if (pt->state == THREAD_BLOCKED) {
-                        pt->state = THREAD_RUNNING;
-                        sched_add(pt);
-                    }
+                    event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
                     pt = pt->proc_next;
                 }
                 spin_unlock_irq(&parent->lock, pflags);
@@ -536,20 +534,15 @@ static long kill_one(process_t *target, int sig) {
     target->sig_pending |= (1ULL << sig);
 
     /* Wake blocked threads that have this signal unblocked.
-     * Lock target to make state=RUNNING + sched_add atomic. */
+     * event_post wakes via sched_wake (BLOCKED→RUNNABLE CAS). */
     {
-        extern void sched_add(thread_t *t);
-        uint64_t tflags;
-        spin_lock_irq(&target->lock, &tflags);
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED && !((1ULL << sig) & t->sig_blocked)) {
-                t->state = THREAD_RUNNING;
-                sched_add(t);
-            }
+            if (t->state == THREAD_BLOCKED && !((1ULL << sig) & t->sig_blocked))
+                event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             t = t->proc_next;
         }
-        spin_unlock_irq(&target->lock, tflags);
     }
     return 0;
 }
@@ -647,13 +640,10 @@ long do_tgkill(int tgid, int tid, int sig) {
         if (p->parent_pid) {
             process_t *parent = proc_find(p->parent_pid);
             if (parent) {
-                extern void sched_add(thread_t *t);
+                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 thread_t *pt = parent->threads;
                 while (pt) {
-                    if (pt->state == THREAD_BLOCKED) {
-                        pt->state = THREAD_RUNNING;
-                        sched_add(pt);
-                    }
+                    event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
                     pt = pt->proc_next;
                 }
             }
@@ -664,11 +654,8 @@ long do_tgkill(int tgid, int tid, int sig) {
     /* User handler — set pending and wake target thread */
     p->sig_pending |= (1ULL << sig);
     if (!((1ULL << sig) & target->sig_blocked)) {
-        if (target->state == THREAD_BLOCKED) {
-            extern void sched_add(thread_t *t);
-            target->state = THREAD_RUNNING;
-            sched_add(target);
-        }
+        extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
+        event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
     }
     return 0;
 }
@@ -772,12 +759,18 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
 
     uint64_t old_blocked = t->sig_blocked;
 
+    /* On syscall restart (in_sigsuspend already set), use saved mask as original.
+     * sig_blocked is still the temp mask from the first invocation. */
+    if (t->in_sigsuspend)
+        old_blocked = t->sig_saved_mask;
+
     /* Install temporary mask */
     t->sig_blocked = new_mask;
 
     /* If a signal is already deliverable, restore and return */
     if (p->sig_pending & ~t->sig_blocked) {
         t->sig_blocked = old_blocked;
+        t->in_sigsuspend = 0;
         return -EINTR;
     }
 
@@ -785,13 +778,13 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     t->sig_saved_mask = old_blocked;
     t->in_sigsuspend = 1;
 
-    /* Block — woken by do_kill when signal becomes deliverable */
-    extern uint64_t pml4[];
-    save_user_state_for_block(t, -EINTR);
-    t->state = THREAD_BLOCKED;
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    return -EINTR; /* unreachable */
+    /* Block via event_wait — do_kill will event_post us.
+     * On wake, syscall restarts: sigsuspend re-checks pending signals. */
+    {
+        event_t ev;
+        event_wait(&t->eq, &ev, -1);
+    }
+    return -EINTR; /* unreachable — syscall restarts */
 }
 
 /* ── send_sigpipe — SIGPIPE for pipe/socket write on broken end ── */

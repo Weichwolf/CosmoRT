@@ -114,9 +114,7 @@ static inline int event_drain(event_queue_t *eq, uint32_t type, event_t *out, in
     return count;
 }
 
-/* ── Kernel-only API (implemented in event_queue.c) ── */
-
-#ifdef __KERNEL__
+/* ── Kernel API (implemented in event_queue.c) ── */
 
 /* Post event to target thread's queue + sched_wake.
  * Non-blocking, IRQ-safe. Queue full: oldest overwritten. */
@@ -129,7 +127,5 @@ void event_post(struct thread *target, uint32_t type, uint64_t data);
  * Returns 0 on success (*out filled), -EAGAIN (empty, non-blocking),
  * -ETIMEDOUT (deadline expired). */
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms);
-
-#endif /* __KERNEL__ */
 
 #endif /* EVENT_QUEUE_H */
