@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 960 ktest PASS, 0 FAIL.
+Stand: 2026-03-26. 975 ktest PASS, 0 FAIL.
 
 ---
 
@@ -47,13 +47,10 @@ SIGWINCH (TIOCSWINSZ). 13 Tests.
 
 TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
-### SH-F: /proc erweitern
+### SH-F: /proc erweitern — erledigt
 
-- [ ] /proc/self/exe: Symlink auf eigene ELF-Binary (Node.js)
-- [ ] /proc/pid/cmdline: Kommandozeile (ps, htop)
-- [ ] /proc/pid/stat: Prozess-Status
-- [ ] /proc/pid/maps: Memory Mappings
-- [ ] /proc/meminfo: Freier/Belegter Speicher
+/proc/self/exe, /proc/pid/cmdline, /proc/pid/stat, /proc/pid/maps,
+/proc/meminfo, per-PID Routing. 15 Tests.
 
 ### SH-G: Locale + Timezone
 

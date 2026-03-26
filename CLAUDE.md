@@ -175,3 +175,9 @@ Tests:
 - Jede Aenderung muss automatisch testbar sein
 - TEST() fuer Unit-Tests, CRASH_TEST() fuer Adversarial-Tests
 - Self-Registering via Linker-Section — kein main.c anfassen
+
+TODO.md:
+- Immer aktuell halten. Nach jedem Commit pruefen.
+- Erledigte Tasks sofort abhaken oder komprimieren
+- Testcount im Header aktualisieren
+- Alte erledigte Phasen in Zusammenfassung verschieben
