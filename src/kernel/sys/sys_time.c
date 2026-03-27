@@ -41,20 +41,51 @@ long do_clock_getres(int clk_id, struct k_timespec *tp) {
     return 0;
 }
 
+/* Preemptible nanosleep via event_wait. On syscall restart after wake,
+ * nanosleep_deadline distinguishes timeout (done) from signal (EINTR). */
 long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
     if (!req) return -EFAULT;
+    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
+
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+
+    /* Restarted after block — check if deadline reached */
+    if (t->nanosleep_deadline) {
+        uint64_t now = timer_ms();
+        uint64_t dl = t->nanosleep_deadline;
+        t->nanosleep_deadline = 0;
+        if (now >= dl)
+            return 0; /* sleep completed */
+        /* Woken early (signal) — write remaining time */
+        if (rem) {
+            uint64_t left_ms = dl - now;
+            struct k_timespec krem = {
+                .tv_sec = (long)(left_ms / 1000),
+                .tv_nsec = (long)((left_ms % 1000) * 1000000)
+            };
+            int r2 = copy_to_user(rem, &krem, sizeof(krem));
+            if (r2) return r2;
+        }
+        return -EINTR;
+    }
+
+    /* First call — compute deadline and block */
     struct k_timespec kreq;
     { int r = copy_from_user(&kreq, req, sizeof(kreq)); if (r) return r; }
-    if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     uint64_t ms = (uint64_t)kreq.tv_sec * 1000 + (uint64_t)(kreq.tv_nsec / 1000000);
-    if (ms == 0) ms = 1;
-    timer_sleep_ms((uint32_t)ms);
-    if (rem) {
-        struct k_timespec krem = { .tv_sec = 0, .tv_nsec = 0 };
-        int r2 = copy_to_user(rem, &krem, sizeof(krem));
-        if (r2) return r2;
+    if (ms == 0) { ms = 1; }
+
+    /* Check pending signals before blocking (POSIX -EINTR) */
+    if (t->proc) {
+        uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
+        if (deliverable) return -EINTR;
     }
-    return 0;
+
+    t->nanosleep_deadline = timer_ms() + ms;
+    thread_block_ms((int)(ms > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : ms));
+    /* thread_block_ms blocks → syscall restarts → re-enters do_nanosleep above */
+    __builtin_unreachable();
 }
 
 long do_clock_nanosleep(int clk_id, int flags,
@@ -62,6 +93,21 @@ long do_clock_nanosleep(int clk_id, int flags,
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
         if (!req) return -EFAULT;
+
+        thread_t *t = thread_current();
+        if (!t) return -EFAULT;
+
+        /* Restarted after block — check deadline */
+        if (t->nanosleep_deadline) {
+            uint64_t now = timer_ms();
+            uint64_t dl = t->nanosleep_deadline;
+            t->nanosleep_deadline = 0;
+            if (now >= dl)
+                return 0;
+            /* TIMER_ABSTIME: no remaining time written (POSIX) */
+            return -EINTR;
+        }
+
         struct k_timespec kreq;
         { int r = copy_from_user(&kreq, req, sizeof(kreq)); if (r) return r; }
         uint64_t target_ms = (uint64_t)kreq.tv_sec * 1000
@@ -76,8 +122,19 @@ long do_clock_nanosleep(int clk_id, int flags,
                 return 0; /* deadline in the past */
         }
         uint64_t now = timer_ms();
-        if (target_ms > now) timer_sleep_ms((uint32_t)(target_ms - now));
-        return 0;
+        if (target_ms <= now)
+            return 0; /* already past */
+
+        uint64_t delta = target_ms - now;
+
+        if (t->proc) {
+            uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
+            if (deliverable) return -EINTR;
+        }
+
+        t->nanosleep_deadline = target_ms;
+        thread_block_ms((int)(delta > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : delta));
+        __builtin_unreachable();
     }
     return do_nanosleep(req, rem);
 }

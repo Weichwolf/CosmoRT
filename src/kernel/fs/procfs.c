@@ -478,29 +478,6 @@ static int procfs_version(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
-/* ── /proc/ksm (dedup stats) ─────────────────────── */
-
-static int procfs_ksm(char *buf, int size, int offset, void *ctx) {
-    (void)ctx;
-    extern void dedup_get_stats(void *);
-    struct { uint64_t scanned, shared, merged, saved; } st;
-    dedup_get_stats(&st);
-    char s[256]; int p = 0;
-    p = append_str(s, p, 256, "pages_scanned ");
-    p = append_int(s, p, 256, (long)st.scanned);
-    p = append_str(s, p, 256, "\npages_shared ");
-    p = append_int(s, p, 256, (long)st.shared);
-    p = append_str(s, p, 256, "\npages_merged ");
-    p = append_int(s, p, 256, (long)st.merged);
-    p = append_str(s, p, 256, "\nbytes_saved ");
-    p = append_int(s, p, 256, (long)st.saved);
-    p = append_str(s, p, 256, "\n");
-    int out = 0;
-    for (int i = offset; i < p && out < size; i++)
-        buf[out++] = s[i];
-    return out;
-}
-
 /* ── /proc/bus/pci/devices ─────────────────────────── */
 
 #include "cosmort.h"
@@ -741,7 +718,6 @@ void procfs_init(void) {
     procfs_register("uptime", procfs_uptime, 0);
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
-    procfs_register("ksm", procfs_ksm, 0);
     procfs_register("bus/pci/devices", procfs_pci_devices, 0);
     procfs_register("filesystems", procfs_filesystems, 0);
     procfs_register("sys/kernel/pid_max", procfs_sys_pid_max, 0);

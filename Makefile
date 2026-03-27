@@ -60,7 +60,6 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/rt.o \
             $(BUILD)/kernel/core/timer_wheel.o \
             $(BUILD)/kernel/core/rt_poll.o \
-            $(BUILD)/kernel/core/rt_hash.o \
             $(BUILD)/kernel/core/event_queue.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
@@ -68,7 +67,6 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/vma.o \
             $(BUILD)/kernel/mm/slab.o \
             $(BUILD)/kernel/mm/random.o \
-            $(BUILD)/kernel/mm/dedup.o \
             $(BUILD)/kernel/mm/page_cache.o
 
 KERN_PROC = $(BUILD)/kernel/proc/process.o \

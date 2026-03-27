@@ -97,6 +97,9 @@ typedef struct thread {
     /* ── Timed wakeup (epoll_wait / poll timeout) ── */
     uint64_t wake_at;      /* timer_ms() deadline; 0 = no timeout */
 
+    /* ── nanosleep: absolute deadline for syscall-restart detection ── */
+    uint64_t nanosleep_deadline;  /* timer_ms() deadline; 0 = not in nanosleep */
+
     /* ── Signal mask (per-thread, like Linux task_struct.blocked) ── */
     uint64_t sig_blocked;     /* bitmask of blocked signals (sigprocmask) */
 

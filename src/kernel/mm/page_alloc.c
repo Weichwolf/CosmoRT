@@ -343,9 +343,6 @@ void page_free(void *page) {
         return; /* still shared */
     }
     __atomic_store_n(&page_refcounts[pfn], 0, __ATOMIC_RELEASE);
-    /* Notify dedup engine: remove hash from table */
-    extern void dedup_on_page_free(uint64_t phys);
-    dedup_on_page_free(pfn << PAGE_SHIFT);
     /* Evict from page cache if this was a shared file-backed page */
     extern void page_cache_evict(uint64_t phys);
     page_cache_evict(pfn << PAGE_SHIFT);
@@ -428,8 +425,6 @@ void huge_page_free(void *page) {
     }
     for (uint64_t i = 0; i < 512 && pfn + i < max_pfn; i++)
         __atomic_store_n(&page_refcounts[pfn + i], 0, __ATOMIC_RELEASE);
-    extern void dedup_on_page_free(uint64_t phys);
-    dedup_on_page_free(pfn << PAGE_SHIFT);
     uint64_t flags;
     spin_lock_irq(&buddy_lock, &flags);
     buddy_free_order(page, 9);

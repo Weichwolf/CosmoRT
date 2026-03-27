@@ -75,6 +75,31 @@ typedef struct {
     uint64_t rcx;       /* user RIP */
 } eq_syscall_frame_t;
 
+/* ── Block: pure timeout sleep (no event queue) ── */
+
+void thread_block_ms(int timeout_ms) {
+    if (timeout_ms <= 0) return;
+
+    thread_t *cur = thread_current();
+    if (!cur) return;
+
+    percpu_t *cpu = percpu_self();
+    eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
+    uint64_t orig_syscall_nr = frame->rax;
+
+    save_user_state_for_block(cur, 0);
+    cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
+    cur->rax = orig_syscall_nr;
+
+    cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
+    epoll_sleeper_add_ext(cur);
+    cur->state = THREAD_BLOCKED;
+
+    arch_set_cr3(virt_to_phys(pml4));
+    thread_return_to_kernel(cur);
+    /* unreachable */
+}
+
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     /* Fast path: event available */
     uint32_t h = arch_load_acquire(&eq->head);

@@ -128,4 +128,9 @@ void event_post(struct thread *target, uint32_t type, uint64_t data);
  * -ETIMEDOUT (deadline expired). */
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms);
 
+/* Block current thread for timeout_ms milliseconds (preemptible sleep).
+ * Does not touch the event queue — purely time-based blocking.
+ * On timeout, syscall restarts. For userspace nanosleep/clock_nanosleep. */
+void thread_block_ms(int timeout_ms);
+
 #endif /* EVENT_QUEUE_H */

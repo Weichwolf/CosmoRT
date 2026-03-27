@@ -67,12 +67,9 @@ uint64_t timer_ms(void) {
     return (rdtsc() - boot_tsc) / timer_tsc_per_ms;
 }
 
+/* Kernel-only non-preemptible delay. For HW init timing (SMP SIPI, device
+ * reset). NOT for userspace sleep — use event_wait with timeout instead. */
 void timer_sleep_ms(uint32_t ms) {
-    /* Cap sleep to prevent fuzzed nanosleep from blocking the core.
-     * Userspace nanosleep with huge values would block the kernel thread
-     * indefinitely since timer_sleep_ms runs in Ring 0 (non-preemptible). */
-    if (ms > 5000) ms = 5000;
-
     if (ms < 10) {
         /* Short sleep: RDTSC busy-wait (accurate, needed for hardware timing) */
         uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;

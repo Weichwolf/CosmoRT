@@ -287,8 +287,6 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                         if (map_user_page(kp->pml4, kpage_addr,
                                                           virt_to_phys(knew), kprot) == 0) {
                                             arch_invlpg(kpage_addr);
-                                            extern void dedup_on_cow_break(uint64_t, uint64_t);
-                                            dedup_on_cow_break(old_phys, virt_to_phys(knew));
                                             page_free(phys_to_virt(old_phys));
                                             return;
                                         }
@@ -378,8 +376,6 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                                   virt_to_phys(new_page), cow_prot) == 0) {
                                     arch_invlpg(page_addr);
                                     /* Notify dedup: old hash invalidated, new page diverged */
-                                    extern void dedup_on_cow_break(uint64_t, uint64_t);
-                                    dedup_on_cow_break(old_phys, virt_to_phys(new_page));
                                     /* page_free handles refcount: decrements and
                                      * only returns to buddy when count reaches 0 */
                                     page_free(phys_to_virt(old_phys));
