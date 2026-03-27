@@ -646,9 +646,25 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
 
     if (t && t->proc) {
         serial_puts(" pid=");
-        serial_putchar('0' + (t->proc->pid % 10));
+        serial_hex64(t->proc->pid);
         serial_puts(" tid=");
-        serial_putchar('0' + (t->tid % 10));
+        serial_hex64(t->tid);
+        serial_puts("\n  rax="); serial_hex64(frame->rax);
+        serial_puts(" rbx="); serial_hex64(frame->rbx);
+        serial_puts(" rcx="); serial_hex64(frame->rcx);
+        serial_puts(" rdx="); serial_hex64(frame->rdx);
+        serial_puts("\n  rsi="); serial_hex64(frame->rsi);
+        serial_puts(" rdi="); serial_hex64(frame->rdi);
+        serial_puts(" rbp="); serial_hex64(frame->rbp);
+        serial_puts(" r8=");  serial_hex64(frame->r8);
+        serial_puts("\n  r9=");  serial_hex64(frame->r9);
+        serial_puts(" r10="); serial_hex64(frame->r10);
+        serial_puts(" r11="); serial_hex64(frame->r11);
+        serial_puts(" r12="); serial_hex64(frame->r12);
+        serial_puts("\n  r13="); serial_hex64(frame->r13);
+        serial_puts(" r14="); serial_hex64(frame->r14);
+        serial_puts(" r15="); serial_hex64(frame->r15);
+        serial_puts(" fs=");  serial_hex64(arch_get_fs_base());
         serial_puts(" killed\n");
         /* Use do_exit_group to properly close FDs, wake parent, etc. */
         extern void do_exit_group(int status);

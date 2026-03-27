@@ -367,6 +367,21 @@ long do_rt_sigreturn(void) {
     t->sig_blocked = uc.uc_sigmask[0];
     t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
 
+    /* Trace sigreturn */
+    {
+        serial_puts("[sigret] pid=");
+        serial_hex64(t->proc->pid);
+        serial_puts(" rip=");
+        serial_hex64(uc.uc_mcontext.gregs.rip);
+        serial_puts(" rsp=");
+        serial_hex64(uc.uc_mcontext.gregs.rsp);
+        serial_puts(" rax=");
+        serial_hex64(uc.uc_mcontext.gregs.rax);
+        serial_puts(" fs=");
+        serial_hex64(uc.uc_mcontext._reserved[0]);
+        serial_putchar('\n');
+    }
+
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER
      * we set frame->rax. We need RAX to be the saved value.

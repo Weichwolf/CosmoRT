@@ -176,6 +176,8 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
     t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
+    /* Save live FS_BASE so deliver_signal stores correct TLS in ucontext */
+    t->fs_base = arch_get_fs_base();
 
     /* SA_RESTART: if syscall returned -EINTR and the about-to-be-delivered
      * signal has SA_RESTART, set up registers so rt_sigreturn restarts the
@@ -196,6 +198,25 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     }
 
     check_pending_signals();
+
+    /* Trace: if we delivered a signal, rip changed to handler address */
+    if (t->rip != (uint64_t)frame->rcx || t->rsp != cpu->user_rsp) {
+        serial_puts("[sig] pid=");
+        serial_hex64(p->pid);
+        serial_puts(" handler=");
+        serial_hex64(t->rip);
+        serial_puts(" frame_rsp=");
+        serial_hex64(t->rsp);
+        serial_puts(" saved_rip=");
+        serial_hex64(frame->rcx);
+        serial_puts(" fs=");
+        serial_hex64(t->fs_base);
+        serial_puts(" syscall=");
+        serial_hex64((uint64_t)num);
+        serial_puts(" result=");
+        serial_hex64((uint64_t)*result_ptr);
+        serial_putchar('\n');
+    }
 
     /* Write back thread_t -> syscall frame */
     frame->rcx = t->rip;

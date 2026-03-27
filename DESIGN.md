@@ -473,33 +473,31 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 Entscheidung: Kein eigenes Userland. Alpine liefert alles oberhalb der Syscall-Schicht.
 CosmoRT implementiert die Linux-Syscall-ABI, Alpine-Binaries laufen unveraendert.
 
-### 13.1 UI-Stack: SDL3 auf CosmoUI
+### 13.1 UI-Stack: SDL3 ueber Linux Device Nodes
 
 ```
 Anwendung (Game, GUI, Player)
          │
-      SDL3 API
+      SDL3 API (unmodifiziert, Alpine-Paket)
          │
-  SDL_cosmoui Backend (~500-1000 LOC)
+  SDL3 Linux-Backends (fbdev, evdev, ALSA, KMS/DRM)
          │
-    cosmoui.h Primitives
+  Linux Device Nodes (/dev/fb0, /dev/input/event0, /dev/snd/*, /dev/dri/)
          │
-  CosmoRT Kernel (Framebuffer, Audio, Input)
+  CosmoRT Kernel (cosmoui.h intern → Hardware)
 ```
 
-| SDL3 Subsystem | cosmoui.h Mapping |
-|----------------|-------------------|
-| SDL_CreateWindow | surface_create (Aufloesung, Format, VSync) |
-| SDL_UpdateWindowSurface | surface_present (Blit, Flip) |
-| SDL_OpenAudioDevice | device_open (Channels, Rate, Format) |
-| SDL_QueueAudio | submit (PCM Samples, Non-Blocking) |
-| SDL_PollEvent | device_read (KEY_*, REL_*, ABS_*) |
-| SDL_SetWindowFullscreen | surface_create (Modus wechseln) |
+| SDL3 Backend | Device Node | Kernel-Subsystem |
+|--------------|-------------|------------------|
+| fbdev | /dev/fb0 (mmap) | Framebuffer (fb.c) |
+| evdev | /dev/input/event0 (read) | Input (input.c) |
+| ALSA | /dev/snd/pcmC0D0p | Audio (RT-Core) |
+| KMS/DRM | /dev/dri/card0 | GPU (virtio-gpu, spaeter) |
 
-Entscheidung: SDL3 ist das einzige UI-Framework. Kein X11, kein Wayland,
-kein Display-Server. Direkter Pfad: App → SDL3 → Kernel.
+Entscheidung: Kein Custom SDL3-Backend. Kernel exposed Standard Linux Device
+Nodes. SDL3 (apk add sdl3) funktioniert direkt. Kein Fork, keine Patches.
 
-### 13.2 VT-Slots = SDL3 Surfaces
+### 13.2 VT-Slots = Fullscreen Surfaces
 
 12 Fullscreen-Slots auf F1-F12 (BeOS-Philosophie, siehe notes/DESKTOP.md).
 Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
@@ -507,13 +505,12 @@ Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
 ```
 F1: [Claude Code]  Terminal          → Glyph-Rendering in FB
 F2: [make]         Terminal          → Glyph-Rendering in FB
-F3: [github.com]   WPE WebKit       → SDL3 in FB
-F4: [Teams]        WPE WebKit       → SDL3 in FB
-F5: [Figma]        WASM-App         → SDL3 in FB
-F6: [Doom]         SDL3-Game        → SDL3 in FB
+F3: [github.com]   WPE WebKit       → SDL3 → /dev/fb0
+F4: [Teams]        WPE WebKit       → SDL3 → /dev/fb0
+F5: [Figma]        WASM-App         → SDL3 → /dev/fb0
+F6: [Doom]         SDL3-Game        → SDL3 → /dev/fb0
 ```
 
-surface_create(slot_id) gibt den Framebuffer fuer diesen VT-Slot.
 F-Tasten wechseln im Kernel — Apps merken davon nichts.
 12-Spur Audio-Mixer im RT-Core: jeder Slot hat eigenen Audio-Stream.
 
@@ -521,9 +518,7 @@ Was automatisch funktioniert:
 - Alles was SDL2/SDL3 nutzt (tausende Anwendungen)
 - Dear ImGui, RetroArch, Mediaplayer, Spiele
 - WPE WebKit: eine Webseite pro Slot (keine Tabs)
-- Software-Rendering sofort, GPU optional (virtio-gpu/nativer Treiber)
-
-SDL_cosmoui lebt im CosmoUI Repository (~/Git/CosmoUI).
+- Software-Rendering sofort, GPU optional (/dev/dri/)
 
 ---
 

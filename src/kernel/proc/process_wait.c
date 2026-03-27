@@ -144,7 +144,8 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
          * or returns immediately (event queued). Loop re-scans children. */
         {
             event_t ev;
-            event_wait(&cur->eq, &ev, -1);
+            int ew = event_wait(&cur->eq, &ev, -1);
+            if (ew == -4) return -EINTR; /* signal pending */
         }
     }
 }

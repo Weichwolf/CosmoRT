@@ -370,6 +370,8 @@ void sched_preempt(void *frame_ptr) {
             cur->rbp = f[8]; cur->rdi = f[9]; cur->rsi = f[10]; cur->rdx = f[11];
             cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
             cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
+            /* Save FS_BASE so deliver_signal stores correct TLS in ucontext */
+            cur->fs_base = arch_get_fs_base();
             check_pending_signals();
             /* Write back (signal handler may have modified rip/rsp/rdi/rsi/rdx) */
             f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;

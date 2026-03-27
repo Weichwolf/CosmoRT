@@ -62,11 +62,12 @@ Input      device_read (KEY_*, REL_*, ABS_* — RT-Core, <1ms)
 Power      state/suspend/shutdown/reboot (ACPI)
 ```
 
-UI-Stack: SDL3 als einziges UI-Framework. CosmoUI-Primitives = SDL3 Backend.
-Ein SDL_cosmoui Video-Driver mappt SDL3 auf cosmoui.h. Alles was SDL2/SDL3
-nutzt laeuft automatisch (Games, Dear ImGui, RetroArch, Mediaplayer).
-Kein X11, kein Wayland, kein Display-Server. App → SDL3 → cosmoui → Framebuffer.
-GPU-Beschleunigung optional ueber virtio-gpu/nativen Treiber.
+UI-Stack: SDL3 laeuft unmodifiziert ueber Standard Linux Device Nodes.
+Kernel exposed /dev/fb0 (Framebuffer), /dev/input/event0 (evdev),
+/dev/snd/ (ALSA). SDL3's existierende Linux-Backends (fbdev, evdev, ALSA)
+funktionieren direkt. Kein SDL3-Fork, kein Custom-Backend, kein X11/Wayland.
+App → SDL3 → Linux Device Nodes → cosmoui.h intern → Hardware.
+GPU-Beschleunigung optional ueber /dev/dri/ (KMS/DRM, virtio-gpu).
 
 USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN = Userspace.
 USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → Block.

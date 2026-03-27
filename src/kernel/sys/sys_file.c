@@ -274,7 +274,8 @@ long do_read(int fd, void *buf, size_t count) {
             vt_flush(pty_id);
 
             event_t ev;
-            event_wait(&t->eq, &ev, -1);
+            int ew = event_wait(&t->eq, &ev, -1);
+            if (ew == -4) return -EINTR; /* signal pending */
             /* If blocked, syscall restarts. If returned, loop re-checks. */
         }
     }

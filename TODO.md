@@ -248,21 +248,35 @@ Noch offen:
 
 ---
 
-## Offen — CosmoUI / SDL3
+## Offen — Device Nodes fuer SDL3/UI
 
-### SDL3 Backend (SDL_cosmoui)
+SDL3 laeuft unmodifiziert ueber Standard Linux Device Nodes.
+Kein Custom-Backend, kein SDL3-Fork. apk add sdl3 funktioniert direkt.
 
-- [ ] SDL_cosmoui Video-Driver: surface_create/present → Framebuffer
-- [ ] SDL_cosmoui Audio-Driver: device_open/submit → Audio-Subsystem
-- [ ] SDL_cosmoui Input-Driver: device_read → Event-Queue
-- [ ] Software-Rendering: SDL_Surface → surface_present Blit
-- [ ] test: SDL3 Hello Window (Farb-Rechteck + Input)
-- [ ] test: Dear ImGui Demo ueber SDL3
+### /dev/fb0 (Framebuffer)
 
-### GPU (spaeter)
+- [ ] /dev/fb0 Device Node: open, mmap (Pixel-Buffer), ioctl (FBIOGET_VSCREENINFO etc.)
+- [ ] Pro VT-Slot ein Framebuffer (12 Slots, F1-F12)
+- [ ] SDL3 fbdev Backend: test mit SDL3 Hello Window
 
-- [ ] virtio-gpu Treiber vollstaendig (Framebuffer + 3D)
-- [ ] SDL3 OpenGL/Vulkan ueber GPU-Treiber
+### /dev/input/event0 (evdev)
+
+- [ ] /dev/input/eventN Device Nodes: read → struct input_event
+- [ ] Keyboard, Maus, Gamepad Events im Linux evdev-Format
+- [ ] SDL3 evdev Backend: test mit SDL3 Input
+
+### /dev/snd/ (ALSA)
+
+- [ ] /dev/snd/pcmC0D0p: PCM Playback Device
+- [ ] ALSA ioctl Subset (SNDRV_PCM_IOCTL_*)
+- [ ] 12-Spur Mixer im RT-Core (ein Stream pro VT-Slot)
+- [ ] SDL3 ALSA Backend: test mit SDL3 Audio
+
+### /dev/dri/ (GPU, spaeter)
+
+- [ ] virtio-gpu Treiber vollstaendig
+- [ ] /dev/dri/card0: KMS/DRM ioctl Subset
+- [ ] SDL3 KMS/DRM Backend: OpenGL/Vulkan
 
 ---
 

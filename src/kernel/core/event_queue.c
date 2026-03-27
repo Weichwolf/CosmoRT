@@ -101,6 +101,17 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
     uint64_t orig_syscall_nr = frame->rax;
 
+    /* Check for pending signals before blocking — POSIX requires that
+     * blocking syscalls return -EINTR when a signal is deliverable.
+     * Without this, signals (e.g. SIGCHLD) stay pending indefinitely
+     * while the thread re-blocks in event_wait without reaching
+     * check_signals_syscall_path. */
+    if (cur->proc) {
+        uint64_t deliverable = cur->proc->sig_pending & ~cur->sig_blocked;
+        if (deliverable)
+            return -4; /* EINTR — caller propagates to sys_handler */
+    }
+
     save_user_state_for_block(cur, 0);
     cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
     cur->rax = orig_syscall_nr;
