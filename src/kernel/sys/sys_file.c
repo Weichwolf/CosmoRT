@@ -42,12 +42,34 @@ int resolve_path(const char *path, char *out, int outsize) {
 
 /* Resolve dirfd + relative path.
  * Absolute paths and AT_FDCWD are handled directly.
- * Real dirfd with relative path → -EBADF (no path stored per FD yet). */
+ * Real dirfd with relative path → prepend directory path from open fd. */
 int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     int len = copy_path_from_user(kpath, upath, (size_t)max);
     if (len < 0) return len;
     if (kpath[0] == '/' || dirfd == AT_FDCWD) return len;
-    return -EBADF;
+
+    /* Real dirfd: look up the directory's path from the open vfs_file */
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, dirfd);
+    if (!fde) return -EBADF;
+    if (fde->type != FD_FILE) return -ENOTDIR;
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    if (!f || f->type != VFS_DIR) return -ENOTDIR;
+    if (!f->path[0]) return -EBADF;
+
+    /* Build absolute path: dirpath + "/" + relative */
+    char tmp[PATH_MAX];
+    int di = 0;
+    const char *dp = f->path;
+    while (*dp && di < PATH_MAX - 2) tmp[di++] = *dp++;
+    if (di > 0 && tmp[di - 1] != '/') tmp[di++] = '/';
+    const char *rp = kpath;
+    while (*rp && di < PATH_MAX - 1) tmp[di++] = *rp++;
+    tmp[di] = '\0';
+
+    /* Copy back and normalize via resolve_path */
+    return resolve_path(tmp, kpath, max);
 }
 
 /* Device file IDs (must match vfs.c) */
@@ -787,6 +809,18 @@ long do_fcntl(int fd, int cmd, long arg) {
         else fde->flags &= ~O_CLOEXEC;
         return 0;
     }
+    case F_GETLK: {
+        /* Single-user system: no contention possible. Report unlocked. */
+        struct k_flock *fl = (struct k_flock *)arg;
+        if (!user_ok((uint64_t)fl, sizeof(*fl))) return -EFAULT;
+        fl->l_type = F_UNLCK;
+        return 0;
+    }
+    case F_SETLK:
+    case F_SETLKW:
+        /* Single-user system: advisory locks always succeed */
+        if (!user_ok((uint64_t)arg, sizeof(struct k_flock))) return -EFAULT;
+        return 0;
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
         int i = fd_find_free(&p->fds, (int)arg);

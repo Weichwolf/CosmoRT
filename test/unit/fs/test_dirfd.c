@@ -24,11 +24,30 @@ static void test_dirfd(void) {
     r = sc2(SYS_ACCESS, (long)"/dev/null", R_OK | W_OK);
     check_val("access /dev/null R_OK|W_OK", r, 0);
 
-    /* openat with real dirfd (not AT_FDCWD) + relative path → -EBADF */
+    /* openat with file fd (not dir) + relative path → -ENOTDIR */
     fd = sc4(SYS_OPENAT, AT_FDCWD, (long)"/proc/dmesg", O_RDONLY, 0);
     if (fd >= 0) {
         long r2 = sc4(SYS_OPENAT, (long)fd, (long)"relative", O_RDONLY, 0);
-        check_val("openat real-dirfd relative → -EBADF", r2, -EBADF);
+        check_val("openat file-dirfd relative → -ENOTDIR", r2, -ENOTDIR);
+        sc1(SYS_CLOSE, fd);
+    }
+
+    /* openat with real dir fd + relative path → resolves correctly */
+    fd = sc4(SYS_OPENAT, AT_FDCWD, (long)"/tmp", O_RDONLY | O_DIRECTORY, 0);
+    check_ge("open /tmp O_DIRECTORY", fd, 0);
+    if (fd >= 0) {
+        /* Create a file via the dir fd */
+        long fd3 = sc4(SYS_OPENAT, (long)fd, (long)"_dirfd_test",
+                       O_CREAT | O_WRONLY, 0644);
+        check_ge("openat dirfd create _dirfd_test", fd3, 0);
+        if (fd3 >= 0) sc1(SYS_CLOSE, fd3);
+        /* Open it back via dirfd */
+        long fd4 = sc4(SYS_OPENAT, (long)fd, (long)"_dirfd_test",
+                       O_RDONLY, 0);
+        check_ge("openat dirfd read _dirfd_test", fd4, 0);
+        if (fd4 >= 0) sc1(SYS_CLOSE, fd4);
+        /* Cleanup */
+        sc3(SYS_UNLINKAT, (long)fd, (long)"_dirfd_test", 0);
         sc1(SYS_CLOSE, fd);
     }
 

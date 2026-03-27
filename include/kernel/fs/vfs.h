@@ -64,6 +64,7 @@ struct vfs_file {
     uint64_t disk_ino;      /* ext2 inode number (0 for ramfs) */
     uint64_t disk_size;     /* cached size for ext2 files */
     uint64_t disk_dir_ino;  /* parent dir inode for ext2 getdents */
+    char path[256];         /* resolved path at open time (for dirfd) */
 };
 
 /* Initialize VFS — create root directory "/" */

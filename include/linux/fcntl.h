@@ -23,8 +23,23 @@
 #define F_SETFD         2
 #define F_GETFL         3
 #define F_SETFL         4
+#define F_GETLK         5
+#define F_SETLK         6
+#define F_SETLKW        7
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC      1
+
+/* flock for fcntl F_GETLK/F_SETLK/F_SETLKW */
+struct k_flock {
+    short l_type;       /* F_RDLCK, F_WRLCK, F_UNLCK */
+    short l_whence;     /* SEEK_SET, SEEK_CUR, SEEK_END */
+    long  l_start;      /* offset */
+    long  l_len;        /* 0 = entire file */
+    int   l_pid;        /* PID of lock owner */
+};
+#define F_RDLCK  0
+#define F_WRLCK  1
+#define F_UNLCK  2
 
 /* Seek */
 #define SEEK_SET        0

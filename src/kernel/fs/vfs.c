@@ -414,6 +414,7 @@ int vfs_open(const char *path, int flags, int mode) {
         f->disk_ino = ino;
         f->disk_size = ip.i_size;
         f->disk_dir_ino = 0;
+        kstrncpy(f->path, path, 256);
 
         if ((flags & O_TRUNC) && !is_dir)
             ext2_truncate(ino, 0);
@@ -461,6 +462,7 @@ int vfs_open(const char *path, int flags, int mode) {
     f->disk_ino = 0;
     f->disk_size = 0;
     f->disk_dir_ino = 0;
+    kstrncpy(f->path, path, 256);
 
     if ((flags & O_TRUNC) && node->type == VFS_FILE) {
         node->size = 0;

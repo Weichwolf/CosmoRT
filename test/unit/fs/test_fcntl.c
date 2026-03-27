@@ -33,6 +33,22 @@ static void test_fcntl(void) {
     long g = sc3(SYS_FCNTL, fd, F_GETFD, 0);
     check("F_SETFD/F_GETFD roundtrip", g & FD_CLOEXEC);
 
+    /* F_SETLK: advisory write lock → 0 (single-user, always succeeds) */
+    struct k_flock fl = { .l_type = F_WRLCK, .l_whence = 0, .l_start = 0, .l_len = 0 };
+    long lr = sc3(SYS_FCNTL, fd, F_SETLK, (long)&fl);
+    check_val("F_SETLK write lock", lr, 0);
+
+    /* F_GETLK: reports F_UNLCK (no contention in single-user) */
+    struct k_flock fl2 = { .l_type = F_WRLCK, .l_whence = 0, .l_start = 0, .l_len = 0 };
+    lr = sc3(SYS_FCNTL, fd, F_GETLK, (long)&fl2);
+    check_val("F_GETLK returns 0", lr, 0);
+    check_val("F_GETLK l_type = F_UNLCK", fl2.l_type, F_UNLCK);
+
+    /* F_SETLKW: blocking lock → 0 */
+    struct k_flock fl3 = { .l_type = F_RDLCK, .l_whence = 0, .l_start = 0, .l_len = 0 };
+    lr = sc3(SYS_FCNTL, fd, F_SETLKW, (long)&fl3);
+    check_val("F_SETLKW read lock", lr, 0);
+
     sc1(SYS_CLOSE, fd);
 }
 
