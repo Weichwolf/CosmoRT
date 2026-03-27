@@ -226,6 +226,190 @@
     /* multi-message send/recv */ \
     X(SYS_SENDMMSG, sendmmsg, do_sendmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
     X(SYS_RECVMMSG, recvmmsg, do_recvmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
+    /* ── Batch 2: remaining syscalls (no more "unhandled") ── */ \
+    /* Harmless no-ops / delegations */ \
+    X(SYS_MINCORE, mincore, do_mincore()) \
+    X(SYS_PTRACE, ptrace, do_ptrace()) \
+    X(SYS_SYSLOG, syslog, do_syslog_stub()) \
+    X(SYS_SCHED_RR_GET_INTERVAL, sched_rr_get_interval, do_sched_rr_get_interval((int)a1, (void *)a2)) \
+    X(SYS_VHANGUP, vhangup, do_vhangup()) \
+    X(SYS_ADJTIMEX, adjtimex, do_adjtimex()) \
+    X(SYS_CHROOT, chroot, do_chroot()) \
+    X(SYS_ACCT, acct, do_acct()) \
+    X(SYS_SETTIMEOFDAY, settimeofday, do_settimeofday()) \
+    X(SYS_SETDOMAINNAME, setdomainname, do_setdomainname()) \
+    X(SYS_READAHEAD, readahead, do_readahead()) \
+    X(SYS_RESTART_SYSCALL, restart_syscall, do_restart_syscall()) \
+    X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime()) \
+    X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime()) \
+    X(SYS_UNSHARE, unshare, do_unshare_stub()) \
+    X(SYS_UTIMES, utimes, do_utimes((const char *)a1, (const void *)a2)) \
+    X(SYS_FUTIMESAT, futimesat, do_futimesat((int)a1, (const char *)a2, (const void *)a3)) \
+    X(SYS_SIGNALFD, signalfd, do_signalfd((int)a1, (const uint64_t *)a2)) \
+    X(SYS_EVENTFD, eventfd, do_eventfd((unsigned int)a1)) \
+    X(SYS_TIMERFD_GETTIME, timerfd_gettime, do_timerfd_gettime((int)a1, (void *)a2)) \
+    X(SYS_RT_TGSIGQUEUEINFO, rt_tgsigqueueinfo, do_rt_tgsigqueueinfo((int)a1, (int)a2, (int)a3, (void *)a4)) \
+    X(SYS_EPOLL_CREATE, epoll_create, do_epoll_create((int)a1)) \
+    X(SYS_INOTIFY_INIT, inotify_init, do_inotify_init()) \
+    X(SYS_PREADV2, preadv2, do_preadv2((int)a1, (const void *)a2, (int)a3)) \
+    X(SYS_PWRITEV2, pwritev2, do_pwritev2((int)a1, (const void *)a2, (int)a3)) \
+    X(SYS_OPENAT2, openat2, do_openat2((int)a1, (const char *)a2, (void *)a3, (size_t)a4)) \
+    X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (void *)a2, (int)a3, (void *)a4)) \
+    X(SYS_MKNOD, mknod, do_mknod((const char *)a1, (uint32_t)a2, (uint64_t)a3)) \
+    X(SYS_FCHMODAT2, fchmodat2, do_fchmodat2((int)a1, (const char *)a2, (uint32_t)a3, (int)a4)) \
+    /* Return -ENOSYS: SysV IPC */ \
+    X(SYS_SHMGET, shmget, -ENOSYS) \
+    X(SYS_SHMAT, shmat, -ENOSYS) \
+    X(SYS_SHMCTL, shmctl, -ENOSYS) \
+    X(SYS_SHMDT, shmdt, -ENOSYS) \
+    X(SYS_SEMGET, semget, -ENOSYS) \
+    X(SYS_SEMOP, semop, -ENOSYS) \
+    X(SYS_SEMCTL, semctl, -ENOSYS) \
+    X(SYS_MSGGET, msgget, -ENOSYS) \
+    X(SYS_MSGSND, msgsnd, -ENOSYS) \
+    X(SYS_MSGRCV, msgrcv, -ENOSYS) \
+    X(SYS_MSGCTL, msgctl, -ENOSYS) \
+    X(SYS_SEMTIMEDOP, semtimedop, -ENOSYS) \
+    /* Return -ENOSYS: kernel modules */ \
+    X(SYS_CREATE_MODULE, create_module, -ENOSYS) \
+    X(SYS_INIT_MODULE, init_module, -ENOSYS) \
+    X(SYS_DELETE_MODULE, delete_module, -ENOSYS) \
+    X(SYS_GET_KERNEL_SYMS, get_kernel_syms, -ENOSYS) \
+    X(SYS_QUERY_MODULE, query_module, -ENOSYS) \
+    X(SYS_FINIT_MODULE, finit_module, -ENOSYS) \
+    /* Return -ENOSYS: security/sandboxing */ \
+    X(SYS_SECCOMP, seccomp, -ENOSYS) \
+    X(SYS_LANDLOCK_CREATE_RULESET, landlock_create_ruleset, -ENOSYS) \
+    X(SYS_LANDLOCK_ADD_RULE, landlock_add_rule, -ENOSYS) \
+    X(SYS_LANDLOCK_RESTRICT_SELF, landlock_restrict_self, -ENOSYS) \
+    X(SYS_LSM_GET_SELF_ATTR, lsm_get_self_attr, -ENOSYS) \
+    X(SYS_LSM_SET_SELF_ATTR, lsm_set_self_attr, -ENOSYS) \
+    X(SYS_LSM_LIST_MODULES, lsm_list_modules, -ENOSYS) \
+    X(SYS_BPF, bpf, -ENOSYS) \
+    /* Return -ENOSYS: NUMA */ \
+    X(SYS_MBIND, mbind, -ENOSYS) \
+    X(SYS_SET_MEMPOLICY, set_mempolicy, -ENOSYS) \
+    X(SYS_GET_MEMPOLICY, get_mempolicy, -ENOSYS) \
+    X(SYS_MIGRATE_PAGES, migrate_pages, -ENOSYS) \
+    X(SYS_MOVE_PAGES, move_pages, -ENOSYS) \
+    X(SYS_SET_MEMPOLICY_HOME_NODE, set_mempolicy_home_node, -ENOSYS) \
+    /* Return -ENOSYS: namespaces */ \
+    X(SYS_SETNS, setns, -ENOSYS) \
+    /* Return -ENOSYS: io_uring */ \
+    X(SYS_IO_URING_SETUP, io_uring_setup, -ENOSYS) \
+    X(SYS_IO_URING_ENTER, io_uring_enter, -ENOSYS) \
+    X(SYS_IO_URING_REGISTER, io_uring_register, -ENOSYS) \
+    /* Return -ENOSYS: old AIO */ \
+    X(SYS_IO_SETUP, io_setup, -ENOSYS) \
+    X(SYS_IO_DESTROY, io_destroy, -ENOSYS) \
+    X(SYS_IO_GETEVENTS, io_getevents, -ENOSYS) \
+    X(SYS_IO_SUBMIT, io_submit, -ENOSYS) \
+    X(SYS_IO_CANCEL, io_cancel, -ENOSYS) \
+    X(SYS_IO_PGETEVENTS, io_pgetevents, -ENOSYS) \
+    /* Return -ENOSYS: obsolete/misc */ \
+    X(SYS_USELIB, uselib, -ENOSYS) \
+    X(SYS_NFSSERVCTL, nfsservctl, -ENOSYS) \
+    X(SYS_GETPMSG, getpmsg, -ENOSYS) \
+    X(SYS_PUTPMSG, putpmsg, -ENOSYS) \
+    X(SYS_AFS_SYSCALL, afs_syscall, -ENOSYS) \
+    X(SYS_TUXCALL, tuxcall, -ENOSYS) \
+    X(SYS_SECURITY, security, -ENOSYS) \
+    X(SYS_VSERVER, vserver, -ENOSYS) \
+    X(SYS_LOOKUP_DCOOKIE, lookup_dcookie, -ENOSYS) \
+    X(SYS_REMAP_FILE_PAGES, remap_file_pages, -ENOSYS) \
+    X(SYS_ADD_KEY, add_key, -ENOSYS) \
+    X(SYS_REQUEST_KEY, request_key, -ENOSYS) \
+    X(SYS_KEYCTL, keyctl, -ENOSYS) \
+    X(SYS_IOPRIO_SET, ioprio_set, -ENOSYS) \
+    X(SYS_IOPRIO_GET, ioprio_get, -ENOSYS) \
+    X(SYS_KEXEC_LOAD, kexec_load, -ENOSYS) \
+    X(SYS_KEXEC_FILE_LOAD, kexec_file_load, -ENOSYS) \
+    X(SYS_PERF_EVENT_OPEN, perf_event_open, -ENOSYS) \
+    X(SYS_PROCESS_VM_READV, process_vm_readv, -ENOSYS) \
+    X(SYS_PROCESS_VM_WRITEV, process_vm_writev, -ENOSYS) \
+    X(SYS_PROCESS_MADVISE, process_madvise, -ENOSYS) \
+    X(SYS_PROCESS_MRELEASE, process_mrelease, -ENOSYS) \
+    /* Return -ENOSYS: new mount API */ \
+    X(SYS_OPEN_TREE, open_tree, -ENOSYS) \
+    X(SYS_MOVE_MOUNT, move_mount, -ENOSYS) \
+    X(SYS_FSOPEN, fsopen, -ENOSYS) \
+    X(SYS_FSCONFIG, fsconfig, -ENOSYS) \
+    X(SYS_FSMOUNT, fsmount, -ENOSYS) \
+    X(SYS_FSPICK, fspick, -ENOSYS) \
+    X(SYS_MOUNT_SETATTR, mount_setattr, -ENOSYS) \
+    X(SYS_OPEN_TREE_ATTR, open_tree_attr, -ENOSYS) \
+    /* Return -ENOSYS: pidfd */ \
+    X(SYS_PIDFD_OPEN, pidfd_open, -ENOSYS) \
+    X(SYS_PIDFD_SEND_SIGNAL, pidfd_send_signal, -ENOSYS) \
+    X(SYS_PIDFD_GETFD, pidfd_getfd, -ENOSYS) \
+    /* Return -ENOSYS: misc modern */ \
+    X(SYS_KCMP, kcmp, -ENOSYS) \
+    X(SYS_USERFAULTFD, userfaultfd, -ENOSYS) \
+    X(SYS_MEMBARRIER, membarrier, -ENOSYS) \
+    X(SYS_MLOCK2, mlock2, -ENOSYS) \
+    X(SYS_PKEY_MPROTECT, pkey_mprotect, -ENOSYS) \
+    X(SYS_PKEY_ALLOC, pkey_alloc, -ENOSYS) \
+    X(SYS_PKEY_FREE, pkey_free, -ENOSYS) \
+    X(SYS_MAP_SHADOW_STACK, map_shadow_stack, -ENOSYS) \
+    X(SYS_FUTEX_WAITV, futex_waitv, -ENOSYS) \
+    X(SYS_FUTEX_WAKE, futex_wake, -ENOSYS) \
+    X(SYS_FUTEX_WAIT, futex_wait, -ENOSYS) \
+    X(SYS_FUTEX_REQUEUE, futex_requeue, -ENOSYS) \
+    X(SYS_STATMOUNT, statmount, -ENOSYS) \
+    X(SYS_LISTMOUNT, listmount, -ENOSYS) \
+    X(SYS_MSEAL, mseal, -ENOSYS) \
+    X(SYS_SETXATTRAT, setxattrat, -ENOSYS) \
+    X(SYS_GETXATTRAT, getxattrat, -ENOSYS) \
+    X(SYS_LISTXATTRAT, listxattrat, -ENOSYS) \
+    X(SYS_REMOVEXATTRAT, removexattrat, -ENOSYS) \
+    X(SYS_FILE_GETATTR, file_getattr, -ENOSYS) \
+    X(SYS_FILE_SETATTR, file_setattr, -ENOSYS) \
+    X(SYS_LISTNS, listns, -ENOSYS) \
+    X(SYS_RSEQ_SLICE_YIELD, rseq_slice_yield, -ENOSYS) \
+    X(SYS_CACHESTAT, cachestat, -ENOSYS) \
+    X(SYS_MEMFD_SECRET, memfd_secret, -ENOSYS) \
+    X(SYS_URETPROBE, uretprobe, -ENOSYS) \
+    X(SYS_UPROBE, uprobe, -ENOSYS) \
+    /* Return -ENOSYS: remaining obsolete */ \
+    X(SYS_MODIFY_LDT, modify_ldt, -ENOSYS) \
+    X(SYS_PIVOT_ROOT, pivot_root, -ENOSYS) \
+    X(SYS__SYSCTL, _sysctl, -ENOSYS) \
+    X(SYS_SYSFS, sysfs, -ENOSYS) \
+    X(SYS_USTAT, ustat, -ENOSYS) \
+    X(SYS_SWAPON, swapon, -ENOSYS) \
+    X(SYS_SWAPOFF, swapoff, -ENOSYS) \
+    X(SYS_QUOTACTL, quotactl, -ENOSYS) \
+    X(SYS_SET_THREAD_AREA, set_thread_area, -ENOSYS) \
+    X(SYS_GET_THREAD_AREA, get_thread_area, -ENOSYS) \
+    X(SYS_EPOLL_CTL_OLD, epoll_ctl_old, -ENOSYS) \
+    X(SYS_EPOLL_WAIT_OLD, epoll_wait_old, -ENOSYS) \
+    X(SYS_TIMER_CREATE, timer_create, -ENOSYS) \
+    X(SYS_TIMER_SETTIME, timer_settime, -ENOSYS) \
+    X(SYS_TIMER_GETTIME, timer_gettime, -ENOSYS) \
+    X(SYS_TIMER_GETOVERRUN, timer_getoverrun, -ENOSYS) \
+    X(SYS_TIMER_DELETE, timer_delete, -ENOSYS) \
+    X(SYS_MQ_OPEN, mq_open, -ENOSYS) \
+    X(SYS_MQ_UNLINK, mq_unlink, -ENOSYS) \
+    X(SYS_MQ_TIMEDSEND, mq_timedsend, -ENOSYS) \
+    X(SYS_MQ_TIMEDRECEIVE, mq_timedreceive, -ENOSYS) \
+    X(SYS_MQ_NOTIFY, mq_notify, -ENOSYS) \
+    X(SYS_MQ_GETSETATTR, mq_getsetattr, -ENOSYS) \
+    X(SYS_GET_ROBUST_LIST, get_robust_list, -ENOSYS) \
+    X(SYS_SPLICE, splice, -ENOSYS) \
+    X(SYS_TEE, tee, -ENOSYS) \
+    X(SYS_SYNC_FILE_RANGE, sync_file_range, -ENOSYS) \
+    X(SYS_VMSPLICE, vmsplice, -ENOSYS) \
+    X(SYS_FANOTIFY_INIT, fanotify_init, -ENOSYS) \
+    X(SYS_FANOTIFY_MARK, fanotify_mark, -ENOSYS) \
+    X(SYS_NAME_TO_HANDLE_AT, name_to_handle_at, -ENOSYS) \
+    X(SYS_OPEN_BY_HANDLE_AT, open_by_handle_at, -ENOSYS) \
+    X(SYS_SCHED_SETATTR, sched_setattr, -ENOSYS) \
+    X(SYS_SCHED_GETATTR, sched_getattr, -ENOSYS) \
+    X(SYS_EXECVEAT, execveat, -ENOSYS) \
+    X(SYS_QUOTACTL_FD, quotactl_fd, -ENOSYS) \
+    /* Return -EPERM: privileged ops */ \
+    X(SYS_IOPL, iopl, -EPERM) \
+    X(SYS_IOPERM, ioperm, -EPERM) \
     /* end */
 
 /* Syscall name lookup for tracing */

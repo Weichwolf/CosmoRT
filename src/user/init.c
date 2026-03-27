@@ -31,16 +31,7 @@ void _start_c(void) {
         if (fd > 2) sc1(SYS_CLOSE, fd);
         sc3(SYS_IOCTL, 0, TIOCSCTTY, 1);
     }
-    char *argv[] = { "sh", "-c",
-        "echo 'nameserver 10.0.2.3' > /etc/resolv.conf;"
-        "cat /etc/resolv.conf;"
-        "cat /etc/apk/repositories;"
-        "wget -O /dev/null http://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/APKINDEX.tar.gz 2>&1;"
-        "echo wget_rc=$?;"
-        "apk update 2>&1;"
-        "echo update_rc=$?;"
-        "echo === DONE ===",
-        (char *)0 };
+    char *argv[] = { "sh", (char *)0 };
     char *envp[] = { "HOME=/", "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
                      "TERM=dumb", (char *)0 };
     sc3(SYS_EXECVE, (long)"/bin/sh", (long)argv, (long)envp);
