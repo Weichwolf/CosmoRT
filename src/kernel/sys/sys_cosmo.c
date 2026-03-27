@@ -135,6 +135,12 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
 
 long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     (void)a6;
+    /* RT_QUERY is read-only observability — any process may call it */
+    if (num == SYS_COSMO_RT_QUERY)
+        return do_cosmo_rt_query(a1, a2, a3, a4);
+    /* All other 0x10000+ syscalls are HW primitives — drivers only */
+    process_t *p = proc_current();
+    if (!p || !p->is_driver) return -EPERM;
     switch (num) {
     case SYS_COSMO_MMIO_MAP:     return do_cosmo_mmio_map(a1, a2, a3);
     case SYS_COSMO_DMA_ALLOC:    return do_cosmo_dma_alloc(a1, a2, a3);
@@ -145,7 +151,6 @@ long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long 
     case SYS_COSMO_FW_LOAD:      return do_cosmo_fw_load(a1, a2, a3);
     case SYS_COSMO_NIC_ATTACH:   return do_cosmo_nic_attach(a1);
     case SYS_COSMO_KEXEC:        return do_cosmo_kexec(a1, a2);
-    case SYS_COSMO_RT_QUERY:     return do_cosmo_rt_query(a1, a2, a3, a4);
     default:                     return -ENOSYS;
     }
 }

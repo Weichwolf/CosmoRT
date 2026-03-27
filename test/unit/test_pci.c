@@ -4,6 +4,13 @@
 static void test_pci(void) {
     puts("\n[PCI Scan]\n");
 
+    /* PCI requires is_driver — skip if non-driver (forked child) */
+    uint32_t probe = 0;
+    if (sc5(SYS_COSMO_PCI_READ, 0, 0, 0, 0, (long)&probe) == -EPERM) {
+        pass("PCI skip (non-driver)");
+        return;
+    }
+
     int found = 0;
     for (int bus = 0; bus < 8; bus++) {
         for (int dev = 0; dev < 32; dev++) {
