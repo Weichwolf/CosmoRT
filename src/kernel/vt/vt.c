@@ -642,9 +642,7 @@ void vt_keyboard_event(uint16_t scancode, int pressed) {
     if (key_ctrl && ch >= 'a' && ch <= 'z') ch = (uint8_t)(ch & 0x1F);
     else if (key_ctrl && ch >= 'A' && ch <= 'Z') ch = (uint8_t)(ch & 0x1F);
 
-    /* Send to active VT's PTY.
-     * Don't flush here — we're in IRQ context.
-     * Timer tick or next syscall will flush. */
+    /* Send to active VT's PTY */
     char c = (char)ch;
     pty_master_write(vts[active_vt].pty_id, &c, 1);
 }
@@ -679,6 +677,7 @@ void vt_flush(int vt_id) {
 
 /* ── Query ─────────────────────────────────────────── */
 
+int vt_active(void) { return active_vt; }
 int vt_cols(void) { return grid_cols; }
 int vt_rows(void) { return grid_rows; }
 int vt_pty_id(int vt_id) {

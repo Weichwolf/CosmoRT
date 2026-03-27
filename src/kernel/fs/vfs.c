@@ -277,6 +277,13 @@ int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
 
     /* Device files */
+    /* /dev/console → PTY slave 0 (VT0) */
+    if (kstreq(path, "/dev/console")) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)0L, flags & 3);
+        return fd < 0 ? -EMFILE : fd;
+    }
     /* /dev/tty → current process's PTY (controlling terminal) */
     if (kstreq(path, "/dev/tty")) {
         process_t *p = proc_current();

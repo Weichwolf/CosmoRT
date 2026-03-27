@@ -342,6 +342,10 @@ void sched_preempt(void *frame_ptr) {
     if (percpu_self()->core_id == 0) {
         extern void epoll_check_timeouts(void);
         epoll_check_timeouts();
+        /* Flush active VT output (echo, process output) */
+        extern void vt_flush(int vt_id);
+        extern int vt_active(void);
+        vt_flush(vt_active());
     }
 
     percpu_t *cpu = percpu_self();
