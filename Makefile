@@ -103,10 +103,8 @@ KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/vfs_dirops.o \
             $(BUILD)/kernel/fs/vfs_ioctls.o \
             $(BUILD)/kernel/fs/vfs_symlink.o \
-            $(BUILD)/kernel/fs/cosmofs.o \
-            $(BUILD)/kernel/fs/btree.o \
+            $(BUILD)/kernel/fs/ext2.o \
             $(BUILD)/kernel/fs/bcache.o \
-            $(BUILD)/kernel/fs/journal.o \
             $(BUILD)/kernel/fs/procfs.o
 
 KERN_NET  = $(BUILD)/kernel/net/net.o \
@@ -244,17 +242,13 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 
 init-bin: $(BUILD)/gen/init_bin.h
 
-# ── Alpine disk image (CosmoFS) ──────────────────
+# ── Alpine disk image (ext2) ─────────────────────
 ALPINE_ROOT ?= /tmp/alpine-root
 
-alpine-image: tools/mkfs tools/cosmocp $(EFI_BIN)
+alpine-image: $(EFI_BIN)
 	sh tools/mkalpine.sh $(ALPINE_ROOT)
 
-# ── mkfs.cosmo (host tool) + disk image ─────────
-tools/mkfs: tools/mkfs.c
-	$(HOST_CC) -Wall -Wextra -O2 -o $@ $<
-
-$(BUILD)/disk.img: tools/mkfs $(EFI_BIN) | $(BUILD)
+$(BUILD)/disk.img: $(EFI_BIN) | $(BUILD)
 	sh tools/mkimage.sh
 
 disk: $(BUILD)/disk.img
@@ -505,14 +499,14 @@ qemu-alpine:
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
-	        -drive file=build/cosmofs.img,format=raw,if=virtio
+	        -drive file=build/root.ext2,format=raw,if=virtio
 
-# Interactive bash on VT with CosmoFS disk
+# Interactive bash on VT with ext2 disk
 # COSMO_INTERACTIVE=1 tells mkimage.sh to skip .boot → init starts bash -i
 qemu-shell: $(ESP_IMG)
 	COSMO_INTERACTIVE=1 sh tools/mkimage.sh
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) \
-	        -drive file=build/cosmofs.img,format=raw,if=virtio \
+	        -drive file=build/root.ext2,format=raw,if=virtio \
 	        -device virtio-keyboard-pci
 
 vhdx: $(BUILD)/disk.img
@@ -566,4 +560,3 @@ test-boot-disk: $(BUILD)/disk.img
 clean:
 	rm -rf $(BUILD)
 	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kexec_tramp_bin.h
-	rm -f tools/mkfs

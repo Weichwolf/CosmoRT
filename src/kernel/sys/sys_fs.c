@@ -60,8 +60,8 @@ long do_renameat2(int olddirfd, const char *oldpath,
 
     if (flags & RENAME_NOREPLACE) {
         /* Target must not exist */
-        extern uint64_t cosmofs_walk_path(const char *);
-        if (vfs_lookup(knew) || cosmofs_walk_path(knew))
+        extern uint64_t ext2_walk_path(const char *);
+        if (vfs_lookup(knew) || ext2_walk_path(knew))
             return -EEXIST;
     }
     return vfs_rename(kold, knew);
@@ -227,10 +227,10 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
             if (*a == 0 && *b == 0) { exists = 1; goto found; }
         }
     }
-    /* CosmoFS on disk */
+    /* ext2 on disk */
     {
-        extern uint64_t cosmofs_walk_path(const char *);
-        if (cosmofs_walk_path(kpath)) { exists = 1; goto found; }
+        extern uint64_t ext2_walk_path(const char *);
+        if (ext2_walk_path(kpath)) { exists = 1; goto found; }
     }
 
 found:

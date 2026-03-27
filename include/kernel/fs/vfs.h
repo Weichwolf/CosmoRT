@@ -1,10 +1,10 @@
 /* CosmoRT VFS — filesystem dispatch layer
  *
  * Two backends:
- *   VFS_BACKEND_RAM    — in-memory ramfs (original, used for /dev/shm and no-disk boots)
- *   VFS_BACKEND_COSMOFS — persistent CosmoFS on virtio-blk
+ *   VFS_BACKEND_RAM  — in-memory ramfs (original, used for /dev/shm and no-disk boots)
+ *   VFS_BACKEND_EXT2 — persistent ext2 on virtio-blk
  *
- * Path routing: CosmoFS is root "/" when mounted. /dev/shm always ramfs.
+ * Path routing: ext2 is root "/" when mounted. /dev/shm always ramfs.
  * Slab-allocated vfs_node pool, linked-list directories (ramfs only).
  */
 #ifndef VFS_H
@@ -51,19 +51,19 @@ struct vfs_node {
 
 /* Filesystem backend */
 #define VFS_BACKEND_RAM     0
-#define VFS_BACKEND_COSMOFS 1
+#define VFS_BACKEND_EXT2    1
 
 /* Open file (per-fd state) */
 struct vfs_file {
     int type;               /* VFS_FILE, VFS_DIR, VFS_PIPE */
     int flags;              /* O_RDONLY, O_WRONLY, O_RDWR */
     int refcount;           /* reference count (fork shares vfs_file) */
-    int backend;            /* VFS_BACKEND_RAM or VFS_BACKEND_COSMOFS */
+    int backend;            /* VFS_BACKEND_RAM or VFS_BACKEND_EXT2 */
     uint64_t offset;        /* current read/write position */
-    struct vfs_node *node;  /* ramfs node (NULL for cosmofs) */
-    uint64_t cosmofs_ino;   /* CosmoFS inode number (0 for ramfs) */
-    uint64_t cosmofs_size;  /* cached size for cosmofs files */
-    uint64_t cosmofs_dir_ino; /* parent dir inode for cosmofs getdents */
+    struct vfs_node *node;  /* ramfs node (NULL for ext2) */
+    uint64_t disk_ino;      /* ext2 inode number (0 for ramfs) */
+    uint64_t disk_size;     /* cached size for ext2 files */
+    uint64_t disk_dir_ino;  /* parent dir inode for ext2 getdents */
 };
 
 /* Initialize VFS — create root directory "/" */
@@ -113,8 +113,8 @@ int vfs_utimensat(const char *path, const int64_t times[4], int flags);
 /* Populate ramfs with a file (for init binary, etc.) */
 int vfs_add_file(const char *path, const void *data, size_t len);
 
-/* Mount CosmoFS as root filesystem (called from main after bcache_init) */
-void vfs_mount_cosmofs(void);
+/* Mount ext2 as root filesystem (called from main after bcache_init) */
+void vfs_mount_ext2(void);
 
 /* Read from an open file at a specific offset without changing file position.
  * Returns bytes read or negative errno. */
@@ -130,12 +130,10 @@ void vfs_file_incref(struct vfs_file *f);
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj);
 
-/* Look up a CosmoFS inode by path. Returns inode number, or 0 if not found.
- * Only searches CosmoFS, not ramfs. */
-uint64_t vfs_cosmofs_lookup(const char *path);
-
+/* Look up an ext2 inode by path. Returns inode number, or 0 if not found. */
+uint64_t vfs_ext2_lookup(const char *path);
 /* Read entire file into a kernel buffer (page-allocated).
- * Handles both ramfs and CosmoFS. Caller must free with pages_free().
+ * Handles both ramfs and ext2. Caller must free with pages_free().
  * Returns 0 on success, fills *out_data and *out_size.
  * Returns negative errno on failure. */
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size);

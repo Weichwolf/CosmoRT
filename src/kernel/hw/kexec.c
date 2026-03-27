@@ -24,7 +24,7 @@
 #include "boot_info.h"
 #include "arch/arch.h"
 #include "fs/bcache.h"
-#include "fs/journal.h"
+#include "fs/ext2.h"
 #include "sys/syscall.h"
 #include "proc/thread.h"
 
@@ -99,7 +99,7 @@ static int validate_elf(const Elf64_Ehdr *eh, size_t len) {
 
 static void flush_filesystem(void) {
     serial_puts("kexec: flushing filesystem\n");
-    journal_commit();
+    ext2_sync();
     bcache_sync();
 }
 

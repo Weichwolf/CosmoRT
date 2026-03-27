@@ -457,7 +457,7 @@ static size_t emit_dirent(uint8_t *out, size_t remaining,
     return reclen;
 }
 
-/* Callback context for CosmoFS getdents64 via cosmofs_dir_iterate */
+/* Callback context for ext2 getdents64 via ext2_dir_iterate */
 struct getdents_ctx {
     uint8_t *out;
     size_t   count;
@@ -466,12 +466,14 @@ struct getdents_ctx {
     int      full;       /* set when buffer is exhausted */
 };
 
-static int getdents_cb(const char *name, uint64_t ino, void *arg) {
+static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type, void *arg) {
     struct getdents_ctx *ctx = (struct getdents_ctx *)arg;
-    /* Determine type: read inode to check */
-    uint8_t d_type = 8; /* DT_REG */
-    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-    if (ip && ip->type == COSMOFS_TYPE_DIR) d_type = 4; /* DT_DIR */
+    /* Map ext2 file_type to DT_* */
+    uint8_t d_type = 0; /* DT_UNKNOWN */
+    if (file_type == EXT2_FT_REG_FILE) d_type = 8; /* DT_REG */
+    else if (file_type == EXT2_FT_DIR) d_type = 4; /* DT_DIR */
+    else if (file_type == EXT2_FT_SYMLINK) d_type = 10; /* DT_LNK */
+    else d_type = 8; /* default to DT_REG */
 
     ctx->next_off++;
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
@@ -556,8 +558,8 @@ long do_getdents64(int fd, void *buf, size_t count) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    /* CosmoFS directory */
-    if (f->backend == VFS_BACKEND_COSMOFS) {
+    /* ext2 directory */
+    if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_DIR) return -ENOTDIR;
         struct getdents_ctx ctx = {
             .out = (uint8_t *)buf,
@@ -566,7 +568,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
             .next_off = f->offset,
             .full = 0
         };
-        cosmofs_dir_iterate(f->cosmofs_ino, (int)f->offset, getdents_cb, &ctx);
+        ext2_dir_iterate((uint32_t)f->disk_ino, (int)f->offset, getdents_cb, &ctx);
         f->offset = ctx.next_off;
         return (long)ctx.written;
     }

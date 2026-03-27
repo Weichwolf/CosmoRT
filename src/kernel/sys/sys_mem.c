@@ -551,7 +551,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     /* File-backed mmap: lazy — just store file metadata in VMA.
      * Pages are loaded on demand by the page fault handler. */
     if (is_file) {
-        uint64_t ino = vf->cosmofs_ino;
+        uint64_t ino = vf->disk_ino;
         if (!ino && vf->node) ino = vf->node->ino;
         v->file_ino = ino;
         v->file_offset = (uint64_t)offset;

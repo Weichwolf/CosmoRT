@@ -184,23 +184,23 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Load binary into buffer — ramfs or CosmoFS, one path */
+    /* Load binary into buffer — ramfs or ext2, one path */
     uint8_t *elf_buf = 0;
     size_t elf_len = 0;
     int elf_pages = 0;
 
-    uint64_t cosmofs_ino = vfs_cosmofs_lookup(kpath);
-    if (cosmofs_ino) {
-        /* CosmoFS: read entire file into buffer */
-        extern struct cosmofs_inode *cosmofs_inode_read(uint64_t ino);
-        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
-        struct cosmofs_inode *ip = cosmofs_inode_read(cosmofs_ino);
-        if (!ip || ip->size == 0) return -ENOEXEC;
-        elf_len = ip->size;
+    uint64_t ext2_ino = vfs_ext2_lookup(kpath);
+    if (ext2_ino) {
+        /* ext2: read entire file into buffer */
+        extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
+        extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+        struct ext2_inode ip;
+        if (ext2_inode_read((uint32_t)ext2_ino, &ip) < 0 || ip.i_size == 0) return -ENOEXEC;
+        elf_len = ip.i_size;
         elf_pages = (int)((elf_len + 4095) / 4096);
         elf_buf = (uint8_t *)pages_alloc(elf_pages);
         if (!elf_buf) return -ENOMEM;
-        int rd = cosmofs_read(cosmofs_ino, elf_buf, 0, elf_len);
+        int rd = ext2_read((uint32_t)ext2_ino, elf_buf, 0, elf_len);
         if (rd < (int)elf_len) { pages_free(elf_buf, elf_pages); return -EIO; }
     } else {
         /* ramfs: copy from node */

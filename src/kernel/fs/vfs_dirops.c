@@ -2,27 +2,32 @@
 
 #include "fs/vfs_internal.h"
 
+/* ── Helpers ─────────────────────────────────────── */
+
+/* Callback for rmdir empty-check: counts non-dot entries */
+static int rmdir_count_cb(const char *name, uint32_t ino, uint8_t type, void *arg) {
+    (void)ino; (void)type;
+    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
+        return 0; /* skip . and .. */
+    (*(int *)arg)++;
+    return 1; /* stop on first real entry */
+}
+
 /* ── Directory/file mutation ─────────────────────── */
 
 int vfs_mkdir(const char *path) {
     if (!is_ramfs_path(path)) {
         /* Check if exists */
-        uint64_t ino = cosmofs_walk(path);
-        if (ino != 0) return -EEXIST;
+        uint64_t ino64 = ext2_walk(path);
+        if (ino64 != 0) return -EEXIST;
 
         const char *basename;
-        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
 
-        uint64_t new_ino = cosmofs_inode_alloc();
-        if (new_ino == 0) return -ENOMEM;
-
-        struct cosmofs_inode dir_in;
-        kmemset(&dir_in, 0, sizeof(dir_in));
-        dir_in.type = COSMOFS_TYPE_DIR;
-        cosmofs_inode_write(new_ino, &dir_in);
-
-        return cosmofs_dir_create(parent_ino, basename, new_ino);
+        uint32_t new_ino;
+        return ext2_mkdir(parent_ino, basename, 0755, &new_ino);
     }
 
     struct vfs_node *existing = vfs_lookup(path);
@@ -50,16 +55,30 @@ int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
 int vfs_rmdir(const char *path) {
     if (!is_ramfs_path(path)) {
         const char *basename;
-        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
-        uint64_t child_ino;
-        if (cosmofs_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(child_ino);
-        if (!ip || ip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
-        /* Check empty (size == entry count in our dir impl) */
-        if (ip->size > 0) return -ENOTEMPTY;
-        int rc = cosmofs_dir_remove(parent_ino, basename);
-        if (rc == 0) cosmofs_inode_free(child_ino);
+        uint32_t child_ino;
+        if (ext2_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
+        struct ext2_inode ip;
+        if (ext2_inode_read(child_ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
+        /* Check empty — only . and .. should exist */
+        int entry_count = 0;
+        ext2_dir_iterate(child_ino, 0, rmdir_count_cb, &entry_count);
+        if (entry_count > 0) return -ENOTEMPTY;
+
+        int rc = ext2_dir_remove(parent_ino, basename);
+        if (rc == 0) {
+            ext2_truncate(child_ino, 0);
+            ext2_inode_free(child_ino);
+            /* Decrement parent link count (child's .. is gone) */
+            struct ext2_inode pip;
+            if (ext2_inode_read(parent_ino, &pip) == 0 && pip.i_links_count > 0) {
+                pip.i_links_count--;
+                ext2_inode_write(parent_ino, &pip);
+            }
+        }
         return rc;
     }
 
@@ -77,17 +96,24 @@ int vfs_rmdir(const char *path) {
 int vfs_unlink(const char *path) {
     if (!is_ramfs_path(path)) {
         const char *basename;
-        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
-        uint64_t child_ino;
-        if (cosmofs_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(child_ino);
-        if (!ip) return -EIO;
-        if (ip->type == COSMOFS_TYPE_DIR) return -EISDIR;
-        int rc = cosmofs_dir_remove(parent_ino, basename);
+        uint32_t child_ino;
+        if (ext2_dir_lookup(parent_ino, basename, &child_ino) < 0) return -ENOENT;
+        struct ext2_inode ip;
+        if (ext2_inode_read(child_ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR) return -EISDIR;
+        int rc = ext2_dir_remove(parent_ino, basename);
         if (rc == 0) {
-            cosmofs_truncate(child_ino, 0);
-            cosmofs_inode_free(child_ino);
+            if (ip.i_links_count > 0) ip.i_links_count--;
+            if (ip.i_links_count == 0) {
+                ext2_inode_write(child_ino, &ip);
+                ext2_truncate(child_ino, 0);
+                ext2_inode_free(child_ino);
+            } else {
+                ext2_inode_write(child_ino, &ip);
+            }
             inotify_event(path, IN_DELETE);
         }
         return rc;
@@ -112,14 +138,16 @@ int vfs_unlink(const char *path) {
 int vfs_rename(const char *oldpath, const char *newpath) {
     if (!is_ramfs_path(oldpath) && !is_ramfs_path(newpath)) {
         const char *old_base;
-        uint64_t old_parent = cosmofs_walk_parent(oldpath, &old_base);
+        uint64_t old_parent64 = ext2_walk_parent(oldpath, &old_base);
+        uint32_t old_parent = (uint32_t)old_parent64;
         if (old_parent == 0) return -ENOENT;
 
         const char *new_base;
-        uint64_t new_parent = cosmofs_walk_parent(newpath, &new_base);
+        uint64_t new_parent64 = ext2_walk_parent(newpath, &new_base);
+        uint32_t new_parent = (uint32_t)new_parent64;
         if (new_parent == 0) return -ENOENT;
 
-        int rc = cosmofs_dir_rename(old_parent, old_base, new_parent, new_base);
+        int rc = ext2_rename(old_parent, old_base, new_parent, new_base);
         if (rc == 0) {
             inotify_event(oldpath, IN_MOVED_FROM);
             inotify_event(newpath, IN_MOVED_TO);
@@ -163,5 +191,5 @@ int vfs_rename(const char *oldpath, const char *newpath) {
 
 int vfs_link(const char *oldpath, const char *newpath) {
     (void)oldpath; (void)newpath;
-    return -ENOSYS; /* CosmoFS doesn't support hard links yet */
+    return -ENOSYS; /* ext2 hard links not yet implemented */
 }

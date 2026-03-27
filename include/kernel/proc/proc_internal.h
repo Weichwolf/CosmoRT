@@ -13,7 +13,7 @@
 #include "config.h"
 #include "mm/vma.h"
 #include "fs/vfs.h"
-#include "fs/cosmofs.h"
+#include "fs/ext2.h"
 #include "memops.h"
 #include "sys/syscall.h"
 #include "core/irq.h"

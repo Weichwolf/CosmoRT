@@ -1,10 +1,10 @@
 #!/bin/sh
-# Build CosmoFS image containing Alpine Linux minirootfs
+# Build ext2 image containing Alpine Linux minirootfs
 # Usage: sh tools/mkalpine.sh [ALPINE_ROOT]
 #
 # Input:  /tmp/alpine-root/ (or $1)
-# Output: build/alpine.img (raw CosmoFS image)
-#         build/disk.img   (GPT: ESP + CosmoFS)
+# Output: build/alpine.img (raw ext2 image)
+#         build/disk.img   (GPT: ESP + ext2)
 
 set -e
 cd "$(dirname "$0")/.."
@@ -13,7 +13,7 @@ ALPINE_ROOT="${1:-/tmp/alpine-root}"
 IMG=build/disk.img
 ESP_MB=64
 FS_MB=512
-COSMOFS_TMP=.cosmofs.tmp
+EXT2_TMP=build/alpine.img
 EFI_BIN=build/BOOTX64.EFI
 
 if [ ! -d "$ALPINE_ROOT" ]; then
@@ -22,24 +22,18 @@ if [ ! -d "$ALPINE_ROOT" ]; then
     exit 1
 fi
 
-# Build host tools
-make tools/mkfs tools/cosmocp 2>/dev/null || {
-    gcc -Wall -Wextra -O2 -o tools/mkfs tools/mkfs.c
-    gcc -Wall -Wextra -O2 -o tools/cosmocp tools/cosmocp.c
-}
+mkdir -p build
 
-# ── Step 1: Create CosmoFS image with Alpine rootfs ──
-echo "mkalpine: creating CosmoFS ($FS_MB MB) from $ALPINE_ROOT"
-./tools/mkfs "$COSMOFS_TMP" "$FS_MB"
+# ── Step 1: Create ext2 image with Alpine rootfs ──
+echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
+dd if=/dev/zero of="$EXT2_TMP" bs=1M count="$FS_MB" 2>/dev/null
+mkfs.ext2 -q -d "$ALPINE_ROOT" "$EXT2_TMP"
 
-# Copy entire Alpine rootfs (files, directories, symlinks preserved by --tree)
-./tools/cosmocp "$COSMOFS_TMP" --tree "$ALPINE_ROOT" /
-
-# Ensure /etc/passwd and /etc/group exist (Alpine minirootfs may have them)
-if ! ./tools/cosmocp "$COSMOFS_TMP" --mkdir /etc 2>/dev/null; then true; fi
-
-# Networking (QEMU user-mode)
-./tools/cosmocp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
+# Fix networking (QEMU user-mode)
+# ext2fuse or debugfs to inject files after creation
+if command -v debugfs >/dev/null 2>&1; then
+    echo "nameserver 10.0.2.3" | debugfs -w -R "write /dev/stdin /etc/resolv.conf" "$EXT2_TMP" 2>/dev/null || true
+fi
 
 # ── Step 2: Build GPT disk image ────────────────────
 ESP_START=2048
@@ -53,16 +47,16 @@ dd if=/dev/zero of="$IMG" bs=512 count="$TOTAL_SECTORS" 2>/dev/null
 if command -v sgdisk >/dev/null 2>&1; then
     sgdisk --clear \
            --new=1:${ESP_START}:+${ESP_SECTORS} --typecode=1:EF00 --change-name=1:ESP \
-           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:CosmoFS \
+           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:ext2 \
            "$IMG" >/dev/null
 elif command -v parted >/dev/null 2>&1; then
     parted -s "$IMG" mklabel gpt
     parted -s "$IMG" mkpart ESP fat32 "${ESP_START}s" "$((ESP_START + ESP_SECTORS - 1))s"
     parted -s "$IMG" set 1 esp on
-    parted -s "$IMG" mkpart CosmoFS "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
+    parted -s "$IMG" mkpart ext2 "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
 else
     echo "ERROR: need sgdisk or parted for GPT" >&2
-    rm -f "$IMG" "$COSMOFS_TMP"
+    rm -f "$IMG"
     exit 1
 fi
 
@@ -81,10 +75,8 @@ fi
 dd if=.esp.tmp of="$IMG" bs=512 seek="$ESP_START" conv=notrunc 2>/dev/null
 rm -f .esp.tmp
 
-# ── Step 4: Write CosmoFS into GPT ──────────────────
-dd if="$COSMOFS_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
-cp "$COSMOFS_TMP" build/alpine.img
-rm -f "$COSMOFS_TMP"
+# ── Step 4: Write ext2 into GPT ──────────────────────
+dd if="$EXT2_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
 
-echo "alpine.img: $(du -h build/alpine.img | cut -f1) CosmoFS"
-echo "disk.img:   $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB CosmoFS)"
+echo "alpine.img: $(du -h "$EXT2_TMP" | cut -f1) ext2"
+echo "disk.img:   $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB ext2)"

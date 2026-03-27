@@ -1,10 +1,10 @@
 #!/bin/sh
-# Build combined CosmoRT disk image: GPT with ESP + CosmoFS partitions
+# Build combined CosmoRT disk image: GPT with ESP + ext2 partitions
 # Usage: sh tools/mkimage.sh
 #
 # Output: disk.img (GPT, raw)
 #   Partition 1: ESP (FAT32, 64MB)  -> EFI/BOOT/BOOTX64.EFI
-#   Partition 2: CosmoFS (512MB)    -> Userland
+#   Partition 2: ext2 (512MB)       -> Userland
 #
 # Convert to VHDX: qemu-img convert -f raw -O vhdx disk.img disk.vhdx
 
@@ -19,49 +19,42 @@ FS_MB=512
 TOTAL_MB=$((ESP_MB + FS_MB + 2))  # +2 for GPT headers
 
 EFI_BIN=build/BOOTX64.EFI
-COSMOFS_TMP=.cosmofs.tmp
+EXT2_TMP=build/root.ext2
+ROOTFS_TMP=$(mktemp -d)
 
-# Build host tools
-make tools/mkfs tools/cosmocp 2>/dev/null || {
-    gcc -Wall -Wextra -O2 -o tools/mkfs tools/mkfs.c
-    gcc -Wall -Wextra -O2 -o tools/cosmocp tools/cosmocp.c
-}
+mkdir -p build
 
-# ── Step 1: Create CosmoFS partition image ──────────
-./tools/mkfs "$COSMOFS_TMP" "$FS_MB"
-
-# Directories
-for d in usr usr/bin usr/lib usr/local usr/local/ssl home home/.npm tmp etc etc/ssl opt opt/claude-code dev; do
-    ./tools/cosmocp "$COSMOFS_TMP" --mkdir "/$d"
-done
+# ── Step 1: Build rootfs directory ────────────────────
+mkdir -p "$ROOTFS_TMP"/{usr/bin,usr/lib,usr/local/ssl,home/.npm,tmp,etc/ssl,opt/claude-code,dev}
 
 # Shell + coreutils
 if [ -d "$PX/coreutils/build" ]; then
     for bin in "$PX"/coreutils/build/*; do
-        ./tools/cosmocp "$COSMOFS_TMP" "$bin" "/usr/bin/$(basename "$bin")"
+        cp "$bin" "$ROOTFS_TMP/usr/bin/$(basename "$bin")"
     done
 fi
-[ -f "$PX/sh/build/sh" ] && ./tools/cosmocp "$COSMOFS_TMP" "$PX/sh/build/sh" /usr/bin/sh
-[ -f "$BREW/bin/bash" ] && ./tools/cosmocp "$COSMOFS_TMP" "$BREW/bin/bash" /usr/bin/bash
+[ -f "$PX/sh/build/sh" ] && cp "$PX/sh/build/sh" "$ROOTFS_TMP/usr/bin/sh"
+[ -f "$BREW/bin/bash" ] && cp "$BREW/bin/bash" "$ROOTFS_TMP/usr/bin/bash"
 
 # Node.js
-[ -f "$BREW/bin/node" ] && ./tools/cosmocp "$COSMOFS_TMP" "$BREW/bin/node" /usr/bin/node
+[ -f "$BREW/bin/node" ] && cp "$BREW/bin/node" "$ROOTFS_TMP/usr/bin/node"
 
 # npm
 if [ -d "$BREW/lib/node_modules/npm" ]; then
-    ./tools/cosmocp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/npm" /usr/lib/node_modules/npm
-    ./tools/cosmocp "$COSMOFS_TMP" --write-string '#!/usr/bin/node
-require("/usr/lib/node_modules/npm/bin/npm-cli.js")' /usr/bin/npm
+    mkdir -p "$ROOTFS_TMP/usr/lib/node_modules"
+    cp -a "$BREW/lib/node_modules/npm" "$ROOTFS_TMP/usr/lib/node_modules/npm"
+    printf '#!/usr/bin/node\nrequire("/usr/lib/node_modules/npm/bin/npm-cli.js")' > "$ROOTFS_TMP/usr/bin/npm"
+    chmod +x "$ROOTFS_TMP/usr/bin/npm"
 fi
 
 # Claude Code
 [ -d "$BREW/lib/node_modules/@anthropic-ai/claude-code" ] && \
-    ./tools/cosmocp "$COSMOFS_TMP" --tree "$BREW/lib/node_modules/@anthropic-ai/claude-code" /opt/claude-code
+    cp -a "$BREW/lib/node_modules/@anthropic-ai/claude-code" "$ROOTFS_TMP/opt/claude-code"
 
 # /etc
-./tools/cosmocp "$COSMOFS_TMP" --write-string "nameserver 10.0.2.3" /etc/resolv.conf
+printf "nameserver 10.0.2.3" > "$ROOTFS_TMP/etc/resolv.conf"
 
-# Resolve hostnames at build time (c-ares UDP DNS broken, /etc/hosts as workaround)
+# Resolve hostnames at build time
 resolve() { dig +short "$1" A 2>/dev/null | head -1; }
 HOSTS="127.0.0.1 localhost"
 for h in registry.npmjs.org example.com api.anthropic.com; do
@@ -69,76 +62,70 @@ for h in registry.npmjs.org example.com api.anthropic.com; do
     [ -n "$ip" ] && HOSTS="$HOSTS
 $ip $h"
 done
-./tools/cosmocp "$COSMOFS_TMP" --write-string "$HOSTS" /etc/hosts
-
-./tools/cosmocp "$COSMOFS_TMP" --write-string "hosts: files dns" /etc/nsswitch.conf
+printf "%s" "$HOSTS" > "$ROOTFS_TMP/etc/hosts"
+printf "hosts: files dns" > "$ROOTFS_TMP/etc/nsswitch.conf"
 
 # Shell profile
-./tools/cosmocp "$COSMOFS_TMP" --write-string 'export PATH=/usr/local/bin:/usr/bin:/bin
+cat > "$ROOTFS_TMP/etc/profile" << 'EOPROF'
+export PATH=/usr/local/bin:/usr/bin:/bin
 export HOME=/home
 export TERM=xterm-256color
 export LANG=en_US.UTF-8
 export NODE_PATH=/usr/lib/node_modules
 export SSL_CERT_FILE=/etc/ssl/cert.pem
-export PS1="\[\e[1;32m\]cosmo\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\\$ "
-cd /home' /etc/profile
+export PS1="\[\e[1;32m\]cosmo\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ "
+cd /home
+EOPROF
 
-./tools/cosmocp "$COSMOFS_TMP" --write-string '[ -f /etc/profile ] && . /etc/profile' /home/.bash_profile
-./tools/cosmocp "$COSMOFS_TMP" --write-string '# CosmoRT user config
-alias ls="ls --color=auto"
-alias ll="ls -la"
-alias grep="grep --color=auto"' /home/.bashrc
+printf '[ -f /etc/profile ] && . /etc/profile' > "$ROOTFS_TMP/home/.bash_profile"
+printf '# CosmoRT user config\nalias ls="ls --color=auto"\nalias ll="ls -la"\nalias grep="grep --color=auto"' > "$ROOTFS_TMP/home/.bashrc"
 
-./tools/cosmocp "$COSMOFS_TMP" --write-string 'root:x:0:0:root:/home:/usr/bin/bash' /etc/passwd
-./tools/cosmocp "$COSMOFS_TMP" --write-string 'root:x:0:' /etc/group
+printf 'root:x:0:0:root:/home:/usr/bin/bash' > "$ROOTFS_TMP/etc/passwd"
+printf 'root:x:0:' > "$ROOTFS_TMP/etc/group"
 
-# TLS CA certificate bundle (Mozilla root CAs, required for HTTPS)
-[ -f "$BREW/ssl/cert.pem" ] && \
-    ./tools/cosmocp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /etc/ssl/cert.pem
-[ -f "$BREW/ssl/cert.pem" ] && \
-    ./tools/cosmocp "$COSMOFS_TMP" "$BREW/ssl/cert.pem" /usr/local/ssl/cert.pem
+# TLS CA certificate bundle
+[ -f "$BREW/ssl/cert.pem" ] && cp "$BREW/ssl/cert.pem" "$ROOTFS_TMP/etc/ssl/cert.pem"
+[ -f "$BREW/ssl/cert.pem" ] && cp "$BREW/ssl/cert.pem" "$ROOTFS_TMP/usr/local/ssl/cert.pem"
 
-# Boot-test script (init runs /home/.boot if present, else starts bash -i)
+# Boot-test script
 if [ -z "$COSMO_INTERACTIVE" ] && [ -f tools/boot-test.sh ]; then
-    ./tools/cosmocp "$COSMOFS_TMP" tools/boot-test.sh /home/.boot
+    cp tools/boot-test.sh "$ROOTFS_TMP/home/.boot"
 fi
 
-# ── Step 2: Build combined GPT image ───────────────
-ESP_START=2048                              # sector 2048 = 1MB (standard GPT alignment)
-ESP_SECTORS=$((ESP_MB * 2048))              # sectors (512 bytes each)
+# ── Step 2: Create ext2 image from rootfs ─────────────
+dd if=/dev/zero of="$EXT2_TMP" bs=1M count="$FS_MB" 2>/dev/null
+mkfs.ext2 -q -d "$ROOTFS_TMP" "$EXT2_TMP"
+rm -rf "$ROOTFS_TMP"
+
+# ── Step 3: Build combined GPT image ───────────────
+ESP_START=2048
+ESP_SECTORS=$((ESP_MB * 2048))
 FS_START=$((ESP_START + ESP_SECTORS))
 FS_SECTORS=$((FS_MB * 2048))
-TOTAL_SECTORS=$((FS_START + FS_SECTORS + 34))  # +34 for backup GPT
+TOTAL_SECTORS=$((FS_START + FS_SECTORS + 34))
 
-# Create raw image
 dd if=/dev/zero of="$IMG" bs=512 count="$TOTAL_SECTORS" 2>/dev/null
 
-# Create GPT partition table
 if command -v sgdisk >/dev/null 2>&1; then
-    # sgdisk available
     sgdisk --clear \
            --new=1:${ESP_START}:+${ESP_SECTORS} --typecode=1:EF00 --change-name=1:ESP \
-           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:CosmoFS \
+           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:ext2 \
            "$IMG" >/dev/null
 elif command -v parted >/dev/null 2>&1; then
-    # parted fallback
     parted -s "$IMG" mklabel gpt
     parted -s "$IMG" mkpart ESP fat32 "${ESP_START}s" "$((ESP_START + ESP_SECTORS - 1))s"
     parted -s "$IMG" set 1 esp on
-    parted -s "$IMG" mkpart CosmoFS "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
+    parted -s "$IMG" mkpart ext2 "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
 else
     echo "ERROR: need sgdisk or parted for GPT" >&2
-    rm -f "$IMG" "$COSMOFS_TMP"
+    rm -f "$IMG" "$EXT2_TMP"
     exit 1
 fi
 
-# ── Step 3: Format ESP partition (FAT32) ───────────
-ESP_OFFSET=$((ESP_START * 512))
-ESP_SIZE=$((ESP_SECTORS * 512))
+# ── Step 4: Format ESP partition (FAT32) ───────────
 dd if=/dev/zero of=.esp.tmp bs=512 count="$ESP_SECTORS" 2>/dev/null
 mkfs.fat -F 32 .esp.tmp >/dev/null
 
-# Copy EFI binary into ESP
 if [ -f "$EFI_BIN" ]; then
     mmd -i .esp.tmp ::/EFI
     mmd -i .esp.tmp ::/EFI/BOOT
@@ -147,14 +134,10 @@ else
     echo "WARNING: $EFI_BIN not found, ESP will be empty (run make first)"
 fi
 
-# Write ESP into combined image at partition offset
 dd if=.esp.tmp of="$IMG" bs=512 seek="$ESP_START" conv=notrunc 2>/dev/null
 rm -f .esp.tmp
 
-# ── Step 4: Write CosmoFS into combined image ─────
-FS_OFFSET=$((FS_START * 512))
-dd if="$COSMOFS_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
-cp "$COSMOFS_TMP" build/cosmofs.img
-rm -f "$COSMOFS_TMP"
+# ── Step 5: Write ext2 into combined image ─────────
+dd if="$EXT2_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
 
-echo "disk.img: $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB CosmoFS)"
+echo "disk.img: $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB ext2)"

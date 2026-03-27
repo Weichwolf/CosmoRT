@@ -55,11 +55,11 @@ const char *procfs_name(const char *path) {
     return 0;
 }
 
-/* ── CosmoFS routing ─────────────────────────────── */
+/* ── ext2 routing ─────────────────────────────────── */
 
-/* Returns 1 if path should use ramfs (not CosmoFS) */
+/* Returns 1 if path should use ramfs (not ext2) */
 int is_ramfs_path(const char *path) {
-    if (!cosmofs_mounted()) return 1;
+    if (!ext2_mounted()) return 1;
     /* /dev/shm always ramfs */
     if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
         path[4]=='/' && path[5]=='s' && path[6]=='h' && path[7]=='m' &&
@@ -68,11 +68,11 @@ int is_ramfs_path(const char *path) {
     return 0;
 }
 
-/* Walk a CosmoFS path component-by-component, following symlinks.
+/* Walk an ext2 path component-by-component, following symlinks.
  * Returns final inode number, or 0 on failure. */
-uint64_t cosmofs_walk(const char *path) {
+uint64_t ext2_walk(const char *path) {
     if (!path || path[0] != '/') return 0;
-    if (path[0] == '/' && path[1] == 0) return cosmofs_root_ino();
+    if (path[0] == '/' && path[1] == 0) return EXT2_ROOT_INO;
 
     /* Mutable copy for symlink restart */
     char buf[512];
@@ -85,7 +85,7 @@ uint64_t cosmofs_walk(const char *path) {
 restart:
     if (symloop > 8) return 0;  /* ELOOP */
 
-    uint64_t cur = cosmofs_root_ino();
+    uint32_t cur = EXT2_ROOT_INO;
     char *p = buf + 1;
 
     while (*p) {
@@ -102,30 +102,26 @@ restart:
         for (int i = 0; i < cplen; i++) name[i] = start[i];
         name[cplen] = 0;
 
-        uint64_t child;
-        if (cosmofs_dir_lookup(cur, name, &child) < 0)
+        uint32_t child;
+        if (ext2_dir_lookup(cur, name, &child) < 0)
             return 0;
 
         /* Check if child is a symlink — resolve transparently */
-        struct cosmofs_inode *ip = cosmofs_inode_read(child);
-        if (ip && ip->type == COSMOFS_TYPE_SYMLINK && ip->size > 0) {
+        struct ext2_inode ip;
+        if (ext2_inode_read(child, &ip) == 0 &&
+            (ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFLNK && ip.i_size > 0) {
             symloop++;
             char target[256];
-            size_t tlen = ip->size;
-            if (tlen >= sizeof(target)) return 0;
-            int rd = cosmofs_read(child, target, 0, tlen);
-            if (rd < (int)tlen) return 0;
-            /* Strip NUL if stored with NUL terminator */
-            if (tlen > 0 && target[tlen - 1] == 0) tlen--;
+            int tlen = ext2_readlink(child, target, sizeof(target) - 1);
+            if (tlen <= 0) return 0;
             target[tlen] = 0;
 
             /* Remaining path after this component */
             int rlen = kstrlen(p);
-            int ttlen = (int)tlen;
+            int ttlen = tlen;
             if (target[0] == '/') {
                 /* Absolute symlink: target + "/" + remaining */
                 if (ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
-                /* Move remaining to end */
                 for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
                 for (int i = 0; i < ttlen; i++) buf[i] = target[i];
                 int off = ttlen;
@@ -151,20 +147,25 @@ restart:
     return cur;
 }
 
-/* Public accessor for execve — walk CosmoFS path to inode */
-uint64_t cosmofs_walk_path(const char *path) {
-    return cosmofs_walk(path);
+/* Public accessor for execve — walk ext2 path to inode */
+uint64_t ext2_walk_path(const char *path) {
+    return ext2_walk(path);
 }
 
-/* Public accessor for execve — get file size from CosmoFS inode */
-uint64_t cosmofs_file_size(uint64_t ino) {
-    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-    if (!ip || ip->type != COSMOFS_TYPE_FILE) return 0;
-    return ip->size;
+/* Public accessor for execve — get file size from ext2 inode */
+uint64_t ext2_file_size(uint64_t ino) {
+    struct ext2_inode ip;
+    if (ext2_inode_read((uint32_t)ino, &ip) < 0) return 0;
+    if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return 0;
+    /* i_size holds lower 32 bits; i_dir_acl holds upper 32 bits for regular files */
+    uint64_t sz = ip.i_size;
+    /* Conservative: only use high bits if the FS actually uses them */
+    if (ip.i_dir_acl) sz |= (uint64_t)ip.i_dir_acl << 32;
+    return sz;
 }
 
 /* Walk to parent directory, extract basename. Returns parent inode or 0. */
-uint64_t cosmofs_walk_parent(const char *path, const char **basename_out) {
+uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
     if (!path || path[0] != '/') return 0;
 
     int len = kstrlen(path);
@@ -175,7 +176,7 @@ uint64_t cosmofs_walk_parent(const char *path, const char **basename_out) {
     *basename_out = path + last_slash + 1;
     if (!**basename_out) return 0;
 
-    if (last_slash == 0) return cosmofs_root_ino();
+    if (last_slash == 0) return EXT2_ROOT_INO;
 
     /* Build parent path */
     char parent_path[256];
@@ -183,7 +184,7 @@ uint64_t cosmofs_walk_parent(const char *path, const char **basename_out) {
     for (int i = 0; i < plen; i++) parent_path[i] = path[i];
     parent_path[plen] = 0;
 
-    return cosmofs_walk(parent_path);
+    return ext2_walk(parent_path);
 }
 
 /* ── Node allocation ─────────────────────────────── */
@@ -364,62 +365,58 @@ int vfs_open(const char *path, int flags, int mode) {
         return fd;
     }
 
-    /* CosmoFS path? */
+    /* ext2 path? */
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
 
         if (ino != 0 && (flags & O_CREAT) && (flags & O_EXCL))
             return -EEXIST;
 
         if (ino == 0 && (flags & O_CREAT)) {
-            /* Create file on CosmoFS */
+            /* Create file on ext2 */
             const char *basename;
-            uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+            uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+            uint32_t parent_ino = (uint32_t)parent_ino64;
             if (parent_ino == 0) return -ENOENT;
 
             /* Ensure parent is a directory */
-            struct cosmofs_inode *pip = cosmofs_inode_read(parent_ino);
-            if (!pip || pip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+            struct ext2_inode pip;
+            if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
+            if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
-            /* Allocate inode */
-            uint64_t new_ino = cosmofs_inode_alloc();
-            if (new_ino == 0) return -ENOMEM;
-
-            /* Set up as file */
-            struct cosmofs_inode new_in;
-            kmemset(&new_in, 0, sizeof(new_in));
-            new_in.type = COSMOFS_TYPE_FILE;
-            cosmofs_inode_write(new_ino, &new_in);
-
-            /* Add to parent directory */
-            cosmofs_dir_create(parent_ino, basename, new_ino);
+            uint32_t new_ino;
+            int rc = ext2_create(parent_ino, basename, 0644, &new_ino);
+            if (rc < 0) return rc;
             ino = new_ino;
             inotify_event(path, IN_CREATE);
         }
 
         if (ino == 0) return -ENOENT;
 
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
 
-        if ((flags & O_DIRECTORY) && ip->type != COSMOFS_TYPE_DIR)
+        int is_dir = ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR);
+
+        if ((flags & O_DIRECTORY) && !is_dir)
             return -ENOTDIR;
 
         struct vfs_file *f = file_alloc();
         if (!f) return -ENOMEM;
 
-        f->type = (ip->type == COSMOFS_TYPE_DIR) ? VFS_DIR : VFS_FILE;
+        f->type = is_dir ? VFS_DIR : VFS_FILE;
         f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
         f->refcount = 1;
-        f->backend = VFS_BACKEND_COSMOFS;
+        f->backend = VFS_BACKEND_EXT2;
         f->offset = 0;
         f->node = 0;
-        f->cosmofs_ino = ino;
-        f->cosmofs_size = ip->size;
-        f->cosmofs_dir_ino = 0;
+        f->disk_ino = ino;
+        f->disk_size = ip.i_size;
+        f->disk_dir_ino = 0;
 
-        if ((flags & O_TRUNC) && ip->type == COSMOFS_TYPE_FILE)
-            cosmofs_truncate(ino, 0);
+        if ((flags & O_TRUNC) && !is_dir)
+            ext2_truncate(ino, 0);
 
         process_t *p = proc_current();
         if (!p) { file_free(f); return -EFAULT; }
@@ -461,9 +458,9 @@ int vfs_open(const char *path, int flags, int mode) {
     f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
     f->node = node;
-    f->cosmofs_ino = 0;
-    f->cosmofs_size = 0;
-    f->cosmofs_dir_ino = 0;
+    f->disk_ino = 0;
+    f->disk_size = 0;
+    f->disk_dir_ino = 0;
 
     if ((flags & O_TRUNC) && node->type == VFS_FILE) {
         node->size = 0;
@@ -508,10 +505,12 @@ int vfs_getcwd(char *buf, size_t size) {
 
 int vfs_chdir(const char *path) {
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip || ip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
         char *cwd = vfs_get_cwd();
         if (!cwd) return -EFAULT;
         kstrncpy(cwd, path, 256);
@@ -578,47 +577,45 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
         return (long)len;
     }
 
-    /* CosmoFS: walk path, create if missing, append via cosmofs_write */
-    uint64_t ino = cosmofs_walk(path);
+    /* ext2: walk path, create if missing, append via ext2_write */
+    uint64_t ino64 = ext2_walk(path);
+    uint32_t ino = (uint32_t)ino64;
     if (ino == 0) {
         const char *basename;
-        uint64_t parent_ino = cosmofs_walk_parent(path, &basename);
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
 
-        struct cosmofs_inode *pip = cosmofs_inode_read(parent_ino);
-        if (!pip || pip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+        struct ext2_inode pip;
+        if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
+        if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
-        ino = cosmofs_inode_alloc();
-        if (ino == 0) return -ENOMEM;
-
-        struct cosmofs_inode new_in;
-        kmemset(&new_in, 0, sizeof(new_in));
-        new_in.type = COSMOFS_TYPE_FILE;
-        cosmofs_inode_write(ino, &new_in);
-        cosmofs_dir_create(parent_ino, basename, ino);
+        uint32_t new_ino;
+        int rc = ext2_create(parent_ino, basename, 0644, &new_ino);
+        if (rc < 0) return rc;
+        ino = new_ino;
     }
 
-    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-    if (!ip) return -EIO;
-    size_t off = ip->size;
+    struct ext2_inode ip;
+    if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+    size_t off = ip.i_size;
 
-    int rc = cosmofs_write(ino, buf, off, len);
+    int rc = ext2_write(ino, buf, off, len);
     return (long)rc;
 }
 
-/* ── Mount CosmoFS ────────────────────────────────── */
+/* ── Mount ext2 ───────────────────────────────────── */
 
-void vfs_mount_cosmofs(void) {
-    extern int cosmofs_mount(void);
-    if (cosmofs_mount() == 0)
-        serial_puts("vfs: CosmoFS mounted as /\n");
+void vfs_mount_ext2(void) {
+    if (ext2_mount() == 0)
+        serial_puts("vfs: ext2 mounted as /\n");
     else
-        serial_puts("vfs: CosmoFS mount failed, using ramfs\n");
+        serial_puts("vfs: ext2 mount failed, using ramfs\n");
 }
 
-uint64_t vfs_cosmofs_lookup(const char *path) {
-    if (!cosmofs_mounted()) return 0;
-    return cosmofs_walk(path);
+uint64_t vfs_ext2_lookup(const char *path) {
+    if (!ext2_mounted()) return 0;
+    return ext2_walk(path);
 }
 
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
@@ -635,27 +632,28 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
         return 0;
     }
 
-    /* Try CosmoFS */
-    if (cosmofs_mounted()) {
-        uint64_t ino = cosmofs_walk(path);
+    /* Try ext2 */
+    if (ext2_mounted()) {
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
 
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        if (ip->type != COSMOFS_TYPE_FILE) return -EACCES;
-        if (ip->size == 0) return -ENOEXEC;
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return -EACCES;
+        if (ip.i_size == 0) return -ENOEXEC;
 
-        size_t sz = ip->size;
+        size_t sz = ip.i_size;
         int npages = (int)((sz + 4095) / 4096);
         uint8_t *buf = (uint8_t *)pages_alloc(npages);
         if (!buf) return -ENOMEM;
 
-        /* Read in chunks (cosmofs_read handles indirect blocks) */
+        /* Read in chunks */
         size_t off = 0;
         while (off < sz) {
             size_t chunk = sz - off;
             if (chunk > 65536) chunk = 65536;
-            int r = cosmofs_read(ino, buf + off, off, chunk);
+            int r = ext2_read(ino, buf + off, off, chunk);
             if (r < 0) {
                 pages_free(buf, npages);
                 return r;

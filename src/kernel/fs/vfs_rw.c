@@ -41,7 +41,7 @@ long vfs_read(int fd, void *buf, size_t count) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
+    if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
         /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
         uint8_t kbuf[4096];
@@ -49,8 +49,8 @@ long vfs_read(int fd, void *buf, size_t count) {
         while (total < count) {
             size_t chunk = count - total;
             if (chunk > 4096) chunk = 4096;
-            int rc = cosmofs_read(f->cosmofs_ino, kbuf,
-                                  (size_t)f->offset + total, chunk);
+            int rc = ext2_read((uint32_t)f->disk_ino, kbuf,
+                               (size_t)f->offset + total, chunk);
             if (rc < 0) return total > 0 ? (long)total : rc;
             if (rc == 0) break;
             kmemcpy((uint8_t *)buf + total, kbuf, (size_t)rc);
@@ -93,10 +93,9 @@ long vfs_read(int fd, void *buf, size_t count) {
 long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
+    if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
-        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
-        int rc = cosmofs_read(f->cosmofs_ino, buf, (size_t)offset, count);
+        int rc = ext2_read((uint32_t)f->disk_ino, buf, (size_t)offset, count);
         return (long)rc;
     }
 
@@ -119,7 +118,7 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
 long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset) {
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
+    if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
         uint8_t kbuf[4096];
         size_t total = 0;
@@ -127,8 +126,8 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
             size_t chunk = count - total;
             if (chunk > 4096) chunk = 4096;
             kmemcpy(kbuf, (const uint8_t *)buf + total, chunk);
-            int rc = cosmofs_write(f->cosmofs_ino, kbuf,
-                                   (size_t)offset + total, chunk);
+            int rc = ext2_write((uint32_t)f->disk_ino, kbuf,
+                                (size_t)offset + total, chunk);
             if (rc < 0) return total > 0 ? (long)total : rc;
             total += (size_t)rc;
             if ((size_t)rc < chunk) break;
@@ -171,12 +170,13 @@ long vfs_write(int fd, const void *buf, size_t count) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
+    if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
         if (f->flags & O_APPEND) {
             /* Re-read inode size for append */
-            struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
-            if (ip) f->offset = ip->size;
+            struct ext2_inode ip;
+            if (ext2_inode_read((uint32_t)f->disk_ino, &ip) == 0)
+                f->offset = ip.i_size;
         }
         /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
         uint8_t kbuf[4096];
@@ -185,17 +185,17 @@ long vfs_write(int fd, const void *buf, size_t count) {
             size_t chunk = count - total;
             if (chunk > 4096) chunk = 4096;
             kmemcpy(kbuf, (const uint8_t *)buf + total, chunk);
-            int rc = cosmofs_write(f->cosmofs_ino, kbuf,
-                                   (size_t)f->offset + total, chunk);
+            int rc = ext2_write((uint32_t)f->disk_ino, kbuf,
+                                (size_t)f->offset + total, chunk);
             if (rc < 0) return total > 0 ? (long)total : rc;
             total += (size_t)rc;
             if ((size_t)rc < chunk) break;
         }
         f->offset += (uint64_t)total;
-        f->cosmofs_size = f->offset;
+        f->disk_size = f->offset;
         /* Invalidate page cache — demand-paged readers must see new data */
         extern void page_cache_invalidate_ino(uint64_t ino);
-        page_cache_invalidate_ino(f->cosmofs_ino);
+        page_cache_invalidate_ino(f->disk_ino);
         return (long)total;
     }
 
@@ -247,9 +247,8 @@ static struct vfs_node *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) {
 }
 
 long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len) {
-    if (backend == VFS_BACKEND_COSMOFS) {
-        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
-        return (long)cosmofs_read(ino, buf, offset, len);
+    if (backend == VFS_BACKEND_EXT2) {
+        return (long)ext2_read((uint32_t)ino, buf, offset, len);
     }
     /* ramfs: find node by inode, read from its data buffer */
     extern struct vfs_node *vfs_root_node;
@@ -266,9 +265,8 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
 /* Write by inode (for msync / dirty page write-back) */
 
 long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len) {
-    if (backend == VFS_BACKEND_COSMOFS) {
-        extern int cosmofs_write(uint64_t ino, const void *buf, size_t offset, size_t len);
-        return (long)cosmofs_write(ino, buf, offset, len);
+    if (backend == VFS_BACKEND_EXT2) {
+        return (long)ext2_write((uint32_t)ino, buf, offset, len);
     }
     /* ramfs: find node by inode, write to its data buffer */
     extern struct vfs_node *vfs_root_node;
@@ -295,10 +293,11 @@ long vfs_lseek(int fd, long offset, int whence) {
     if (!f) return -EBADF;
 
     long new_off;
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        uint64_t sz = f->cosmofs_size;
-        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
-        if (ip) sz = ip->size;
+    if (f->backend == VFS_BACKEND_EXT2) {
+        uint64_t sz = f->disk_size;
+        struct ext2_inode ip;
+        if (ext2_inode_read((uint32_t)f->disk_ino, &ip) == 0)
+            sz = ip.i_size;
         switch (whence) {
         case SEEK_SET: new_off = offset; break;
         case SEEK_CUR: new_off = (long)f->offset + offset; break;

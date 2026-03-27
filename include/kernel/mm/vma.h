@@ -21,7 +21,7 @@ typedef struct vma {
     int flags;           /* MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED */
     uint64_t file_ino;   /* backing file inode (0 = anonymous) */
     uint64_t file_offset; /* offset in file where this VMA starts */
-    int file_backend;    /* VFS_BACKEND_RAM or VFS_BACKEND_COSMOFS */
+    int file_backend;    /* VFS_BACKEND_RAM or VFS_BACKEND_EXT2 */
     /* AVL tree linkage */
     struct vma *left;
     struct vma *right;

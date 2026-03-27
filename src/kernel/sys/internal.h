@@ -22,7 +22,7 @@
 #include "spinlock.h"
 #include "fs/procfs.h"
 #include "event/epoll.h"
-#include "fs/cosmofs.h"
+#include "fs/ext2.h"
 #include "vt/pty.h"
 #include "vt/vt.h"
 #include "arch/arch.h"

@@ -191,8 +191,8 @@ void kernel_main(struct boot_info *info) {
     vfs_create("/dev/shm", VFS_DIR);
 
     if (has_disk) {
-        extern void vfs_mount_cosmofs(void);
-        vfs_mount_cosmofs();
+        extern void vfs_mount_ext2(void);
+        vfs_mount_ext2();
     }
 
     /* ramfs directories (fallback for no-disk boots) */

@@ -24,31 +24,23 @@ void fill_stat(struct vfs_node *node, struct k_stat *buf) {
         buf->st_mode = S_IFLNK | 0777;
 }
 
-void fill_cosmofs_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_stat *buf) {
+void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
     buf->st_ino = ino;
-    buf->st_dev = 1;  /* CosmoFS device */
-    buf->st_nlink = 1;
-    buf->st_size = (int64_t)ip->size;
+    buf->st_dev = 1;  /* ext2 device */
+    buf->st_nlink = ip->i_links_count;
+    buf->st_size = (int64_t)ip->i_size;
     buf->st_blksize = 4096;
-    buf->st_blocks = (int64_t)((ip->size + 511) / 512);
-    buf->st_atime_sec = (int64_t)(ip->atime / 1000000000ULL);
-    buf->st_atime_nsec = (int64_t)(ip->atime % 1000000000ULL);
-    buf->st_mtime_sec = (int64_t)(ip->mtime / 1000000000ULL);
-    buf->st_mtime_nsec = (int64_t)(ip->mtime % 1000000000ULL);
-    buf->st_ctime_sec = (int64_t)(ip->ctime / 1000000000ULL);
-    buf->st_ctime_nsec = (int64_t)(ip->ctime % 1000000000ULL);
+    buf->st_blocks = (int64_t)ip->i_blocks;
+    buf->st_atime_sec = (int64_t)ip->i_atime;
+    buf->st_mtime_sec = (int64_t)ip->i_mtime;
+    buf->st_ctime_sec = (int64_t)ip->i_ctime;
 
-    buf->st_uid = ip->uid;
-    buf->st_gid = ip->gid;
+    buf->st_uid = ip->i_uid;
+    buf->st_gid = ip->i_gid;
 
-    uint32_t perms = ip->flags ? ip->flags : 0755;
-    if (ip->type == COSMOFS_TYPE_DIR)
-        buf->st_mode = S_IFDIR | perms;
-    else if (ip->type == COSMOFS_TYPE_SYMLINK)
-        buf->st_mode = S_IFLNK | 0777;
-    else
-        buf->st_mode = S_IFREG | perms;
+    /* Mode already contains type + permissions in ext2 */
+    buf->st_mode = ip->i_mode;
 }
 
 /* ── Stat operations ─────────────────────────────── */
@@ -91,11 +83,12 @@ int vfs_stat(const char *path, struct k_stat *buf) {
         return 0;
     }
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        fill_cosmofs_stat(ino, ip, buf);
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        fill_ext2_stat(ino, &ip, buf);
         return 0;
     }
     struct vfs_node *node = vfs_lookup(path);
@@ -181,10 +174,10 @@ int vfs_fstat(int fd, struct k_stat *buf) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
-        if (!ip) return -EIO;
-        fill_cosmofs_stat(f->cosmofs_ino, ip, buf);
+    if (f->backend == VFS_BACKEND_EXT2) {
+        struct ext2_inode ip;
+        if (ext2_inode_read((uint32_t)f->disk_ino, &ip) < 0) return -EIO;
+        fill_ext2_stat((uint32_t)f->disk_ino, &ip, buf);
         return 0;
     }
 
@@ -197,14 +190,13 @@ int vfs_fstat(int fd, struct k_stat *buf) {
 
 int vfs_chmod(const char *path, uint32_t mode) {
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        struct cosmofs_inode copy;
-        kmemcpy(&copy, ip, sizeof(copy));
-        copy.flags = (uint16_t)(mode & 07777);
-        cosmofs_inode_write(ino, &copy);
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        ip.i_mode = (ip.i_mode & EXT2_S_IFMT) | (uint16_t)(mode & 07777);
+        ext2_inode_write(ino, &ip);
         return 0;
     }
     struct vfs_node *node = vfs_lookup(path);
@@ -221,13 +213,11 @@ int vfs_fchmod(int fd, uint32_t mode) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
-        if (!ip) return -EIO;
-        struct cosmofs_inode copy;
-        kmemcpy(&copy, ip, sizeof(copy));
-        copy.flags = (uint16_t)(mode & 07777);
-        cosmofs_inode_write(f->cosmofs_ino, &copy);
+    if (f->backend == VFS_BACKEND_EXT2) {
+        struct ext2_inode ip;
+        if (ext2_inode_read((uint32_t)f->disk_ino, &ip) < 0) return -EIO;
+        ip.i_mode = (ip.i_mode & EXT2_S_IFMT) | (uint16_t)(mode & 07777);
+        ext2_inode_write((uint32_t)f->disk_ino, &ip);
         return 0;
     }
     if (f->node) f->node->mode = mode & 07777;
@@ -242,14 +232,12 @@ int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        struct cosmofs_inode *ip = cosmofs_inode_read(f->cosmofs_ino);
-        if (!ip) return -EIO;
-        struct cosmofs_inode copy;
-        kmemcpy(&copy, ip, sizeof(copy));
-        if (uid != (uint32_t)-1) copy.uid = uid;
-        if (gid != (uint32_t)-1) copy.gid = gid;
-        cosmofs_inode_write(f->cosmofs_ino, &copy);
+    if (f->backend == VFS_BACKEND_EXT2) {
+        struct ext2_inode ip;
+        if (ext2_inode_read((uint32_t)f->disk_ino, &ip) < 0) return -EIO;
+        if (uid != (uint32_t)-1) ip.i_uid = (uint16_t)uid;
+        if (gid != (uint32_t)-1) ip.i_gid = (uint16_t)gid;
+        ext2_inode_write((uint32_t)f->disk_ino, &ip);
         return 0;
     }
     if (f->node) {
@@ -263,12 +251,13 @@ int vfs_truncate(const char *path, int64_t length) {
     if (length < 0) return -EINVAL;
 
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        if (ip->type == COSMOFS_TYPE_DIR) return -EISDIR;
-        return cosmofs_truncate(ino, (size_t)length);
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR) return -EISDIR;
+        return ext2_truncate(ino, (size_t)length);
     }
 
     struct vfs_node *node = vfs_lookup(path);
@@ -293,8 +282,8 @@ int vfs_ftruncate(int fd, int64_t length) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f || f->type != VFS_FILE) return -EINVAL;
 
-    if (f->backend == VFS_BACKEND_COSMOFS) {
-        return cosmofs_truncate(f->cosmofs_ino, (size_t)length);
+    if (f->backend == VFS_BACKEND_EXT2) {
+        return ext2_truncate((uint32_t)f->disk_ino, (size_t)length);
     }
 
     if (!f->node) return -EBADF;
@@ -311,22 +300,20 @@ int vfs_ftruncate(int fd, int64_t length) {
 int vfs_utimensat(const char *path, const int64_t times[4], int flags) {
     (void)flags;
     /* times[0]=atime_sec, times[1]=atime_nsec, times[2]=mtime_sec, times[3]=mtime_nsec */
-    /* path==NULL means futimens (already handled by caller) */
 
     if (!path) return -EINVAL;
 
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        struct cosmofs_inode copy;
-        kmemcpy(&copy, ip, sizeof(copy));
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
         if (times) {
-            copy.atime = (uint64_t)times[0] * 1000000000ULL + (uint64_t)times[1];
-            copy.mtime = (uint64_t)times[2] * 1000000000ULL + (uint64_t)times[3];
+            ip.i_atime = (uint32_t)times[0];
+            ip.i_mtime = (uint32_t)times[2];
         }
-        cosmofs_inode_write(ino, &copy);
+        ext2_inode_write(ino, &ip);
         return 0;
     }
 

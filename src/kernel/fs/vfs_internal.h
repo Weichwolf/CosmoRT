@@ -3,7 +3,7 @@
 #define VFS_INTERNAL_H
 
 #include "fs/vfs.h"
-#include "fs/cosmofs.h"
+#include "fs/ext2.h"
 #include "fs/bcache.h"
 #include "event/fd.h"
 #include "proc/process.h"
@@ -33,8 +33,8 @@ int kstreq(const char *a, const char *b);
 
 const char *procfs_name(const char *path);
 int is_ramfs_path(const char *path);
-uint64_t cosmofs_walk(const char *path);
-uint64_t cosmofs_walk_parent(const char *path, const char **basename_out);
+uint64_t ext2_walk(const char *path);
+uint64_t ext2_walk_parent(const char *path, const char **basename_out);
 char *vfs_get_cwd(void);
 
 /* ── Node/file allocation (defined in vfs.c) ── */
@@ -64,7 +64,7 @@ int unlink_child(struct vfs_node *parent, struct vfs_node *child);
 /* ── Stat helpers (defined in vfs_ioctls.c) ── */
 
 void fill_stat(struct vfs_node *node, struct k_stat *buf);
-void fill_cosmofs_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_stat *buf);
+void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf);
 
 /* ── Device file IDs ── */
 

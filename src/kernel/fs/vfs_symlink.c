@@ -10,34 +10,20 @@ int vfs_symlink(const char *target, const char *linkpath) {
     if (tlen == 0 || tlen >= 256) return -ENAMETOOLONG;
 
     if (!is_ramfs_path(linkpath)) {
-        /* CosmoFS symlink: create inode with COSMOFS_TYPE_SYMLINK,
-         * store target as file data */
-        uint64_t ino = cosmofs_walk(linkpath);
-        if (ino != 0) return -EEXIST;
+        /* ext2 symlink */
+        uint64_t ino64 = ext2_walk(linkpath);
+        if (ino64 != 0) return -EEXIST;
 
         const char *basename;
-        uint64_t parent_ino = cosmofs_walk_parent(linkpath, &basename);
+        uint64_t parent_ino64 = ext2_walk_parent(linkpath, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
 
-        struct cosmofs_inode *pip = cosmofs_inode_read(parent_ino);
-        if (!pip || pip->type != COSMOFS_TYPE_DIR) return -ENOTDIR;
+        struct ext2_inode pip;
+        if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
+        if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
-        uint64_t new_ino = cosmofs_inode_alloc();
-        if (new_ino == 0) return -ENOMEM;
-
-        struct cosmofs_inode new_in;
-        kmemset(&new_in, 0, sizeof(new_in));
-        new_in.type = COSMOFS_TYPE_SYMLINK;
-        cosmofs_inode_write(new_ino, &new_in);
-
-        /* Write target path as file data */
-        int rc = cosmofs_write(new_ino, target, 0, (size_t)(tlen + 1));
-        if (rc < 0) {
-            cosmofs_inode_free(new_ino);
-            return rc;
-        }
-
-        return cosmofs_dir_create(parent_ino, basename, new_ino);
+        return ext2_symlink_create(parent_ino, basename, target);
     }
 
     /* ramfs symlink */
@@ -79,20 +65,17 @@ int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     }
 
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
-        if (ino == 0) return -ENOENT;
+        /* ext2: walk WITHOUT following final symlink */
+        /* We need to walk to parent, then lookup the name to get the symlink inode */
+        const char *basename;
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
+        if (parent_ino == 0) return -ENOENT;
 
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        if (ip->type != COSMOFS_TYPE_SYMLINK) return -EINVAL;
+        uint32_t ino;
+        if (ext2_dir_lookup(parent_ino, basename, &ino) < 0) return -ENOENT;
 
-        /* Read target from file data */
-        size_t len = ip->size;
-        /* size includes NUL, readlink returns without NUL */
-        if (len > 0) len--;
-        if (len > bufsiz) len = bufsiz;
-
-        return cosmofs_read(ino, buf, 0, len);
+        return ext2_readlink(ino, buf, bufsiz);
     }
 
     /* ramfs — use nofollow lookup so final symlink isn't resolved,
@@ -121,23 +104,18 @@ static void fill_symlink_stat(struct vfs_node *node, struct k_stat *buf) {
     buf->st_mode = S_IFLNK | 0777;
 }
 
-static void fill_cosmofs_symlink_stat(uint64_t ino, struct cosmofs_inode *ip, struct k_stat *buf) {
+static void fill_ext2_symlink_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
     buf->st_ino = ino;
     buf->st_dev = 1;
-    buf->st_nlink = 1;
-    int64_t sz = (int64_t)ip->size;
-    if (sz > 0) sz--; /* stored with NUL */
-    buf->st_size = sz;
+    buf->st_nlink = ip->i_links_count;
+    buf->st_size = (int64_t)ip->i_size;
     buf->st_blksize = 4096;
-    buf->st_blocks = (int64_t)((sz + 511) / 512);
+    buf->st_blocks = (int64_t)ip->i_blocks;
     buf->st_mode = S_IFLNK | 0777;
-    buf->st_atime_sec = (int64_t)(ip->atime / 1000000000ULL);
-    buf->st_atime_nsec = (int64_t)(ip->atime % 1000000000ULL);
-    buf->st_mtime_sec = (int64_t)(ip->mtime / 1000000000ULL);
-    buf->st_mtime_nsec = (int64_t)(ip->mtime % 1000000000ULL);
-    buf->st_ctime_sec = (int64_t)(ip->ctime / 1000000000ULL);
-    buf->st_ctime_nsec = (int64_t)(ip->ctime % 1000000000ULL);
+    buf->st_atime_sec = (int64_t)ip->i_atime;
+    buf->st_mtime_sec = (int64_t)ip->i_mtime;
+    buf->st_ctime_sec = (int64_t)ip->i_ctime;
 }
 
 int vfs_lstat(const char *path, struct k_stat *buf) {
@@ -145,15 +123,31 @@ int vfs_lstat(const char *path, struct k_stat *buf) {
     if (pn) return vfs_stat(path, buf);  /* vfs_stat handles exe symlinks */
 
     if (!is_ramfs_path(path)) {
-        uint64_t ino = cosmofs_walk(path);
-        if (ino == 0) return -ENOENT;
-        struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-        if (!ip) return -EIO;
-        if (ip->type == COSMOFS_TYPE_SYMLINK) {
-            fill_cosmofs_symlink_stat(ino, ip, buf);
+        /* Walk to parent, lookup name without following symlinks */
+        const char *basename;
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
+        if (parent_ino == 0) {
+            /* Could be root "/" */
+            if (path[0] == '/' && path[1] == 0) {
+                struct ext2_inode ip;
+                if (ext2_inode_read(EXT2_ROOT_INO, &ip) < 0) return -EIO;
+                fill_ext2_stat(EXT2_ROOT_INO, &ip, buf);
+                return 0;
+            }
+            return -ENOENT;
+        }
+
+        uint32_t ino;
+        if (ext2_dir_lookup(parent_ino, basename, &ino) < 0) return -ENOENT;
+
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFLNK) {
+            fill_ext2_symlink_stat(ino, &ip, buf);
             return 0;
         }
-        fill_cosmofs_stat(ino, ip, buf);
+        fill_ext2_stat(ino, &ip, buf);
         return 0;
     }
 
