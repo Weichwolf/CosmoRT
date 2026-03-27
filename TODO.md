@@ -120,11 +120,13 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 - [ ] /etc/localtime: Timezone-Datei
 - [ ] test: time() mit korrektem TZ Offset
 
-### SH-H: Symlinks + Permissions
+### SH-H: Symlinks — erledigt
 
-- [ ] Symlink-Resolution in allen Pfad-Operationen
+Symlinks komplett: ramfs + CosmoFS, path resolution mit ELOOP (max 8 Hops),
+lstat S_IFLNK, O_NOFOLLOW, unlink Symlink. 25 Tests.
+
+Noch offen:
 - [ ] CosmoFS: rwx Bits speichern (chmod), nur +x enforced
-- [ ] test: Symlink-Chain 3 Ebenen, chmod +x → exec
 
 ### Job Control — erledigt (EQ-C)
 
@@ -174,7 +176,8 @@ fuer PTY-Input, timer-getriebener vt_flush, /dev/console.
 make qemu-alpine bootet Alpine von CosmoFS Disk-Image.
 
 Noch offen:
-- [ ] SEGFAULT nach zweitem Kommando (ash readline Crash nach fork/wait)
+- [ ] ash crasht nach externem Kommando im interaktiven Modus (Signal-Frame?)
+- [ ] Fuzz-Crash: seed=0x2a057240, Round 8 (Agent debuggt)
 - [ ] apk-tools lauffaehig (apk add/del/update)
 - [ ] test: apk add bash && bash --version
 
@@ -344,8 +347,7 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 
 ## Offen — Observability
 
-- [ ] /proc/pid/maps, /proc/pid/status, /proc/pid/cmdline
-- [ ] /proc/meminfo
+/proc/pid/maps, /proc/pid/status, /proc/pid/cmdline, /proc/meminfo: erledigt.
 - [ ] perf_event_open (geplant)
 
 ---
@@ -370,10 +372,10 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 - [ ] B+ Tree Rebalancing nach Delete (btree.c:589)
 - [ ] /proc/pid/maps: shared/private korrekt anzeigen (procfs.c:231)
 
-### IPC/Synchronisation
+### IPC/Synchronisation — erledigt
 
-- [ ] futex Timeouts: timeout-Parameter ignoriert (futex.c:278)
-- [ ] futex echtes Blocking statt Spin-Wait (futex.c:156)
+futex: echtes Blocking via event_wait/event_post, Timeouts (timespec→ms),
+PI Boost/Unboost, FUTEX_WAKE_OP, CMP_REQUEUE, WAIT_BITSET. 6 Tests.
 
 ### Netzwerk
 
