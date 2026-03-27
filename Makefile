@@ -219,13 +219,19 @@ $(BUILD)/gen/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin | $(BUILD)/gen
 $(BUILD)/kernel/hw/kexec.o: $(SRC)/kernel/hw/kexec.c $(BUILD)/gen/kexec_tramp_bin.h | $(BUILD)/kernel/hw
 	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
+# ── CRT0: ABI-correct _start → _start_c trampoline ──
+$(BUILD)/user/crt0.o: $(SRC)/user/crt0.S | $(BUILD)/user
+	$(CC) -c -o $@ $<
+
+CRT0 = $(BUILD)/user/crt0.o
+
 # ── Init binary (embedded in kernel) ─────────────
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
 	      -fno-plt -mno-red-zone -nostdlib -O2 -c -o $@ $<
 
-$(BUILD)/user/init: $(BUILD)/user/init.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/user/init: $(CRT0) $(BUILD)/user/init.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/init.o
 
 $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 	@python3 -c "\
@@ -244,8 +250,8 @@ init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_
 $(BUILD)/user/e1000d.o: $(SRC)/user/e1000d.c | $(BUILD)/user
 	$(CC) $(UCFLAGS) -c -o $@ $<
 
-$(BUILD)/user/e1000d: $(BUILD)/user/e1000d.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/user/e1000d: $(CRT0) $(BUILD)/user/e1000d.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/e1000d.o
 
 $(BUILD)/gen/e1000d_bin.h: $(BUILD)/user/e1000d | $(BUILD)/gen
 	@python3 -c "\
@@ -262,8 +268,8 @@ $(BUILD)/gen/e1000d_bin.h: $(BUILD)/user/e1000d | $(BUILD)/gen
 $(BUILD)/user/svcmgr.o: $(SRC)/user/svcmgr.c | $(BUILD)/user
 	$(CC) $(UCFLAGS) -c -o $@ $<
 
-$(BUILD)/user/svcmgr: $(BUILD)/user/svcmgr.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/user/svcmgr: $(CRT0) $(BUILD)/user/svcmgr.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/svcmgr.o
 
 $(BUILD)/gen/svcmgr_bin.h: $(BUILD)/user/svcmgr | $(BUILD)/gen
 	@python3 -c "\
@@ -293,8 +299,8 @@ UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 $(BUILD)/user/kbench.o: $(SRC)/user/kbench.c | $(BUILD)/user
 	$(CC) $(UCFLAGS) -c -o $@ $<
 
-$(BUILD)/user/kbench: $(BUILD)/user/kbench.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/user/kbench: $(CRT0) $(BUILD)/user/kbench.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/kbench.o
 
 $(BUILD)/gen/kbench_bin.h: $(BUILD)/user/kbench | $(BUILD)/gen
 	@python3 -c "\
@@ -385,14 +391,14 @@ $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
 $(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
-$(BUILD)/user/ktest: $(KTEST_UNIT_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_UNIT_OBJ)
+$(BUILD)/user/ktest: $(CRT0) $(KTEST_UNIT_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_UNIT_OBJ)
 
-$(BUILD)/user/ktest-crash: $(KTEST_CRASH_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_CRASH_OBJ)
+$(BUILD)/user/ktest-crash: $(CRT0) $(KTEST_CRASH_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_CRASH_OBJ)
 
-$(BUILD)/user/ktest-fuzz: $(KTEST_FUZZ_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(KTEST_FUZZ_OBJ)
+$(BUILD)/user/ktest-fuzz: $(CRT0) $(KTEST_FUZZ_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_FUZZ_OBJ)
 
 # Generic: embed ELF as init_bin.h, rebuild kernel, boot in QEMU
 define run_test_binary
@@ -543,8 +549,8 @@ qemu: $(ESP_IMG)
 $(BUILD)/user/vt_shell.o: $(SRC)/user/vt_shell.c | $(BUILD)/user
 	$(CC) $(UCFLAGS) -c -o $@ $<
 
-$(BUILD)/user/vt_shell: $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $<
+$(BUILD)/user/vt_shell: $(CRT0) $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
+	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/vt_shell.o
 
 qemu-gui: $(BUILD)/user/vt_shell
 	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true

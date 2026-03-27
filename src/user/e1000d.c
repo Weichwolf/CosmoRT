@@ -465,7 +465,7 @@ static int hw_recv(void *buf, uint16_t bufsize) {
 
 /* ── Main ───────────────────────────────────── */
 
-void _start(void) {
+void _start_c(void) {
     puts("e1000d: starting userspace E1000 driver\n");
 
     if (e1000d_init() < 0) {

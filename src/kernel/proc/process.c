@@ -288,13 +288,6 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
                  &entry, &stack_ptr, &brk_end) < 0)
         goto fail_pml4;
 
-    /* Freestanding binaries (ktest, e1000d, svcmgr) have GCC-compiled _start
-     * that expects RSP = 16n+8 (as if entered via 'call'). build_user_stack
-     * returns RSP = 16n (correct per SysV ABI for process entry). Subtract 8
-     * to match GCC's assumption. Real binaries use execve → build_user_stack
-     * directly (no -8), where libc's _start handles 16n alignment. */
-    stack_ptr -= 8;
-
     p->brk_base = brk_end;
     p->brk_current = brk_end;
     p->is_driver = (p->pid == 1) ? 1 : 0;

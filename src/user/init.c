@@ -21,7 +21,7 @@ static void puts(const char *s) {
     syscall3(1, 1, (long)s, len);
 }
 
-void _start(void) {
+void _start_c(void) {
     puts("CosmoRT init\n");
     syscall1(80 /* chdir */, (long)"/home");
 

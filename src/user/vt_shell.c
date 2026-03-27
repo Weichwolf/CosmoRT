@@ -46,7 +46,7 @@ static void put_int(long v) {
     while (i--) sc3(SYS_write, 1, (long)&buf[i], 1);
 }
 
-void _start(void) {
+void _start_c(void) {
     puts("CosmoRT Shell\n");
     sc1(80 /* chdir */, (long)"/home");
 

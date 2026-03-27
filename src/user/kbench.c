@@ -279,7 +279,7 @@ static void bench_multicore(void) {
 
 /* ── Main ────────────────────────────────────── */
 
-void _start(void) {
+void _start_c(void) {
     puts("\n=== CosmoRT Kernel Benchmark ===\n\n");
 
     puts("[Syscall Latency]\n");

@@ -99,7 +99,7 @@ static void write_file(const char *path, const char *content) {
 
 /* ── Main ───────────────────────────────────────────── */
 
-void _start(void) {
+void _start_c(void) {
     puts("\n=== CosmoRT Claude Code Init ===\n\n");
 
     /* Skip mounts/config for now — just try execve directly */

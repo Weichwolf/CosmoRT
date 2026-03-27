@@ -117,7 +117,7 @@ static void start_service(int idx) {
 
 /* ── Main ───────────────────────────────────── */
 
-void _start(void) {
+void _start_c(void) {
     puts("svcmgr: starting service manager\n");
 
     /* Start all services */

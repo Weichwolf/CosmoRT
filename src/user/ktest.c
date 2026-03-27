@@ -889,7 +889,7 @@ static void test_ioctl_jobctl(void) {
 
 /* ── Main ────────────────────────────────────── */
 
-void _start(void) {
+void _start_c(void) {
     puts("\n=== CosmoRT Hardware Test ===\n");
 
     test_identity();

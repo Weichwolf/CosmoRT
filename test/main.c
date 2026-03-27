@@ -20,7 +20,7 @@ static void *shared_alloc(long size) {
 }
 
 
-void _start(void) {
+void _start_c(void) {
     puts("\n=== CosmoRT Hardware Test ===\n");
 
     int total = (int)(__stop_ktest - __start_ktest);
