@@ -1,59 +1,17 @@
-/* CosmoRT init — exec bash with boot-test.sh as .bashrc */
+/* CosmoRT init — exec /bin/sh */
 
-static long syscall3(long num, long a1, long a2, long a3) {
-    long ret;
-    __asm__ volatile("syscall" : "=a"(ret)
-                     : "a"(num), "D"(a1), "S"(a2), "d"(a3)
-                     : "rcx", "r11", "memory");
-    return ret;
+static long sc1(long n, long a) {
+    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a):"rcx","r11","memory"); return r;
 }
-static long syscall1(long num, long a1) {
-    long ret;
-    __asm__ volatile("syscall" : "=a"(ret)
-                     : "a"(num), "D"(a1)
-                     : "rcx", "r11", "memory");
-    return ret;
-}
-
-static void puts(const char *s) {
-    int len = 0;
-    while (s[len]) len++;
-    syscall3(1, 1, (long)s, len);
+static long sc3(long n, long a, long b, long c) {
+    long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c):"rcx","r11","memory"); return r;
 }
 
 void _start_c(void) {
-    puts("CosmoRT init\n");
-    syscall1(80 /* chdir */, (long)"/home");
-
-    char *envp[] = {
-        "HOME=/home", "PATH=/usr/bin:/bin", "TERM=linux",
-        "PWD=/home", "SHELL=/usr/bin/bash",
-        "PS1=cosmo:\\w$ ",
-        "npm_config_cache=/tmp/.npm-cache",
-        "NODE_OPTIONS=--max-old-space-size=512",
-        "SSL_CERT_FILE=/etc/ssl/cert.pem",
-        "NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem",
-        (char *)0
-    };
-
-    /* If /home/.boot exists, run it as boot-test script.
-     * Otherwise start interactive bash. */
-    long fd = syscall3(2 /* open */, (long)"/home/.boot", 0 /* O_RDONLY */, 0);
-    if (fd >= 0) {
-        syscall1(3 /* close */, fd);
-        char *argv[] = { "/usr/bin/bash", "/home/.boot", (char *)0 };
-        syscall3(59, (long)"/usr/bin/bash", (long)argv, (long)envp);
-    }
-
-    /* Interactive bash (no job control — PTY job control incomplete) */
-    char *argv_i[] = { "/usr/bin/bash", "--norc", "--noprofile", "--noediting", "+m", "-i", (char *)0 };
-    syscall3(59, (long)"/usr/bin/bash", (long)argv_i, (long)envp);
-
-    /* Fallback to sh */
-    char *argv2[] = { "/usr/bin/sh", (char *)0 };
-    syscall3(59, (long)"/usr/bin/sh", (long)argv2, (long)envp);
-
-    puts("exec failed\n");
-    syscall1(231, 1);
+    char *argv[] = { "sh", (char *)0 };
+    char *envp[] = { "HOME=/", "PATH=/bin:/usr/bin", "TERM=linux", (char *)0 };
+    sc3(59 /* execve */, (long)"/bin/sh", (long)argv, (long)envp);
+    sc3(1 /* write */, 1, (long)"exec /bin/sh failed\n", 20);
+    sc1(231 /* exit_group */, 1);
     __builtin_unreachable();
 }
