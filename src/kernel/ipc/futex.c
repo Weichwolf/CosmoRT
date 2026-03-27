@@ -1,8 +1,11 @@
 /* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance
  *
- * Spin-yield implementation: threads spin with PAUSE instead of true blocking.
- * Functionally correct for musl pthread_mutex — the fast path (uncontended)
- * never enters the kernel. Only contended locks hit this code, and they're rare.
+ * True blocking via event_wait/event_post + syscall restart.
+ * The fast path (uncontended) never enters the kernel. Only contended
+ * locks hit this code, and they're rare.
+ *
+ * Timeout: converted from struct timespec to milliseconds for event_wait.
+ * On timeout, the thread is removed from the wait queue and -ETIMEDOUT returned.
  *
  * PI (Priority Inheritance): when a high-priority thread blocks on a PI futex
  * owned by a low-priority thread, the owner is temporarily boosted. This prevents
@@ -20,6 +23,7 @@
 #include "config.h"
 #include "arch/arch.h"
 #include "core/event_queue.h"
+#include "uaccess.h"
 
 extern void sched_add(thread_t *t);
 
@@ -66,6 +70,29 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
     return (int)(h % FUTEX_HASH_SIZE);
 }
 
+/* Remove a specific thread from a futex wait queue bucket.
+ * Returns 1 if found and removed, 0 if not found. */
+static int futex_remove_waiter(uint64_t addr, uint32_t pid, thread_t *t) {
+    int bucket = hash_uaddr(addr, pid);
+    uint64_t flags;
+    spin_lock_irq(&futex_hash[bucket].lock, &flags);
+
+    futex_waiter_t **pp = &futex_hash[bucket].head;
+    while (*pp) {
+        futex_waiter_t *w = *pp;
+        if (w->uaddr == addr && w->pid == pid && w->thread == t) {
+            *pp = w->next;
+            slab_free(&waiter_slab, w);
+            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            return 1;
+        }
+        pp = &w->next;
+    }
+
+    spin_unlock_irq(&futex_hash[bucket].lock, flags);
+    return 0;
+}
+
 /* ── Helpers ────────────────────────────────────── */
 
 /* Boost owner's priority to at least `prio`.
@@ -81,12 +108,6 @@ static void pi_boost(thread_t *owner, int prio) {
     __sync_synchronize();
     owner->priority = prio;
     __sync_synchronize();
-    /* Re-insertion into scheduler at new priority would require removing
-     * from the old queue first. For spin-yield semantics the owner is
-     * either RUNNING (and will be re-queued at the boosted priority on
-     * next preemption) or RUNNABLE in a queue. The latter case is
-     * imprecise but safe — it will pick up the new priority on its next
-     * scheduling cycle. True queue re-insertion comes with true blocking. */
 }
 
 /* Restore owner's original priority after PI unlock. */
@@ -98,27 +119,69 @@ static void pi_unboost(thread_t *owner) {
     owner->saved_priority = -1;
 }
 
+/* Drain stale futex-related events from a thread's event queue.
+ * Called on syscall restart to consume the event that caused the wake.
+ * Returns: EQ_FUTEX_WAKE if woken by futex_wake,
+ *          EQ_TIMEOUT if woken by timeout,
+ *          0 if no relevant event found. */
+static uint32_t futex_drain_events(event_queue_t *eq) {
+    event_t ev;
+    uint32_t result = 0;
+
+    /* Drain all futex/timeout events — there should be at most one,
+     * but be defensive against duplicates. Prefer TIMEOUT over WAKE
+     * only if no WAKE seen (WAKE means someone explicitly woke us). */
+    while (eq_pop(eq, &ev) == 0) {
+        if (ev.type == EQ_FUTEX_WAKE) {
+            result = EQ_FUTEX_WAKE;
+        } else if (ev.type == EQ_TIMEOUT && result != EQ_FUTEX_WAKE) {
+            result = EQ_TIMEOUT;
+        }
+        /* Other event types: lost. This is acceptable because futex_wait
+         * is a blocking syscall — only futex events are relevant here.
+         * In practice, other events don't arrive during futex wait. */
+    }
+    return result;
+}
+
 /* ── FUTEX_WAIT ─────────────────────────────────── */
 
 extern uint64_t pml4[];
 
-static long futex_wait(uint32_t *uaddr, uint32_t val) {
-    /* Atomic check: if *uaddr != val, the wake already happened */
-    if (__sync_val_compare_and_swap(uaddr, val, val) != val)
-        return -EAGAIN;
-
+static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     process_t *p = t->proc;
     uint32_t pid = p ? p->pid : 0;
+    uint64_t addr = (uint64_t)(uintptr_t)uaddr;
+
+    /* On syscall restart: an event woke us. Drain it to determine why. */
+    uint32_t wake_reason = futex_drain_events(&t->eq);
+
+    if (wake_reason == EQ_TIMEOUT) {
+        /* Timeout fired — remove ourselves from the wait queue (if still there)
+         * and return -ETIMEDOUT. futex_wake may have raced and already removed us,
+         * in which case futex_remove_waiter returns 0 — that's fine. */
+        futex_remove_waiter(addr, pid, t);
+        return -ETIMEDOUT;
+    }
+
+    if (wake_reason == EQ_FUTEX_WAKE) {
+        /* Woken by futex_wake — it already removed us from the wait queue.
+         * The *uaddr check below will return -EAGAIN (value changed). */
+    }
+
+    /* Atomic check: if *uaddr != val, the wake already happened */
+    if (__atomic_load_n(uaddr, __ATOMIC_ACQUIRE) != val)
+        return -EAGAIN;
 
     /* Add to wait queue under lock */
-    int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
+    int bucket = hash_uaddr(addr, pid);
     uint64_t flags;
     spin_lock_irq(&futex_hash[bucket].lock, &flags);
 
     /* Re-check under lock — value may have changed */
-    if (__sync_val_compare_and_swap(uaddr, val, val) != val) {
+    if (__atomic_load_n(uaddr, __ATOMIC_ACQUIRE) != val) {
         spin_unlock_irq(&futex_hash[bucket].lock, flags);
         return -EAGAIN;
     }
@@ -130,7 +193,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val) {
         return -ENOMEM;
     }
     w->thread = t;
-    w->uaddr = (uint64_t)(uintptr_t)uaddr;
+    w->uaddr = addr;
     w->pid = pid;
     w->next = futex_hash[bucket].head;
     futex_hash[bucket].head = w;
@@ -138,23 +201,18 @@ static long futex_wait(uint32_t *uaddr, uint32_t val) {
     spin_unlock_irq(&futex_hash[bucket].lock, flags);
 
     /* Block via event_wait — futex_wake will event_post us.
-     * On wake, syscall restarts: futex_wait re-checks *uaddr.
-     * If value changed (normal case), returns -EAGAIN → caller re-tries lock. */
+     * On wake, syscall restarts: futex_wait re-enters, drains the event,
+     * and returns -EAGAIN (value changed) or -ETIMEDOUT (timeout). */
     {
         event_t ev;
-        event_wait(&t->eq, &ev, -1);
+        event_wait(&t->eq, &ev, timeout_ms);
     }
-    return 0; /* unreachable — syscall restarts */
+    return 0; /* unreachable — event_wait does syscall restart when blocking */
 }
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
 
 static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
-    /* With spin-yield, waiters observe *uaddr directly.
-     * The wake is implicit — changing *uaddr is sufficient.
-     * We still walk the wait queue in case anyone registered there
-     * (future true-blocking path). For now, return 0 (woke nobody
-     * explicitly, but spin-waiters will see the change). */
     process_t *p = proc_current();
     uint32_t pid = p ? p->pid : 0;
     int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
@@ -167,13 +225,12 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
     while (*pp && (uint32_t)woken < max_wake) {
         futex_waiter_t *w = *pp;
         if (w->uaddr == (uint64_t)(uintptr_t)uaddr && w->pid == pid) {
-            /* Wake this thread */
-            {
-                event_post(w->thread, 6 /* EQ_FUTEX_WAKE */, 0);
-                woken++;
-            }
+            /* Remove from queue + wake */
+            thread_t *target = w->thread;
             *pp = w->next;
             slab_free(&waiter_slab, w);
+            event_post(target, EQ_FUTEX_WAKE, 0);
+            woken++;
         } else {
             pp = &(*pp)->next;
         }
@@ -198,7 +255,10 @@ static long futex_lock_pi(uint32_t *uaddr) {
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 
-    /* Block via wait queue (no spin — strict spec compliance) */
+    /* Drain stale events from previous restart */
+    futex_drain_events(&self->eq);
+
+    /* Block via wait queue */
     {
         process_t *p = self->proc;
         uint32_t pid = p ? p->pid : 0;
@@ -252,17 +312,18 @@ static long futex_unlock_pi(uint32_t *uaddr) {
     uint32_t tid = (uint32_t)self->tid;
 
     /* Verify we own this futex */
-    uint32_t cur = __sync_val_compare_and_swap(uaddr, tid, tid);
+    uint32_t cur = __atomic_load_n(uaddr, __ATOMIC_ACQUIRE);
     if ((cur & FUTEX_TID_MASK) != tid)
         return -EPERM;
 
     /* Restore our priority */
     pi_unboost(self);
 
-    /* Release: clear our TID. Keep FUTEX_WAITERS if set so waiters can acquire. */
+    /* Release: clear our TID */
     if (cur & FUTEX_WAITERS) {
-        /* Clear TID but keep WAITERS bit — a waiter will CAS it */
+        /* Waiters present — clear TID, keep WAITERS bit, wake one */
         __sync_val_compare_and_swap(uaddr, cur, FUTEX_WAITERS);
+        futex_wake(uaddr, 1);
     } else {
         /* No waiters — just release */
         __sync_val_compare_and_swap(uaddr, cur, 0);
@@ -271,21 +332,42 @@ static long futex_unlock_pi(uint32_t *uaddr) {
     return 0;
 }
 
+/* ── Timespec → milliseconds ────────────────────── */
+
+/* Convert userspace struct timespec to milliseconds.
+ * Returns timeout_ms for event_wait: -1 if ts is NULL (infinite),
+ * 0 if timespec is zero, >0 otherwise. Capped at INT32_MAX. */
+static int timespec_to_ms(const void *ts) {
+    if (!ts) return -1;
+
+    struct { long tv_sec; long tv_nsec; } kts;
+    if (copy_from_user(&kts, ts, sizeof(kts)) != 0)
+        return -1; /* bad pointer → treat as infinite (caller will fail on uaddr access) */
+
+    if (kts.tv_sec < 0 || kts.tv_nsec < 0) return 0;
+
+    long ms = kts.tv_sec * 1000 + kts.tv_nsec / 1000000;
+    if (ms <= 0 && (kts.tv_sec > 0 || kts.tv_nsec > 0))
+        ms = 1; /* sub-millisecond → round up to 1ms */
+    if (ms > 0x7FFFFFFFL) ms = 0x7FFFFFFFL; /* cap */
+    return (int)ms;
+}
+
 /* ── Dispatcher ─────────────────────────────────── */
 
 long do_futex(uint32_t *uaddr, int op, uint32_t val,
               const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
-    (void)timeout; /* timeout not implemented yet */
-    (void)uaddr2;
-    (void)val3;
-
     int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100); /* strip PRIVATE + CLOCK_REALTIME */
 
     switch (cmd) {
-    case FUTEX_WAIT:      return futex_wait(uaddr, val);
-    case FUTEX_WAKE:      return futex_wake(uaddr, val);
-    case FUTEX_LOCK_PI:   return futex_lock_pi(uaddr);
-    case FUTEX_UNLOCK_PI: return futex_unlock_pi(uaddr);
+    case FUTEX_WAIT:
+        return futex_wait(uaddr, val, timespec_to_ms(timeout));
+    case FUTEX_WAKE:
+        return futex_wake(uaddr, val);
+    case FUTEX_LOCK_PI:
+        return futex_lock_pi(uaddr);
+    case FUTEX_UNLOCK_PI:
+        return futex_unlock_pi(uaddr);
     case FUTEX_WAKE_OP: {
         /* Simplified WAKE_OP: wake val waiters on uaddr, then
          * apply operation on *uaddr2 and conditionally wake val3
@@ -302,7 +384,7 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         /* Simplified: wake val waiters on uaddr, ignore requeue */
         return futex_wake(uaddr, val);
     case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
-        return futex_wait(uaddr, val);
+        return futex_wait(uaddr, val, timespec_to_ms(timeout));
     case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
         return futex_wake(uaddr, val);
     default:
