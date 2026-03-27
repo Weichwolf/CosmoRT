@@ -246,18 +246,16 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 
 init-bin: $(BUILD)/gen/init_bin.h
 
-# ── Busybox (optional, embedded as /bin/sh) ──────
-BUSYBOX_SRC ?= /tmp/busybox-src/busybox
+# ── Alpine userland (optional, embedded) ─────────
+ALPINE_ROOT ?= /tmp/alpine-root
+BUSYBOX_SRC ?= $(ALPINE_ROOT)/bin/busybox
+LD_MUSL_SRC ?= $(ALPINE_ROOT)/lib/ld-musl-x86_64.so.1
+
 $(BUILD)/gen/busybox_bin.h: $(BUSYBOX_SRC) | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* busybox (%d bytes) */' % len(data)); \
-	print('static const unsigned char busybox_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long busybox_bin_size = %d;' % len(data))" > $@
-	@echo "busybox_bin.h: $$(wc -c < $<) bytes"
+	@python3 tools/embed.py $< busybox_bin > $@
+
+$(BUILD)/gen/ld_musl_bin.h: $(LD_MUSL_SRC) | $(BUILD)/gen
+	@python3 tools/embed.py $< ld_musl_bin > $@
 
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
@@ -455,12 +453,16 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h (+ optional busybox_bin.h)
+# main.o depends on init_bin.h (+ optional busybox/ld-musl)
 MAIN_DEPS = $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h
 MAIN_FLAGS =
 ifdef HAVE_BUSYBOX
 MAIN_DEPS += $(BUILD)/gen/busybox_bin.h
 MAIN_FLAGS += -DHAVE_BUSYBOX
+endif
+ifdef HAVE_LD_MUSL
+MAIN_DEPS += $(BUILD)/gen/ld_musl_bin.h
+MAIN_FLAGS += -DHAVE_LD_MUSL
 endif
 $(BUILD)/kernel/core/main.o: $(MAIN_DEPS) | $(BUILD)/kernel/core
 	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen $(MAIN_FLAGS) -o $@ $<
@@ -498,10 +500,11 @@ QEMU_FLAGS = -cpu qemu64 -smp 2 -m 4096 \
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
-# Boot busybox shell (serial console)
-qemu-busybox: $(BUILD)/gen/busybox_bin.h
+# Boot Alpine busybox shell (serial console)
+qemu-busybox:
+	$(MAKE) $(BUILD)/gen/busybox_bin.h $(BUILD)/gen/ld_musl_bin.h
 	@rm -f $(BUILD)/kernel/core/main.o
-	HAVE_BUSYBOX=1 $(MAKE) all
+	HAVE_BUSYBOX=1 HAVE_LD_MUSL=1 $(MAKE) all
 	timeout 30 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \

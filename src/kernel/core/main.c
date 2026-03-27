@@ -215,11 +215,56 @@ void kernel_main(struct boot_info *info) {
     serial_puts("vfs: /lib/ld-musl-x86_64.so.1 registered\n");
 #endif
 
-    /* Busybox shell at /bin/sh */
+    /* Alpine userland */
 #ifdef HAVE_BUSYBOX
     vfs_create("/bin", VFS_DIR);
-    vfs_add_file("/bin/sh", busybox_bin, busybox_bin_size);
-    serial_puts("vfs: /bin/sh registered\n");
+    vfs_create("/usr", VFS_DIR);
+    vfs_create("/usr/bin", VFS_DIR);
+    vfs_create("/sbin", VFS_DIR);
+    vfs_create("/usr/sbin", VFS_DIR);
+    vfs_create("/etc", VFS_DIR);
+    vfs_add_file("/bin/busybox", busybox_bin, busybox_bin_size);
+    serial_puts("vfs: /bin/busybox registered\n");
+    /* Core symlinks — busybox applet detection via argv[0] */
+    extern int vfs_symlink(const char *target, const char *linkpath);
+    vfs_symlink("/bin/busybox", "/bin/sh");
+    vfs_symlink("/bin/busybox", "/bin/ls");
+    vfs_symlink("/bin/busybox", "/bin/cat");
+    vfs_symlink("/bin/busybox", "/bin/echo");
+    vfs_symlink("/bin/busybox", "/bin/mkdir");
+    vfs_symlink("/bin/busybox", "/bin/cp");
+    vfs_symlink("/bin/busybox", "/bin/mv");
+    vfs_symlink("/bin/busybox", "/bin/rm");
+    vfs_symlink("/bin/busybox", "/bin/ln");
+    vfs_symlink("/bin/busybox", "/bin/pwd");
+    vfs_symlink("/bin/busybox", "/bin/env");
+    vfs_symlink("/bin/busybox", "/bin/uname");
+    vfs_symlink("/bin/busybox", "/bin/id");
+    vfs_symlink("/bin/busybox", "/bin/ps");
+    vfs_symlink("/bin/busybox", "/bin/mount");
+    vfs_symlink("/bin/busybox", "/bin/grep");
+    vfs_symlink("/bin/busybox", "/bin/sed");
+    vfs_symlink("/bin/busybox", "/bin/awk");
+    vfs_symlink("/bin/busybox", "/bin/head");
+    vfs_symlink("/bin/busybox", "/bin/tail");
+    vfs_symlink("/bin/busybox", "/bin/wc");
+    vfs_symlink("/bin/busybox", "/bin/sort");
+    vfs_symlink("/bin/busybox", "/bin/chmod");
+    vfs_symlink("/bin/busybox", "/bin/chown");
+    vfs_symlink("/bin/busybox", "/bin/test");
+    vfs_symlink("/bin/busybox", "/bin/true");
+    vfs_symlink("/bin/busybox", "/bin/false");
+    vfs_symlink("/bin/busybox", "/bin/sleep");
+    vfs_symlink("/bin/busybox", "/bin/date");
+    vfs_symlink("/bin/busybox", "/bin/vi");
+    vfs_symlink("/bin/busybox", "/bin/wget");
+    /* /etc basics */
+    {
+        static const char passwd[] = "root:x:0:0:root:/root:/bin/sh\n";
+        static const char group[]  = "root:x:0:\n";
+        vfs_add_file("/etc/passwd", (const uint8_t *)passwd, sizeof(passwd) - 1);
+        vfs_add_file("/etc/group", (const uint8_t *)group, sizeof(group) - 1);
+    }
 #endif
 
     /* Futex subsystem (wait queue hash table + slab pool) */
