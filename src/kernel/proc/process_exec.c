@@ -17,14 +17,9 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     return -ENAMETOOLONG;
 }
 
-/* Max entries and string length for execve argv/envp */
-#define EXECVE_MAX_ARGS  16
-#define EXECVE_MAX_ENVS  16
-#define EXECVE_MAX_STRLEN 256
-
 /* Build user stack with argv, envp, auxv. Allocates stack pages.
  * Returns RSP value on success, 0 on error. */
-static uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
+uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
                                  char kargv[][EXECVE_MAX_STRLEN], int argc,
                                  char kenvp[][EXECVE_MAX_STRLEN], int envc,
                                  const elf_info_t *elf_info) {
@@ -359,15 +354,13 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             return -ENOMEM;
         }
     } else {
-        /* Fast path: plain ET_EXEC, no interpreter */
-        uint64_t brk_end;
+        /* Fast path: plain ET_EXEC, no interpreter — use elf_load_ex + build_user_stack */
+        elf_info_t info;
         int load_rc;
         if (from_cosmofs)
-            load_rc = elf_load_cosmofs(cosmofs_ino, p->pml4, stack_top,
-                                       &entry, &stack_ptr, &brk_end);
+            load_rc = elf_load_ex_cosmofs(cosmofs_ino, p->pml4, 0, &info);
         else
-            load_rc = elf_load(elf_buf, elf_len, p->pml4, stack_top,
-                               &entry, &stack_ptr, &brk_end);
+            load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
 
         if (load_rc < 0) {
             if (elf_buf) pages_free(elf_buf, elf_pages);
@@ -379,8 +372,9 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             return -ENOEXEC;
         }
 
-        p->brk_base = brk_end;
-        p->brk_current = brk_end;
+        p->brk_base = info.brk;
+        p->brk_current = info.brk;
+        entry = info.entry;
 
         /* Stack VMA with guard page */
         spin_lock_irq(&p->lock, &exec_irqf);
@@ -390,132 +384,22 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                    0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
         vma_insert(&p->vma_root, stack_bottom, stack_top,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        spin_unlock_irq(&p->lock, exec_irqf);
-        /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
-
-        /* Rebuild stack with real argv/envp (elf_load already set up minimal stack) */
-        {
-            uint64_t stk_page_va = stack_top - 4096;
-            uint64_t pte = read_pte(p->pml4, stk_page_va);
-            if (pte & PTE_PRESENT) {
-                uint8_t *page = (uint8_t *)phys_to_virt(pte & PTE_ADDR_MASK);
-                kmemset(page, 0, 4096);
-
-                uint64_t str_off = 4096;
-                uint64_t argv_addrs[EXECVE_MAX_ARGS];
-                uint64_t envp_addrs[EXECVE_MAX_ENVS];
-
-                for (int i = envc - 1; i >= 0; i--) {
-                    int sl = 0; while (kenvp[i][sl]) sl++;
-                    if (str_off < (uint64_t)(sl + 1) + 256) break;
-                    str_off -= (uint64_t)(sl + 1);
-                    kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
-                    envp_addrs[i] = stk_page_va + str_off;
-                }
-                for (int i = argc - 1; i >= 0; i--) {
-                    int sl = 0; while (kargv[i][sl]) sl++;
-                    if (str_off < (uint64_t)(sl + 1) + 256) break;
-                    str_off -= (uint64_t)(sl + 1);
-                    kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
-                    argv_addrs[i] = stk_page_va + str_off;
-                }
-
-                /* Place 16 bytes of random data on stack for AT_RANDOM */
-                str_off -= 16;
-                str_off &= ~7ULL;
-                uint64_t at_random_addr = stk_page_va + str_off;
-                {
-                    extern int random_get(void *buf, size_t len);
-                    uint8_t rand_buf[16];
-                    if (random_get(rand_buf, 16) != 0) {
-                        /* Fallback: use RDTSC */
-                        uint64_t t = arch_rdtsc();
-                        kmemcpy(rand_buf, &t, 8);
-                        kmemcpy(rand_buf + 8, &t, 8);
-                    }
-                    kmemcpy(page + str_off, rand_buf, 16);
-                }
-
-                str_off &= ~7ULL;
-
-                /* Count total qwords needed for the stack frame:
-                 * argc(1) + argv(argc+1) + envp(envc+1) + auxv(2*N+2)
-                 * auxv entries: AT_ENTRY, AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_RANDOM, AT_NULL = 7 */
-                int naux = 7;
-                int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
-                /* Align: total frame must land on 16-byte boundary */
-                str_off -= (uint64_t)nqwords * 8;
-                str_off &= ~0xFULL;  /* 16-byte align RSP at entry */
-
-                uint64_t *stk = (uint64_t *)(page + str_off);
-                uint64_t *sp_base = stk;
-
-                /* argc */
-                *stk++ = (uint64_t)argc;
-                /* argv pointers */
-                for (int i = 0; i < argc; i++)
-                    *stk++ = argv_addrs[i];
-                *stk++ = 0;  /* argv terminator */
-                /* envp pointers */
-                for (int i = 0; i < envc; i++)
-                    *stk++ = envp_addrs[i];
-                *stk++ = 0;  /* envp terminator */
-
-                /* Compute AT_PHDR */
-                uint64_t phdr_vaddr = peek_eh->e_phoff;
-                if (from_cosmofs) {
-                    Elf64_Phdr ph0;
-                    for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
-                        size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
-                        cosmofs_read(cosmofs_ino, &ph0, po, sizeof(ph0));
-                        if (ph0.p_type == PT_LOAD) {
-                            phdr_vaddr = ph0.p_vaddr + (peek_eh->e_phoff - ph0.p_offset);
-                            break;
-                        }
-                    }
-                } else if (elf_buf && elf_len >= sizeof(Elf64_Ehdr)) {
-                    for (int pi = 0; pi < peek_eh->e_phnum && pi < 64; pi++) {
-                        size_t po = (size_t)(peek_eh->e_phoff + (uint64_t)pi * peek_eh->e_phentsize);
-                        if (po + sizeof(Elf64_Phdr) > elf_len) break;
-                        const Elf64_Phdr *ph0 = (const Elf64_Phdr *)(elf_buf + po);
-                        if (ph0->p_type == PT_LOAD) {
-                            phdr_vaddr = ph0->p_vaddr + (peek_eh->e_phoff - ph0->p_offset);
-                            break;
-                        }
-                    }
-                }
-
-                /* auxv (key, value pairs) */
-                *stk++ = AT_ENTRY;      *stk++ = entry;
-                *stk++ = AT_PHDR;       *stk++ = phdr_vaddr;
-                *stk++ = AT_PHENT;      *stk++ = (uint64_t)peek_eh->e_phentsize;
-                *stk++ = AT_PHNUM;      *stk++ = (uint64_t)peek_eh->e_phnum;
-                *stk++ = AT_PAGESZ;     *stk++ = 4096;
-                *stk++ = AT_RANDOM;     *stk++ = at_random_addr;
-                *stk++ = AT_NULL;       *stk++ = 0;
-
-                stack_ptr = stk_page_va + (uint64_t)((uint8_t *)sp_base - page);
-            }
-        }
 
         /* Create VMAs for ELF segments */
-        if (!from_cosmofs) {
+        if (!from_cosmofs)
             create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
-        } else {
-            /* Create VMAs from CosmoFS ELF phdrs */
-            Elf64_Phdr cos_phdrs[64];
-            size_t cos_phdr_size = (size_t)peek_eh->e_phnum * peek_eh->e_phentsize;
-            cosmofs_read(cosmofs_ino, cos_phdrs, (size_t)peek_eh->e_phoff, cos_phdr_size);
-            for (int i = 0; i < peek_eh->e_phnum && i < 64; i++) {
-                if (cos_phdrs[i].p_type != PT_LOAD || cos_phdrs[i].p_memsz == 0) continue;
-                uint64_t seg_start = cos_phdrs[i].p_vaddr & ~0xFFFULL;
-                uint64_t seg_end = (cos_phdrs[i].p_vaddr + cos_phdrs[i].p_memsz + 0xFFF) & ~0xFFFULL;
-                int seg_prot = 0;
-                if (cos_phdrs[i].p_flags & PF_R) seg_prot |= PROT_READ;
-                if (cos_phdrs[i].p_flags & PF_W) seg_prot |= PROT_WRITE;
-                if (cos_phdrs[i].p_flags & PF_X) seg_prot |= PROT_EXEC;
-                vma_insert(&p->vma_root, seg_start, seg_end, seg_prot, MAP_PRIVATE);
-            }
+        spin_unlock_irq(&p->lock, exec_irqf);
+
+        stack_ptr = build_user_stack(p->pml4, stack_top,
+                                      kargv, argc, kenvp, envc, &info);
+        if (!stack_ptr) {
+            if (elf_buf) pages_free(elf_buf, elf_pages);
+            if (interp_buf) pages_free(interp_buf, interp_pages);
+            p->state = PROC_ZOMBIE;
+            cur->state = THREAD_DEAD;
+            arch_set_cr3(virt_to_phys(pml4));
+            thread_return_to_kernel(cur);
+            return -ENOMEM;
         }
     }
 

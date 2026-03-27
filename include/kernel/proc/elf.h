@@ -94,12 +94,14 @@ typedef struct {
     char     interp[256];  /* interpreter path from PT_INTERP ("" if none) */
 } elf_info_t;
 
-/* Load a static ELF64 binary into a user address space.
- * Sets up page tables, stack, argc/argv/envp/auxv.
- * Returns 0 on success, -1 on error.
- * On success: *entry = ELF entry point, *stack_ptr = initial RSP. */
+/* Load ELF64 binary + build user stack with argv/envp/auxv.
+ * Thin wrapper: elf_load_ex + build_user_stack.
+ * Returns 0 on success, -1 on error. */
+#define ELF_LOAD_MAX_STRLEN 256
 int elf_load(const void *data, size_t len, uint64_t *pml4,
              uint64_t stack_top,
+             char kargv[][ELF_LOAD_MAX_STRLEN], int argc,
+             char kenvp[][ELF_LOAD_MAX_STRLEN], int envc,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
 
 /* Extended ELF load: maps segments + returns metadata for dynamic linking.
@@ -109,10 +111,12 @@ int elf_load(const void *data, size_t len, uint64_t *pml4,
 int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
                 uint64_t base_hint, elf_info_t *info);
 
-/* Load a static ELF64 from CosmoFS inode — no contiguous buffer needed.
- * Reads segments page-by-page from disk. */
+/* Load ELF64 from CosmoFS inode + build user stack.
+ * Thin wrapper: elf_load_ex_cosmofs + build_user_stack. */
 int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
                      uint64_t stack_top,
+                     char kargv[][ELF_LOAD_MAX_STRLEN], int argc,
+                     char kenvp[][ELF_LOAD_MAX_STRLEN], int envc,
                      uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
 
 /* Extended ELF load from CosmoFS inode — handles ET_EXEC + ET_DYN. */

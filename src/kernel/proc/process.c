@@ -275,11 +275,25 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
 
-    /* Load ELF */
+    /* Load ELF with proper argv/envp for init */
+    char kargv[EXECVE_MAX_ARGS][EXECVE_MAX_STRLEN];
+    char kenvp[EXECVE_MAX_ENVS][EXECVE_MAX_STRLEN];
+    { const char *s = "/init"; int ii = 0; while (s[ii]) { kargv[0][ii] = s[ii]; ii++; } kargv[0][ii] = 0; }
+    { const char *s = "HOME=/"; int ii = 0; while (s[ii]) { kenvp[0][ii] = s[ii]; ii++; } kenvp[0][ii] = 0; }
+    { const char *s = "PATH=/bin:/usr/bin"; int ii = 0; while (s[ii]) { kenvp[1][ii] = s[ii]; ii++; } kenvp[1][ii] = 0; }
+    { const char *s = "TERM=linux"; int ii = 0; while (s[ii]) { kenvp[2][ii] = s[ii]; ii++; } kenvp[2][ii] = 0; }
     uint64_t entry, stack_ptr, brk_end;
     if (elf_load(elf_data, elf_len, p->pml4, stack_top,
+                 kargv, 1, kenvp, 3,
                  &entry, &stack_ptr, &brk_end) < 0)
         goto fail_pml4;
+
+    /* Freestanding binaries (ktest, e1000d, svcmgr) have GCC-compiled _start
+     * that expects RSP = 16n+8 (as if entered via 'call'). build_user_stack
+     * returns RSP = 16n (correct per SysV ABI for process entry). Subtract 8
+     * to match GCC's assumption. Real binaries use execve → build_user_stack
+     * directly (no -8), where libc's _start handles 16n alignment. */
+    stack_ptr -= 8;
 
     p->brk_base = brk_end;
     p->brk_current = brk_end;
