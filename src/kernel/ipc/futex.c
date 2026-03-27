@@ -1,7 +1,7 @@
 /* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance
  *
  * Spin-yield implementation: threads spin with PAUSE instead of true blocking.
- * Functionally correct for CosmoPX pthread_mutex — the fast path (uncontended)
+ * Functionally correct for musl pthread_mutex — the fast path (uncontended)
  * never enters the kernel. Only contended locks hit this code, and they're rare.
  *
  * PI (Priority Inheritance): when a high-priority thread blocks on a PI futex

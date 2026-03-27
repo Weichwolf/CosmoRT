@@ -556,7 +556,7 @@ uint64_t vfs_cosmofs_lookup(const char *path) {
 }
 
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
-    /* Try ramfs first (for embedded binaries like /lib/ld-cosmo.so) */
+    /* Try ramfs first (for embedded binaries like /lib/ld-musl-x86_64.so.1) */
     struct vfs_node *node = vfs_lookup(path);
     if (node && node->type == VFS_FILE && node->data && node->size > 0) {
         size_t sz = node->size;

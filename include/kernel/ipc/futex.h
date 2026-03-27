@@ -1,7 +1,7 @@
 /* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance
  *
  * Linux-compatible subset: FUTEX_WAIT, FUTEX_WAKE, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI.
- * Spin-yield semantics (no true blocking yet — sufficient for CosmoPX pthread_mutex
+ * Spin-yield semantics (no true blocking yet — sufficient for musl pthread_mutex
  * where most locks are uncontended and the fast path stays in userspace).
  */
 #ifndef FUTEX_H

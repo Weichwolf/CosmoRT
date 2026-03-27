@@ -38,7 +38,7 @@ Sichtbarkeit:
 - Userspace: -Iinclude/public
 
 Kein Consumer braucht mehr als eine Datei:
-- CosmoPX libc: linux.h → uebersetzt POSIX in Syscalls
+- musl libc: Standard-POSIX, statisch oder dynamisch (ld-musl-x86_64.so.1)
 - Treiber: cosmort.h → spricht Hardware
 - CosmoUI: cosmoui.h → spricht Kernel-Subsysteme
 - Programme: sehen nur was libc ihnen gibt, nie Header direkt
@@ -106,9 +106,9 @@ Partition-Grenze = SPSC Lock-free Channels. Kein Code-Pfad kreuzt die Grenze.
 
 ```
 CosmoUI  ~/Git/CosmoUI    UI, WASM-Runtime, Protokoll-Stacks
-CosmoPX  ~/Git/CosmoPX     libc, Userland, Node.js, Claude Code
 CosmoJS  ~/Git/CosmoJS     JS-Engine
 CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
+musl     System-libc       POSIX libc (statisch + dynamisch, ld-musl-x86_64.so.1)
 ```
 
 ## Verzeichnisse
@@ -130,7 +130,7 @@ src/kernel/
   hw/            kexec, serial, hyperv
 src/drivers/     NUR include/public/ (kein Zugriff auf Kernel-Interna)
 src/boot/        UEFI Bootloader
-src/user/        init, ktest, ld-cosmo.so, e1000d, svcmgr
+src/user/        init, ktest, e1000d, svcmgr
 test/            unit/ + crash/ (Self-Registering: TEST/CRASH_TEST Macros)
 tools/           mkfs, cosmocp, mkimage.sh, mkfont.py
 ```

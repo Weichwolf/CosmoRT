@@ -472,4 +472,4 @@ Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 | Security Modules | SELinux/AppArmor | Keiner | Single-User |
 | SysV IPC | shmget/semget/msgget | Nicht implementiert | Pipes/Unix-Sockets/Futex reichen |
 | Filesystem Journaling | ext4 Journal | CosmoFS COW (kein Journal) | COW = crash-safe by design |
-| Dynamic Linker | ld-linux.so | ld-cosmo.so (CosmoPX) | Eigene libc |
+| Dynamic Linker | ld-linux.so | ld-musl-x86_64.so.1 | musl libc (statisch + dynamisch) |

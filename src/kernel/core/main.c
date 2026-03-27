@@ -28,9 +28,9 @@
 
 #include "gen/init_bin.h"
 
-/* Dynamic linker binary (embedded, registered in VFS at /lib/ld-cosmo.so) */
-#ifdef HAVE_LD_COSMO
-#include "gen/ld_cosmo_bin.h"
+/* Dynamic linker binary (embedded, registered in VFS at /lib/ld-musl-x86_64.so.1) */
+#ifdef HAVE_LD_MUSL
+#include "gen/ld_musl_bin.h"
 #endif
 
 /* Userspace E1000 driver (embedded, registered in VFS at /bin/e1000d) */
@@ -212,11 +212,11 @@ void kernel_main(struct boot_info *info) {
     /* procfs — virtual /proc (dmesg, meminfo, cpuinfo) */
     procfs_init();
 
-    /* Dynamic linker: register at /lib/ld-cosmo.so */
-#ifdef HAVE_LD_COSMO
+    /* Dynamic linker: musl ld-musl-x86_64.so.1 */
+#ifdef HAVE_LD_MUSL
     vfs_create("/lib", VFS_DIR);
-    vfs_add_file("/lib/ld-cosmo.so", ld_cosmo_bin, ld_cosmo_bin_size);
-    serial_puts("vfs: /lib/ld-cosmo.so registered\n");
+    vfs_add_file("/lib/ld-musl-x86_64.so.1", ld_musl_bin, ld_musl_bin_size);
+    serial_puts("vfs: /lib/ld-musl-x86_64.so.1 registered\n");
 #endif
 
     /* Userspace driver binaries */

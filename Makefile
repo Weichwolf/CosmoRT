@@ -238,26 +238,7 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h
-
-# ── Dynamic linker (ld-cosmo.so, embedded in kernel) ──
-$(BUILD)/user/ld-cosmo.o: $(SRC)/user/ld-cosmo.c | $(BUILD)/user
-	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
-	      -fno-plt -mno-red-zone -nostdlib -Wall -Wextra -Werror -O2 -c -o $@ $<
-
-$(BUILD)/user/ld-cosmo: $(BUILD)/user/ld-cosmo.o $(SRC)/user/interp.ld
-	$(LD) -T $(SRC)/user/interp.ld -o $@ $<
-
-$(BUILD)/gen/ld_cosmo_bin.h: $(BUILD)/user/ld-cosmo | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated ld-cosmo binary (%d bytes) */' % len(data)); \
-	print('static const unsigned char ld_cosmo_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long ld_cosmo_bin_size = %d;' % len(data))" > $@
-	@echo "ld_cosmo_bin.h: $$(wc -c < $<) bytes"
+init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h
 
 # ── E1000 userspace driver (embedded in kernel) ──
 $(BUILD)/user/e1000d.o: $(SRC)/user/e1000d.c | $(BUILD)/user
@@ -521,9 +502,9 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h, ld_cosmo_bin.h, e1000d_bin.h, svcmgr_bin.h
-$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_LD_COSMO -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
+# main.o depends on init_bin.h, e1000d_bin.h, svcmgr_bin.h
+$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -635,5 +616,5 @@ test-boot-disk: $(BUILD)/disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/ld_cosmo_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
+	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
 	rm -f tools/mkfs
