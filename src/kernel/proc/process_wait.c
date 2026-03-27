@@ -7,7 +7,8 @@
 void proc_cleanup(process_t *p) {
     if (!p) return;
 
-    /* Close all FDs — decrement refcount, free when last ref */
+    /* Close all FDs — decrement refcount, free when last ref.
+     * exit_kill_process already does this, so entries may be FD_NONE. */
     for (int i = 0; i < FD_MAX; i++) {
         int type = p->fds.entries[i].type;
         if (type == FD_FILE) {
@@ -18,15 +19,24 @@ void proc_cleanup(process_t *p) {
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;
     }
-    /* Reset bitmap: all free */
     for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
-    /* Free all threads */
+    /* Free threads.
+     * exit_kill_process sets sibling threads to DEAD with proc=NULL. Those
+     * threads may still be in the run queue — the scheduler drains and frees
+     * them lazily (see sched_loop). Only free threads still owned by this
+     * process (proc != NULL), which means exit_kill_process didn't orphan them.
+     * The main thread (which executed exit_group) is always safe: it did
+     * longjmp back to sched_loop and was not re-enqueued. */
     thread_t *t = p->threads;
     while (t) {
         thread_t *next = t->proc_next;
-        t->state = THREAD_DEAD;
-        thread_free(t);
+        if (t->proc == p) {
+            /* Still owned by this process — safe to free */
+            t->state = THREAD_DEAD;
+            thread_free(t);
+        }
+        /* else: orphaned by exit_kill_process (proc=NULL), scheduler frees it */
         t = next;
     }
     p->threads = 0;

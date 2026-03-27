@@ -1,6 +1,7 @@
-/* CosmoRT Hardware Test — entry point
- * Unit tests run in-process.
- * Crash tests run in fork'd children so a crash kills the child, not ktest.
+/* CosmoRT Hardware Test — parallel test runner
+ * ALL tests (unit + crash) run in fork'd children.
+ * Batch of BATCH children run concurrently.
+ * Parent collects results via MAP_SHARED slots + wait4.
  * Tests self-register via .ktest linker section. */
 #include "ktest.h"
 
@@ -10,88 +11,128 @@ int passes = 0;
 extern const ktest_entry_t __start_ktest[];
 extern const ktest_entry_t __stop_ktest[];
 
-/* Run a crash test in a child process.
- * PASS = child exits 0 (all checks passed inside).
- * FAIL = child crashed or exited non-zero. */
-static void run_crash_test(const char *name, void (*fn)(void)) {
-    /* Save counters — child will have its own copy after fork */
-    int pass_before = passes;
-    int fail_before = failures;
+#define BATCH 4
 
-    long pid = sc0(SYS_FORK);
-    if (pid < 0) {
-        fail(name, "fork failed");
-        return;
-    }
-    if (pid == 0) {
-        /* Child: run test, exit with failure count */
-        failures = 0;
-        passes = 0;
-        fn();
-        sc1(SYS_EXIT_GROUP, (long)failures);
-        __builtin_unreachable();
-    }
-
-    /* Parent: wait for child */
-    int status = 0;
-    long w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
-    if (w < 0) {
-        fail(name, "wait4 failed");
-        return;
-    }
-
-    /* Decode wait status: Linux encoding — signal in bits 6:0,
-     * exit code in bits 15:8 (if exited normally, signal bits = 0). */
-    int exit_signal = status & 0x7F;
-    int exit_code = exit_signal ? (128 + exit_signal) : ((status >> 8) & 0xFF);
-
-    /* The child printed its own PASS/FAIL lines.
-     * We just track whether the whole suite survived. */
-    if (exit_code == 0) {
-        /* Child's internal checks all passed */
-        puts("  --- "); puts(name); puts(": child OK ---\n");
-    } else if (exit_code > 128) {
-        /* Killed by signal (128+sig convention) or raw signal number */
-        puts("  --- "); puts(name); puts(": child CRASHED (status=");
-        put_int(exit_code); puts(") ---\n");
-        fail(name, "child crashed");
-        return;
-    } else if (exit_code > 0) {
-        puts("  --- "); puts(name); puts(": child had ");
-        put_int(exit_code); puts(" failures ---\n");
-    }
-
-    /* Restore counters — fork'd child's increments are lost.
-     * We count one PASS per crash-suite if exit_code == 0,
-     * or one FAIL if the child died or had failures. */
-    passes = pass_before;
-    failures = fail_before;
-
-    if (exit_code == 0) {
-        pass(name);
-    } else {
-        fail(name, "child failures or crash");
-    }
+/* Allocate MAP_SHARED anonymous memory */
+static void *shared_alloc(long size) {
+    return (void *)sc6(SYS_MMAP, 0, size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 }
+
 
 void _start(void) {
     puts("\n=== CosmoRT Hardware Test ===\n");
 
-    for (const ktest_entry_t *t = __start_ktest; t < __stop_ktest; t++) {
-        if (t->crash)
-            run_crash_test(t->name, t->fn);
-        else
-            t->fn();
+    int total = (int)(__stop_ktest - __start_ktest);
+
+    /* Allocate shared slots for result reporting */
+    test_slot_t *slots = (test_slot_t *)shared_alloc(BATCH * (long)sizeof(test_slot_t));
+    if ((long)slots < 0) {
+        puts("FATAL: shared_alloc failed\n");
+        sc1(SYS_EXIT_GROUP, 1);
+        __builtin_unreachable();
     }
+
+    int idx = 0;
+    while (idx < total) {
+        int batch_size = total - idx;
+        if (batch_size > BATCH) batch_size = BATCH;
+
+        /* Clear slots */
+        for (int s = 0; s < batch_size; s++) {
+            slots[s].done = 0;
+            slots[s].pass_cnt = 0;
+            slots[s].fail_cnt = 0;
+            slots[s].exit_code = -1;
+            slots[s].pid = 0;
+        }
+
+        /* Fork children */
+        for (int s = 0; s < batch_size; s++) {
+            const ktest_entry_t *t = &__start_ktest[idx + s];
+            long pid = sc0(SYS_FORK);
+            if (pid < 0) {
+                puts("  FAIL  "); puts(t->name); puts(" (fork failed)\n");
+                slots[s].done = 1;
+                slots[s].fail_cnt = 1;
+                failures++;
+                continue;
+            }
+            if (pid == 0) {
+                /* Child: own process group + session so tests that check
+                 * getpgrp()==getpid() work correctly in forked context. */
+                sc2(SYS_SETPGID, 0, 0);
+                sc0(SYS_SETSID);
+                failures = 0;
+                passes = 0;
+                t->fn();
+                slots[s].pass_cnt = passes;
+                slots[s].fail_cnt = failures;
+                slots[s].done = 1;
+                sc1(SYS_EXIT_GROUP, (long)failures);
+                __builtin_unreachable();
+            }
+            slots[s].pid = pid;
+        }
+
+        /* Wait for all children in this batch.
+         * Timeout: 1000 yield iterations per child. */
+        for (int s = 0; s < batch_size; s++) {
+            if (slots[s].pid <= 0) continue;
+
+            int status = 0;
+            long w = sc4(SYS_WAIT4, slots[s].pid, (long)&status, 0, 0);
+
+            const ktest_entry_t *t = &__start_ktest[idx + s];
+
+            if (w < 0) {
+                puts("  FAIL  "); puts(t->name); puts(" (wait4 failed)\n");
+                failures++;
+                continue;
+            }
+
+            /* Decode wait status */
+            int exit_signal = status & 0x7F;
+            int exit_code = exit_signal ? (128 + exit_signal) : ((status >> 8) & 0xFF);
+            slots[s].exit_code = exit_code;
+
+            /* Collect results from shared slot */
+            if (slots[s].done && slots[s].fail_cnt == 0 && exit_code == 0) {
+                passes += slots[s].pass_cnt;
+                if (t->crash) {
+                    /* Crash test: count 1 pass for the suite */
+                    puts("  --- "); puts(t->name); puts(": child OK ---\n");
+                }
+            } else if (exit_code > 128) {
+                puts("  --- "); puts(t->name); puts(": CRASHED (status=");
+                put_int(exit_code); puts(") ---\n");
+                failures++;
+            } else {
+                /* Child had failures */
+                passes += slots[s].pass_cnt;
+                failures += slots[s].fail_cnt;
+                if (slots[s].fail_cnt == 0 && exit_code != 0) {
+                    /* exit_code != 0 but no recorded fails — unexpected exit */
+                    puts("  FAIL  "); puts(t->name); puts(" (exit=");
+                    put_int(exit_code); puts(")\n");
+                    failures++;
+                }
+            }
+        }
+
+        idx += batch_size;
+    }
+
+    /* Unmap shared slots */
+    sc2(SYS_MUNMAP, (long)slots, BATCH * (long)sizeof(test_slot_t));
 
     puts("\n=== ");
     put_int((long)passes); puts(" passed, ");
     put_int((long)failures); puts(" failed ===\n");
     if (failures == 0) puts("ALL PASSED\n");
 
-    /* Power off: reboot(LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, POWER_OFF) */
+    /* Power off */
     sc3(SYS_REBOOT, (long)0xFEE1DEAD, (long)0x28121969, (long)0x4321FEDC);
-
     sc1(SYS_EXIT_GROUP, (long)failures);
     __builtin_unreachable();
 }

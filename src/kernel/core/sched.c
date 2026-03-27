@@ -454,6 +454,13 @@ static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 void sched_loop_once(void) {
     thread_t *next = sched_pick();
     if (next) {
+        /* Skip dead/orphaned threads — see sched_loop comment. */
+        if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
+            !next->proc || !next->proc->pml4) {
+            if (next->state == THREAD_DEAD && !next->proc)
+                thread_free(next);
+            return;
+        }
         thread_run(next);
         if (next->state == THREAD_RUNNABLE)
             sched_add(next);
@@ -474,6 +481,18 @@ void sched_loop(void) {
 
         thread_t *next = sched_pick();
         if (next) {
+            /* Skip dead/orphaned threads left in the queue by exit_group.
+             * exit_group kills sibling threads by setting THREAD_DEAD and freeing
+             * the address space, but can't dequeue them (O(n) scan per core).
+             * Drain them here after sched_pick removes them from the queue. */
+            if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
+                !next->proc || !next->proc->pml4) {
+                /* Thread is dequeued now — safe to free if orphaned.
+                 * exit_kill_process sets proc=NULL for killed siblings. */
+                if (next->state == THREAD_DEAD && !next->proc)
+                    thread_free(next);
+                continue;
+            }
             thread_run(next);
             if (next->state == THREAD_RUNNABLE)
                 sched_add(next);

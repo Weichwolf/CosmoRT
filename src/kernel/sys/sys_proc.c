@@ -60,10 +60,16 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     /* Reset bitmap: all free */
     for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
-    /* Kill other threads */
+    /* Kill other threads.
+     * Sibling threads may be in the scheduler's run queue (no way to dequeue
+     * in O(1)). Set state=DEAD AND proc=NULL so sched_loop can detect and
+     * skip them without dereferencing the soon-to-be-freed process struct. */
     thread_t *scan = p->threads;
     while (scan) {
-        if (scan != t) scan->state = THREAD_DEAD;
+        if (scan != t) {
+            scan->state = THREAD_DEAD;
+            scan->proc = 0;
+        }
         scan = scan->proc_next;
     }
 

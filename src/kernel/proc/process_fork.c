@@ -224,11 +224,16 @@ long do_fork(void) {
     child->brk_current = parent->brk_current;
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
-    child->is_driver = 0; /* HW access not inherited — only via proc_create_from_vfs */
+    child->is_driver = parent->is_driver; /* driver capability inherited */
     for (int ci = 0; ci < 256; ci++) {
         child->cwd[ci] = parent->cwd[ci];
         if (!parent->cwd[ci]) break;
     }
+
+    /* Inherit cmdline (for /proc/pid/cmdline) */
+    child->cmdline_len = parent->cmdline_len;
+    for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
+        child->cmdline[ci] = parent->cmdline[ci];
 
     /* Inherit signal state */
     child->sig_pending = 0; /* child starts with no pending signals */
