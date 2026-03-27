@@ -505,8 +505,8 @@ Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
 ```
 F1: [Claude Code]  Terminal          → Glyph-Rendering in FB
 F2: [make]         Terminal          → Glyph-Rendering in FB
-F3: [github.com]   WPE WebKit       → SDL3 → /dev/fb0
-F4: [Teams]        WPE WebKit       → SDL3 → /dev/fb0
+F3: [github.com]   WPE WebKit       → /dev/fb0
+F4: [docs.kernel]  WPE WebKit       → /dev/fb0
 F5: [Figma]        WASM-App         → SDL3 → /dev/fb0
 F6: [Doom]         SDL3-Game        → SDL3 → /dev/fb0
 ```
