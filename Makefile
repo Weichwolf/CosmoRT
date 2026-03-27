@@ -346,7 +346,13 @@ bench: $(BUILD)/gen/kbench_bin.h
 
 # ── Hardware test binaries ────────────────────────
 KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
-            $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
+            $(patsubst test/unit/mm/%.c,$(BUILD)/test/unit/mm/%.o,$(wildcard test/unit/mm/*.c)) \
+            $(patsubst test/unit/fs/%.c,$(BUILD)/test/unit/fs/%.o,$(wildcard test/unit/fs/*.c)) \
+            $(patsubst test/unit/ipc/%.c,$(BUILD)/test/unit/ipc/%.o,$(wildcard test/unit/ipc/*.c)) \
+            $(patsubst test/unit/sched/%.c,$(BUILD)/test/unit/sched/%.o,$(wildcard test/unit/sched/*.c)) \
+            $(patsubst test/unit/signal/%.c,$(BUILD)/test/unit/signal/%.o,$(wildcard test/unit/signal/*.c)) \
+            $(patsubst test/unit/sys/%.c,$(BUILD)/test/unit/sys/%.o,$(wildcard test/unit/sys/*.c)) \
+            $(patsubst test/unit/hw/%.c,$(BUILD)/test/unit/hw/%.o,$(wildcard test/unit/hw/*.c)) \
             $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c)) \
             $(patsubst test/unit/proc/%.c,$(BUILD)/test/unit/proc/%.o,$(wildcard test/unit/proc/*.c))
 
@@ -356,13 +362,34 @@ KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
 KTEST_FUZZ_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
 
-$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/unit/proc $(BUILD)/test/crash $(BUILD)/test/fuzz:
+$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash $(BUILD)/test/fuzz \
+$(BUILD)/test/unit/mm $(BUILD)/test/unit/fs $(BUILD)/test/unit/ipc \
+$(BUILD)/test/unit/sched $(BUILD)/test/unit/signal $(BUILD)/test/unit/sys \
+$(BUILD)/test/unit/hw $(BUILD)/test/unit/net $(BUILD)/test/unit/proc:
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
-$(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
+$(BUILD)/test/unit/mm/%.o: test/unit/mm/%.c test/ktest.h | $(BUILD)/test/unit/mm
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/fs/%.o: test/unit/fs/%.c test/ktest.h | $(BUILD)/test/unit/fs
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/ipc/%.o: test/unit/ipc/%.c test/ktest.h | $(BUILD)/test/unit/ipc
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/sched/%.o: test/unit/sched/%.c test/ktest.h | $(BUILD)/test/unit/sched
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/signal/%.o: test/unit/signal/%.c test/ktest.h | $(BUILD)/test/unit/signal
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/sys/%.o: test/unit/sys/%.c test/ktest.h | $(BUILD)/test/unit/sys
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/hw/%.o: test/unit/hw/%.c test/ktest.h | $(BUILD)/test/unit/hw
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/proc/%.o: test/unit/proc/%.c test/ktest.h | $(BUILD)/test/unit/proc

@@ -81,6 +81,25 @@ void page_cache_remove(uint64_t ino, uint64_t offset) {
     spin_unlock_irq(&pc_lock, irqf);
 }
 
+void page_cache_invalidate_ino(uint64_t ino) {
+    if (!pc_slab_ready) return;
+    uint64_t irqf;
+    spin_lock_irq(&pc_lock, &irqf);
+    for (uint32_t i = 0; i < PC_HASH_SIZE; i++) {
+        pc_entry_t **pp = &pc_hash[i];
+        while (*pp) {
+            pc_entry_t *e = *pp;
+            if (e->ino == ino) {
+                *pp = e->next;
+                slab_free(&pc_slab, e);
+            } else {
+                pp = &e->next;
+            }
+        }
+    }
+    spin_unlock_irq(&pc_lock, irqf);
+}
+
 void page_cache_evict(uint64_t phys) {
     if (!pc_slab_ready) return;
     uint64_t irqf;

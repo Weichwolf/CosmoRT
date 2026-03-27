@@ -16,6 +16,9 @@ void page_cache_insert(uint64_t ino, uint64_t offset, uint64_t phys);
 /* Remove page from cache by (ino, offset) key. */
 void page_cache_remove(uint64_t ino, uint64_t offset);
 
+/* Invalidate all cached pages for an inode (called on write/truncate). */
+void page_cache_invalidate_ino(uint64_t ino);
+
 /* Remove any entry matching physical address (called when page freed). */
 void page_cache_evict(uint64_t phys);
 

@@ -193,6 +193,9 @@ long vfs_write(int fd, const void *buf, size_t count) {
         }
         f->offset += (uint64_t)total;
         f->cosmofs_size = f->offset;
+        /* Invalidate page cache — demand-paged readers must see new data */
+        extern void page_cache_invalidate_ino(uint64_t ino);
+        page_cache_invalidate_ino(f->cosmofs_ino);
         return (long)total;
     }
 
@@ -225,6 +228,9 @@ long vfs_write(int fd, const void *buf, size_t count) {
     if (end > node->size) node->size = end;
 
     vfs_notify_modify(node);
+    /* Invalidate page cache — demand-paged readers must see new data */
+    extern void page_cache_invalidate_ino(uint64_t ino);
+    page_cache_invalidate_ino(node->ino);
     return (long)count;
 }
 
