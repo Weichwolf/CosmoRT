@@ -124,6 +124,11 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
         }
         pp->blocked_reader = t;
         spin_unlock_irq(&pp->lock, irqf);
+        /* Check pending signals before blocking (POSIX -EINTR semantics) */
+        if (t->proc) {
+            uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
+            if (deliverable) return -EINTR;
+        }
         /* Block via event_wait — pipe_write/pipe_close will event_post us.
          * If event pre-queued, returns immediately → loop retries. */
         event_t ev;
@@ -167,6 +172,11 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
         }
         pp->blocked_writer = t;
         spin_unlock_irq(&pp->lock, irqf);
+        /* Check pending signals before blocking (POSIX -EINTR semantics) */
+        if (t->proc) {
+            uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
+            if (deliverable) return -EINTR;
+        }
         /* Block via event_wait — pipe_read/pipe_close will event_post us */
         event_t ev;
         event_wait(&t->eq, &ev, -1);
