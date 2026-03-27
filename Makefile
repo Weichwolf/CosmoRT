@@ -244,25 +244,7 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/svcmgr_bin.h
-
-# ── Service manager (embedded in kernel) ─────────
-$(BUILD)/user/svcmgr.o: $(SRC)/user/svcmgr.c | $(BUILD)/user
-	$(CC) $(UCFLAGS) -c -o $@ $<
-
-$(BUILD)/user/svcmgr: $(CRT0) $(BUILD)/user/svcmgr.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/svcmgr.o
-
-$(BUILD)/gen/svcmgr_bin.h: $(BUILD)/user/svcmgr | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated svcmgr binary (%d bytes) */' % len(data)); \
-	print('static const unsigned char svcmgr_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long svcmgr_bin_size = %d;' % len(data))" > $@
-	@echo "svcmgr_bin.h: $$(wc -c < $<) bytes"
+init-bin: $(BUILD)/gen/init_bin.h
 
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
@@ -278,41 +260,6 @@ UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-plt -mno-red-zone -nostdlib -O2 \
           -Iinclude/public
 
-$(BUILD)/user/kbench.o: $(SRC)/user/kbench.c | $(BUILD)/user
-	$(CC) $(UCFLAGS) -c -o $@ $<
-
-$(BUILD)/user/kbench: $(CRT0) $(BUILD)/user/kbench.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/kbench.o
-
-$(BUILD)/gen/kbench_bin.h: $(BUILD)/user/kbench | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated kbench binary (%d bytes) */' % len(data)); \
-	print('static const unsigned char kbench_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long kbench_bin_size = %d;' % len(data))" > $@
-	@echo "kbench_bin.h: $$(wc -c < $<) bytes"
-
-# Build + boot with benchmark instead of init
-bench: $(BUILD)/gen/kbench_bin.h
-	@cp $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/init_bin.h.bak
-	@sed 's/kbench_bin/init_bin/g; s/kbench_bin_size/init_bin_size/g' \
-	  $(BUILD)/gen/kbench_bin.h > $(BUILD)/gen/init_bin.h
-	$(MAKE) all
-	@rm -f /tmp/cosmo-serial.log
-	timeout 300 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
-	  -bios /usr/share/ovmf/OVMF.fd \
-	  -drive file=$(ESP_IMG),format=raw \
-	  -serial file:/tmp/cosmo-serial.log \
-	  -display none -no-reboot \
-	  -device e1000,netdev=net0 \
-	  -netdev user,id=net0 || true
-	@echo "=== Benchmark Results ==="
-	@sed -n '/Kernel Benchmark/,/Benchmark Complete/p' /tmp/cosmo-serial.log
-	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
-
 # ── Hardware test binaries ────────────────────────
 KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/mm/%.c,$(BUILD)/test/unit/mm/%.o,$(wildcard test/unit/mm/*.c)) \
@@ -323,7 +270,8 @@ KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/sys/%.c,$(BUILD)/test/unit/sys/%.o,$(wildcard test/unit/sys/*.c)) \
             $(patsubst test/unit/hw/%.c,$(BUILD)/test/unit/hw/%.o,$(wildcard test/unit/hw/*.c)) \
             $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c)) \
-            $(patsubst test/unit/proc/%.c,$(BUILD)/test/unit/proc/%.o,$(wildcard test/unit/proc/*.c))
+            $(patsubst test/unit/proc/%.c,$(BUILD)/test/unit/proc/%.o,$(wildcard test/unit/proc/*.c)) \
+            $(patsubst test/unit/perf/%.c,$(BUILD)/test/unit/perf/%.o,$(wildcard test/unit/perf/*.c))
 
 KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
@@ -334,7 +282,8 @@ KTEST_FUZZ_OBJ = $(BUILD)/test/main.o \
 $(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash $(BUILD)/test/fuzz \
 $(BUILD)/test/unit/mm $(BUILD)/test/unit/fs $(BUILD)/test/unit/ipc \
 $(BUILD)/test/unit/sched $(BUILD)/test/unit/signal $(BUILD)/test/unit/sys \
-$(BUILD)/test/unit/hw $(BUILD)/test/unit/net $(BUILD)/test/unit/proc:
+$(BUILD)/test/unit/hw $(BUILD)/test/unit/net $(BUILD)/test/unit/proc \
+$(BUILD)/test/unit/perf:
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
@@ -362,6 +311,9 @@ $(BUILD)/test/unit/hw/%.o: test/unit/hw/%.c test/ktest.h | $(BUILD)/test/unit/hw
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/proc/%.o: test/unit/proc/%.c test/ktest.h | $(BUILD)/test/unit/proc
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/perf/%.o: test/unit/perf/%.c test/ktest.h | $(BUILD)/test/unit/perf
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
@@ -490,9 +442,9 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h, svcmgr_bin.h
-$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_SVCMGR -o $@ $<
+# main.o depends on init_bin.h
+$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -526,21 +478,6 @@ QEMU_FLAGS = -cpu qemu64 -smp 2 -m 4096 \
 
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
-
-# VT shell binary (interactive echo on PTY)
-$(BUILD)/user/vt_shell.o: $(SRC)/user/vt_shell.c | $(BUILD)/user
-	$(CC) $(UCFLAGS) -c -o $@ $<
-
-$(BUILD)/user/vt_shell: $(CRT0) $(BUILD)/user/vt_shell.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/vt_shell.o
-
-qemu-gui: $(BUILD)/user/vt_shell
-	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
-	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char init_bin[]={'+','.join(str(b) for b in d)+'};'); print('static const unsigned long init_bin_size=%d;'%len(d))" $(BUILD)/user/vt_shell > $(BUILD)/gen/init_bin.h
-	@rm -f $(BUILD)/kernel/core/main.o
-	$(MAKE) all
-	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
-	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) -device virtio-keyboard-pci
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
@@ -604,5 +541,5 @@ test-boot-disk: $(BUILD)/disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
+	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kexec_tramp_bin.h
 	rm -f tools/mkfs

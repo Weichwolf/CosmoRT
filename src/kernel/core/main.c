@@ -33,10 +33,6 @@
 #include "gen/ld_musl_bin.h"
 #endif
 
-/* Service manager (embedded, registered in VFS at /bin/svcmgr) */
-#ifdef HAVE_SVCMGR
-#include "gen/svcmgr_bin.h"
-#endif
 
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
@@ -212,12 +208,6 @@ void kernel_main(struct boot_info *info) {
     vfs_create("/lib", VFS_DIR);
     vfs_add_file("/lib/ld-musl-x86_64.so.1", ld_musl_bin, ld_musl_bin_size);
     serial_puts("vfs: /lib/ld-musl-x86_64.so.1 registered\n");
-#endif
-
-    /* Userspace driver binaries */
-#ifdef HAVE_SVCMGR
-    vfs_add_file("/bin/svcmgr", svcmgr_bin, svcmgr_bin_size);
-    serial_puts("vfs: /bin/svcmgr registered\n");
 #endif
 
     /* Futex subsystem (wait queue hash table + slab pool) */
