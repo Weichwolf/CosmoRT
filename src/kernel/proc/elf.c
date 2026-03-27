@@ -144,11 +144,20 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
     uint64_t brk_end = elf_map_segments(data, len, eh, pml4, base);
     if (brk_end == 0) return -1;
 
-    /* Compute program header address in mapped memory.
-     * If a PT_LOAD segment covers offset 0 (contains ELF header + phdrs),
-     * phdrs are at base + e_phoff. For ET_EXEC, base=0 so it's just e_phoff
-     * which should be within the first PT_LOAD's vaddr range. */
-    info->prog_phdr = base + eh->e_phoff;
+    /* AT_PHDR: virtual address of program headers in mapped memory.
+     * Find the PT_LOAD segment that contains file offset e_phoff.
+     * phdr vaddr = segment vaddr + (e_phoff - segment file offset). */
+    info->prog_phdr = 0;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)
+            ((const uint8_t *)data + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type == PT_LOAD &&
+            eh->e_phoff >= ph->p_offset &&
+            eh->e_phoff < ph->p_offset + ph->p_filesz) {
+            info->prog_phdr = base + ph->p_vaddr + (eh->e_phoff - ph->p_offset);
+            break;
+        }
+    }
     info->prog_phent = eh->e_phentsize;
     info->prog_phnum = eh->e_phnum;
     info->prog_entry = base + eh->e_entry;
