@@ -68,21 +68,32 @@ int is_ramfs_path(const char *path) {
     return 0;
 }
 
-/* Walk a CosmoFS path component-by-component, returning the inode number.
- * Returns 0 on failure (inode 0 is invalid). */
+/* Walk a CosmoFS path component-by-component, following symlinks.
+ * Returns final inode number, or 0 on failure. */
 uint64_t cosmofs_walk(const char *path) {
     if (!path || path[0] != '/') return 0;
     if (path[0] == '/' && path[1] == 0) return cosmofs_root_ino();
 
+    /* Mutable copy for symlink restart */
+    char buf[512];
+    int blen = kstrlen(path);
+    if (blen >= (int)sizeof(buf)) return 0;
+    for (int i = 0; i <= blen; i++) buf[i] = path[i];
+
+    int symloop = 0;
+
+restart:
+    if (symloop > 8) return 0;  /* ELOOP */
+
     uint64_t cur = cosmofs_root_ino();
-    const char *p = path + 1;
+    char *p = buf + 1;
 
     while (*p) {
         while (*p == '/') p++;
         if (!*p) break;
 
         /* Extract component */
-        const char *start = p;
+        char *start = p;
         while (*p && *p != '/') p++;
         int len = (int)(p - start);
 
@@ -94,6 +105,47 @@ uint64_t cosmofs_walk(const char *path) {
         uint64_t child;
         if (cosmofs_dir_lookup(cur, name, &child) < 0)
             return 0;
+
+        /* Check if child is a symlink — resolve transparently */
+        struct cosmofs_inode *ip = cosmofs_inode_read(child);
+        if (ip && ip->type == COSMOFS_TYPE_SYMLINK && ip->size > 0) {
+            symloop++;
+            char target[256];
+            size_t tlen = ip->size;
+            if (tlen >= sizeof(target)) return 0;
+            int rd = cosmofs_read(child, target, 0, tlen);
+            if (rd < (int)tlen) return 0;
+            /* Strip NUL if stored with NUL terminator */
+            if (tlen > 0 && target[tlen - 1] == 0) tlen--;
+            target[tlen] = 0;
+
+            /* Remaining path after this component */
+            int rlen = kstrlen(p);
+            int ttlen = (int)tlen;
+            if (target[0] == '/') {
+                /* Absolute symlink: target + "/" + remaining */
+                if (ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
+                /* Move remaining to end */
+                for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
+                for (int i = 0; i < ttlen; i++) buf[i] = target[i];
+                int off = ttlen;
+                if (rlen > 0 && buf[off - 1] != '/') buf[off++] = '/';
+                for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
+                buf[off + rlen] = 0;
+            } else {
+                /* Relative symlink: resolve from parent of current component */
+                int prefix_len = (int)(start - buf);
+                if (prefix_len + ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
+                for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
+                for (int i = 0; i < ttlen; i++) buf[prefix_len + i] = target[i];
+                int off = prefix_len + ttlen;
+                if (rlen > 0 && buf[off - 1] != '/') buf[off++] = '/';
+                for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
+                buf[off + rlen] = 0;
+            }
+            goto restart;
+        }
+
         cur = child;
     }
     return cur;

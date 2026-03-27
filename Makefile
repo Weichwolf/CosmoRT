@@ -246,16 +246,11 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 
 init-bin: $(BUILD)/gen/init_bin.h
 
-# ── Alpine userland (optional, embedded) ─────────
+# ── Alpine disk image (CosmoFS) ──────────────────
 ALPINE_ROOT ?= /tmp/alpine-root
-BUSYBOX_SRC ?= $(ALPINE_ROOT)/bin/busybox
-LD_MUSL_SRC ?= $(ALPINE_ROOT)/lib/ld-musl-x86_64.so.1
 
-$(BUILD)/gen/busybox_bin.h: $(BUSYBOX_SRC) | $(BUILD)/gen
-	@python3 tools/embed.py $< busybox_bin > $@
-
-$(BUILD)/gen/ld_musl_bin.h: $(LD_MUSL_SRC) | $(BUILD)/gen
-	@python3 tools/embed.py $< ld_musl_bin > $@
+alpine-image: tools/mkfs tools/cosmocp $(EFI_BIN)
+	sh tools/mkalpine.sh $(ALPINE_ROOT)
 
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
@@ -453,19 +448,9 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h (+ optional busybox/ld-musl)
-MAIN_DEPS = $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h
-MAIN_FLAGS =
-ifdef HAVE_BUSYBOX
-MAIN_DEPS += $(BUILD)/gen/busybox_bin.h
-MAIN_FLAGS += -DHAVE_BUSYBOX
-endif
-ifdef HAVE_LD_MUSL
-MAIN_DEPS += $(BUILD)/gen/ld_musl_bin.h
-MAIN_FLAGS += -DHAVE_LD_MUSL
-endif
-$(BUILD)/kernel/core/main.o: $(MAIN_DEPS) | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen $(MAIN_FLAGS) -o $@ $<
+# main.o depends on init_bin.h
+$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -500,20 +485,25 @@ QEMU_FLAGS = -cpu qemu64 -smp 2 -m 4096 \
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
-# Boot Alpine busybox shell (serial console)
-qemu-busybox:
-	$(MAKE) $(BUILD)/gen/busybox_bin.h $(BUILD)/gen/ld_musl_bin.h
+# Boot Alpine Linux from CosmoFS disk image (serial console)
+qemu-alpine:
+	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
+	$(MAKE) init-bin
 	@rm -f $(BUILD)/kernel/core/main.o
-	HAVE_BUSYBOX=1 HAVE_LD_MUSL=1 $(MAKE) all
+	$(MAKE) all
+	$(MAKE) alpine-image
+	@rm -f /tmp/cosmo-serial.log
 	timeout 30 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(ESP_IMG),format=raw \
+	  -drive file=build/alpine.img,format=raw,if=virtio \
 	  -serial file:/tmp/cosmo-serial.log \
 	  -display none -no-reboot \
 	  -device e1000,netdev=net0 \
 	  -netdev user,id=net0 || true
 	@echo "=== Serial output ==="
-	@tail -20 /tmp/cosmo-serial.log
+	@tail -30 /tmp/cosmo-serial.log
+	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
