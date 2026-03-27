@@ -208,11 +208,10 @@ static void fuzz_round(uint64_t seed) {
 static void test_syscall_fuzz(void) {
     puts("\n[Syscall Fuzzer]\n");
     puts("NOTE: Non-deterministic. To reproduce a crash:\n");
-    puts("  1. Set FUZZ_SEED in this file to the logged seed value\n");
-    puts("  2. make test-fuzz — must reproduce the same crash\n");
-    puts("  3. Add per-round puts() to find which round crashes\n");
-    puts("  4. Write a deterministic CRASH_TEST in test/crash/\n");
-    puts("  5. Reset FUZZ_SEED to 0, commit the crash test + fix\n");
+    puts("  1. make test-fuzz FUZZ_SEED=0x<seed from log>\n");
+    puts("  2. Last 'round N seed=0x...' before crash identifies the round\n");
+    puts("  3. Write a deterministic CRASH_TEST in test/crash/\n");
+    puts("  4. Commit the crash test + fix\n");
 
     /* Seed */
     uint64_t seed = FUZZ_SEED;
@@ -237,6 +236,7 @@ static void test_syscall_fuzz(void) {
 
     for (int round = 0; round < FUZZ_ROUNDS; round++) {
         uint64_t round_seed = seed ^ ((uint64_t)round * 0x9E3779B97F4A7C15ULL);
+        puts("  round "); put_int(round); puts(" seed=0x"); put_hex(round_seed); puts("\n");
 
         long pid = sc0(SYS_FORK);
         if (pid < 0) {

@@ -329,7 +329,7 @@ $(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest $(if $(FUZZ_SEED),-DFUZZ_SEED=$(FUZZ_SEED)) -c -o $@ $<
 
 $(BUILD)/user/ktest: $(CRT0) $(KTEST_UNIT_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_UNIT_OBJ)
