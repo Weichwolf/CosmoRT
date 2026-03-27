@@ -336,7 +336,34 @@ long do_brk(unsigned long addr) {
     if (new_end >= old_end) {
         vma_t *brk_vma = vma_find(p->vma_root, p->brk_base);
         if (brk_vma && brk_vma->start == p->brk_base) {
-            brk_vma->end = new_end;
+            /* mmap(MAP_FIXED) may have replaced the brk VMA with a
+             * different prot (e.g. ld-musl creates PROT_NONE gap pages
+             * at the end of ELF segments, which can land on brk_base).
+             * Remove the foreign VMA and any others in the brk range,
+             * then insert a proper brk VMA. */
+            if (brk_vma->prot != (PROT_READ | PROT_WRITE) ||
+                brk_vma->end < new_end) {
+                /* Remove all VMAs in [brk_base, new_end) */
+                for (;;) {
+                    vma_t *ov = vma_find_overlap(p->vma_root, p->brk_base, new_end);
+                    if (!ov) break;
+                    if (ov->start >= p->brk_base && ov->end <= new_end) {
+                        vma_remove(&p->vma_root, ov);
+                    } else if (ov->start < p->brk_base) {
+                        ov->end = p->brk_base;
+                    } else {
+                        /* ov->end > new_end: trim from left */
+                        uint64_t ns = new_end, ne = ov->end;
+                        int np = ov->prot, nf = ov->flags;
+                        vma_remove(&p->vma_root, ov);
+                        vma_insert(&p->vma_root, ns, ne, np, nf);
+                    }
+                }
+                vma_insert(&p->vma_root, p->brk_base, new_end,
+                           PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+            } else {
+                brk_vma->end = new_end;
+            }
         } else if (new_end > p->brk_base) {
             vma_insert(&p->vma_root, p->brk_base, new_end,
                        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
