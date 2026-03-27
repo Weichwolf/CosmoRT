@@ -21,6 +21,8 @@ static void *shared_alloc(long size) {
 
 
 void _start_c(void) {
+    passes = 0;
+    failures = 0;
     puts("\n=== CosmoRT Hardware Test ===\n");
 
     int total = (int)(__stop_ktest - __start_ktest);
