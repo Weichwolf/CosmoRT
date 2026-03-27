@@ -42,74 +42,96 @@ static uint64_t xorshift64(void) {
 
 /* ── Syscall number generator ───────────────────── */
 
+/* ── Syscall number: 80% real Linux, 10% CosmoRT, 5% boundary, 5% random ── */
+
 static uint64_t nr_gen(void) {
-    switch (xorshift64() % 10) {
-    case 0:  return xorshift64() % 512;               /* Linux range 0-511 */
-    case 1:  return 0x10000 + (xorshift64() % 32);    /* CosmoRT range */
-    case 2:  return 0;                                 /* zero */
-    case 3:  return I64_MAX;                           /* INT64_MAX */
-    case 4:  return I64_MIN;                           /* INT64_MIN */
-    case 5:  return U64_MAX;                           /* UINT64_MAX */
-    case 6:  return 511;                               /* upper Linux bound */
-    case 7:  return 512;                               /* just past Linux */
-    case 8:  return xorshift64();                      /* full 64-bit random */
-    default: return xorshift64() & 0xFFFF;             /* 16-bit range */
+    uint64_t r = xorshift64() % 100;
+    if (r < 80) {
+        /* All syscalls defined in include/linux/syscall.h */
+        static const uint64_t all_nr[] = {
+            0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,
+            23,24,25,26,28,32,33,35,37,39,40,41,42,43,44,45,46,47,48,49,
+            50,51,52,53,54,55,56,57,58,59,60,61,62,63,72,73,76,77,79,80,
+            82,83,84,86,87,88,89,90,91,93,94,95,96,97,98,99,100,102,104,
+            107,108,109,110,111,112,115,116,121,124,125,126,130,131,137,
+            138,142,143,144,145,146,147,149,150,151,152,157,158,160,165,
+            169,170,186,188,189,190,191,192,193,194,195,196,197,198,199,
+            201,202,203,204,217,218,221,228,229,230,231,232,233,234,254,
+            255,257,258,259,262,263,265,266,267,268,269,270,271,273,280,
+            281,283,285,286,288,289,290,291,292,293,294,295,296,299,302,
+            307,309,316,318,332,334,435,
+        };
+        return all_nr[xorshift64() % (sizeof(all_nr)/sizeof(all_nr[0]))];
     }
+    if (r < 90) {
+        static const uint64_t cosmo[] = {
+            SYS_COSMO_MMIO_MAP, SYS_COSMO_DMA_ALLOC, SYS_COSMO_DMA_FREE,
+            SYS_COSMO_IRQ_REGISTER, SYS_COSMO_PCI_READ, SYS_COSMO_PCI_WRITE,
+            SYS_COSMO_FW_LOAD, SYS_COSMO_NIC_ATTACH, SYS_COSMO_KEXEC,
+            SYS_COSMO_RT_QUERY,
+        };
+        return cosmo[xorshift64() % 10];
+    }
+    if (r < 95) {
+        /* Boundaries */
+        static const uint64_t bounds[] = { 0, 511, 512, U64_MAX, I64_MAX, I64_MIN };
+        return bounds[xorshift64() % 6];
+    }
+    return xorshift64();  /* full random */
 }
 
-/* ── Argument generators ────────────────────────── */
-
-#define KADDR_HIGH  0xFFFF800000000000ULL
-#define KADDR_TEXT  0xFFFFFFFF80000000ULL
-#define ADDR_DEAD   0xDEAD000000000000ULL
-#define USER_END    0x7FFFFFFFE000ULL
+/* ── Arguments: 70% plausible, 20% boundary, 10% random ── */
 
 static uint64_t ptr_gen(uint64_t valid_buf) {
-    switch (xorshift64() % 12) {
-    case 0:  return 0;                                 /* NULL */
-    case 1:  return 1;                                 /* misaligned */
-    case 2:  return ADDR_DEAD;                         /* unmapped high */
-    case 3:  return KADDR_HIGH;                        /* kernel space */
-    case 4:  return KADDR_TEXT;                        /* kernel text */
-    case 5:  return USER_END;                          /* user space top */
-    case 6:  return valid_buf;                         /* valid page */
-    case 7:  return valid_buf + 4096 - 1;              /* end of valid page */
-    case 8:  return I64_MAX;                           /* INT64_MAX */
-    case 9:  return U64_MAX;                           /* UINT64_MAX */
-    case 10: return I64_MIN;                           /* INT64_MIN */
-    default: return xorshift64() & 0x7FFFFFFFFFFFULL;  /* random user addr */
-    }
+    uint64_t r = xorshift64() % 100;
+    if (r < 50) return valid_buf;                       /* valid page */
+    if (r < 60) return valid_buf + (xorshift64() % 4096); /* within page */
+    if (r < 70) return 0;                               /* NULL */
+    if (r < 75) return 0xFFFF800000000000ULL;           /* kernel space */
+    if (r < 80) return 0xFFFFFFFF80000000ULL;           /* kernel text */
+    if (r < 85) return 0x7FFFFFFFE000ULL;               /* user top */
+    if (r < 88) return I64_MAX;
+    if (r < 91) return U64_MAX;
+    if (r < 94) return I64_MIN;
+    if (r < 97) return 1;                               /* misaligned */
+    return xorshift64();                                /* full random */
 }
 
 static uint64_t fd_gen(void) {
-    static const uint64_t fds[] = {
-        0, 1, 2, 3, 5, 10, 255, 256,
-        U64_MAX, I64_MAX, I64_MIN, I32_MIN, I32_MAX, U32_MAX,
-    };
-    uint64_t r = xorshift64();
-    if ((r & 3) == 0) return xorshift64() & 0x3FF;
-    return fds[r % 14];
+    uint64_t r = xorshift64() % 100;
+    if (r < 60) return xorshift64() % 4;               /* stdin/out/err/scratch */
+    if (r < 80) return xorshift64() % 256;             /* plausible fd */
+    if (r < 85) return (uint64_t)-1;                   /* -1 (common error) */
+    if (r < 90) return I32_MAX;
+    if (r < 95) return U64_MAX;
+    return xorshift64();                                /* full random */
 }
 
 static uint64_t size_gen(void) {
-    static const uint64_t sizes[] = {
-        0, 1, 4096, 4097,
-        I32_MAX, U32_MAX, I64_MAX, U64_MAX, I64_MIN,
-        (uint64_t)-1, (uint64_t)-4096,
-    };
-    uint64_t r = xorshift64();
-    if ((r & 3) == 0) return xorshift64() & 0xFFFFF;
-    return sizes[r % 11];
+    uint64_t r = xorshift64() % 100;
+    if (r < 40) return xorshift64() % 4097;            /* 0-4096 */
+    if (r < 60) return xorshift64() % 0x10000;         /* 0-64K */
+    if (r < 70) return 0;
+    if (r < 75) return 1;
+    if (r < 80) return 4096;
+    if (r < 85) return I32_MAX;
+    if (r < 88) return U32_MAX;
+    if (r < 91) return I64_MAX;
+    if (r < 94) return U64_MAX;
+    if (r < 97) return I64_MIN;
+    return xorshift64();                                /* full random */
 }
 
 static uint64_t flags_gen(void) {
-    static const uint64_t flags[] = {
-        0, 1, U32_MAX, U64_MAX, I64_MAX, I64_MIN,
-        0xDEADBEEF, 0x80000000,
-    };
-    uint64_t r = xorshift64();
-    if ((r & 3) == 0) return xorshift64();
-    return flags[r % 8];
+    uint64_t r = xorshift64() % 100;
+    if (r < 40) return 0;                              /* no flags */
+    if (r < 60) return xorshift64() & 0xFF;            /* low byte flags */
+    if (r < 75) return xorshift64() & 0xFFFF;          /* 16-bit flags */
+    if (r < 85) return xorshift64() & 0xFFFFFFFF;      /* 32-bit flags */
+    if (r < 90) return U64_MAX;
+    if (r < 93) return I64_MIN;
+    if (r < 96) return I64_MAX;
+    return xorshift64();                                /* full random */
 }
 
 /* ── One fuzz round (runs in child) ─────────────── */
