@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-27. 1171 ktest PASS, 0 FAIL. Busybox Shell bootet.
+Stand: 2026-03-27. 1171 ktest PASS. Alpine Linux interaktive Shell funktioniert.
 
 ---
 
@@ -44,7 +44,10 @@ geloescht (-3400 Zeilen). init.c minimal (15 Zeilen, execve /bin/sh).
 
 Parallele Tests: fork pro Test (BATCH=4), MAP_SHARED Slots, Kernel-Fix orphaned Threads.
 
-Alpine Bootstrap Phase 1: Busybox ash Shell bootet (musl-gcc statisch, 1.17MB).
+Alpine Bootstrap Phase 1-3: Interaktive Alpine Shell auf CosmoRT.
+Dynamic Linking (ld-musl), CosmoFS Root, PTY/termios (TCGETS/TCSETS real,
+poll()-Wake, timer-vt_flush, /dev/console, pty_input_direct).
+CosmoFS Symlink-Resolution. make qemu-alpine bootet Alpine von Disk.
 
 ---
 
@@ -162,12 +165,17 @@ Noch offen (nicht blockierend fuer Phase 3):
 - [ ] /etc/resolv.conf lesbar fuer musl DNS-Resolver
 - [ ] /dev/pts: posix_openpt / openpty (Terminal-Multiplexing)
 
-### Phase 3: Alpine Base
+### Phase 3: Alpine Base — erledigt
 
-- [ ] ld-musl-x86_64.so.1 einbetten (Dynamic Linker)
-- [ ] Alpine minirootfs extrahieren → CosmoFS oder ramfs
+Alpine minirootfs bootet von CosmoFS. Dynamic Linking (ld-musl-x86_64.so.1).
+Interaktive busybox ash Shell: echo, ls, cat, uname funktionieren.
+PTY/termios: TCGETS/TCSETS real, pty_input_direct (DSR bypass), poll()-Wake
+fuer PTY-Input, timer-getriebener vt_flush, /dev/console.
+make qemu-alpine bootet Alpine von CosmoFS Disk-Image.
+
+Noch offen:
+- [ ] SEGFAULT nach zweitem Kommando (ash readline Crash nach fork/wait)
 - [ ] apk-tools lauffaehig (apk add/del/update)
-- [ ] /etc/passwd, /etc/group (getpwnam, getgrgid)
 - [ ] test: apk add bash && bash --version
 
 ### Phase 4: Entwicklungsumgebung
