@@ -4,7 +4,7 @@
 
 /* ── Path lookup ─────────────────────────────────── */
 
-#define SYMLOOP_MAX 4
+#define SYMLOOP_MAX 8
 
 /* Iterative path lookup with symlink resolution.
  * follow_last: if 0, don't follow symlink on the final path component

@@ -93,8 +93,10 @@ int vfs_unlink(const char *path) {
         return rc;
     }
 
-    struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    /* Use nofollow: unlink removes the symlink itself, not the target */
+    int lerr = 0;
+    struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
+    if (!node) return lerr ? lerr : -ENOENT;
     if (node->type == VFS_DIR) return -EISDIR;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);

@@ -373,6 +373,13 @@ int vfs_open(const char *path, int flags, int mode) {
     /* ramfs path */
     struct vfs_node *node = vfs_lookup(path);
 
+    /* O_NOFOLLOW: reject if final component is a symlink */
+    if (node && (flags & O_NOFOLLOW)) {
+        int lerr = 0;
+        struct vfs_node *raw = vfs_lookup_nofollow(path, &lerr);
+        if (raw && raw->type == VFS_SYMLINK) return -ELOOP;
+    }
+
     if (node && (flags & O_CREAT) && (flags & O_EXCL))
         return -EEXIST;
 
