@@ -514,10 +514,31 @@ F6: [Doom]         SDL3-Game        → SDL3 → /dev/fb0
 F-Tasten wechseln im Kernel — Apps merken davon nichts.
 12-Spur Audio-Mixer im RT-Core: jeder Slot hat eigenen Audio-Stream.
 
+### 13.3 Device-Routing pro Slot
+
+Jeder Prozess oeffnet /dev/fb0, /dev/input/event0, /dev/snd/pcmC0D0p.
+Der Kernel routet basierend auf dem VT-Slot des Prozesses:
+
+```
+Prozess auf F1: open("/dev/fb0") → Kernel mappt auf Slot 1 Framebuffer
+Prozess auf F3: open("/dev/fb0") → Kernel mappt auf Slot 3 Framebuffer
+```
+
+Ein Device-Name, pro Prozess geroutet. Wie /dev/tty (Controlling Terminal).
+Apps sehen immer /dev/fb0 — der Kernel weiss welcher Slot gemeint ist.
+Keine Namespaces, kein Multiplexing in Userspace.
+
+| Device | Routing | Aktiver Slot |
+|--------|---------|-------------|
+| /dev/fb0 | Slot-FB des Prozesses | Auf Monitor angezeigt |
+| /dev/input/event0 | Input-Queue des Slots | Empfaengt Keyboard/Maus |
+| /dev/snd/pcmC0D0p | Audio-Stream des Slots | Aktiv: spielt. Pinned: immer. Sonst: stumm |
+
 Was automatisch funktioniert:
 - Alles was SDL2/SDL3 nutzt (tausende Anwendungen)
 - Dear ImGui, RetroArch, Mediaplayer, Spiele
 - WPE WebKit: eine Webseite pro Slot (keine Tabs)
+- WASM-Apps ueber Wasmer/Wasmtime + SDL3
 - Software-Rendering sofort, GPU optional (/dev/dri/)
 
 ---

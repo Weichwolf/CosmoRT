@@ -273,9 +273,17 @@ long do_read(int fd, void *buf, size_t count) {
             extern void vt_flush(int vt_id);
             vt_flush(pty_id);
 
+            /* Check for pending signals before blocking (POSIX: blocking
+             * read must return -EINTR when a signal is deliverable).
+             * Without this, signals like SIGCHLD stay pending while the
+             * thread keeps re-blocking in event_wait. */
+            if (t->proc) {
+                uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
+                if (deliverable) return -EINTR;
+            }
+
             event_t ev;
-            int ew = event_wait(&t->eq, &ev, -1);
-            if (ew == -4) return -EINTR; /* signal pending */
+            event_wait(&t->eq, &ev, -1);
             /* If blocked, syscall restarts. If returned, loop re-checks. */
         }
     }

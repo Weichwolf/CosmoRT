@@ -127,8 +127,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
         /* Block via event_wait — pipe_write/pipe_close will event_post us.
          * If event pre-queued, returns immediately → loop retries. */
         event_t ev;
-        int ew = event_wait(&t->eq, &ev, -1);
-        if (ew == -4) return -EINTR; /* signal pending */
+        event_wait(&t->eq, &ev, -1);
         /* If blocked, syscall restarts (unreachable).
          * If returned immediately, loop back and re-check pipe. */
     }
@@ -170,8 +169,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
         spin_unlock_irq(&pp->lock, irqf);
         /* Block via event_wait — pipe_read/pipe_close will event_post us */
         event_t ev;
-        int ew = event_wait(&t->eq, &ev, -1);
-        if (ew == -4) return -EINTR; /* signal pending */
+        event_wait(&t->eq, &ev, -1);
         /* If blocked, syscall restarts. If returned, loop retries. */
     }
 }
