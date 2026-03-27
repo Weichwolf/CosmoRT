@@ -443,6 +443,16 @@ long socket_write(int fd, const void *buf, long count) {
 long socket_close(int fd) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
+
+    /* Close the fd entry first */
+    process_t *p = proc_current();
+    if (p) fd_close(&p->fds, fd);
+
+    /* Only tear down socket when last reference is gone.
+     * Fork increments refcount; each close decrements. */
+    int old = __sync_fetch_and_sub(&s->refcount, 1);
+    if (old > 1) return 0; /* other processes still reference this socket */
+
     if (s->is_dgram && s->udp_local_port) {
         udp_sock_t *us = udp_find(s->udp_local_port);
         if (us) udp_unbind(us);
@@ -450,9 +460,6 @@ long socket_close(int fd) {
     if (s->state == SOCK_CONNECTED && !s->is_dgram)
         net_tcp_close(&s->tcp);
     sock_free(s);
-
-    process_t *p = proc_current();
-    if (p) fd_close(&p->fds, fd);
     return 0;
 }
 

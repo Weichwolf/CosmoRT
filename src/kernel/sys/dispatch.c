@@ -139,7 +139,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return (long)p->sid;
     }
 
-    /* dup: find lowest free fd */
+    /* dup: find lowest free fd. POSIX: new fd does NOT inherit O_CLOEXEC. */
     case SYS_DUP: {
         process_t *dp = proc_current();
         if (!dp) return -EFAULT;
@@ -148,6 +148,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         int di = fd_find_free(&dp->fds, 0);
         if (di < 0) return -EMFILE;
         dp->fds.entries[di] = *dold;
+        dp->fds.entries[di].flags &= ~O_CLOEXEC;
         fd_mark_used(&dp->fds, di);
         if (dold->type == FD_FILE && dold->obj) {
             extern void vfs_file_incref(struct vfs_file *f);

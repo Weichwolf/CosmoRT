@@ -412,8 +412,11 @@ long do_dup3(int oldfd, int newfd, int flags) {
         p->fds.entries[newfd].obj = 0;
     }
 
-    /* Copy the fd entry and bump refcount */
+    /* Copy the fd entry and bump refcount.
+     * dup2 clears O_CLOEXEC on the new fd (POSIX). dup3 sets it only if
+     * O_CLOEXEC is in flags. */
     p->fds.entries[newfd] = *old;
+    p->fds.entries[newfd].flags &= ~O_CLOEXEC;  /* dup2: always clear */
     fd_mark_used(&p->fds, newfd);
     if (old->type == FD_FILE && old->obj) {
         extern void vfs_file_incref(struct vfs_file *f);

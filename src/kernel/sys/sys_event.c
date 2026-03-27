@@ -5,24 +5,40 @@
 /* ── pselect6 / select → convert to poll ── */
 
 long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long num) {
-    (void)a3; (void)a4; /* writefds, exceptfds — ignored */
-    /* Minimal: poll the fds in readfds with POLLIN */
+    uint64_t *writefds = (uint64_t *)a3;
+    uint64_t *exceptfds = (uint64_t *)a4;
+    (void)exceptfds; /* exceptfds: not yet supported */
+
     if (nfds <= 0) return 0;
-    if (nfds > 64) nfds = 64;
-    /* Build pollfd array on kernel stack */
-    struct { int fd; short events; short revents; } pfd[64];
+    if (nfds > 256) nfds = 256;
+
+    int nwords = (nfds + 63) / 64;
+    if (nwords > 4) nwords = 4;
+
+    /* Read fd_set bitmaps from userspace */
+    uint64_t kread[4] = {0}, kwrite[4] = {0};
+    if (readfds && user_ok((uint64_t)readfds, (uint64_t)(nwords * 8)))
+        copy_from_user(kread, readfds, (size_t)(nwords * 8));
+    if (writefds && user_ok((uint64_t)writefds, (uint64_t)(nwords * 8)))
+        copy_from_user(kwrite, writefds, (size_t)(nwords * 8));
+
+    /* Build pollfd array */
+    struct { int fd; short events; short revents; } pfd[256];
     int npfd = 0;
-    for (int i = 0; i < nfds && npfd < 64; i++) {
-        int in_read = readfds && user_ok((uint64_t)readfds, 8) &&
-                      (readfds[i / 64] & (1ULL << (i % 64)));
-        if (in_read) {
+    for (int i = 0; i < nfds && npfd < 256; i++) {
+        int in_read  = kread[i / 64]  & (1ULL << (i % 64));
+        int in_write = kwrite[i / 64] & (1ULL << (i % 64));
+        if (in_read || in_write) {
             pfd[npfd].fd = i;
-            pfd[npfd].events = 1; /* POLLIN */
+            pfd[npfd].events = 0;
+            if (in_read)  pfd[npfd].events |= 1; /* POLLIN */
+            if (in_write) pfd[npfd].events |= 4; /* POLLOUT */
             pfd[npfd].revents = 0;
             npfd++;
         }
     }
     if (npfd == 0) return 0;
+
     /* Compute timeout in ms */
     int timeout_ms = -1;
     if (num == 270 && a5) { /* pselect6: timespec */
@@ -38,19 +54,36 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
             timeout_ms = (int)(tv.sec * 1000 + tv.usec / 1000);
         }
     }
+
     long ret = do_poll(pfd, npfd, timeout_ms);
-    /* Write back readfds */
-    if (readfds && user_ok((uint64_t)readfds, (uint64_t)((nfds + 63) / 64 * 8))) {
-        int nwords = (nfds + 63) / 64;
-        uint64_t out[1] = {0};
-        for (int i = 0; i < npfd; i++) {
-            if (pfd[i].revents & 1)
-                out[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
+
+    /* Write back fd_set bitmaps */
+    uint64_t out_read[4] = {0}, out_write[4] = {0};
+    int total_ready = 0;
+    for (int i = 0; i < npfd; i++) {
+        if (pfd[i].revents & 1) { /* POLLIN */
+            out_read[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
+            total_ready++;
         }
-        for (int w = 0; w < nwords && w < 1; w++)
-            copy_to_user(&readfds[w], &out[w], 8);
+        if (pfd[i].revents & 4) { /* POLLOUT */
+            out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
+            total_ready++;
+        }
+        if (pfd[i].revents & 0x18) { /* POLLERR|POLLHUP → both read and write */
+            out_read[pfd[i].fd / 64]  |= (1ULL << (pfd[i].fd % 64));
+            out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
+            total_ready++;
+        }
     }
-    return ret > 0 ? ret : 0;
+    if (readfds && user_ok((uint64_t)readfds, (uint64_t)(nwords * 8)))
+        copy_to_user(readfds, out_read, (size_t)(nwords * 8));
+    if (writefds && user_ok((uint64_t)writefds, (uint64_t)(nwords * 8)))
+        copy_to_user(writefds, out_write, (size_t)(nwords * 8));
+    if (exceptfds && user_ok((uint64_t)exceptfds, (uint64_t)(nwords * 8))) {
+        uint64_t zero[4] = {0};
+        copy_to_user(exceptfds, zero, (size_t)(nwords * 8));
+    }
+    return total_ready > 0 ? (long)total_ready : (ret == 0 ? 0 : ret);
 }
 
 /* ── ppoll (271) ── */

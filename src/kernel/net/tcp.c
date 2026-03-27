@@ -175,12 +175,17 @@ static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
     put32(t + 8, c->rcv_nxt);
     t[12] = (uint8_t)((thdr / 4) << 4);
     t[13] = flags;
-    /* Advertise rcv_wnd with scaling */
+    /* Advertise rcv_wnd based on actual available buffer space */
     uint16_t adv_wnd;
-    if (c->wscale_ok)
-        adv_wnd = (uint16_t)(NET_TCP_RXBUF >> c->rcv_wscale);
-    else
-        adv_wnd = c->rcv_wnd ? c->rcv_wnd : 8192;
+    {
+        int free_space = rxring_free(&c->rx);
+        if (free_space < 0) free_space = 0;
+        if (c->wscale_ok)
+            adv_wnd = (uint16_t)((uint32_t)free_space >> c->rcv_wscale);
+        else
+            adv_wnd = (uint16_t)(free_space > 65535 ? 65535 : free_space);
+        if (adv_wnd == 0 && free_space > 0) adv_wnd = 1;
+    }
     put16(t + 14, adv_wnd);
     put16(t + 16, 0);
     put16(t + 18, 0);
@@ -638,8 +643,8 @@ void tcp_input(const uint8_t *pkt, int len) {
     if (plen > 0) {
         const uint8_t *payload = pkt + 14 + 20 + doff;
         if (tseq == c->rcv_nxt) {
-            c->rcv_nxt = tseq + (uint32_t)plen;
-            rxring_push(&c->rx, payload, plen);
+            int stored = rxring_push(&c->rx, payload, plen);
+            c->rcv_nxt = tseq + (uint32_t)stored;
             ooo_drain(c);
             send_tcp(c, 0x10, 0, 0);
             struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
