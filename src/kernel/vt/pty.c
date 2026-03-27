@@ -206,10 +206,7 @@ int pty_master_write(int id, const char *buf, int len) {
         }
     }
 
-    /* Wake blocked reader if input data OR echo output pending.
-     * Echo output needs a vt_flush which only runs in process context
-     * (during the reader's do_read syscall). Waking the reader with
-     * no input is fine — it re-blocks after flushing echo. */
+    /* Wake blocked reader if input data OR echo output pending */
     if (p->blocked_reader &&
         (ring_count(p->input_head, p->input_tail) > 0 ||
          ring_count(p->output_head, p->output_tail) > 0)) {
@@ -220,6 +217,13 @@ int pty_master_write(int id, const char *buf, int len) {
     }
 
     spin_unlock_irq(&p->lock, flags);
+
+    /* Wake poll/epoll sleepers — they check fd_poll_readiness on re-scan */
+    if (ring_count(p->input_head, p->input_tail) > 0) {
+        extern void epoll_wake_all(void);
+        epoll_wake_all();
+    }
+
     return len;
 }
 
@@ -284,6 +288,10 @@ int pty_input_direct(int id, const char *buf, int len) {
         event_post(reader, 4, 0);
     }
     spin_unlock_irq(&p->lock, flags);
+    if (written > 0) {
+        extern void epoll_wake_all(void);
+        epoll_wake_all();
+    }
     return written;
 }
 
