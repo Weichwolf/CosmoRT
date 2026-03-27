@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-26. 1091 ktest PASS, 0 FAIL.
+Stand: 2026-03-27. 1136 ktest PASS, 0 FAIL. Busybox Shell bootet.
 
 ---
 
@@ -27,6 +27,24 @@ range checks, mlock DoS).
 Restrukturierung: include/linux/, include/kernel/ (Subsystem-Spiegel), src/kernel/sys/,
 arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
 Phase 1 File-Split: vfs.c→6, process.c→5, sys_signal.c→3 (4495→14 Dateien + 2 interne Header).
+Test-Reorg: test/unit/ in 10 Unterordner (mm/fs/ipc/sched/signal/sys/hw/proc/net/perf).
+
+SH-C: MAP_SHARED komplett (Page Cache, Demand Paging, Dirty Tracking + Write-Back).
+
+Security: cosmo_dispatch EPERM fuer Non-Driver, is_driver nicht vererbt bei fork.
+
+ELF-Loader: 4→1 Variante, CosmoFS-Loader eliminiert (Layering-Fix), crt0.S (ABI),
+AT_PHDR Fix, build_user_stack fuer proc_create_elf (argv/envp/auxv korrekt).
+
+procfs: /proc/version, uptime, loadavg, filesystems, pid/status, pid/cwd, pid/environ,
+bus/pci/devices, sys/kernel/pid_max, sys/kernel/hostname. /proc als Verzeichnis stat-bar.
+
+Aufgeraeumt: CosmoPX→musl, e1000d/svcmgr/ktest.c/ld-cosmo.c/kbench.c/claude_init.c/vt_shell.c
+geloescht (-3400 Zeilen). init.c minimal (15 Zeilen, execve /bin/sh).
+
+Parallele Tests: fork pro Test (BATCH=4), MAP_SHARED Slots, Kernel-Fix orphaned Threads.
+
+Alpine Bootstrap Phase 1: Busybox ash Shell bootet (musl-gcc statisch, 1.17MB).
 
 ---
 
@@ -128,11 +146,12 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
 Userland = Alpine Linux (musl-nativ). Kein eigenes Userland.
 
-### Phase 1: Busybox Shell (statisch)
+### Phase 1: Busybox Shell (statisch) — erledigt
 
-- [ ] busybox mit musl-gcc statisch kompilieren
-- [ ] Als Init booten → interaktive Shell
-- [ ] Grundlegende Befehle testen: ls, cat, echo, mkdir, cp
+Busybox 1.36.1 (musl-gcc, statisch, 1.17MB). Eingebettet als /bin/sh in ramfs.
+init.c execve'd /bin/sh → ash Prompt. AT_PHDR Fix (prog_phdr aus PT_LOAD vaddr).
+ELF-Loader Refactoring: 4→1 Variante, CosmoFS-Loader eliminiert, crt0.S ABI-korrekt.
+make qemu-busybox zum Testen.
 
 ### Phase 2: Kernel-Features fuer Alpine
 
