@@ -473,6 +473,39 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 Entscheidung: Kein eigenes Userland. Alpine liefert alles oberhalb der Syscall-Schicht.
 CosmoRT implementiert die Linux-Syscall-ABI, Alpine-Binaries laufen unveraendert.
 
+### 13.1 UI-Stack: SDL3 auf CosmoUI
+
+```
+Anwendung (Game, GUI, Player)
+         │
+      SDL3 API
+         │
+  SDL_cosmoui Backend (~500-1000 LOC)
+         │
+    cosmoui.h Primitives
+         │
+  CosmoRT Kernel (Framebuffer, Audio, Input)
+```
+
+| SDL3 Subsystem | cosmoui.h Mapping |
+|----------------|-------------------|
+| SDL_CreateWindow | surface_create (Aufloesung, Format, VSync) |
+| SDL_UpdateWindowSurface | surface_present (Blit, Flip) |
+| SDL_OpenAudioDevice | device_open (Channels, Rate, Format) |
+| SDL_QueueAudio | submit (PCM Samples, Non-Blocking) |
+| SDL_PollEvent | device_read (KEY_*, REL_*, ABS_*) |
+| SDL_SetWindowFullscreen | surface_create (Modus wechseln) |
+
+Entscheidung: SDL3 ist das einzige UI-Framework. Kein X11, kein Wayland,
+kein Display-Server. Direkter Pfad: App → SDL3 → Kernel.
+
+Was automatisch funktioniert:
+- Alles was SDL2/SDL3 nutzt (tausende Anwendungen)
+- Dear ImGui, RetroArch, Mediaplayer, Spiele
+- Software-Rendering sofort, GPU optional (virtio-gpu/nativer Treiber)
+
+SDL_cosmoui lebt im CosmoUI Repository (~/Git/CosmoUI).
+
 ---
 
 ## 14. Abweichungen von Linux

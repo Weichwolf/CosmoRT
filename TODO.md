@@ -219,6 +219,24 @@ Userland = Alpine Linux (musl-nativ). Kein eigenes Userland.
 
 ---
 
+## Offen — CosmoUI / SDL3
+
+### SDL3 Backend (SDL_cosmoui)
+
+- [ ] SDL_cosmoui Video-Driver: surface_create/present → Framebuffer
+- [ ] SDL_cosmoui Audio-Driver: device_open/submit → Audio-Subsystem
+- [ ] SDL_cosmoui Input-Driver: device_read → Event-Queue
+- [ ] Software-Rendering: SDL_Surface → surface_present Blit
+- [ ] test: SDL3 Hello Window (Farb-Rechteck + Input)
+- [ ] test: Dear ImGui Demo ueber SDL3
+
+### GPU (spaeter)
+
+- [ ] virtio-gpu Treiber vollstaendig (Framebuffer + 3D)
+- [ ] SDL3 OpenGL/Vulkan ueber GPU-Treiber
+
+---
+
 ## Offen — VT/Terminal
 
 ### VT-A: Scrollback-Buffer
