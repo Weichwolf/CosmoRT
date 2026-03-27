@@ -122,7 +122,24 @@ void kernel_main(struct boot_info *info) {
         arch_set_cr0(cr0);
         uint64_t cr4 = arch_get_cr4();
         cr4 |= (1 << 9) | (1 << 10); /* CR4.OSFXSR + CR4.OSXMMEXCPT */
+
+        /* SMEP + SMAP: prevent kernel from executing/accessing user pages.
+         * Check CPUID.07H:EBX — bit 7 = SMEP, bit 20 = SMAP. */
+        uint32_t eax, ebx, ecx, edx;
+        arch_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+        if (ebx & (1U << 7)) {
+            cr4 |= (1ULL << 20);  /* CR4.SMEP */
+            serial_puts("sec: SMEP enabled\n");
+        }
+        if (ebx & (1U << 20)) {
+            cr4 |= (1ULL << 21);  /* CR4.SMAP */
+            serial_puts("sec: SMAP enabled\n");
+        }
+
         arch_set_cr4(cr4);
+
+        /* Ensure AC flag is clear (CLAC) — default kernel state */
+        arch_clac();
     }
 
     /* Interrupts + Timer */

@@ -40,6 +40,7 @@ syscall_entry_asm:
 
     ; Store frame pointer THEN enable interrupts (P0 fix: sti race)
     mov [gs:32], rsp
+    stac                            ; SMAP: allow user memory access during syscall
     sti
 
     ; Call sys_handler(num, a1, a2, a3, a4, a5, a6)
@@ -70,6 +71,7 @@ syscall_entry_asm:
     pop rdi
     add rsp, 8                  ; skip saved rax
     cli
+    clac                            ; SMAP: revoke user memory access
     pop r11                     ; user RFLAGS
     pop rcx                     ; user RIP
 

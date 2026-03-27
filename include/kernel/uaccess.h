@@ -1,6 +1,9 @@
 /* User-space access helpers — copy_from_user / copy_to_user
  *
  * Validates user pointer range before copying.
+ * SMAP: AC flag is set by syscall_entry.asm (STAC) and cleared on
+ * return (CLAC). These functions run within syscall context where
+ * user memory access is already permitted.
  * Returns 0 on success, -EFAULT on bad address. */
 #ifndef UACCESS_H
 #define UACCESS_H
@@ -9,6 +12,7 @@
 #include <stddef.h>
 #include "memops.h"
 #include "linux/abi.h"
+#include "arch/arch.h"
 
 /* Validate user pointer: must be in lower half, no overflow */
 static inline int user_ok(uint64_t addr, size_t len) {

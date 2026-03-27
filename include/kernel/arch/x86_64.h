@@ -235,6 +235,18 @@ static inline uint64_t arch_get_rsp(void) {
     return sp;
 }
 
+/* --- SMAP (Supervisor Mode Access Prevention) --------------------- */
+
+/* STAC: temporarily allow kernel access to user pages (set AC in RFLAGS) */
+static inline void arch_stac(void) {
+    __asm__ volatile(".byte 0x0f, 0x01, 0xcb" ::: "memory", "cc");
+}
+
+/* CLAC: revoke kernel access to user pages (clear AC in RFLAGS) */
+static inline void arch_clac(void) {
+    __asm__ volatile(".byte 0x0f, 0x01, 0xca" ::: "memory", "cc");
+}
+
 /* --- Hyper-V hypercall -------------------------------------------- */
 
 static inline uint64_t arch_hyperv_call(uint64_t control, uint64_t input_phys,

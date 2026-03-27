@@ -60,8 +60,16 @@ static void ap_main(void) {
     cr0 |= (1ULL << 1);   /* set MP */
     arch_set_cr0(cr0);
     uint64_t cr4 = arch_get_cr4();
-    cr4 |= (1 << 9) | (1 << 10);
+    cr4 |= (1 << 9) | (1 << 10);  /* OSFXSR + OSXMMEXCPT */
+
+    /* SMEP + SMAP on AP (same CPUID check as BSP) */
+    uint32_t eax, ebx, ecx, edx;
+    arch_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+    if (ebx & (1U << 7))  cr4 |= (1ULL << 20);  /* SMEP */
+    if (ebx & (1U << 20)) cr4 |= (1ULL << 21);  /* SMAP */
+
     arch_set_cr4(cr4);
+    arch_clac();  /* ensure AC=0 — kernel default */
 
     /* Initialize this core's LAPIC (reset by INIT IPI) */
     *(volatile uint32_t *)LAPIC_SVR = 0x1FF;         /* enable, spurious=0xFF */

@@ -247,8 +247,10 @@ void deliver_signal(thread_t *t, int signo) {
     uint64_t uc_user_addr = new_rsp + SIGFRAME_OFF_UCONTEXT;
     uc.uc_mcontext.fpstate = uc_user_addr + __builtin_offsetof(sig_ucontext_t, __fpregs_mem);
 
-    /* Write signal frame directly to user stack.
-     * No SMAP in CosmoRT, CR3 = user page tables during SYSCALL. */
+    /* Write signal frame to user stack.
+     * Signal delivery from IRQ context runs with AC=0 (SMAP blocks user access).
+     * STAC/CLAC bracket the write since this code path is NOT via syscall_entry. */
+    arch_stac();
     *(uint64_t *)new_rsp = restorer_addr;
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_SIGINFO), &si, sizeof(si));
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_UCONTEXT), &uc, sizeof(uc));
@@ -256,6 +258,7 @@ void deliver_signal(thread_t *t, int signo) {
     /* Write trampoline if no sa_restorer */
     if (!has_restorer)
         kmemcpy((void *)(new_rsp + SIGFRAME_OFF_TRAMPOLINE), sig_trampoline, sizeof(sig_trampoline));
+    arch_clac();
 
     /* Set up thread to enter handler */
     t->rip = (uint64_t)sa->sa_handler;

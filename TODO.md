@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-27. 1171 ktest PASS. Alpine Linux interaktive Shell funktioniert.
+Stand: 2026-03-27. 1056+ ktest PASS (923 unit + 133 crash). Alpine Linux interaktive Shell funktioniert.
 
 ---
 
@@ -22,7 +22,9 @@ Timer Free-Stack, FD Bitmap. Alles O(1).
 SH-B: Device Nodes (/dev/null, /dev/zero, /dev/urandom, /dev/tty).
 
 Security: 5 Fuzz-Fixes (fault_recover, sigreturn MXCSR, signal handler validation,
-range checks, mlock DoS).
+range checks, mlock DoS). Sec-B SMEP+SMAP (CR4 Bits, STAC/CLAC im Syscall-Entry/Exit
++ Signal-Frame), Sec-C W^X (mmap/mprotect RWX → -EINVAL), Sec-D Stack Guard Pages
+(PROT_NONE VMA unter jedem Stack — war bereits implementiert).
 
 Restrukturierung: include/linux/, include/kernel/ (Subsystem-Spiegel), src/kernel/sys/,
 arch/x86_64/, drivers nach Bus sortiert, event split, arch.h Abstraktion.
