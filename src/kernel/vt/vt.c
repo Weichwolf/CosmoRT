@@ -421,7 +421,10 @@ static void csi_dispatch(vt_t *vt, char cmd) {
             if (col >= 10) resp[len++] = (char)('0' + (col / 10) % 10);
             resp[len++] = (char)('0' + col % 10);
             resp[len++] = 'R';
-            pty_master_write(vt->pty_id, resp, len);
+            /* Terminal responses bypass canonical mode — write directly
+             * to PTY input ring (like Linux's tty_insert_flip_string) */
+            extern int pty_input_direct(int id, const char *buf, int len);
+            pty_input_direct(vt->pty_id, resp, len);
         }
         break;
     default:

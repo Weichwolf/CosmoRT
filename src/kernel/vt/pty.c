@@ -261,6 +261,32 @@ int pty_slave_write(int id, const char *buf, int len) {
 
 /* ── Slave read: process stdin ← input buffer ──────── */
 
+/* Write directly to input ring, bypassing canonical mode line buffer.
+ * Used for terminal responses (DSR, cursor position) that must reach
+ * the process regardless of canonical/raw mode state. */
+int pty_input_direct(int id, const char *buf, int len) {
+    if (id < 0 || id >= PTY_MAX) return 0;
+    pty_t *p = &pty_pool[id];
+    uint64_t flags;
+    spin_lock_irq(&p->lock, &flags);
+    int written = 0;
+    for (int i = 0; i < len; i++) {
+        if (((p->input_tail + 1) % PTY_BUF_SIZE) == p->input_head) break;
+        p->input_buf[p->input_tail] = buf[i];
+        p->input_tail = (p->input_tail + 1) % PTY_BUF_SIZE;
+        written++;
+    }
+    /* Wake blocked reader */
+    if (written > 0 && p->blocked_reader) {
+        thread_t *reader = p->blocked_reader;
+        p->blocked_reader = 0;
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 4, 0);
+    }
+    spin_unlock_irq(&p->lock, flags);
+    return written;
+}
+
 int pty_slave_read(int id, char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return 0;
     pty_t *p = &pty_pool[id];

@@ -33,7 +33,7 @@ void _start_c(void) {
     }
     char *argv[] = { "sh", (char *)0 };
     char *envp[] = { "HOME=/", "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-                     "TERM=linux", (char *)0 };
+                     "TERM=dumb", (char *)0 };
     sc3(SYS_EXECVE, (long)"/bin/sh", (long)argv, (long)envp);
     sc3(SYS_WRITE, 2, (long)"exec /bin/sh failed\n", 20);
     sc1(SYS_EXIT, 1);

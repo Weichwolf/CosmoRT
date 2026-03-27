@@ -621,20 +621,33 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (!fde) return -EBADF;
 
     if (request == TCGETS) {
-        /* Kernel struct termios: 4×tcflag_t(16) + c_line(1) + c_cc[19] = 36 bytes.
-         * NOT glibc's 60-byte struct (NCCS=32 + c_ispeed/c_ospeed).
-         * Writing 60 bytes would smash the caller's stack canary.
-         * Set sane Linux-standard defaults so isatty() AND Node.js
-         * terminal detection both succeed. */
-        if (fde->type == FD_SERIAL || fde->type == FD_PTY_SLAVE ||
-            fde->type == FD_PTY_MASTER) {
+        /* Return current PTY termios state. musl uses kernel struct termios
+         * (36 bytes: 4×uint32 flags + c_line + c_cc[19]). */
+        if (fde->type == FD_SERIAL) {
             if (!user_ok(arg, 36)) return -EFAULT;
             kmemset((void *)arg, 0, 36);
-            uint32_t *termios = (uint32_t *)arg;
-            termios[0] = 0x6D02; /* c_iflag: ICRNL|IXON|IXANY|IMAXBEL|IUTF8 */
-            termios[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
-            termios[2] = 0x08BD; /* c_cflag: B38400|CS8|CREAD|CLOCAL|HUPCL */
-            termios[3] = 0x8A3B; /* c_lflag: ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
+            uint32_t *t = (uint32_t *)arg;
+            t[0] = 0x0500; /* c_iflag: ICRNL|IXON */
+            t[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
+            t[2] = 0x00BF; /* c_cflag: B38400|CS8|CREAD */
+            t[3] = 0x8A3B; /* c_lflag: ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
+            return 0;
+        }
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            pty_t *pt = pty_get((int)(long)fde->obj);
+            if (!pt) return -ENOTTY;
+            if (!user_ok(arg, 36)) return -EFAULT;
+            kmemset((void *)arg, 0, 36);
+            uint32_t *t = (uint32_t *)arg;
+            t[0] = 0x0500; /* c_iflag: ICRNL|IXON */
+            t[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
+            t[2] = 0x00BF; /* c_cflag: B38400|CS8|CREAD */
+            /* Build c_lflag from PTY state */
+            uint32_t lflag = 0x8A20; /* ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
+            if (pt->canon) lflag |= 0x02; /* ICANON */
+            if (pt->echo)  lflag |= 0x08; /* ECHO */
+            lflag |= 0x01; /* ISIG */
+            t[3] = lflag;
             return 0;
         }
         return -ENOTTY;
@@ -681,8 +694,34 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         return 0;
     }
     /* Terminal set: accept and ignore (no real termios backend) */
-    if (request == TCSETS || request == TCSETSW || request == TCSETSF)
+    if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
+        /* Apply termios flags to PTY */
+        if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
+            /* struct termios: c_iflag(4), c_oflag(4), c_cflag(4), c_lflag(4), ... */
+            struct { uint32_t c_iflag, c_oflag, c_cflag, c_lflag; } kterm;
+            if (copy_from_user(&kterm, (const void *)arg, sizeof(kterm)) == 0) {
+                pty_t *pt = pty_get((int)(long)fde->obj);
+                if (pt) {
+                    uint64_t irqf;
+                    spin_lock_irq(&pt->lock, &irqf);
+                    int was_canon = pt->canon;
+                    pt->canon = (kterm.c_lflag & 0x02) ? 1 : 0; /* ICANON */
+                    pt->echo  = (kterm.c_lflag & 0x08) ? 1 : 0; /* ECHO */
+                    /* Flush line buffer when switching canonical → raw */
+                    if (was_canon && !pt->canon && pt->line_pos > 0) {
+                        for (int li = 0; li < pt->line_pos; li++) {
+                            if (((pt->input_tail + 1) % PTY_BUF_SIZE) != pt->input_head)
+                                pt->input_buf[pt->input_tail] = pt->line_buf[li],
+                                pt->input_tail = (pt->input_tail + 1) % PTY_BUF_SIZE;
+                        }
+                        pt->line_pos = 0;
+                    }
+                    spin_unlock_irq(&pt->lock, irqf);
+                }
+            }
+        }
         return 0;
+    }
     /* Controlling terminal */
     if (request == TIOCSCTTY || request == TIOCNOTTY)
         return 0;
