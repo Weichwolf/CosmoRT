@@ -207,9 +207,12 @@ static void fuzz_round(uint64_t seed) {
 /* ── Main test function ─────────────────────────── */
 static void test_syscall_fuzz(void) {
     puts("\n[Syscall Fuzzer]\n");
-    puts("NOTE: Fuzzer is non-deterministic. Reproduce failures via\n");
-    puts("test/crash/ with fixed seed before fixing. Do not re-test\n");
-    puts("fixes with the fuzzer — write a deterministic crash test.\n");
+    puts("NOTE: Non-deterministic. To reproduce a crash:\n");
+    puts("  1. Set FUZZ_SEED in this file to the logged seed value\n");
+    puts("  2. make test-fuzz — must reproduce the same crash\n");
+    puts("  3. Add per-round puts() to find which round crashes\n");
+    puts("  4. Write a deterministic CRASH_TEST in test/crash/\n");
+    puts("  5. Reset FUZZ_SEED to 0, commit the crash test + fix\n");
 
     /* Seed */
     uint64_t seed = FUZZ_SEED;
