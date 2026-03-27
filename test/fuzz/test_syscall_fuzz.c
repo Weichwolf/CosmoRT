@@ -252,6 +252,20 @@ static void test_syscall_fuzz(void) {
 
     int ok = 0, crashed = 0, errors = 0;
 
+    /* Block all catchable signals in the parent so child kill(0, sig) /
+     * kill(-1, sig) cannot terminate us. SIGKILL (9) stays unblockable.
+     * Ignore SIGSTOP (19) to prevent kill(-1, SIGSTOP) from halting us.
+     * (CosmoRT extension: Linux doesn't allow ignoring SIGSTOP.) */
+    {
+        uint64_t all_blocked = ~((1ULL << 9) | (1ULL << 19));
+        sc4(SYS_RT_SIGPROCMASK, 2 /* SIG_SETMASK */, (long)&all_blocked, 0, 8);
+        /* Set SIG_IGN for all stop signals that could freeze us */
+        struct { void *handler; unsigned long flags; void *restorer; unsigned long mask; }
+            ign = { (void *)1 /* SIG_IGN */, 0, 0, 0 };
+        for (int s = 19; s <= 22; s++)
+            sc4(SYS_RT_SIGACTION, s, (long)&ign, 0, 8);
+    }
+
     for (int round = 0; round < FUZZ_ROUNDS; round++) {
         uint64_t round_seed = seed ^ ((uint64_t)round * 0x9E3779B97F4A7C15ULL);
         puts("  round "); put_int(round); puts(" seed=0x"); put_hex(round_seed); puts("\n");
@@ -266,6 +280,9 @@ static void test_syscall_fuzz(void) {
             fuzz_round(round_seed);
             __builtin_unreachable();
         }
+        /* Put child in its own process group so kill(0, sig) in the child
+         * cannot reach us. Race-free: child inherits blocked signals. */
+        sc2(SYS_SETPGID, pid, pid);
 
         /* Parent: poll with timeout */
         int status = 0;

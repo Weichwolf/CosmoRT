@@ -185,6 +185,9 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
 
 /* Send signal to a single process. Returns 0 or negative errno. */
 static long kill_one(process_t *target, int sig) {
+    /* Can't signal zombie/dead processes */
+    if (target->state != PROC_ALIVE) return -ESRCH;
+
     /* Check handler */
     void *handler = target->sig_actions[sig].sa_handler;
     if (handler == SIG_IGN) return 0;
@@ -246,12 +249,30 @@ static long kill_one(process_t *target, int sig) {
             return 0;
         }
 
-        /* Everything else: terminate */
+        /* Everything else (fatal).
+         * Linux semantics: blocked signals stay pending, not delivered.
+         * Check if ANY thread can receive this signal. */
+        {
+            int all_blocked = 1;
+            thread_t *t = target->threads;
+            while (t) {
+                if (!((1ULL << sig) & t->sig_blocked)) { all_blocked = 0; break; }
+                t = t->proc_next;
+            }
+            if (all_blocked) {
+                /* Signal blocked on all threads — just set pending */
+                target->sig_pending |= (1ULL << sig);
+                return 0;
+            }
+        }
+
+        /* Signal is unblocked — terminate immediately.
+         * For proc_current(): direct exit (fast path).
+         * For remote: mark zombie + kill threads + notify parent. */
         target->exit_signal = sig;
         if (target == proc_current()) {
             do_exit_group(128 + sig); /* doesn't return */
         }
-        /* Remote kill: mark zombie + kill threads */
         target->state = PROC_ZOMBIE;
         target->exit_code = 128 + sig;
         {
@@ -263,7 +284,6 @@ static long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
         }
-        /* Wake parent if blocked in wait4 */
         if (target->parent_pid) {
             process_t *parent = proc_find(target->parent_pid);
             if (parent) {
@@ -304,7 +324,7 @@ static long kill_pgrp(uint32_t pgid, int sig) {
     int found = 0;
     for (int i = 1; i < PID_TABLE_MAX; i++) {
         process_t *p = proc_find((uint32_t)i);
-        if (p && p->pgid == pgid) {
+        if (p && p->pgid == pgid && p->state == PROC_ALIVE) {
             kill_one(p, sig);
             found = 1;
         }
@@ -327,19 +347,16 @@ long do_kill(int pid, int sig) {
         if (!self) return -ESRCH;
         return kill_pgrp(self->pgid, sig);
     } else if (pid == -1) {
-        /* Signal to all processes except init (pid 1) and self */
-        process_t *self = proc_current();
+        /* Signal to all processes except init (pid 1) */
         int found = 0;
         for (int i = 1; i < PID_TABLE_MAX; i++) {
             process_t *p = proc_find((uint32_t)i);
-            if (!p) continue;
+            if (!p || p->state != PROC_ALIVE) continue;
             if (p->pid <= 1) continue; /* skip init */
             kill_one(p, sig);
             found = 1;
         }
-        /* Also signal self */
-        if (self) kill_one(self, sig);
-        return found || self ? 0 : -ESRCH;
+        return found ? 0 : -ESRCH;
     } else {
         /* pid < -1: signal to process group abs(pid) */
         return kill_pgrp((uint32_t)(-pid), sig);
@@ -372,42 +389,21 @@ long do_tgkill(int tgid, int tid, int sig) {
             sig == SIGCONT)
             return kill_one(p, sig);
 
-        /* Everything else: terminate */
-        p->exit_signal = sig;
-        if (p == proc_current()) {
-            do_exit_group(128 + sig);
+        /* Everything else (fatal): check if signal is blocked on target thread */
+        if ((1ULL << sig) & target->sig_blocked) {
+            p->sig_pending |= (1ULL << sig);
+            return 0;
         }
-        p->state = PROC_ZOMBIE;
-        p->exit_code = 128 + sig;
-        {
-            thread_t *th = p->threads;
-            while (th) {
-                if (th->state == THREAD_BLOCKED || th->state == THREAD_RUNNING ||
-                    th->state == THREAD_STOPPED)
-                    th->state = THREAD_DEAD;
-                th = th->proc_next;
-            }
-        }
-        /* Wake parent if blocked in wait4 */
-        if (p->parent_pid) {
-            process_t *parent = proc_find(p->parent_pid);
-            if (parent) {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                thread_t *pt = parent->threads;
-                while (pt) {
-                    event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
-                    pt = pt->proc_next;
-                }
-            }
-        }
-        return 0;
+        /* Signal is deliverable — terminate via kill_one (process-level) */
+        return kill_one(p, sig);
     }
 
     /* User handler — set pending and wake target thread */
     p->sig_pending |= (1ULL << sig);
     if (!((1ULL << sig) & target->sig_blocked)) {
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-        event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+        if (target->state == THREAD_BLOCKED)
+            event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
     }
     return 0;
 }
