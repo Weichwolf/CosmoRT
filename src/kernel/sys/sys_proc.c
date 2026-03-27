@@ -533,6 +533,147 @@ long do_times(void *buf_) {
 
 /* ── SYS_getcpu (309) ────────────────────────────── */
 
+/* ── SYS_pause (34) — block until signal ────────── */
+
+long do_pause(void) {
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+    /* Block indefinitely — returns on signal delivery */
+    event_t ev;
+    event_wait(&t->eq, &ev, -1);
+    return -EINTR;
+}
+
+/* ── SYS_setitimer (38) / SYS_getitimer (36) ─────── */
+
+struct k_itimerval {
+    struct k_timeval it_interval;
+    struct k_timeval it_value;
+};
+
+long do_getitimer(int which, void *curr_value) {
+    if (which != 0) return -EINVAL; /* only ITIMER_REAL */
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    struct k_itimerval kval;
+    kmemset(&kval, 0, sizeof(kval));
+    if (p->alarm_deadline_ms > 0) {
+        uint64_t now = timer_ms();
+        if (p->alarm_deadline_ms > now) {
+            uint64_t rem_ms = p->alarm_deadline_ms - now;
+            kval.it_value.tv_sec = (long)(rem_ms / 1000);
+            kval.it_value.tv_usec = (long)((rem_ms % 1000) * 1000);
+        }
+    }
+    return copy_to_user(curr_value, &kval, sizeof(kval));
+}
+
+long do_setitimer(int which, const void *new_value, void *old_value) {
+    if (which != 0) return -EINVAL; /* only ITIMER_REAL */
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    /* Return old value first */
+    if (old_value) {
+        long r = do_getitimer(0, old_value);
+        if (r) return r;
+    }
+
+    if (new_value) {
+        struct k_itimerval kval;
+        int r = copy_from_user(&kval, new_value, sizeof(kval));
+        if (r) return r;
+        uint64_t ms = (uint64_t)kval.it_value.tv_sec * 1000 +
+                      (uint64_t)kval.it_value.tv_usec / 1000;
+        if (ms == 0)
+            p->alarm_deadline_ms = 0; /* cancel */
+        else
+            p->alarm_deadline_ms = timer_ms() + ms;
+        /* Note: it_interval is ignored — we don't support repeating timers.
+         * alarm(2) and most callers only use one-shot ITIMER_REAL. */
+    }
+
+    return 0;
+}
+
+/* ── SYS_waitid (247) — wait for process ──────────── */
+
+/* idtype values */
+#define P_PID  1
+#define P_PGID 2
+#define P_ALL  0
+
+/* siginfo_t layout (simplified for waitid): 128 bytes total */
+struct k_siginfo {
+    int si_signo;
+    int si_errno;
+    int si_code;
+    int _pad0;
+    int si_pid;
+    int si_uid;
+    int si_status;
+    int _pad1;
+    /* rest is padding to 128 bytes */
+};
+
+/* CLD_* codes */
+#define CLD_EXITED    1
+#define CLD_KILLED    2
+#define CLD_STOPPED   5
+#define CLD_CONTINUED 6
+
+long do_waitid(int idtype, int id, void *infop, int options) {
+    /* Convert to wait4 semantics */
+    int wait4_pid;
+    switch (idtype) {
+    case P_PID:  wait4_pid = id; break;
+    case P_PGID: wait4_pid = -id; break;
+    case P_ALL:  wait4_pid = -1; break;
+    default: return -EINVAL;
+    }
+
+    int wstatus = 0;
+    long ret = do_wait4(wait4_pid, &wstatus, options, 0);
+    if (ret < 0) return ret;
+    if (ret == 0) {
+        /* WNOHANG and no child ready: clear infop.si_pid */
+        if (infop) {
+            struct k_siginfo ksi;
+            kmemset(&ksi, 0, sizeof(ksi));
+            copy_to_user(infop, &ksi, sizeof(ksi));
+        }
+        return 0;
+    }
+
+    if (infop) {
+        struct k_siginfo ksi;
+        kmemset(&ksi, 0, sizeof(ksi));
+        ksi.si_signo = SIGCHLD;
+        ksi.si_pid = (int)ret;
+        ksi.si_uid = 0;
+
+        if ((wstatus & 0x7f) == 0) {
+            /* Normal exit: WIFEXITED */
+            ksi.si_code = CLD_EXITED;
+            ksi.si_status = (wstatus >> 8) & 0xff;
+        } else if ((wstatus & 0x7f) != 0x7f) {
+            /* Killed by signal: WIFSIGNALED */
+            ksi.si_code = CLD_KILLED;
+            ksi.si_status = wstatus & 0x7f;
+        } else if ((wstatus >> 8) != 0) {
+            /* Stopped: WIFSTOPPED */
+            ksi.si_code = CLD_STOPPED;
+            ksi.si_status = (wstatus >> 8) & 0xff;
+        }
+
+        copy_to_user(infop, &ksi, sizeof(ksi));
+    }
+
+    return 0; /* waitid returns 0 on success, not pid */
+}
+
+/* ── SYS_getcpu (309) ────────────────────────────── */
+
 long do_getcpu(unsigned *cpu_ptr, unsigned *node_ptr) {
     unsigned c = (unsigned)percpu_self()->core_id;
     if (cpu_ptr && user_ok((uint64_t)cpu_ptr, 4))

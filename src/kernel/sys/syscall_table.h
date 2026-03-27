@@ -52,14 +52,36 @@
     X(SYS_SIGALTSTACK, sigaltstack, do_sigaltstack((const void *)a1, (void *)a2)) \
     X(SYS_RT_SIGSUSPEND, rt_sigsuspend, do_rt_sigsuspend((const uint64_t *)a1, (size_t)a2)) \
     X(SYS_TGKILL, tgkill, do_tgkill((int)a1, (int)a2, (int)a3)) \
+    X(SYS_TKILL, tkill, do_tkill((int)a1, (int)a2)) \
+    X(SYS_RT_SIGPENDING, rt_sigpending, do_rt_sigpending((uint64_t *)a1, (size_t)a2)) \
+    X(SYS_RT_SIGTIMEDWAIT, rt_sigtimedwait, do_rt_sigtimedwait((const uint64_t *)a1, (void *)a2, (const struct k_timespec *)a3, (size_t)a4)) \
+    X(SYS_RT_SIGQUEUEINFO, rt_sigqueueinfo, do_rt_sigqueueinfo((int)a1, (int)a2, (void *)a3)) \
     /* Identity (single-user: uid/gid always 0) */ \
     X(SYS_GETUID, getuid, do_getuid()) \
     X(SYS_GETGID, getgid, do_getgid()) \
     X(SYS_GETEUID, geteuid, do_geteuid()) \
     X(SYS_GETEGID, getegid, do_getegid()) \
+    X(SYS_SETUID, setuid, do_setuid(a1)) \
+    X(SYS_SETGID, setgid, do_setgid(a1)) \
+    X(SYS_SETREUID, setreuid, do_setreuid(a1, a2)) \
+    X(SYS_SETREGID, setregid, do_setregid(a1, a2)) \
+    X(SYS_SETRESUID, setresuid, do_setresuid(a1, a2, a3)) \
+    X(SYS_SETRESGID, setresgid, do_setresgid(a1, a2, a3)) \
+    X(SYS_GETRESUID, getresuid, do_getresuid((long *)a1, (long *)a2, (long *)a3)) \
+    X(SYS_GETRESGID, getresgid, do_getresgid((long *)a1, (long *)a2, (long *)a3)) \
+    X(SYS_SETFSUID, setfsuid, do_setfsuid(a1)) \
+    X(SYS_SETFSGID, setfsgid, do_setfsgid(a1)) \
     /* Process info */ \
     X(SYS_PRCTL, prctl, do_prctl((int)a1, (unsigned long)a2, (unsigned long)a3, (unsigned long)a4, (unsigned long)a5)) \
     X(SYS_GETRLIMIT, getrlimit, do_prlimit64(0, (int)a1, 0, (void *)a2)) \
+    /* Process/timer */ \
+    X(SYS_PAUSE, pause, do_pause()) \
+    X(SYS_GETITIMER, getitimer, do_getitimer((int)a1, (void *)a2)) \
+    X(SYS_SETITIMER, setitimer, do_setitimer((int)a1, (const void *)a2, (void *)a3)) \
+    X(SYS_WAITID, waitid, do_waitid((int)a1, (int)a2, (void *)a3, (int)a4)) \
+    X(SYS_PERSONALITY, personality, do_personality((unsigned long)a1)) \
+    X(SYS_GETPRIORITY, getpriority, do_getpriority((int)a1, (int)a2)) \
+    X(SYS_SETPRIORITY, setpriority, do_setpriority((int)a1, (int)a2, (int)a3)) \
     /* Stubs */ \
     X(SYS_FLOCK, flock, do_flock((int)a1, (int)a2)) \
     X(SYS_REBOOT, reboot, do_reboot((int)a1, (int)a2, (int)a3)) \
@@ -159,6 +181,22 @@
     X(SYS_UTIMENSAT, utimensat, do_utimensat((int)a1, (const char *)a2, (const void *)a3, (int)a4)) \
     X(SYS_FALLOCATE, fallocate, do_fallocate((int)a1, (int)a2, (int64_t)a3, (int64_t)a4)) \
     X(SYS_MKNODAT, mknodat, do_mknodat((int)a1, (const char *)a2, (uint32_t)a3, (uint64_t)a4)) \
+    X(SYS_FSYNC, fsync, do_fsync((int)a1)) \
+    X(SYS_FDATASYNC, fdatasync, do_fdatasync((int)a1)) \
+    X(SYS_GETDENTS, getdents, do_getdents((int)a1, (void *)a2, (size_t)a3)) \
+    X(SYS_FCHDIR, fchdir, do_fchdir((int)a1)) \
+    X(SYS_CREAT, creat, do_creat((const char *)a1, (int)a2)) \
+    X(SYS_CHOWN, chown, do_chown((const char *)a1, (uint32_t)a2, (uint32_t)a3)) \
+    X(SYS_FCHOWNAT, fchownat, do_fchownat((int)a1, (const char *)a2, (uint32_t)a3, (uint32_t)a4, (int)a5)) \
+    X(SYS_RENAMEAT, renameat, do_renameat((int)a1, (const char *)a2, (int)a3, (const char *)a4)) \
+    X(SYS_UTIME, utime, do_utime((const char *)a1, (const void *)a2)) \
+    X(SYS_SYNC, sync, do_sync()) \
+    X(SYS_SYNCFS, syncfs, do_syncfs((int)a1)) \
+    X(SYS_UMOUNT2, umount2, do_umount2((const char *)a1, (int)a2)) \
+    X(SYS_MEMFD_CREATE, memfd_create, do_memfd_create((const char *)a1, (unsigned int)a2)) \
+    X(SYS_COPY_FILE_RANGE, copy_file_range, do_copy_file_range((int)a1, (long *)a2, (int)a3, (long *)a4, (size_t)a5, (unsigned int)a6)) \
+    X(SYS_CLOSE_RANGE, close_range, do_close_range((unsigned int)a1, (unsigned int)a2, (unsigned int)a3)) \
+    X(SYS_FACCESSAT2, faccessat2, do_faccessat2((int)a1, (const char *)a2, (int)a3, (int)a4)) \
     /* Pipe / IO */ \
     X(SYS_PIPE, pipe, do_pipe2((int *)a1, 0)) \
     X(SYS_PIPE2, pipe2, do_pipe2((int *)a1, (int)a2)) \

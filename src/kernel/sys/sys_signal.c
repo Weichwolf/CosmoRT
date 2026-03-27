@@ -408,6 +408,103 @@ long do_tgkill(int tgid, int tid, int sig) {
     return 0;
 }
 
+/* ── SYS_TKILL (200) — send signal to thread (legacy, delegate to tgkill) ── */
+
+long do_tkill(int tid, int sig) {
+    thread_t *target = thread_find_by_tid(tid);
+    if (!target || !target->proc) return -ESRCH;
+    return do_tgkill((int)target->proc->pid, tid, sig);
+}
+
+/* ── SYS_RT_SIGPENDING (127) — return pending signal mask ── */
+
+long do_rt_sigpending(uint64_t *set, size_t sigsetsize) {
+    if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
+    thread_t *t = thread_current();
+    if (!t || !t->proc) return -EFAULT;
+    uint64_t pending = t->proc->sig_pending & ~t->sig_blocked;
+    int r = copy_to_user(set, &pending, 8);
+    if (r) return r;
+    if (sigsetsize == 16) {
+        uint64_t zero = 0;
+        r = copy_to_user(set + 1, &zero, 8);
+        if (r) return r;
+    }
+    return 0;
+}
+
+/* ── SYS_RT_SIGTIMEDWAIT (128) — wait for signal with timeout ── */
+
+long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timespec *uts, size_t sigsetsize) {
+    if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
+    thread_t *t = thread_current();
+    if (!t || !t->proc) return -EFAULT;
+    process_t *p = t->proc;
+
+    uint64_t wait_mask;
+    { int r = copy_from_user(&wait_mask, uset, 8); if (r) return r; }
+
+    int timeout_ms = -1;
+    if (uts) {
+        struct k_timespec kts;
+        int r = copy_from_user(&kts, uts, sizeof(kts));
+        if (r) return r;
+        timeout_ms = (int)(kts.tv_sec * 1000 + kts.tv_nsec / 1000000);
+        if (timeout_ms < 0) timeout_ms = 0;
+    }
+
+    /* Check if any waited signal is already pending */
+    uint64_t match = p->sig_pending & wait_mask;
+    if (match) {
+        int sig;
+        for (sig = 1; sig < 64; sig++)
+            if (match & (1ULL << sig)) break;
+        p->sig_pending &= ~(1ULL << sig);
+        /* Write siginfo (simplified: just si_signo at offset 0) */
+        if (uinfo) {
+            int ksi[32];
+            kmemset(ksi, 0, sizeof(ksi));
+            ksi[0] = sig; /* si_signo */
+            copy_to_user(uinfo, ksi, 128);
+        }
+        return sig;
+    }
+
+    if (timeout_ms == 0) return -EAGAIN;
+
+    /* Block, waiting for signal */
+    {
+        event_t ev;
+        int r = event_wait(&t->eq, &ev, timeout_ms);
+        if (r == -ETIMEDOUT) return -EAGAIN;
+    }
+
+    /* Re-check after wake */
+    match = p->sig_pending & wait_mask;
+    if (match) {
+        int sig;
+        for (sig = 1; sig < 64; sig++)
+            if (match & (1ULL << sig)) break;
+        p->sig_pending &= ~(1ULL << sig);
+        if (uinfo) {
+            int ksi[32];
+            kmemset(ksi, 0, sizeof(ksi));
+            ksi[0] = sig;
+            copy_to_user(uinfo, ksi, 128);
+        }
+        return sig;
+    }
+
+    return -EAGAIN;
+}
+
+/* ── SYS_RT_SIGQUEUEINFO (129) — send signal with info ── */
+
+long do_rt_sigqueueinfo(int pid, int sig, void *uinfo) {
+    (void)uinfo; /* we don't use siginfo_t data beyond sig number */
+    return do_kill(pid, sig);
+}
+
 /* ── SYS_RT_SIGSUSPEND (130) ────────────────────────── */
 
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {

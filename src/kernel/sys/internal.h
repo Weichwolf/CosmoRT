@@ -81,6 +81,13 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg);
 long do_fcntl(int fd, int cmd, long arg);
 long do_pread64(int fd, void *buf, size_t count, int64_t offset);
 long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset);
+long do_fchdir(int fd);
+long do_creat(const char *path, int mode);
+long do_getdents(int fd, void *buf, size_t count);
+long do_close_range(unsigned int first, unsigned int last, unsigned int flags);
+long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
+                        size_t len, unsigned int flags);
+long do_memfd_create(const char *uname, unsigned int flags);
 
 /* ── Forward declarations: sys_fs.c ── */
 long do_fstat(int fd, struct k_stat *buf);
@@ -106,6 +113,10 @@ long do_statx(int dirfd, const char *pathname, int flags,
               unsigned int mask, void *statxbuf);
 long do_statfs(const char *path, void *buf);
 long do_fstatfs(int fd, void *buf);
+long do_chown(const char *upath, uint32_t uid, uint32_t gid);
+long do_fchownat(int dirfd, const char *upath, uint32_t uid, uint32_t gid, int flags);
+long do_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
+long do_faccessat2(int dirfd, const char *path, int mode, int flags);
 
 /* ── Forward declarations: sys_mem.c ── */
 long do_brk(unsigned long addr);
@@ -138,6 +149,10 @@ long do_times(void *buf);
 long do_prctl(int option, unsigned long a2, unsigned long a3,
               unsigned long a4, unsigned long a5);
 long do_getcpu(unsigned *cpu, unsigned *node);
+long do_pause(void);
+long do_getitimer(int which, void *curr_value);
+long do_setitimer(int which, const void *new_value, void *old_value);
+long do_waitid(int idtype, int id, void *infop, int options);
 
 /* ── Forward declarations: sys_sched.c ── */
 long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mask);
@@ -154,6 +169,10 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset, size_t si
 long do_kill(int pid, int sig);
 long do_tgkill(int tgid, int tid, int sig);
 long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize);
+long do_tkill(int tid, int sig);
+long do_rt_sigpending(uint64_t *set, size_t sigsetsize);
+long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timespec *uts, size_t sigsetsize);
+long do_rt_sigqueueinfo(int pid, int sig, void *uinfo);
 
 /* ── Forward declarations: sys_signal_frame.c ── */
 void deliver_signal(thread_t *t, int signo);
@@ -214,6 +233,16 @@ long do_getuid(void);
 long do_getgid(void);
 long do_geteuid(void);
 long do_getegid(void);
+long do_setuid(long uid);
+long do_setgid(long gid);
+long do_setreuid(long ruid, long euid);
+long do_setregid(long rgid, long egid);
+long do_setresuid(long ruid, long euid, long suid);
+long do_setresgid(long rgid, long egid, long sgid);
+long do_getresuid(long *ruid, long *euid, long *suid);
+long do_getresgid(long *rgid, long *egid, long *sgid);
+long do_setfsuid(long uid);
+long do_setfsgid(long gid);
 
 /* ── Forward declarations: stubs.c ── */
 long do_set_robust_list(void);
@@ -233,6 +262,15 @@ long do_fadvise64(void);
 long do_umask(int mask);
 long do_getgroups(void);
 long do_setgroups(void);
+long do_personality(unsigned long persona);
+long do_getpriority(int which, int who);
+long do_setpriority(int which, int who, int prio);
+long do_sync(void);
+long do_syncfs(int fd);
+long do_fsync(int fd);
+long do_fdatasync(int fd);
+long do_umount2(const char *target, int flags);
+long do_utime(const char *filename, const void *times);
 
 /* Save user register state from syscall frame into thread_t */
 void save_user_state_for_block(thread_t *t, long return_value);

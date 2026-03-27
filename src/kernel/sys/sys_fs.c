@@ -396,3 +396,47 @@ long do_statx(int dirfd, const char *pathname, int flags,
 
     return copy_to_user(statxbuf, &sx, sizeof(sx));
 }
+
+/* ── SYS_chown (92) — set file owner (single-user: noop, validate path) ── */
+
+long do_chown(const char *upath, uint32_t uid, uint32_t gid) {
+    (void)uid; (void)gid;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, upath, PATH_MAX);
+    if (len < 0) return len;
+    /* Validate file exists */
+    char rpath[PATH_MAX];
+    resolve_path(kpath, rpath, PATH_MAX);
+    struct k_stat kst;
+    int r = vfs_stat(rpath, &kst);
+    if (r < 0) return r;
+    return 0;
+}
+
+/* ── SYS_fchownat (260) — chown with dirfd ────────── */
+
+long do_fchownat(int dirfd, const char *upath, uint32_t uid, uint32_t gid, int flags) {
+    (void)uid; (void)gid; (void)flags;
+    char kpath[PATH_MAX];
+    int len = resolve_at_path(dirfd, upath, kpath, PATH_MAX);
+    if (len < 0) return len;
+    /* Validate file exists */
+    char rpath[PATH_MAX];
+    resolve_path(kpath, rpath, PATH_MAX);
+    struct k_stat kst;
+    int r = vfs_stat(rpath, &kst);
+    if (r < 0) return r;
+    return 0;
+}
+
+/* ── SYS_renameat (264) — delegate to renameat2 ──── */
+
+long do_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    return do_renameat2(olddirfd, oldpath, newdirfd, newpath, 0);
+}
+
+/* ── SYS_faccessat2 (439) — delegate to faccessat ── */
+
+long do_faccessat2(int dirfd, const char *path, int mode, int flags) {
+    return do_faccessat(dirfd, path, mode, flags);
+}

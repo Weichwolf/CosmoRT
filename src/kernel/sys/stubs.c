@@ -34,3 +34,61 @@ long do_umask(int mask) { (void)mask; return 0022; }
 
 long do_getgroups(void) { return 0; }
 long do_setgroups(void) { return 0; }
+
+/* personality(2): PER_LINUX = 0 */
+long do_personality(unsigned long persona) {
+    if (persona == 0xFFFFFFFF) return 0; /* query: return PER_LINUX */
+    if (persona == 0) return 0;          /* set PER_LINUX: ok */
+    return -EINVAL;
+}
+
+/* priority: single-user, no priority enforcement */
+long do_getpriority(int which, int who) { (void)which; (void)who; return 20; }
+long do_setpriority(int which, int who, int prio) {
+    (void)which; (void)who; (void)prio; return 0;
+}
+
+/* sync/syncfs/fsync/fdatasync: flush to disk (noop for ramfs, ext2_sync for ext2) */
+long do_sync(void) {
+    extern void ext2_sync(void);
+    ext2_sync();
+    return 0;
+}
+
+long do_syncfs(int fd) { (void)fd; return do_sync(); }
+
+long do_fsync(int fd) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    /* ext2 backend: sync. ramfs/other: noop */
+    if (fde->type == FD_FILE) {
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (f && f->backend == VFS_BACKEND_EXT2) {
+            extern void ext2_sync(void);
+            ext2_sync();
+        }
+    }
+    return 0;
+}
+
+long do_fdatasync(int fd) { return do_fsync(fd); }
+
+/* umount2: single mount, never unmount — return 0 */
+long do_umount2(const char *target, int flags) {
+    (void)target; (void)flags; return 0;
+}
+
+/* utime: delegate to utimensat */
+long do_utime(const char *filename, const void *times) {
+    /* struct utimbuf { time_t actime; time_t modtime; } */
+    if (times) {
+        long utimes[2];
+        int r = copy_from_user(utimes, times, sizeof(utimes));
+        if (r) return r;
+        int64_t ts[4] = { utimes[0], 0, utimes[1], 0 };
+        return do_utimensat(AT_FDCWD, filename, ts, 0);
+    }
+    return do_utimensat(AT_FDCWD, filename, 0, 0);
+}
