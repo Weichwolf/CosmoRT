@@ -505,12 +505,12 @@ kein Display-Server. Direkter Pfad: App → SDL3 → Kernel.
 Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
 
 ```
-F1: [Claude Code]  Terminal          → VT-Textmodus
-F2: [make]         Terminal          → VT-Textmodus
-F3: [github.com]   WPE WebKit       → SDL3 Framebuffer
-F4: [Teams]        WPE WebKit       → SDL3 Framebuffer
-F5: [Figma]        WASM-App         → SDL3 Framebuffer
-F6: [Doom]         SDL3-Game        → SDL3 Framebuffer
+F1: [Claude Code]  Terminal          → Glyph-Rendering in FB
+F2: [make]         Terminal          → Glyph-Rendering in FB
+F3: [github.com]   WPE WebKit       → SDL3 in FB
+F4: [Teams]        WPE WebKit       → SDL3 in FB
+F5: [Figma]        WASM-App         → SDL3 in FB
+F6: [Doom]         SDL3-Game        → SDL3 in FB
 ```
 
 surface_create(slot_id) gibt den Framebuffer fuer diesen VT-Slot.
