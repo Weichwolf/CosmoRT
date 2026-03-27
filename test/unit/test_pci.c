@@ -1,47 +1,26 @@
+/* PCI device enumeration via /proc/bus/pci/devices */
 #include "ktest.h"
-#include "cosmort.h"
 
 static void test_pci(void) {
     puts("\n[PCI Scan]\n");
 
-    /* PCI requires is_driver — skip if non-driver (forked child) */
-    uint32_t probe = 0;
-    if (sc5(SYS_COSMO_PCI_READ, 0, 0, 0, 0, (long)&probe) == -EPERM) {
-        pass("PCI skip (non-driver)");
-        return;
-    }
+    char buf[2048];
+    long fd = sc3(SYS_OPEN, (long)"/proc/bus/pci/devices", O_RDONLY, 0);
+    check("open /proc/bus/pci/devices", fd >= 0);
+    if (fd < 0) return;
 
+    long n = sc3(SYS_READ, fd, (long)buf, sizeof(buf) - 1);
+    sc1(SYS_CLOSE, fd);
+    check("read pci devices", n > 0);
+    if (n <= 0) return;
+    buf[n] = 0;
+
+    /* Count lines = device count */
     int found = 0;
-    for (int bus = 0; bus < 8; bus++) {
-        for (int dev = 0; dev < 32; dev++) {
-            uint32_t id = 0;
-            long r = sc5(SYS_COSMO_PCI_READ, bus, dev, 0, 0, (long)&id);
-            if (r < 0 || id == 0 || id == 0xFFFFFFFF) continue;
-            uint32_t vendor = id & 0xFFFF;
-            uint32_t device = (id >> 16) & 0xFFFF;
-            puts("  PCI "); put_int(bus); puts(":"); put_int(dev);
-            puts(".0 = "); put_hex(vendor); puts(":"); put_hex(device);
+    for (long i = 0; i < n; i++)
+        if (buf[i] == '\n') found++;
 
-            /* Identify known devices */
-            if (vendor == 0x8086 && (device == 0x100E || device == 0x100F))
-                puts(" (E1000 NIC)");
-            else if (vendor == 0x8086 && device == 0x1237)
-                puts(" (440FX Host)");
-            else if (vendor == 0x8086 && device == 0x7000)
-                puts(" (PIIX3 ISA)");
-            else if (vendor == 0x8086 && device == 0x7010)
-                puts(" (PIIX3 IDE)");
-            else if (vendor == 0x8086 && device == 0x7113)
-                puts(" (PIIX4 ACPI)");
-            else if (vendor == 0x1234 && device == 0x1111)
-                puts(" (QEMU VGA)");
-            else if (vendor == 0x1AF4)
-                puts(" (virtio)");
-
-            puts("\n");
-            found++;
-        }
-    }
+    puts("  "); put_int(found); puts(" PCI devices\n");
     check_ge("PCI devices found", (long)found, 1);
 }
 

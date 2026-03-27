@@ -347,7 +347,8 @@ bench: $(BUILD)/gen/kbench_bin.h
 # ── Hardware test binaries ────────────────────────
 KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/unit/%.c,$(BUILD)/test/unit/%.o,$(wildcard test/unit/*.c)) \
-            $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c))
+            $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c)) \
+            $(patsubst test/unit/proc/%.c,$(BUILD)/test/unit/proc/%.o,$(wildcard test/unit/proc/*.c))
 
 KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
@@ -355,13 +356,16 @@ KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
 KTEST_FUZZ_OBJ = $(BUILD)/test/main.o \
             $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
 
-$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/crash $(BUILD)/test/fuzz:
+$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/unit/net $(BUILD)/test/unit/proc $(BUILD)/test/crash $(BUILD)/test/fuzz:
 	@mkdir -p $@
 
 $(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/%.o: test/unit/%.c test/ktest.h | $(BUILD)/test/unit
+	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
+
+$(BUILD)/test/unit/proc/%.o: test/unit/proc/%.c test/ktest.h | $(BUILD)/test/unit/proc
 	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
 
 $(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
