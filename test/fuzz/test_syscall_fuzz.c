@@ -1,4 +1,4 @@
-/* Syscall fuzzer: deterministic random args to every syscall number.
+/* Syscall fuzzer: every syscall number 0-511 + CosmoRT range + boundaries.
  * Child process fuzzes, parent verifies survival. Kernel must never
  * crash, hang, or corrupt state — only return values or errno. */
 #include "ktest.h"
@@ -21,6 +21,14 @@
 #define FUZZ_SEED       0
 #endif
 
+/* ── 64-bit boundary constants ──────────────────── */
+#define I64_MIN  0x8000000000000000ULL
+#define I64_MAX  0x7FFFFFFFFFFFFFFFULL
+#define U64_MAX  0xFFFFFFFFFFFFFFFFULL
+#define I32_MIN  0xFFFFFFFF80000000ULL
+#define I32_MAX  0x000000007FFFFFFFULL
+#define U32_MAX  0x00000000FFFFFFFFULL
+
 /* ── PRNG ───────────────────────────────────────── */
 static uint64_t rng_state;
 
@@ -32,6 +40,23 @@ static uint64_t xorshift64(void) {
     return rng_state = x;
 }
 
+/* ── Syscall number generator ───────────────────── */
+
+static uint64_t nr_gen(void) {
+    switch (xorshift64() % 10) {
+    case 0:  return xorshift64() % 512;               /* Linux range 0-511 */
+    case 1:  return 0x10000 + (xorshift64() % 32);    /* CosmoRT range */
+    case 2:  return 0;                                 /* zero */
+    case 3:  return I64_MAX;                           /* INT64_MAX */
+    case 4:  return I64_MIN;                           /* INT64_MIN */
+    case 5:  return U64_MAX;                           /* UINT64_MAX */
+    case 6:  return 511;                               /* upper Linux bound */
+    case 7:  return 512;                               /* just past Linux */
+    case 8:  return xorshift64();                      /* full 64-bit random */
+    default: return xorshift64() & 0xFFFF;             /* 16-bit range */
+    }
+}
+
 /* ── Argument generators ────────────────────────── */
 
 #define KADDR_HIGH  0xFFFF800000000000ULL
@@ -40,95 +65,52 @@ static uint64_t xorshift64(void) {
 #define USER_END    0x7FFFFFFFE000ULL
 
 static uint64_t ptr_gen(uint64_t valid_buf) {
-    uint64_t r = xorshift64();
-    switch (r % 9) {
-    case 0:  return 0;
-    case 1:  return 1;
-    case 2:  return ADDR_DEAD;
-    case 3:  return KADDR_HIGH;
-    case 4:  return KADDR_TEXT;
-    case 5:  return USER_END;
-    case 6:  return valid_buf;
-    case 7:  return valid_buf + 4096 - 1;
-    default: return xorshift64() & 0x7FFFFFFFFFFFULL;
+    switch (xorshift64() % 12) {
+    case 0:  return 0;                                 /* NULL */
+    case 1:  return 1;                                 /* misaligned */
+    case 2:  return ADDR_DEAD;                         /* unmapped high */
+    case 3:  return KADDR_HIGH;                        /* kernel space */
+    case 4:  return KADDR_TEXT;                        /* kernel text */
+    case 5:  return USER_END;                          /* user space top */
+    case 6:  return valid_buf;                         /* valid page */
+    case 7:  return valid_buf + 4096 - 1;              /* end of valid page */
+    case 8:  return I64_MAX;                           /* INT64_MAX */
+    case 9:  return U64_MAX;                           /* UINT64_MAX */
+    case 10: return I64_MIN;                           /* INT64_MIN */
+    default: return xorshift64() & 0x7FFFFFFFFFFFULL;  /* random user addr */
     }
 }
 
 static uint64_t fd_gen(void) {
     static const uint64_t fds[] = {
-        (uint64_t)-1, (uint64_t)-100, 0, 1, 2, 3, 5, 10,
-        255, 256, 0x7FFFFFFF, (uint64_t)-2,
+        0, 1, 2, 3, 5, 10, 255, 256,
+        U64_MAX, I64_MAX, I64_MIN, I32_MIN, I32_MAX, U32_MAX,
     };
     uint64_t r = xorshift64();
     if ((r & 3) == 0) return xorshift64() & 0x3FF;
-    return fds[r % 12];
+    return fds[r % 14];
 }
 
 static uint64_t size_gen(void) {
     static const uint64_t sizes[] = {
-        0, 1, 4096, 4097, 0x7FFFFFFF,
-        0xFFFFFFFFFFFFFFFFULL, 0x8000000000000000ULL,
+        0, 1, 4096, 4097,
+        I32_MAX, U32_MAX, I64_MAX, U64_MAX, I64_MIN,
+        (uint64_t)-1, (uint64_t)-4096,
     };
     uint64_t r = xorshift64();
     if ((r & 3) == 0) return xorshift64() & 0xFFFFF;
-    return sizes[r % 7];
+    return sizes[r % 11];
 }
 
 static uint64_t flags_gen(void) {
+    static const uint64_t flags[] = {
+        0, 1, U32_MAX, U64_MAX, I64_MAX, I64_MIN,
+        0xDEADBEEF, 0x80000000,
+    };
     uint64_t r = xorshift64();
-    switch (r % 5) {
-    case 0:  return 0;
-    case 1:  return (uint64_t)-1;
-    case 2:  return 0xFFFFFFFF;
-    case 3:  return xorshift64() & 0xFFFFFFFF;
-    default: return xorshift64();
-    }
+    if ((r & 3) == 0) return xorshift64();
+    return flags[r % 8];
 }
-
-/* ── Flat table of guaranteed non-blocking syscalls ── */
-
-/* Every syscall in this table is guaranteed to return without blocking,
- * regardless of arguments. No I/O, no wait, no sleep, no signal suspend.
- * This covers: memory, fs metadata, process info, stubs, cosmo HW, unknown. */
-static const uint64_t nr_all[] = {
-    /* Memory (highest risk) */
-    SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_BRK, SYS_MREMAP,
-    SYS_MADVISE, SYS_MLOCK, SYS_MUNLOCK, SYS_MLOCKALL, SYS_MUNLOCKALL,
-    /* FS metadata (non-blocking) */
-    SYS_STAT, SYS_LSTAT, SYS_FSTAT, SYS_FSTATAT, SYS_STATFS,
-    SYS_FSTATFS, SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT, SYS_FCHOWN,
-    SYS_LINK, SYS_LINKAT, SYS_SYMLINK, SYS_SYMLINKAT,
-    SYS_READLINK, SYS_READLINKAT, SYS_UNLINK, SYS_UNLINKAT,
-    SYS_RENAME, SYS_RENAMEAT2, SYS_MKDIR, SYS_MKDIRAT, SYS_RMDIR,
-    SYS_TRUNCATE, SYS_FTRUNCATE, SYS_UTIMENSAT, SYS_FALLOCATE,
-    SYS_MKNODAT, SYS_CHDIR, SYS_GETCWD, SYS_STATX,
-    /* Process info (instant return) */
-    SYS_GETPID, SYS_GETPPID, SYS_GETTID,
-    SYS_GETUID, SYS_GETGID, SYS_GETEUID, SYS_GETEGID,
-    SYS_SCHED_YIELD,
-    /* File ops that never block (just return errno on bad fd) */
-    SYS_CLOSE, SYS_LSEEK, SYS_ACCESS, SYS_DUP, SYS_DUP2,
-    SYS_FCNTL, SYS_GETDENTS64, SYS_OPENAT, SYS_FACCESSAT, SYS_DUP3,
-    /* Signals: excluded from fuzz — garbage rt_sigaction installs handlers
-     * that trap the child in infinite exception→handler loops, and garbage
-     * rt_sigprocmask can unblock those signals. Signal syscalls are tested
-     * by dedicated unit tests (test_signals, test_sigreturn_hijack). */
-    /* Stubs */
-    SYS_SET_ROBUST_LIST, SYS_RSEQ, SYS_CAPGET, SYS_CAPSET,
-    SYS_MOUNT, SYS_SETHOSTNAME, SYS_PRCTL, SYS_ARCH_PRCTL,
-    /* CosmoRT hw (must EPERM) */
-    SYS_COSMO_MMIO_MAP, SYS_COSMO_DMA_ALLOC, SYS_COSMO_DMA_FREE,
-    SYS_COSMO_IRQ_REGISTER, SYS_COSMO_PCI_READ, SYS_COSMO_PCI_WRITE,
-    SYS_COSMO_FW_LOAD, SYS_COSMO_NIC_ATTACH, SYS_COSMO_KEXEC,
-    /* Socket creation (non-blocking) */
-    SYS_SOCKET, SYS_BIND, SYS_LISTEN, SYS_SHUTDOWN,
-    SYS_SETSOCKOPT, SYS_GETSOCKOPT, SYS_GETSOCKNAME, SYS_GETPEERNAME,
-    SYS_SOCKETPAIR,
-    /* Unknown / invalid syscall numbers */
-    500, 511, 521, 600, 999,
-};
-
-#define NR_ALL_LEN ((int)(sizeof(nr_all)/sizeof(nr_all[0])))
 
 /* ── One fuzz round (runs in child) ─────────────── */
 static void fuzz_round(uint64_t seed) {
@@ -138,8 +120,7 @@ static void fuzz_round(uint64_t seed) {
     for (int fd = 0; fd < 16; fd++)
         sc1(SYS_CLOSE, fd);
 
-    /* Block all signals so garbage SYS_RT_SIGACTION can't install
-     * handlers that trap us in infinite exception→handler loops.
+    /* Block all signals so garbage sigaction can't trap us.
      * SIGKILL (9) stays unblockable — parent can still kill us. */
     {
         uint64_t all_blocked = ~((1ULL << 9) | (1ULL << 19));
@@ -152,7 +133,7 @@ static void fuzz_round(uint64_t seed) {
     uint64_t vbuf = (uint64_t)buf;
 
     for (int i = 0; i < FUZZ_CALLS; i++) {
-        uint64_t nr = nr_all[xorshift64() % NR_ALL_LEN];
+        uint64_t nr = nr_gen();
         uint64_t a0 = ptr_gen(vbuf);
         uint64_t a1 = size_gen();
         uint64_t a2 = flags_gen();
@@ -204,6 +185,9 @@ static void fuzz_round(uint64_t seed) {
 /* ── Main test function ─────────────────────────── */
 static void test_syscall_fuzz(void) {
     puts("\n[Syscall Fuzzer]\n");
+    puts("NOTE: Fuzzer is non-deterministic. Reproduce failures via\n");
+    puts("test/crash/ with fixed seed before fixing. Do not re-test\n");
+    puts("fixes with the fuzzer — write a deterministic crash test.\n");
 
     /* Seed */
     uint64_t seed = FUZZ_SEED;
@@ -217,12 +201,8 @@ static void test_syscall_fuzz(void) {
     puts("[fuzz] rounds="); put_int(FUZZ_ROUNDS);
     puts(" calls="); put_int(FUZZ_CALLS); puts("\n");
 
-    /* Sentinel on stack to detect parent memory corruption.
-     * Stack pages are COW after fork — child writes get their own copy.
-     * Volatile to prevent compiler optimisation. */
     volatile uint64_t sentinel_val = 0xFEEDFACECAFEBABEULL;
 
-    /* Snapshot: fd count before */
     int fds_before = 0;
     for (int fd = 0; fd < 64; fd++) {
         if (sc2(SYS_FSTAT, fd, 0) != -9) fds_before++;
@@ -244,34 +224,26 @@ static void test_syscall_fuzz(void) {
             __builtin_unreachable();
         }
 
-        /* Parent: poll with timeout — child may hang if fuzzing
-         * corrupts its address space (e.g. munmap own code).
-         * Use sched_yield between polls to give child CPU time
-         * (nanosleep uses hlt which monopolises the core). */
+        /* Parent: poll with timeout */
         int status = 0;
         long w = -1;
         {
-            int tries = 2000; /* ~2000 yields ≈ 1-2s wall time */
+            int tries = 2000;
             while (tries-- > 0) {
                 w = sc4(SYS_WAIT4, pid, (long)&status, 1 /* WNOHANG */, 0);
                 if (w > 0) break;
-                if (w < 0 && w != -10 /* -ECHILD */) break;
+                if (w < 0 && w != -10) break;
                 sc0(SYS_SCHED_YIELD);
             }
             if (w == 0) {
-                /* Still running after timeout → kill it */
-                sc2(SYS_KILL, pid, 9 /* SIGKILL */);
+                sc2(SYS_KILL, pid, 9);
                 w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
             }
         }
 
-        if (w < 0) {
-            errors++;
-            continue;
-        }
+        if (w < 0) { errors++; continue; }
 
         if (WIFSIGNALED(status) && WTERMSIG(status) == 9) {
-            /* SIGKILL = our timeout kill → child hung */
             crashed++;
             if (crashed <= 5) {
                 puts("  TIMEOUT round="); put_int(round);
@@ -280,7 +252,6 @@ static void test_syscall_fuzz(void) {
             continue;
         }
 
-        /* Child exited (any code) or died by signal — kernel survived */
         ok++;
     }
 
@@ -288,34 +259,23 @@ static void test_syscall_fuzz(void) {
     puts(" timeout="); put_int(crashed);
     puts(" errors="); put_int(errors); puts("\n");
 
-    /* Kernel must survive all rounds: no panics, no hangs.
-     * ok + timeout + errors = FUZZ_ROUNDS.
-     * Child may self-destruct (exit non-zero, SIGSEGV) — that's fine.
-     * Timeouts are concerning (child hung → possible kernel DoS). */
     check("kernel survived all rounds", ok + crashed + errors == FUZZ_ROUNDS);
     check("no timeouts", crashed == 0);
-
-    /* Sentinel intact — kernel didn't corrupt our memory */
     check("sentinel intact", sentinel_val == 0xFEEDFACECAFEBABEULL);
 
-    /* fd count unchanged */
     int fds_after = 0;
     for (int fd = 0; fd < 64; fd++) {
         if (sc2(SYS_FSTAT, fd, 0) != -9) fds_after++;
     }
     check("no fd leak", fds_after == fds_before);
-
-    /* Parent kernel still responding */
     check("getpid works", sc0(SYS_GETPID) > 0);
 
-    /* Timing still sane */
     struct { long sec; long nsec; } t1, t2;
     sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
     sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t2);
     check("clock monotonic",
           t2.sec > t1.sec ||
           (t2.sec == t1.sec && t2.nsec >= t1.nsec));
-
 }
 
 CRASH_TEST("fuzz/syscall", test_syscall_fuzz);
