@@ -499,9 +499,28 @@ Anwendung (Game, GUI, Player)
 Entscheidung: SDL3 ist das einzige UI-Framework. Kein X11, kein Wayland,
 kein Display-Server. Direkter Pfad: App → SDL3 → Kernel.
 
+### 13.2 VT-Slots = SDL3 Surfaces
+
+12 Fullscreen-Slots auf F1-F12 (BeOS-Philosophie, siehe notes/DESKTOP.md).
+Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
+
+```
+F1: [Claude Code]  Terminal          → VT-Textmodus
+F2: [make]         Terminal          → VT-Textmodus
+F3: [github.com]   WPE WebKit       → SDL3 Framebuffer
+F4: [Teams]        WPE WebKit       → SDL3 Framebuffer
+F5: [Figma]        WASM-App         → SDL3 Framebuffer
+F6: [Doom]         SDL3-Game        → SDL3 Framebuffer
+```
+
+surface_create(slot_id) gibt den Framebuffer fuer diesen VT-Slot.
+F-Tasten wechseln im Kernel — Apps merken davon nichts.
+12-Spur Audio-Mixer im RT-Core: jeder Slot hat eigenen Audio-Stream.
+
 Was automatisch funktioniert:
 - Alles was SDL2/SDL3 nutzt (tausende Anwendungen)
 - Dear ImGui, RetroArch, Mediaplayer, Spiele
+- WPE WebKit: eine Webseite pro Slot (keine Tabs)
 - Software-Rendering sofort, GPU optional (virtio-gpu/nativer Treiber)
 
 SDL_cosmoui lebt im CosmoUI Repository (~/Git/CosmoUI).
