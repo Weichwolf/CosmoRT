@@ -33,11 +33,6 @@
 #include "gen/ld_musl_bin.h"
 #endif
 
-/* Userspace E1000 driver (embedded, registered in VFS at /bin/e1000d) */
-#ifdef HAVE_E1000D
-#include "gen/e1000d_bin.h"
-#endif
-
 /* Service manager (embedded, registered in VFS at /bin/svcmgr) */
 #ifdef HAVE_SVCMGR
 #include "gen/svcmgr_bin.h"
@@ -220,10 +215,6 @@ void kernel_main(struct boot_info *info) {
 #endif
 
     /* Userspace driver binaries */
-#ifdef HAVE_E1000D
-    vfs_add_file("/bin/e1000d", e1000d_bin, e1000d_bin_size);
-    serial_puts("vfs: /bin/e1000d registered\n");
-#endif
 #ifdef HAVE_SVCMGR
     vfs_add_file("/bin/svcmgr", svcmgr_bin, svcmgr_bin_size);
     serial_puts("vfs: /bin/svcmgr registered\n");

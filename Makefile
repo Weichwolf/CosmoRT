@@ -244,25 +244,7 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 	print('static const unsigned long init_bin_size = %d;' % len(data))" > $@
 	@echo "init_bin.h: $$(wc -c < $<) bytes"
 
-init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h
-
-# ── E1000 userspace driver (embedded in kernel) ──
-$(BUILD)/user/e1000d.o: $(SRC)/user/e1000d.c | $(BUILD)/user
-	$(CC) $(UCFLAGS) -c -o $@ $<
-
-$(BUILD)/user/e1000d: $(CRT0) $(BUILD)/user/e1000d.o $(SRC)/user/init.ld
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/e1000d.o
-
-$(BUILD)/gen/e1000d_bin.h: $(BUILD)/user/e1000d | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated e1000d binary (%d bytes) */' % len(data)); \
-	print('static const unsigned char e1000d_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long e1000d_bin_size = %d;' % len(data))" > $@
-	@echo "e1000d_bin.h: $$(wc -c < $<) bytes"
+init-bin: $(BUILD)/gen/init_bin.h $(BUILD)/gen/svcmgr_bin.h
 
 # ── Service manager (embedded in kernel) ─────────
 $(BUILD)/user/svcmgr.o: $(SRC)/user/svcmgr.c | $(BUILD)/user
@@ -508,9 +490,9 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h, e1000d_bin.h, svcmgr_bin.h
-$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_E1000D -DHAVE_SVCMGR -o $@ $<
+# main.o depends on init_bin.h, svcmgr_bin.h
+$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h $(BUILD)/gen/svcmgr_bin.h | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -DHAVE_SVCMGR -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -622,5 +604,5 @@ test-boot-disk: $(BUILD)/disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/e1000d_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
+	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kbench_bin.h $(BUILD)/gen/ktest_bin.h $(BUILD)/gen/svcmgr_bin.h $(BUILD)/gen/kexec_tramp_bin.h
 	rm -f tools/mkfs
