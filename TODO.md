@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-27. 1136 ktest PASS, 0 FAIL. Busybox Shell bootet.
+Stand: 2026-03-27. 1171 ktest PASS, 0 FAIL. Busybox Shell bootet.
 
 ---
 
@@ -153,10 +153,12 @@ init.c execve'd /bin/sh → ash Prompt. AT_PHDR Fix (prog_phdr aus PT_LOAD vaddr
 ELF-Loader Refactoring: 4→1 Variante, CosmoFS-Loader eliminiert, crt0.S ABI-korrekt.
 make qemu-busybox zum Testen.
 
-### Phase 2: Kernel-Features fuer Alpine
+### Phase 2: Kernel-Features fuer Alpine — erledigt
 
-- [ ] SH-H: Symlinks (busybox/Alpine braucht /bin/sh → busybox etc.)
-- [ ] futex echtes Blocking + Timeouts (pthreads, jedes Multi-Thread-Programm)
+Symlinks: komplett (ramfs + CosmoFS, path resolution, ELOOP, 25 Tests).
+futex: Spin-Wait → event_wait/event_post, Timeouts, PI, WAKE_OP, 6 Tests.
+
+Noch offen (nicht blockierend fuer Phase 3):
 - [ ] /etc/resolv.conf lesbar fuer musl DNS-Resolver
 - [ ] /dev/pts: posix_openpt / openpty (Terminal-Multiplexing)
 
