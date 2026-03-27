@@ -45,9 +45,12 @@ int kstreq(const char *a, const char *b) {
 /* Returns pointer to name after "/proc/" or NULL */
 const char *procfs_name(const char *path) {
     if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
-        path[4]=='c' && path[5]=='/') {
-        const char *name = path + 6;
-        if (*name && *name != '/') return name;
+        path[4]=='c') {
+        if (path[5] == '\0' || path[5] == '/') {
+            const char *name = path + 5;
+            if (*name == '/') name++;
+            return name; /* "" for /proc, "meminfo" for /proc/meminfo, etc. */
+        }
     }
     return 0;
 }

@@ -72,6 +72,15 @@ int vfs_stat(const char *path, struct k_stat *buf) {
 
     const char *pn = procfs_name(path);
     if (pn) {
+        /* /proc root directory */
+        if (*pn == '\0') {
+            kmemset(buf, 0, sizeof(struct k_stat));
+            buf->st_mode = S_IFDIR | 0555;
+            buf->st_ino = 0xFFFF0000;
+            buf->st_nlink = 2;
+            buf->st_blksize = 4096;
+            return 0;
+        }
         int dummy;
         int pid_type = procfs_pid_exists(pn);
         if (procfs_stat(pn, &dummy) < 0 && !pid_type) return -ENOENT;
