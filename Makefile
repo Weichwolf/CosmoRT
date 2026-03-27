@@ -246,6 +246,19 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 
 init-bin: $(BUILD)/gen/init_bin.h
 
+# ── Busybox (optional, embedded as /bin/sh) ──────
+BUSYBOX_SRC ?= /tmp/busybox-src/busybox
+$(BUILD)/gen/busybox_bin.h: $(BUSYBOX_SRC) | $(BUILD)/gen
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* busybox (%d bytes) */' % len(data)); \
+	print('static const unsigned char busybox_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long busybox_bin_size = %d;' % len(data))" > $@
+	@echo "busybox_bin.h: $$(wc -c < $<) bytes"
+
 # ── mkfs.cosmo (host tool) + disk image ─────────
 tools/mkfs: tools/mkfs.c
 	$(HOST_CC) -Wall -Wextra -O2 -o $@ $<
@@ -442,9 +455,15 @@ $(BUILD)/drivers/pci/%.o: $(SRC)/drivers/pci/%.c | $(BUILD)/drivers/pci
 $(BUILD)/drivers/hyperv/%.o: $(SRC)/drivers/hyperv/%.c | $(BUILD)/drivers/hyperv
 	$(CC) $(DRVFLAGS) -I$(SRC)/drivers/hyperv -Iinclude/kernel -Iinclude -o $@ $<
 
-# main.o depends on init_bin.h
-$(BUILD)/kernel/core/main.o: $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
+# main.o depends on init_bin.h (+ optional busybox_bin.h)
+MAIN_DEPS = $(SRC)/kernel/core/main.c $(BUILD)/gen/init_bin.h
+MAIN_FLAGS =
+ifdef HAVE_BUSYBOX
+MAIN_DEPS += $(BUILD)/gen/busybox_bin.h
+MAIN_FLAGS += -DHAVE_BUSYBOX
+endif
+$(BUILD)/kernel/core/main.o: $(MAIN_DEPS) | $(BUILD)/kernel/core
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen $(MAIN_FLAGS) -o $@ $<
 
 # ── Link ────────────────────────────────────────
 $(BUILD)/cosmo-rt.so: $(ALL_OBJ) | $(BUILD)
@@ -478,6 +497,20 @@ QEMU_FLAGS = -cpu qemu64 -smp 2 -m 4096 \
 
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
+
+# Boot busybox shell (serial console)
+qemu-busybox: $(BUILD)/gen/busybox_bin.h
+	@rm -f $(BUILD)/kernel/core/main.o
+	HAVE_BUSYBOX=1 $(MAKE) all
+	timeout 30 $(QEMU) -cpu qemu64 -smp 2 -m 4096 \
+	  -bios /usr/share/ovmf/OVMF.fd \
+	  -drive file=$(ESP_IMG),format=raw \
+	  -serial file:/tmp/cosmo-serial.log \
+	  -display none -no-reboot \
+	  -device e1000,netdev=net0 \
+	  -netdev user,id=net0 || true
+	@echo "=== Serial output ==="
+	@tail -20 /tmp/cosmo-serial.log
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \

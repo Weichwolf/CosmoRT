@@ -28,6 +28,11 @@
 
 #include "gen/init_bin.h"
 
+/* Busybox shell (embedded, registered in VFS at /bin/sh) */
+#ifdef HAVE_BUSYBOX
+#include "gen/busybox_bin.h"
+#endif
+
 /* Dynamic linker binary (embedded, registered in VFS at /lib/ld-musl-x86_64.so.1) */
 #ifdef HAVE_LD_MUSL
 #include "gen/ld_musl_bin.h"
@@ -208,6 +213,13 @@ void kernel_main(struct boot_info *info) {
     vfs_create("/lib", VFS_DIR);
     vfs_add_file("/lib/ld-musl-x86_64.so.1", ld_musl_bin, ld_musl_bin_size);
     serial_puts("vfs: /lib/ld-musl-x86_64.so.1 registered\n");
+#endif
+
+    /* Busybox shell at /bin/sh */
+#ifdef HAVE_BUSYBOX
+    vfs_create("/bin", VFS_DIR);
+    vfs_add_file("/bin/sh", busybox_bin, busybox_bin_size);
+    serial_puts("vfs: /bin/sh registered\n");
 #endif
 
     /* Futex subsystem (wait queue hash table + slab pool) */
