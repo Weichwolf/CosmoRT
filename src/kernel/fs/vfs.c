@@ -276,7 +276,7 @@ int vfs_open(const char *path, int flags, int mode) {
 
             procfs_fd_t *pf = procfs_fd_alloc();
             if (!pf) return -ENOMEM;
-            pf->handle = -2; /* sentinel: per-pid dynamic */
+            pf->handle = (ptype == 3) ? -3 : -2; /* -3 = fd directory, -2 = per-pid file */
             pf->offset = 0;
             int ni = 0;
             while (ni < 63 && pname[ni]) { pf->name[ni] = pname[ni]; ni++; }

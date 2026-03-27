@@ -12,7 +12,7 @@
 
 /* ── Entry table ─────────────────────────────────── */
 
-#define PROCFS_MAX 32
+#define PROCFS_MAX 48
 
 typedef struct {
     char name[64];
@@ -269,25 +269,50 @@ void procfs_fd_free(procfs_fd_t *pf) {
         fd_used[idx] = 0;
 }
 
-/* ── /proc/self/status ──────────────────────────── */
+/* ── /proc/pid/status ──────────────────────────── */
 
-static int procfs_self_status(char *buf, int size, int offset, void *ctx) {
-    (void)ctx;
-    process_t *p = proc_current();
+/* VMA walk to sum virtual size */
+static uint64_t vma_sum_size(vma_t *node) {
+    if (!node) return 0;
+    return vma_sum_size(node->left)
+         + (node->end - node->start)
+         + vma_sum_size(node->right);
+}
+
+static int procfs_pid_status(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
     if (!p) return 0;
+
+    const char *state_str;
+    switch (p->state) {
+    case PROC_ALIVE:  state_str = "R (running)"; break;
+    case PROC_ZOMBIE: state_str = "Z (zombie)";  break;
+    default:          state_str = "S (sleeping)"; break;
+    }
+
+    /* Compute VmSize from VMA tree */
+    uint64_t vm_bytes = 0;
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+    vm_bytes = vma_sum_size(p->vma_root);
+    spin_unlock_irq(&p->lock, irqf);
+    long vm_kb = (long)(vm_bytes / 1024);
 
     char tmp[512];
     int pos = 0;
     pos = append_str(tmp, pos, 512, "Name:\t");
     pos = append_str(tmp, pos, 512, p->comm[0] ? p->comm : "?");
-    pos = append_str(tmp, pos, 512, "\n");
-    pos = append_str(tmp, pos, 512, "Pid:\t");
+    pos = append_str(tmp, pos, 512, "\nState:\t");
+    pos = append_str(tmp, pos, 512, state_str);
+    pos = append_str(tmp, pos, 512, "\nPid:\t");
     pos = append_int(tmp, pos, 512, (long)p->pid);
     pos = append_str(tmp, pos, 512, "\nPPid:\t");
     pos = append_int(tmp, pos, 512, (long)p->parent_pid);
     pos = append_str(tmp, pos, 512, "\nThreads:\t");
     pos = append_int(tmp, pos, 512, (long)p->thread_count);
-    pos = append_str(tmp, pos, 512, "\nVmSize:\t0 kB\nVmRSS:\t0 kB\n");
+    pos = append_str(tmp, pos, 512, "\nVmSize:\t");
+    pos = append_int(tmp, pos, 512, vm_kb);
+    pos = append_str(tmp, pos, 512, " kB\n");
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
@@ -411,12 +436,7 @@ static int procfs_uptime(char *buf, int size, int offset, void *ctx) {
     pos = append_str(tmp, pos, 256, ".");
     if (frac < 10) pos = append_str(tmp, pos, 256, "0");
     pos = append_int(tmp, pos, 256, frac);
-    pos = append_str(tmp, pos, 256, " ");
-    pos = append_int(tmp, pos, 256, sec);
-    pos = append_str(tmp, pos, 256, ".");
-    if (frac < 10) pos = append_str(tmp, pos, 256, "0");
-    pos = append_int(tmp, pos, 256, frac);
-    pos = append_str(tmp, pos, 256, "\n");
+    pos = append_str(tmp, pos, 256, " 0.00\n");
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
@@ -428,11 +448,21 @@ static int procfs_uptime(char *buf, int size, int offset, void *ctx) {
 
 static int procfs_loadavg(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
-    const char *s = "0.00 0.00 0.00 1/1 1\n";
-    int len = 0; while (s[len]) len++;
+    int nproc = proc_count_alive();
+    process_t *cur = proc_current();
+    long last_pid = cur ? (long)cur->pid : 1;
+
+    char tmp[128];
+    int pos = 0;
+    pos = append_str(tmp, pos, 128, "0.00 0.00 0.00 1/");
+    pos = append_int(tmp, pos, 128, (long)nproc);
+    pos = append_str(tmp, pos, 128, " ");
+    pos = append_int(tmp, pos, 128, last_pid);
+    pos = append_str(tmp, pos, 128, "\n");
+
     int out = 0;
-    for (int i = offset; i < len && out < size; i++)
-        buf[out++] = s[i];
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
     return out;
 }
 
@@ -469,6 +499,115 @@ static int procfs_ksm(char *buf, int size, int offset, void *ctx) {
     for (int i = offset; i < p && out < size; i++)
         buf[out++] = s[i];
     return out;
+}
+
+/* ── /proc/bus/pci/devices ─────────────────────────── */
+
+#include "cosmort.h"
+
+static int procfs_pci_devices(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char tmp[2048];
+    int pos = 0;
+
+    for (int bus = 0; bus < 8 && pos < 1900; bus++) {
+        for (int dev = 0; dev < 32 && pos < 1900; dev++) {
+            uint32_t id = 0;
+            if (cosmo_pci_config_read(bus, dev, 0, 0, &id) < 0) continue;
+            if (id == 0 || id == 0xFFFFFFFF) continue;
+
+            uint32_t irq_reg = 0;
+            cosmo_pci_config_read(bus, dev, 0, 0x3C, &irq_reg);
+            int irq = (int)(irq_reg & 0xFF);
+
+            /* bus_dev_fn (encoded: bus<<8 | dev<<3 | fn) */
+            int bdf = (bus << 8) | (dev << 3);
+            pos = append_hex(tmp, pos, 2048, (uint64_t)bdf);
+            pos = append_str(tmp, pos, 2048, "\t");
+            pos = append_hex(tmp, pos, 2048, (uint64_t)id);
+            pos = append_str(tmp, pos, 2048, "\t");
+            pos = append_int(tmp, pos, 2048, (long)irq);
+
+            /* BAR addresses (registers 0x10..0x24) */
+            for (int bar = 0; bar < 6; bar++) {
+                uint32_t bval = 0;
+                cosmo_pci_config_read(bus, dev, 0, 0x10 + bar * 4, &bval);
+                pos = append_str(tmp, pos, 2048, "\t");
+                pos = append_hex(tmp, pos, 2048, (uint64_t)bval);
+            }
+            pos = append_str(tmp, pos, 2048, "\n");
+        }
+    }
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/filesystems ─────────────────────────────── */
+
+static int procfs_filesystems(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "\tcosmofs\n\tramfs\n\tprocfs\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+/* ── /proc/sys/kernel/pid_max ──────────────────────── */
+
+static int procfs_sys_pid_max(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char tmp[16];
+    int pos = itoa_buf(tmp, 16, (long)PID_TABLE_MAX);
+    tmp[pos++] = '\n';
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/sys/kernel/hostname ─────────────────────── */
+
+static char hostname[64] = "cosmo";
+
+static int procfs_sys_hostname(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char tmp[72];
+    int pos = 0;
+    pos = append_str(tmp, pos, 72, hostname);
+    pos = append_str(tmp, pos, 72, "\n");
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/pid/cwd ─────────────────────────────────── */
+
+static int procfs_pid_cwd(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p || !p->cwd[0]) return 0;
+
+    int len = 0;
+    while (p->cwd[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = p->cwd[i];
+    return out;
+}
+
+/* ── /proc/pid/environ ─────────────────────────────── */
+
+static int procfs_pid_environ(char *buf, int size, int offset, void *ctx) {
+    (void)ctx; (void)buf; (void)size; (void)offset;
+    /* Environment not stored yet — return empty */
+    return 0;
 }
 
 /* ── /proc/self/cmdline (or /proc/pid/cmdline) ───── */
@@ -533,14 +672,22 @@ int procfs_pid_read(const char *name, char *buf, int size, int offset) {
     }
     if (!p || !file) return -1;
 
-    /* Dispatch to handler */
-    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t' && file[4]==0)
-        return procfs_pid_stat(buf, size, offset, p);
+    /* Dispatch to handler — compare file suffix */
+    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t') {
+        if (file[4]==0) return procfs_pid_stat(buf, size, offset, p);
+        if (file[4]=='u' && file[5]=='s' && file[6]==0)
+            return procfs_pid_status(buf, size, offset, p);  /* "status" */
+    }
     if (file[0]=='m' && file[1]=='a' && file[2]=='p' && file[3]=='s' && file[4]==0)
         return procfs_pid_maps(buf, size, offset, p);
     if (file[0]=='c' && file[1]=='m' && file[2]=='d' && file[3]=='l' &&
         file[4]=='i' && file[5]=='n' && file[6]=='e' && file[7]==0)
         return procfs_pid_cmdline(buf, size, offset, p);
+    if (file[0]=='c' && file[1]=='w' && file[2]=='d' && file[3]==0)
+        return procfs_pid_cwd(buf, size, offset, p);
+    if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
+        file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0)
+        return procfs_pid_environ(buf, size, offset, p);
 
     return -1; /* not a per-pid file we handle */
 }
@@ -562,8 +709,15 @@ int procfs_pid_exists(const char *name) {
     if (file[0]=='e' && file[1]=='x' && file[2]=='e' && file[3]==0) return 2; /* symlink */
     if (file[0]=='c' && file[1]=='m' && file[2]=='d' && file[3]=='l' &&
         file[4]=='i' && file[5]=='n' && file[6]=='e' && file[7]==0) return 1;
-    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t' && file[4]==0) return 1;
+    if (file[0]=='s' && file[1]=='t' && file[2]=='a' && file[3]=='t') {
+        if (file[4]==0) return 1;                           /* stat */
+        if (file[4]=='u' && file[5]=='s' && file[6]==0) return 1; /* status */
+    }
     if (file[0]=='m' && file[1]=='a' && file[2]=='p' && file[3]=='s' && file[4]==0) return 1;
+    if (file[0]=='c' && file[1]=='w' && file[2]=='d' && file[3]==0) return 1;
+    if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
+        file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0) return 1;
+    if (file[0]=='f' && file[1]=='d' && file[2]==0) return 3; /* directory */
 
     return 0;
 }
@@ -577,7 +731,7 @@ void procfs_init(void) {
     procfs_register("meminfo", procfs_meminfo, 0);
     procfs_register("cpuinfo", procfs_cpuinfo, 0);
     procfs_register("self/maps", procfs_pid_maps, 0);
-    procfs_register("self/status", procfs_self_status, 0);
+    procfs_register("self/status", procfs_pid_status, 0);
     procfs_register("self/stat", procfs_pid_stat, 0);
     procfs_register("self/statm", procfs_self_statm, 0);
     procfs_register("self/cmdline", procfs_pid_cmdline, 0);
@@ -588,5 +742,11 @@ void procfs_init(void) {
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
     procfs_register("ksm", procfs_ksm, 0);
-    serial_puts("procfs: init (15 entries)\n");
+    procfs_register("bus/pci/devices", procfs_pci_devices, 0);
+    procfs_register("filesystems", procfs_filesystems, 0);
+    procfs_register("sys/kernel/pid_max", procfs_sys_pid_max, 0);
+    procfs_register("sys/kernel/hostname", procfs_sys_hostname, 0);
+    procfs_register("self/cwd", procfs_pid_cwd, 0);
+    procfs_register("self/environ", procfs_pid_environ, 0);
+    serial_puts("procfs: init (21 entries)\n");
 }

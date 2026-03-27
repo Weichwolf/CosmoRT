@@ -501,7 +501,36 @@ long do_getdents64(int fd, void *buf, size_t count) {
     /* /proc directory (FD_PROCFS with handle == -1) */
     if (fde->type == FD_PROCFS) {
         procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
-        if (!pf || pf->handle != -1) return -ENOTDIR;
+        if (!pf) return -EBADF;
+
+        /* /proc/self/fd directory (handle == -3) */
+        if (pf->handle == -3) {
+            struct procfs_getdents_ctx ctx = {
+                .out = (uint8_t *)buf,
+                .count = count,
+                .written = 0,
+                .next_off = (uint64_t)pf->offset
+            };
+            for (int i = pf->offset; i < FD_MAX; i++) {
+                fd_entry_t *e = fd_get(&p->fds, i);
+                if (!e || e->type == FD_NONE) continue;
+                char name[12];
+                int ni = 0;
+                { int v = i; char t[12]; int ti = 0;
+                  do { t[ti++] = '0' + (char)(v % 10); v /= 10; } while (v);
+                  while (ti--) name[ni++] = t[ti]; }
+                name[ni] = 0;
+                ctx.next_off = (uint64_t)(i + 1);
+                size_t n = emit_dirent(ctx.out + ctx.written, ctx.count - ctx.written,
+                                       (uint64_t)(i + 1), ctx.next_off, 10 /* DT_LNK */, name);
+                if (n == 0) break;
+                ctx.written += n;
+            }
+            pf->offset = (int)ctx.next_off;
+            return (long)ctx.written;
+        }
+
+        if (pf->handle != -1) return -ENOTDIR;
         struct procfs_getdents_ctx ctx = {
             .out = (uint8_t *)buf,
             .count = count,
