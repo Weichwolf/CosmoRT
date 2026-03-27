@@ -124,13 +124,52 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
 ---
 
+## Alpine Bootstrap — Weg zum Self-Hosting
+
+Userland = Alpine Linux (musl-nativ). Kein eigenes Userland.
+
+### Phase 1: Busybox Shell (statisch)
+
+- [ ] busybox mit musl-gcc statisch kompilieren
+- [ ] Als Init booten → interaktive Shell
+- [ ] Grundlegende Befehle testen: ls, cat, echo, mkdir, cp
+
+### Phase 2: Kernel-Features fuer Alpine
+
+- [ ] SH-H: Symlinks (busybox/Alpine braucht /bin/sh → busybox etc.)
+- [ ] futex echtes Blocking + Timeouts (pthreads, jedes Multi-Thread-Programm)
+- [ ] /etc/resolv.conf lesbar fuer musl DNS-Resolver
+- [ ] /dev/pts: posix_openpt / openpty (Terminal-Multiplexing)
+
+### Phase 3: Alpine Base
+
+- [ ] ld-musl-x86_64.so.1 einbetten (Dynamic Linker)
+- [ ] Alpine minirootfs extrahieren → CosmoFS oder ramfs
+- [ ] apk-tools lauffaehig (apk add/del/update)
+- [ ] /etc/passwd, /etc/group (getpwnam, getgrgid)
+- [ ] test: apk add bash && bash --version
+
+### Phase 4: Entwicklungsumgebung
+
+- [ ] apk add gcc musl-dev make
+- [ ] test: gcc -o hello hello.c && ./hello
+- [ ] apk add git
+- [ ] test: git clone funktioniert
+
+### Phase 5: Self-Hosting (Ziel)
+
+- [ ] apk add nodejs npm
+- [ ] npm install -g @anthropic-ai/claude-code
+- [ ] test: claude --version
+- [ ] CosmoRT Kernel auf CosmoRT kompilieren
+
+---
+
 ## Offen — TCP Advanced
 
 - [ ] TCP Timestamps (RFC 7323): RTTM + PAWS
 - [ ] ECN (RFC 3168): IP ECN Bits + TCP CWR/ECE
 - [ ] TFO (TCP Fast Open, RFC 7413): Daten im SYN, Cookie-Management
-- [ ] test: npm install -g funktioniert
-- [ ] test: claude update funktioniert
 
 ---
 

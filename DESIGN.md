@@ -458,7 +458,24 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 
 ---
 
-## 13. Abweichungen von Linux
+## 13. Userland: Alpine Linux + musl
+
+| Komponente | Quelle | Bemerkung |
+|------------|--------|-----------|
+| libc | musl 1.2.x | Statisch + dynamisch, ld-musl-x86_64.so.1 |
+| Paketmanager | apk-tools (Alpine) | ~15.000 Pakete, musl-nativ |
+| Coreutils | busybox (Alpine) | Ein Binary, ~300 Applets |
+| Shell | bash oder busybox sh | Alpine-Paket |
+| Compiler | gcc (Alpine) | musl-basiert, cross-compile-faehig |
+| Node.js | Alpine nodejs Paket | Self-Hosting: Claude Code |
+| Init | Eigener Init oder OpenRC | Kein systemd |
+
+Entscheidung: Kein eigenes Userland. Alpine liefert alles oberhalb der Syscall-Schicht.
+CosmoRT implementiert die Linux-Syscall-ABI, Alpine-Binaries laufen unveraendert.
+
+---
+
+## 14. Abweichungen von Linux
 
 Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 

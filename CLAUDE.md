@@ -38,10 +38,10 @@ Sichtbarkeit:
 - Userspace: -Iinclude/public
 
 Kein Consumer braucht mehr als eine Datei:
-- musl libc: Standard-POSIX, statisch oder dynamisch (ld-musl-x86_64.so.1)
+- Alpine Userland: musl libc, ld-musl-x86_64.so.1, apk Pakete
 - Treiber: cosmort.h → spricht Hardware
 - CosmoUI: cosmoui.h → spricht Kernel-Subsysteme
-- Programme: sehen nur was libc ihnen gibt, nie Header direkt
+- Programme: sehen nur was musl libc ihnen gibt, nie Kernel-Header direkt
 
 Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
 
@@ -108,8 +108,11 @@ Partition-Grenze = SPSC Lock-free Channels. Kein Code-Pfad kreuzt die Grenze.
 CosmoUI  ~/Git/CosmoUI    UI, WASM-Runtime, Protokoll-Stacks
 CosmoJS  ~/Git/CosmoJS     JS-Engine
 CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
-musl     System-libc       POSIX libc (statisch + dynamisch, ld-musl-x86_64.so.1)
+Alpine   Userland          musl libc, apk, busybox, gcc, Node.js, Claude Code
 ```
+
+Userland basiert auf Alpine Linux (musl-nativ). Pakete per apk-tools.
+Kein systemd — OpenRC oder eigener Init. Kernel + Alpine = komplettes System.
 
 ## Verzeichnisse
 
