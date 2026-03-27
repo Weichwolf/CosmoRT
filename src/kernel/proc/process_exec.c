@@ -184,21 +184,30 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Determine source: ramfs (small, in-memory) vs CosmoFS (potentially large) */
-    uint64_t cosmofs_ino = vfs_cosmofs_lookup(kpath);
-    int from_cosmofs = (cosmofs_ino != 0);
-
-    /* For ramfs files, load into buffer (small embedded binaries) */
+    /* Load binary into buffer — ramfs or CosmoFS, one path */
     uint8_t *elf_buf = 0;
     size_t elf_len = 0;
     int elf_pages = 0;
 
-    if (!from_cosmofs) {
+    uint64_t cosmofs_ino = vfs_cosmofs_lookup(kpath);
+    if (cosmofs_ino) {
+        /* CosmoFS: read entire file into buffer */
+        extern struct cosmofs_inode *cosmofs_inode_read(uint64_t ino);
+        extern int cosmofs_read(uint64_t ino, void *buf, size_t offset, size_t len);
+        struct cosmofs_inode *ip = cosmofs_inode_read(cosmofs_ino);
+        if (!ip || ip->size == 0) return -ENOEXEC;
+        elf_len = ip->size;
+        elf_pages = (int)((elf_len + 4095) / 4096);
+        elf_buf = (uint8_t *)pages_alloc(elf_pages);
+        if (!elf_buf) return -ENOMEM;
+        int rd = cosmofs_read(cosmofs_ino, elf_buf, 0, elf_len);
+        if (rd < (int)elf_len) { pages_free(elf_buf, elf_pages); return -EIO; }
+    } else {
+        /* ramfs: copy from node */
         struct vfs_node *node = vfs_lookup(kpath);
         if (!node) return -ENOENT;
         if (node->type != VFS_FILE) return -EACCES;
         if (!node->data || node->size == 0) return -ENOEXEC;
-
         elf_len = node->size;
         elf_pages = (int)((elf_len + 4095) / 4096);
         elf_buf = (uint8_t *)pages_alloc(elf_pages);
@@ -206,17 +215,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         kmemcpy(elf_buf, node->data, elf_len);
     }
 
-    /* Read ELF header to determine type (small read for CosmoFS) */
-    Elf64_Ehdr peek_eh_buf;
-    const Elf64_Ehdr *peek_eh;
-    if (from_cosmofs) {
-        int hdr_rc = cosmofs_read(cosmofs_ino, &peek_eh_buf, 0, sizeof(peek_eh_buf));
-        if (hdr_rc < (int)sizeof(peek_eh_buf))
-            return -ENOEXEC;
-        peek_eh = &peek_eh_buf;
-    } else {
-        peek_eh = (const Elf64_Ehdr *)elf_buf;
+    /* ELF header from buffer */
+    if (elf_len < sizeof(Elf64_Ehdr)) {
+        pages_free(elf_buf, elf_pages);
+        return -ENOEXEC;
     }
+    const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)elf_buf;
 
     /* Determine if dynamic and check for PT_INTERP */
     int has_interp = 0;
@@ -227,25 +231,17 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (peek_eh->e_type == ET_DYN || peek_eh->e_type == ET_EXEC) {
         /* Scan phdrs for PT_INTERP */
         for (int i = 0; i < peek_eh->e_phnum && i < 64; i++) {
-            Elf64_Phdr ph;
             size_t phoff = (size_t)(peek_eh->e_phoff + (uint64_t)i * peek_eh->e_phentsize);
-            if (from_cosmofs) {
-                if (cosmofs_read(cosmofs_ino, &ph, phoff, sizeof(ph)) < (int)sizeof(ph))
-                    break;
-            } else {
-                if (phoff + sizeof(ph) > elf_len) break;
-                kmemcpy(&ph, elf_buf + phoff, sizeof(ph));
-            }
+            if (phoff + sizeof(Elf64_Phdr) > elf_len) break;
+            Elf64_Phdr ph;
+            kmemcpy(&ph, elf_buf + phoff, sizeof(ph));
             if (ph.p_type == PT_INTERP) {
                 has_interp = 1;
                 char ipath[256];
                 size_t iplen = ph.p_filesz;
                 if (iplen >= sizeof(ipath)) iplen = sizeof(ipath) - 1;
-                if (from_cosmofs) {
-                    cosmofs_read(cosmofs_ino, ipath, (size_t)ph.p_offset, iplen);
-                } else if (ph.p_offset + iplen <= elf_len) {
+                if (ph.p_offset + iplen <= elf_len)
                     kmemcpy(ipath, elf_buf + ph.p_offset, iplen);
-                }
                 ipath[iplen] = '\0';
                 while (iplen > 0 && ipath[iplen - 1] == '\0') iplen--;
 
@@ -294,10 +290,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         /* Extended path: ET_DYN and/or PT_INTERP */
         elf_info_t info;
         int load_rc;
-        if (from_cosmofs)
-            load_rc = elf_load_ex_cosmofs(cosmofs_ino, p->pml4, 0, &info);
-        else
-            load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
+        load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
 
         if (load_rc < 0) {
             if (elf_buf) pages_free(elf_buf, elf_pages);
@@ -311,8 +304,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
         /* Create VMAs (skip for CosmoFS — segments already mapped) */
         spin_lock_irq(&p->lock, &exec_irqf);
-        if (!from_cosmofs)
-            create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
+        create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
 
         /* Load interpreter if present */
         if (has_interp && interp_buf) {
@@ -357,10 +349,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         /* Fast path: plain ET_EXEC, no interpreter — use elf_load_ex + build_user_stack */
         elf_info_t info;
         int load_rc;
-        if (from_cosmofs)
-            load_rc = elf_load_ex_cosmofs(cosmofs_ino, p->pml4, 0, &info);
-        else
-            load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
+        load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
 
         if (load_rc < 0) {
             if (elf_buf) pages_free(elf_buf, elf_pages);
@@ -386,8 +375,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
 
         /* Create VMAs for ELF segments */
-        if (!from_cosmofs)
-            create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
+        create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
         spin_unlock_irq(&p->lock, exec_irqf);
 
         stack_ptr = build_user_stack(p->pml4, stack_top,

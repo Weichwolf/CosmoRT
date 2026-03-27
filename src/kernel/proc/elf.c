@@ -1,10 +1,10 @@
 /* CosmoRT ELF Loader — static + dynamic ELF64 binaries
  *
- * elf_load_ex:          maps segments (ET_EXEC + ET_DYN), returns elf_info_t
- * elf_load_ex_cosmofs:  same but reads from CosmoFS inode
- * elf_load:             thin wrapper: elf_load_ex + build_user_stack
- * elf_load_cosmofs:     thin wrapper: elf_load_ex_cosmofs + build_user_stack
- */
+ * elf_load_ex: maps segments (ET_EXEC + ET_DYN), returns elf_info_t
+ * elf_load:    thin wrapper: elf_load_ex + build_user_stack
+ *
+ * ELF-Loader bekommt Bytes, nicht Inodes. Dateisystem-Zugriff ist
+ * Aufgabe des Callers (VFS read → Buffer → elf_load_ex). */
 
 #include "proc/proc_internal.h"
 
@@ -86,127 +86,6 @@ static uint64_t elf_map_segments(const void *data, size_t len,
 
 /* Map PT_LOAD segments from a CosmoFS inode into user address space.
  * Reads data page-by-page from disk — no large contiguous allocation. */
-static uint64_t elf_map_segments_inode(uint64_t ino, uint64_t file_size,
-                                        const Elf64_Phdr *phdrs, int phnum,
-                                        uint64_t *user_pml4, uint64_t base) {
-    uint64_t brk_end = 0;
-
-    for (int i = 0; i < phnum; i++) {
-        const Elf64_Phdr *ph = &phdrs[i];
-
-        if (ph->p_type != PT_LOAD) continue;
-        if (ph->p_memsz == 0) continue;
-
-        uint64_t vaddr = ph->p_vaddr + base;
-
-        if (ph->p_filesz > file_size || vaddr + ph->p_filesz < vaddr)
-            return 0;
-
-        int seg_prot = 0;
-        if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
-        if (ph->p_flags & PF_W) seg_prot |= PROT_WRITE;
-        if (ph->p_flags & PF_X) seg_prot |= PROT_EXEC;
-
-        uint64_t seg_start = vaddr & ~0xFFFULL;
-        uint64_t seg_end = (vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
-
-        for (uint64_t va = seg_start; va < seg_end; va += 4096) {
-            uint64_t *page = alloc_page();
-            if (!page) { serial_puts("elf: OOM\n"); return 0; }
-
-            if (va < vaddr + ph->p_filesz) {
-                uint64_t page_start = va;
-                uint64_t copy_start = page_start < vaddr ? vaddr : page_start;
-                uint64_t copy_end = page_start + 4096;
-                uint64_t file_end = vaddr + ph->p_filesz;
-                if (copy_end > file_end) copy_end = file_end;
-
-                if (copy_start < copy_end) {
-                    uint64_t file_off = ph->p_offset + (copy_start - vaddr);
-                    uint64_t page_off = copy_start - page_start;
-                    uint64_t nbytes = copy_end - copy_start;
-
-                    if (file_off + nbytes <= file_size)
-                        cosmofs_read(ino, (uint8_t *)page + page_off,
-                                     (size_t)file_off, (size_t)nbytes);
-                }
-            }
-            /* BSS (memsz > filesz) already zeroed by alloc_page */
-
-            if (map_user_page(user_pml4, va, virt_to_phys(page), seg_prot) < 0) {
-                serial_puts("elf: map failed\n");
-                return 0;
-            }
-        }
-
-        uint64_t seg_data_end = vaddr + ph->p_memsz;
-        if (seg_data_end > brk_end) brk_end = seg_data_end;
-    }
-
-    return brk_end ? brk_end : 1;
-}
-
-/* Extended ELF load from CosmoFS inode — handles ET_EXEC + ET_DYN.
- * Returns metadata needed for dynamic linking (auxv, interpreter). */
-int elf_load_ex_cosmofs(uint64_t ino, uint64_t *pml4,
-                        uint64_t base_hint, elf_info_t *info) {
-    struct cosmofs_inode *ip = cosmofs_inode_read(ino);
-    if (!ip || ip->type != COSMOFS_TYPE_FILE || ip->size < sizeof(Elf64_Ehdr))
-        return -1;
-
-    uint64_t file_size = ip->size;
-
-    Elf64_Ehdr eh;
-    if (cosmofs_read(ino, &eh, 0, sizeof(eh)) < (int)sizeof(eh)) return -1;
-
-    if (eh.e_ident[0] != ELFMAG0 || eh.e_ident[1] != ELFMAG1 ||
-        eh.e_ident[2] != ELFMAG2 || eh.e_ident[3] != ELFMAG3)
-        return -1;
-    if (eh.e_ident[4] != 2) return -1;
-    if (eh.e_type != ET_EXEC && eh.e_type != ET_DYN) return -1;
-    if (eh.e_machine != EM_X86_64) return -1;
-    if (eh.e_phentsize < sizeof(Elf64_Phdr)) return -1;
-    if (eh.e_phnum > 64) return -1;
-
-    Elf64_Phdr phdrs[64];
-    size_t phdr_size = (size_t)eh.e_phnum * eh.e_phentsize;
-    if (cosmofs_read(ino, phdrs, (size_t)eh.e_phoff, phdr_size) < (int)phdr_size)
-        return -1;
-
-    uint64_t base = 0;
-    if (eh.e_type == ET_DYN) {
-        base = base_hint ? base_hint : (0x400000 + (elf_aslr_rand() & 0x1FFFF000ULL));
-    }
-
-    /* Scan for PT_INTERP */
-    info->interp[0] = '\0';
-    for (int i = 0; i < eh.e_phnum; i++) {
-        if (phdrs[i].p_type == PT_INTERP) {
-            size_t plen = phdrs[i].p_filesz;
-            if (plen >= sizeof(info->interp)) plen = sizeof(info->interp) - 1;
-            cosmofs_read(ino, info->interp, (size_t)phdrs[i].p_offset, plen);
-            info->interp[plen] = '\0';
-            break;
-        }
-    }
-
-    uint64_t brk_end = elf_map_segments_inode(ino, file_size, phdrs, eh.e_phnum,
-                                               pml4, base);
-    if (brk_end == 0) return -1;
-
-    info->prog_phdr = base + eh.e_phoff;
-    info->prog_phent = eh.e_phentsize;
-    info->prog_phnum = eh.e_phnum;
-    info->prog_entry = base + eh.e_entry;
-    info->entry = info->prog_entry;
-    info->interp_base = 0;
-    info->brk = (brk_end + 0xFFF) & ~0xFFFULL;
-    info->stack_ptr = 0;
-    info->load_base = base;
-
-    return 0;
-}
-
 int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
                 uint64_t base_hint, elf_info_t *info) {
     if (len < sizeof(Elf64_Ehdr)) return -1;
@@ -303,23 +182,3 @@ int elf_load(const void *data, size_t len, uint64_t *user_pml4,
     return 0;
 }
 
-/* ── elf_load_cosmofs: thin wrapper — elf_load_ex_cosmofs + build_user_stack ── */
-
-int elf_load_cosmofs(uint64_t ino, uint64_t *user_pml4,
-                     uint64_t stack_top,
-                     char kargv[][EXECVE_MAX_STRLEN], int argc,
-                     char kenvp[][EXECVE_MAX_STRLEN], int envc,
-                     uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out) {
-    elf_info_t info;
-    if (elf_load_ex_cosmofs(ino, user_pml4, 0, &info) < 0)
-        return -1;
-
-    uint64_t sp = build_user_stack(user_pml4, stack_top,
-                                    kargv, argc, kenvp, envc, &info);
-    if (!sp) return -1;
-
-    *entry = info.entry;
-    *stack_ptr = sp;
-    *brk_out = info.brk;
-    return 0;
-}
