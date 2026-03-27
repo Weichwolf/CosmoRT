@@ -476,6 +476,11 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                 return -EEXIST;
             }
         }
+        /* Unmap old PTEs so demand paging sees the new VMA's file_offset */
+        unmap_range(p->pml4, vaddr, vaddr + length);
+        arch_flush_tlb();
+        tlb_shootdown(virt_to_phys(p->pml4));
+
         /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
         for (;;) {
             vma_t *ov = vma_find_overlap(p->vma_root, vaddr, vaddr + length);
@@ -496,10 +501,21 @@ long do_mmap(unsigned long addr, size_t length, int prot,
             } else if (ov->start < vaddr) {
                 ov->end = vaddr;
             } else if (ov->end > vaddr + length) {
-                /* Trim from left: adjust file_offset if file-backed */
-                if (ov->file_ino)
-                    ov->file_offset += (vaddr + length) - ov->start;
-                ov->start = vaddr + length;
+                /* Trim from left: remove + re-insert to keep AVL key order */
+                uint64_t new_start = vaddr + length;
+                uint64_t ov_end = ov->end;
+                int ov_prot = ov->prot;
+                int ov_flags = ov->flags;
+                uint64_t ov_file_ino = ov->file_ino;
+                uint64_t ov_foff = ov->file_ino ? ov->file_offset + (new_start - ov->start) : 0;
+                int ov_backend = ov->file_backend;
+                vma_remove(&p->vma_root, ov);
+                vma_t *nv = vma_insert(&p->vma_root, new_start, ov_end, ov_prot, ov_flags);
+                if (nv && ov_file_ino) {
+                    nv->file_ino = ov_file_ino;
+                    nv->file_offset = ov_foff;
+                    nv->file_backend = ov_backend;
+                }
             } else {
                 vma_remove(&p->vma_root, ov);
             }
@@ -655,10 +671,21 @@ long do_munmap(unsigned long addr, size_t length) {
         } else if (v->start < start) {
             v->end = start;
         } else {
-            /* Trim from left: adjust file_offset if file-backed */
-            if (v->file_ino)
-                v->file_offset += end - v->start;
-            v->start = end;
+            /* Trim from left: remove + re-insert to keep AVL key order */
+            uint64_t new_start = end;
+            uint64_t v_end = v->end;
+            int v_prot = v->prot;
+            int v_flags = v->flags;
+            uint64_t v_file_ino = v->file_ino;
+            uint64_t v_foff = v->file_ino ? v->file_offset + (new_start - v->start) : 0;
+            int v_backend = v->file_backend;
+            vma_remove(&p->vma_root, v);
+            vma_t *nv = vma_insert(&p->vma_root, new_start, v_end, v_prot, v_flags);
+            if (nv && v_file_ino) {
+                nv->file_ino = v_file_ino;
+                nv->file_offset = v_foff;
+                nv->file_backend = v_backend;
+            }
         }
     }
 

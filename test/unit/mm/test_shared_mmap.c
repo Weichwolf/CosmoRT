@@ -305,12 +305,111 @@ static void test_munmap_implicit_writeback(void) {
     sc1(SYS_UNLINK, (long)"/tmp/munmap_wb");
 }
 
+/* test_demand_paging_offset: mmap with non-zero file offset via MAP_FIXED.
+ * Reproduces shared library loading pattern: reserve PROT_NONE, then
+ * MAP_FIXED segments with different file offsets. */
+static void test_demand_paging_offset(void) {
+    puts("\n[demand_paging offset]\n");
+
+    /* Create 4-page file: each page has a distinct pattern */
+    long fd = sc3(SYS_OPEN, (long)"/tmp/dptest_off", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check("create file", fd >= 0);
+
+    uint64_t buf[PAGE / 8];
+    for (int pg = 0; pg < 4; pg++) {
+        for (int i = 0; i < PAGE / 8; i++)
+            buf[i] = 0xAA00000000000000ULL * (uint64_t)(pg + 1) + (uint64_t)i;
+        sc3(SYS_WRITE, fd, (long)buf, PAGE);
+    }
+    sc1(SYS_CLOSE, fd);
+
+    fd = sc3(SYS_OPEN, (long)"/tmp/dptest_off", O_RDONLY, 0);
+    check("reopen", fd >= 0);
+
+    /* Reserve 4 pages with PROT_NONE (mimics dynamic linker reservation) */
+    long base = sc6(SYS_MMAP, 0, 4 * PAGE, PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check("reserve", base > 0x1000);
+
+    /* MAP_FIXED first 2 pages from file offset 0 (like .text segment) */
+    long r1 = sc6(SYS_MMAP, base, 2 * PAGE, PROT_READ,
+                  MAP_PRIVATE | MAP_FIXED, fd, 0);
+    check("map text", r1 == base);
+
+    /* MAP_FIXED next 2 pages from file offset 2*PAGE (like .data segment) */
+    long r2 = sc6(SYS_MMAP, base + 2 * PAGE, 2 * PAGE, PROT_READ,
+                  MAP_PRIVATE | MAP_FIXED, fd, 2 * PAGE);
+    check("map data", r2 == base + 2 * PAGE);
+
+    /* Verify page 0: pattern 0xAA00..00 + i */
+    volatile uint64_t *p0 = (volatile uint64_t *)base;
+    check_val("page0[0]", (long)p0[0], (long)(0xAA00000000000000ULL + 0));
+    check_val("page0[1]", (long)p0[1], (long)(0xAA00000000000000ULL + 1));
+
+    /* Verify page 2 (mapped from file offset 2*PAGE): pattern 0xAA*3 + i */
+    volatile uint64_t *p2 = (volatile uint64_t *)(base + 2 * PAGE);
+    check_val("page2[0]", (long)p2[0], (long)(0xAA00000000000000ULL * 3 + 0));
+    check_val("page2[1]", (long)p2[1], (long)(0xAA00000000000000ULL * 3 + 1));
+
+    /* Verify page 3 (mapped from file offset 3*PAGE): pattern 0xAA*4 + i */
+    volatile uint64_t *p3 = (volatile uint64_t *)(base + 3 * PAGE);
+    check_val("page3[0]", (long)p3[0], (long)(0xAA00000000000000ULL * 4 + 0));
+    check_val("page3[1]", (long)p3[1], (long)(0xAA00000000000000ULL * 4 + 1));
+
+    sc2(SYS_MUNMAP, base, 4 * PAGE);
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/dptest_off");
+}
+
+/* test_demand_paging_fixed_replace: mmap file, touch pages, then MAP_FIXED
+ * remap with different offset. Old PTEs must be flushed. */
+static void test_demand_paging_fixed_replace(void) {
+    puts("\n[demand_paging fixed_replace]\n");
+
+    /* Create 2-page file with distinct patterns per page */
+    long fd = sc3(SYS_OPEN, (long)"/tmp/dptest_repl", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check("create file", fd >= 0);
+
+    uint64_t buf[PAGE / 8];
+    for (int i = 0; i < PAGE / 8; i++) buf[i] = 0xDEAD000000000000ULL + (uint64_t)i;
+    sc3(SYS_WRITE, fd, (long)buf, PAGE);
+    for (int i = 0; i < PAGE / 8; i++) buf[i] = 0xBEEF000000000000ULL + (uint64_t)i;
+    sc3(SYS_WRITE, fd, (long)buf, PAGE);
+    sc1(SYS_CLOSE, fd);
+
+    fd = sc3(SYS_OPEN, (long)"/tmp/dptest_repl", O_RDONLY, 0);
+    check("reopen", fd >= 0);
+
+    /* Map first page (file offset 0) */
+    long addr = sc6(SYS_MMAP, 0, PAGE, PROT_READ, MAP_PRIVATE, fd, 0);
+    check("mmap page0", addr > 0x1000);
+
+    /* Touch it to fault in page 0 data */
+    volatile uint64_t *p = (volatile uint64_t *)addr;
+    check_val("before: page0", (long)*p, (long)0xDEAD000000000000ULL);
+
+    /* MAP_FIXED: remap same address from file offset PAGE (page 1) */
+    long r = sc6(SYS_MMAP, addr, PAGE, PROT_READ,
+                 MAP_PRIVATE | MAP_FIXED, fd, PAGE);
+    check("remap fixed", r == addr);
+
+    /* Must see page 1 data, NOT stale page 0 data */
+    check_val("after: page1[0]", (long)*p, (long)0xBEEF000000000000ULL);
+    check_val("after: page1[1]", (long)p[1], (long)(0xBEEF000000000000ULL + 1));
+
+    sc2(SYS_MUNMAP, addr, PAGE);
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/dptest_repl");
+}
+
 TEST("shared_mmap_basic", test_shared_mmap_basic);
 TEST("shared_mmap_fork", test_shared_mmap_fork);
 TEST("shared_mmap_two_maps", test_shared_mmap_two_maps);
 TEST("demand_paging_file", test_demand_paging_file);
 TEST("demand_paging_sparse", test_demand_paging_sparse);
 TEST("demand_paging_shared", test_demand_paging_shared);
+TEST("demand_paging_offset", test_demand_paging_offset);
+TEST("demand_paging_fixed_replace", test_demand_paging_fixed_replace);
 TEST("msync_write_back", test_msync_write_back);
 TEST("dirty_tracking", test_dirty_tracking);
 TEST("munmap_implicit_writeback", test_munmap_implicit_writeback);

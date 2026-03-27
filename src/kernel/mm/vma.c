@@ -162,11 +162,14 @@ static vma_t *remove_node(vma_t *root, vma_t *target, vma_t **removed) {
          * Detach successor from tree BEFORE marking it as removed,
          * so rebalancing during detach never touches the freed node. */
         vma_t *succ = min_node(root->right);
-        /* Copy data from successor into root */
+        /* Copy ALL data from successor into root */
         root->start = succ->start;
         root->end = succ->end;
         root->prot = succ->prot;
         root->flags = succ->flags;
+        root->file_ino = succ->file_ino;
+        root->file_offset = succ->file_offset;
+        root->file_backend = succ->file_backend;
         /* Detach successor from subtree (rebalancing happens here) */
         root->right = remove_node(root->right, succ, &(vma_t *){0});
         /* Now mark successor as the node to free */
