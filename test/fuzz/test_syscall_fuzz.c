@@ -134,6 +134,13 @@ static uint64_t flags_gen(void) {
     return xorshift64();                                /* full random */
 }
 
+/* ── Shared crash log (MAP_SHARED, parent reads after child crash) ── */
+typedef struct {
+    volatile uint64_t nr, a0, a1, a2, a3, a4, a5;
+    volatile int call_idx;
+} fuzz_log_t;
+static fuzz_log_t *fuzz_log;
+
 /* ── One fuzz round (runs in child) ─────────────── */
 static void fuzz_round(uint64_t seed) {
     rng_state = seed;
@@ -182,6 +189,13 @@ static void fuzz_round(uint64_t seed) {
             nr == SYS_FALLOCATE || nr == SYS_STATX)
             a0 = (xorshift64() & 1) ? (uint64_t)(long)AT_FDCWD : fd_gen();
 
+        /* Log to shared memory so parent can report on crash */
+        if (fuzz_log) {
+            fuzz_log->nr = nr; fuzz_log->a0 = a0; fuzz_log->a1 = a1;
+            fuzz_log->a2 = a2; fuzz_log->a3 = a3; fuzz_log->a4 = a4;
+            fuzz_log->a5 = a5; fuzz_log->call_idx = i;
+            __sync_synchronize();
+        }
         sc6(nr, (long)a0, (long)a1, (long)a2, (long)a3, (long)a4, (long)a5);
     }
 
@@ -227,6 +241,10 @@ static void test_syscall_fuzz(void) {
 
     volatile uint64_t sentinel_val = 0xFEEDFACECAFEBABEULL;
 
+    /* Shared crash log */
+    long log_page = sc6(SYS_MMAP, 0, 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    fuzz_log = (log_page > 0) ? (fuzz_log_t *)log_page : 0;
+
     int fds_before = 0;
     for (int fd = 0; fd < 64; fd++) {
         if (sc2(SYS_FSTAT, fd, 0) != -9) fds_before++;
@@ -268,11 +286,26 @@ static void test_syscall_fuzz(void) {
 
         if (w < 0) { errors++; continue; }
 
-        if (WIFSIGNALED(status) && WTERMSIG(status) == 9) {
+        if (WIFSIGNALED(status)) {
             crashed++;
             if (crashed <= 5) {
-                puts("  TIMEOUT round="); put_int(round);
-                puts(" seed=0x"); put_hex(round_seed); puts("\n");
+                int sig = WTERMSIG(status);
+                puts(sig == 9 ? "  TIMEOUT" : "  CRASH");
+                puts(" round="); put_int(round);
+                puts(" signal="); put_int(sig);
+                puts(" seed=0x"); put_hex(round_seed);
+                if (fuzz_log && fuzz_log->call_idx >= 0) {
+                    puts(" call="); put_int(fuzz_log->call_idx);
+                    puts(" sc("); put_hex(fuzz_log->nr);
+                    puts(","); put_hex(fuzz_log->a0);
+                    puts(","); put_hex(fuzz_log->a1);
+                    puts(","); put_hex(fuzz_log->a2);
+                    puts(","); put_hex(fuzz_log->a3);
+                    puts(","); put_hex(fuzz_log->a4);
+                    puts(","); put_hex(fuzz_log->a5);
+                    puts(")");
+                }
+                puts("\n");
             }
             continue;
         }
