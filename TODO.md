@@ -250,6 +250,52 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 
 ---
 
+## Offen — Fehlende Implementierungen (aus Source-Kommentaren)
+
+### Syscalls/Prozesse
+
+- [ ] ARCH_SET_GS / ARCH_GET_GS: GS-Base Management (sys_proc.c:18)
+- [ ] vfork: echte Semantik (Parent suspended bis exec), aktuell Alias auf fork
+- [ ] prlimit64: set-Operationen ignoriert (sys_proc.c:489)
+- [ ] sendfile: nicht implementiert, return -ENOSYS (stubs.c:19)
+- [ ] MREMAP_FIXED: return -EINVAL (sys_mem.c:872)
+
+### Dateisystem
+
+- [ ] Hard Links in CosmoFS (vfs_dirops.c:164)
+- [ ] renameat2 RENAME_EXCHANGE (sys_fs.c:53)
+- [ ] futimens auf FD (sys_fs.c:147, aktuell no-op)
+- [ ] CosmoFS Triple-Indirect Blocks: grosse Dateien (cosmofs.c:398)
+- [ ] CosmoFS xattr/Extended Attributes (cosmofs.c:683)
+- [ ] B+ Tree Rebalancing nach Delete (btree.c:589)
+- [ ] /proc/pid/maps: shared/private korrekt anzeigen (procfs.c:231)
+
+### IPC/Synchronisation
+
+- [ ] futex Timeouts: timeout-Parameter ignoriert (futex.c:278)
+- [ ] futex echtes Blocking statt Spin-Wait (futex.c:156)
+
+### Netzwerk
+
+- [ ] AF_UNIX shutdown: aktuell no-op (socket.c:820)
+
+### Events
+
+- [ ] inotify: nur Stub, keine echten FS-Events (inotify.c)
+
+### Hardware/Treiber
+
+- [ ] MMIO Pages: PTE_PCD setzen (cosmort.c:67)
+- [ ] Virtio Feature-Negotiation: nur 32-Bit (virtio.c:264)
+- [ ] Hyper-V Framebuffer: VMBus Protokoll, VRAM Mapping (hyperv_fb.c:103)
+- [ ] Hyper-V Mouse: HID Descriptor Parsing, Event Loop (hv_mouse.c:92)
+
+### RT/Audio
+
+- [ ] Audio/Input/VSync Poll Handler: nur Stubs (rt_poll.c:31)
+
+---
+
 ## Offen (sonstige)
 
 - [ ] c-ares UDP DNS (ETIMEOUT trotz korrekter Pakete)
