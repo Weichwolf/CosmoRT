@@ -97,22 +97,20 @@ void _start_c(void) {
             slots[s].exit_code = exit_code;
 
             /* Collect results from shared slot */
-            if (slots[s].done && slots[s].fail_cnt == 0 && exit_code == 0) {
+            if (!slots[s].done) {
+                /* Child died before writing results */
+                puts("  --- "); puts(t->name); puts(": CRASHED (status=");
+                put_int(exit_code); puts(")\n");
+                failures++;
+            } else if (slots[s].fail_cnt == 0 && exit_code == 0) {
                 passes += slots[s].pass_cnt;
                 if (t->crash) {
-                    /* Crash test: count 1 pass for the suite */
                     puts("  --- "); puts(t->name); puts(": child OK ---\n");
                 }
-            } else if (exit_code > 128) {
-                puts("  --- "); puts(t->name); puts(": CRASHED (status=");
-                put_int(exit_code); puts(") ---\n");
-                failures++;
             } else {
-                /* Child had failures */
                 passes += slots[s].pass_cnt;
                 failures += slots[s].fail_cnt;
                 if (slots[s].fail_cnt == 0 && exit_code != 0) {
-                    /* exit_code != 0 but no recorded fails — unexpected exit */
                     puts("  FAIL  "); puts(t->name); puts(" (exit=");
                     put_int(exit_code); puts(")\n");
                     failures++;
