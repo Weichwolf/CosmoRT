@@ -426,16 +426,18 @@ Aktuell liegt alles unter `src/kernel/vt/`. Linux hat `drivers/tty/` — aber
 TTY braucht Kernel-Interna (Scheduler, Signals, Prozesse), passt nicht unter
 die Driver-Isolation (`src/drivers/` = nur `include/public/`).
 
-Ziel: `src/kernel/tty/` mit sauberer Trennung:
+Ziel: `src/kernel/tty/` mit Linux-konformer Benennung:
 
 ```
 src/kernel/tty/
-  tty.c        termios Storage, ioctl Dispatch (TCGETS/TCSETS/TIOC*)
-  pty.c        PTY master/slave (open, read, write, close)
-  ldisc.c      Line Discipline (canonical/raw, c_cc[], VMIN/VTIME)
-  vt.c         VT Rendering, ANSI Parser, Cursor, Scrollback
-  fb.c         Framebuffer (Glyph Rendering, Dirty Tracking)
-  input.c      Keyboard/Input Routing (evdev → VT)
+  tty_io.c       Core TTY I/O Dispatch (open, read, write, close)
+  tty_ioctl.c    termios, TIOC* ioctls (TCGETS/TCSETS/TIOCSPGRP/...)
+  n_tty.c        Line Discipline (canonical/raw, c_cc[], VMIN/VTIME)
+  pty.c          PTY master/slave
+  vt/
+    vt.c         VT State, ANSI Parser, Cursor, Scrollback
+    keyboard.c   Keyboard Input, Keymap
+    fb.c         Framebuffer Rendering (Glyph, Dirty Tracking)
 ```
 
 Aktuell: `pty.c` mischt Line Discipline + PTY I/O + termios.
