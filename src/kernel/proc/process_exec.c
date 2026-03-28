@@ -20,55 +20,63 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
 /* Build user stack with argv, envp, auxv. Allocates stack pages.
  * Returns RSP value on success, 0 on error. */
 uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
-                                 char kargv[][EXECVE_MAX_STRLEN], int argc,
-                                 char kenvp[][EXECVE_MAX_STRLEN], int envc,
+                                 const char *const *argv, int argc,
+                                 const char *const *envp, int envc,
                                  const elf_info_t *elf_info) {
-    /* Map 4 stack pages (16KB) */
-    for (int i = 0; i < 4; i++) {
-        uint64_t va = stack_top - (uint64_t)(i + 1) * 4096;
+    /* Map stack pages — enough for strings + metadata.
+     * 8 pages (32KB) covers typical gcc/ld invocations. */
+    #define STK_PAGES 8
+    uint8_t *stk_kern[STK_PAGES]; /* kernel-mapped page pointers */
+    uint64_t stk_base_va = stack_top - (uint64_t)STK_PAGES * 4096;
+    for (int i = 0; i < STK_PAGES; i++) {
         uint64_t *pg = alloc_page();
         if (!pg) return 0;
+        uint64_t va = stk_base_va + (uint64_t)i * 4096;
         if (map_user_page(user_pml4, va, virt_to_phys(pg), PROT_READ | PROT_WRITE) < 0)
             return 0;
+        stk_kern[i] = (uint8_t *)pg;
     }
 
-    /* Allocate the stack-top page we can write to (overwrites previous mapping) */
-    uint64_t stk_page_va = stack_top - 4096;
-    uint64_t *frame_page = alloc_page();
-    if (!frame_page) return 0;
-    map_user_page(user_pml4, stk_page_va, virt_to_phys(frame_page), PROT_READ | PROT_WRITE);
-    uint8_t *page = (uint8_t *)frame_page;
+    /* Helper: write byte at offset within multi-page stack area.
+     * off is relative to stk_base_va. */
+    #define STK_SIZE ((uint64_t)STK_PAGES * 4096)
+    #define STK_BYTE(off) (stk_kern[(off) >> 12][(off) & 0xFFF])
 
-    /* Write strings at the top of the page */
-    uint64_t str_off = 4096;
+    uint64_t str_off = STK_SIZE; /* write top-down */
     uint64_t argv_addrs[EXECVE_MAX_ARGS];
     uint64_t envp_addrs[EXECVE_MAX_ENVS];
 
     /* 16 random bytes for AT_RANDOM */
     str_off -= 16;
     str_off &= ~7ULL;
-    uint64_t at_random_addr = stk_page_va + str_off;
+    uint64_t at_random_addr = stk_base_va + str_off;
     extern int random_get(void *buf, size_t len);
-    if (random_get(page + str_off, 16) != 0) {
-        /* Fallback: zero-fill (better than nothing) */
-        kmemset(page + str_off, 0x42, 16);
+    /* Write AT_RANDOM bytes page-aware */
+    {
+        uint8_t rnd[16];
+        if (random_get(rnd, 16) != 0)
+            kmemset(rnd, 0x42, 16);
+        for (int i = 0; i < 16; i++)
+            STK_BYTE(str_off + (uint64_t)i) = rnd[i];
     }
 
-    /* Environment strings — with bounds checking to prevent underflow */
+    /* Environment strings */
     for (int i = envc - 1; i >= 0; i--) {
-        int sl = 0; while (kenvp[i][sl]) sl++;
-        if (str_off < (uint64_t)(sl + 1) + 256) return 0; /* not enough space */
+        int sl = 0; while (envp[i][sl]) sl++;
+        if (str_off < (uint64_t)(sl + 1) + 256) return 0;
         str_off -= (uint64_t)(sl + 1);
-        kmemcpy(page + str_off, kenvp[i], (size_t)(sl + 1));
-        envp_addrs[i] = stk_page_va + str_off;
+        for (int j = 0; j <= sl; j++)
+            STK_BYTE(str_off + (uint64_t)j) = (uint8_t)envp[i][j];
+        envp_addrs[i] = stk_base_va + str_off;
     }
-    /* Argument strings — with bounds checking to prevent underflow */
+    /* Argument strings */
     for (int i = argc - 1; i >= 0; i--) {
-        int sl = 0; while (kargv[i][sl]) sl++;
-        if (str_off < (uint64_t)(sl + 1) + 256) return 0; /* not enough space */
+        int sl = 0; while (argv[i][sl]) sl++;
+        if (str_off < (uint64_t)(sl + 1) + 256) return 0;
         str_off -= (uint64_t)(sl + 1);
-        kmemcpy(page + str_off, kargv[i], (size_t)(sl + 1));
-        argv_addrs[i] = stk_page_va + str_off;
+        for (int j = 0; j <= sl; j++)
+            STK_BYTE(str_off + (uint64_t)j) = (uint8_t)argv[i][j];
+        argv_addrs[i] = stk_base_va + str_off;
     }
 
     str_off &= ~7ULL;
@@ -79,31 +87,38 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     str_off -= (uint64_t)nqwords * 8;
     str_off &= ~0xFULL; /* 16-byte align RSP at process entry */
 
-    uint64_t *stk = (uint64_t *)(page + str_off);
-    uint64_t *sp_base = stk;
+    /* Write metadata (argc, argv, envp, auxv) as qwords */
+    uint64_t wp = str_off;
+    #define STK_QWORD(off, val) do { \
+        uint64_t _v = (val); \
+        for (int _b = 0; _b < 8; _b++) \
+            STK_BYTE((off) + (uint64_t)_b) = (uint8_t)(_v >> (_b * 8)); \
+    } while(0)
 
     /* argc */
-    *stk++ = (uint64_t)argc;
+    STK_QWORD(wp, (uint64_t)argc); wp += 8;
     /* argv pointers */
-    for (int i = 0; i < argc; i++)
-        *stk++ = argv_addrs[i];
-    *stk++ = 0; /* argv terminator */
+    for (int i = 0; i < argc; i++) { STK_QWORD(wp, argv_addrs[i]); wp += 8; }
+    STK_QWORD(wp, 0); wp += 8; /* argv terminator */
     /* envp pointers */
-    for (int i = 0; i < envc; i++)
-        *stk++ = envp_addrs[i];
-    *stk++ = 0; /* envp terminator */
+    for (int i = 0; i < envc; i++) { STK_QWORD(wp, envp_addrs[i]); wp += 8; }
+    STK_QWORD(wp, 0); wp += 8; /* envp terminator */
     /* auxv */
-    *stk++ = AT_PHDR;   *stk++ = elf_info->prog_phdr;
-    *stk++ = AT_PHENT;  *stk++ = (uint64_t)elf_info->prog_phent;
-    *stk++ = AT_PHNUM;  *stk++ = (uint64_t)elf_info->prog_phnum;
-    *stk++ = AT_BASE;   *stk++ = elf_info->interp_base;
-    *stk++ = AT_ENTRY;  *stk++ = elf_info->prog_entry;
-    *stk++ = AT_PAGESZ; *stk++ = 4096;
-    *stk++ = AT_RANDOM; *stk++ = at_random_addr;
-    *stk++ = AT_NULL;   *stk++ = 0;
+    STK_QWORD(wp, AT_PHDR);   wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
+    STK_QWORD(wp, AT_PHENT);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
+    STK_QWORD(wp, AT_PHNUM);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
+    STK_QWORD(wp, AT_BASE);   wp += 8; STK_QWORD(wp, elf_info->interp_base);         wp += 8;
+    STK_QWORD(wp, AT_ENTRY);  wp += 8; STK_QWORD(wp, elf_info->prog_entry);          wp += 8;
+    STK_QWORD(wp, AT_PAGESZ); wp += 8; STK_QWORD(wp, 4096);                          wp += 8;
+    STK_QWORD(wp, AT_RANDOM); wp += 8; STK_QWORD(wp, at_random_addr);                wp += 8;
+    STK_QWORD(wp, AT_NULL);   wp += 8; STK_QWORD(wp, 0);                             wp += 8;
 
-    uint64_t sp = stk_page_va + (uint64_t)((uint8_t *)sp_base - page);
-    return sp;
+    #undef STK_BYTE
+    #undef STK_QWORD
+    #undef STK_SIZE
+    #undef STK_PAGES
+
+    return stk_base_va + str_off;
 }
 
 /* Create VMAs for mapped ELF segments (using elf_info_t metadata).
@@ -147,8 +162,14 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
     if (plen < 0) return -EFAULT;
 
-    /* Copy argv/envp from userspace before destroying address space */
-    char kargv[EXECVE_MAX_ARGS][EXECVE_MAX_STRLEN];
+    /* Copy argv/envp from userspace into a flat page-allocated buffer.
+     * Layout: string data packed contiguously, pointer arrays on stack. */
+    #define EXECVE_BUF_PAGES (EXECVE_BUF_SIZE / 4096)
+    char *strbuf = (char *)pages_alloc(EXECVE_BUF_PAGES);
+    if (!strbuf) return -ENOMEM;
+    size_t buf_off = 0;
+
+    const char *kargv_ptrs[EXECVE_MAX_ARGS];
     int argc = 0;
     if (argv && (uint64_t)argv < 0x800000000000ULL) {
         for (int i = 0; i < EXECVE_MAX_ARGS; i++) {
@@ -157,19 +178,28 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             char *arg = *ap;
             if (!arg) break;
             if ((uint64_t)arg >= 0x800000000000ULL) break;
-            int r = copy_path_from_user_proc(kargv[argc], arg, EXECVE_MAX_STRLEN);
+            size_t avail = EXECVE_BUF_SIZE - buf_off;
+            if (avail < 2) break;
+            int r = copy_path_from_user_proc(strbuf + buf_off, arg,
+                        avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN);
             if (r < 0) break;
+            kargv_ptrs[argc] = strbuf + buf_off;
+            buf_off += (size_t)r + 1;
             argc++;
         }
     }
     if (argc == 0) {
         int ci = 0;
-        while (ci < EXECVE_MAX_STRLEN - 1 && kpath[ci]) { kargv[0][ci] = kpath[ci]; ci++; }
-        kargv[0][ci] = '\0';
+        while (ci < EXECVE_MAX_STRLEN - 1 && kpath[ci] && buf_off + 1 < EXECVE_BUF_SIZE) {
+            strbuf[buf_off + (size_t)ci] = kpath[ci]; ci++;
+        }
+        strbuf[buf_off + (size_t)ci] = '\0';
+        kargv_ptrs[0] = strbuf + buf_off;
+        buf_off += (size_t)ci + 1;
         argc = 1;
     }
 
-    char kenvp[EXECVE_MAX_ENVS][EXECVE_MAX_STRLEN];
+    const char *kenvp_ptrs[EXECVE_MAX_ENVS];
     int envc = 0;
     if (envp && (uint64_t)envp < 0x800000000000ULL) {
         for (int i = 0; i < EXECVE_MAX_ENVS; i++) {
@@ -178,8 +208,13 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             char *env = *ep;
             if (!env) break;
             if ((uint64_t)env >= 0x800000000000ULL) break;
-            int r = copy_path_from_user_proc(kenvp[envc], env, EXECVE_MAX_STRLEN);
+            size_t avail = EXECVE_BUF_SIZE - buf_off;
+            if (avail < 2) break;
+            int r = copy_path_from_user_proc(strbuf + buf_off, env,
+                        avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN);
             if (r < 0) break;
+            kenvp_ptrs[envc] = strbuf + buf_off;
+            buf_off += (size_t)r + 1;
             envc++;
         }
     }
@@ -190,20 +225,23 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     struct vfs_node *ramfs_node = 0;
     size_t elf_len = 0;
 
+    /* Macro to free string buffer on early exit */
+    #define EXECVE_FAIL(err) do { pages_free(strbuf, EXECVE_BUF_PAGES); return (err); } while(0)
+
     if (ext2_ino) {
         struct ext2_inode ip;
         if (ext2_inode_read((uint32_t)ext2_ino, &ip) < 0 || ip.i_size == 0)
-            return -ENOEXEC;
+            EXECVE_FAIL(-ENOEXEC);
         elf_len = ip.i_size;
     } else {
         ramfs_node = vfs_lookup(kpath);
-        if (!ramfs_node) return -ENOENT;
-        if (ramfs_node->type != VFS_FILE) return -EACCES;
-        if (!ramfs_node->data || ramfs_node->size == 0) return -ENOEXEC;
+        if (!ramfs_node) EXECVE_FAIL(-ENOENT);
+        if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
+        if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;
     }
 
-    if (elf_len < sizeof(Elf64_Ehdr)) return -ENOEXEC;
+    if (elf_len < sizeof(Elf64_Ehdr)) EXECVE_FAIL(-ENOEXEC);
 
     /* Read only the ELF header to determine type and check for PT_INTERP.
      * elf_load_ext2/elf_load_ramfs will read the full header internally,
@@ -213,22 +251,22 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (ext2_ino) {
         extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
         if (ext2_read((uint32_t)ext2_ino, hdr_buf, 0, hdr_read) < (int)hdr_read)
-            return -EIO;
+            EXECVE_FAIL(-EIO);
     } else {
         kmemcpy(hdr_buf, ramfs_node->data, hdr_read);
     }
     const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)hdr_buf;
 
     /* Read program headers too */
-    if (peek_eh->e_phnum > 64) return -ENOEXEC;
+    if (peek_eh->e_phnum > 64) EXECVE_FAIL(-ENOEXEC);
     size_t phdrs_end = (size_t)(peek_eh->e_phoff + (uint64_t)peek_eh->e_phnum * peek_eh->e_phentsize);
-    if (phdrs_end > sizeof(hdr_buf) || phdrs_end > elf_len) return -ENOEXEC;
+    if (phdrs_end > sizeof(hdr_buf) || phdrs_end > elf_len) EXECVE_FAIL(-ENOEXEC);
     if (phdrs_end > hdr_read) {
         size_t extra = phdrs_end - hdr_read;
         if (ext2_ino) {
             extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
             if (ext2_read((uint32_t)ext2_ino, hdr_buf + hdr_read, hdr_read, extra) < (int)extra)
-                return -EIO;
+                EXECVE_FAIL(-EIO);
         } else {
             kmemcpy(hdr_buf + hdr_read, ramfs_node->data + hdr_read, extra);
         }
@@ -296,6 +334,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     /* Create new PML4 */
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
+        pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
@@ -320,6 +359,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         load_rc = elf_load_ramfs(ramfs_node->data, elf_len, p->pml4, 0, &info);
 
     if (load_rc < 0) {
+        pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
@@ -376,8 +416,9 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     spin_unlock_irq(&p->lock, exec_irqf);
 
     stack_ptr = build_user_stack(p->pml4, stack_top,
-                                 kargv, argc, kenvp, envc, &info);
+                                 kargv_ptrs, argc, kenvp_ptrs, envc, &info);
     if (!stack_ptr) {
+        pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
@@ -397,7 +438,7 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         int pos = 0;
         for (int i = 0; i < argc && pos < 1023; i++) {
             int j = 0;
-            while (kargv[i][j] && pos < 1023) { p->cmdline[pos++] = kargv[i][j++]; }
+            while (kargv_ptrs[i][j] && pos < 1023) { p->cmdline[pos++] = kargv_ptrs[i][j++]; }
             p->cmdline[pos++] = '\0';
         }
         p->cmdline_len = pos;
@@ -405,13 +446,16 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
     /* Set comm from argv[0] basename */
     {
-        const char *s = kargv[0];
+        const char *s = kargv_ptrs[0];
         const char *base = s;
         for (int i = 0; s[i]; i++) if (s[i] == '/') base = s + i + 1;
         int ci = 0;
         while (ci < 15 && base[ci]) { p->comm[ci] = base[ci]; ci++; }
         p->comm[ci] = '\0';
     }
+
+    /* Free execve string buffer — no longer needed */
+    pages_free(strbuf, EXECVE_BUF_PAGES);
 
     /* vfork: wake blocked parent now that child has its own address space */
     if (p->vfork_parent_tid) {

@@ -276,15 +276,11 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
 
     /* Load ELF with proper argv/envp for init */
-    char kargv[EXECVE_MAX_ARGS][EXECVE_MAX_STRLEN];
-    char kenvp[EXECVE_MAX_ENVS][EXECVE_MAX_STRLEN];
-    { const char *s = "/init"; int ii = 0; while (s[ii]) { kargv[0][ii] = s[ii]; ii++; } kargv[0][ii] = 0; }
-    { const char *s = "HOME=/"; int ii = 0; while (s[ii]) { kenvp[0][ii] = s[ii]; ii++; } kenvp[0][ii] = 0; }
-    { const char *s = "PATH=/bin:/usr/bin"; int ii = 0; while (s[ii]) { kenvp[1][ii] = s[ii]; ii++; } kenvp[1][ii] = 0; }
-    { const char *s = "TERM=linux"; int ii = 0; while (s[ii]) { kenvp[2][ii] = s[ii]; ii++; } kenvp[2][ii] = 0; }
+    const char *init_argv[] = { "/init" };
+    const char *init_envp[] = { "HOME=/", "PATH=/bin:/usr/bin", "TERM=linux" };
     uint64_t entry, stack_ptr, brk_end;
     if (elf_load(elf_data, elf_len, p->pml4, stack_top,
-                 kargv, 1, kenvp, 3,
+                 init_argv, 1, init_envp, 3,
                  &entry, &stack_ptr, &brk_end) < 0)
         goto fail_pml4;
 

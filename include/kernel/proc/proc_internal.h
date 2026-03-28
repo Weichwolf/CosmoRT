@@ -55,12 +55,13 @@ void vma_free_tree(vma_t *node);
 void unmap_shared_vmas(vma_t *node, uint64_t *pml4);
 
 /* Internal helpers — defined in process_exec.c */
-#define EXECVE_MAX_ARGS  16
-#define EXECVE_MAX_ENVS  16
-#define EXECVE_MAX_STRLEN ELF_LOAD_MAX_STRLEN
+#define EXECVE_MAX_ARGS    256
+#define EXECVE_MAX_ENVS    256
+#define EXECVE_MAX_STRLEN  4096
+#define EXECVE_BUF_SIZE    (128 * 1024)  /* 128KB flat string buffer */
 uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
-                          char kargv[][EXECVE_MAX_STRLEN], int argc,
-                          char kenvp[][EXECVE_MAX_STRLEN], int envc,
+                          const char *const *argv, int argc,
+                          const char *const *envp, int envc,
                           const elf_info_t *elf_info);
 
 /* Internal helpers — defined in process_fork.c */

@@ -403,15 +403,15 @@ int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
 
 int elf_load(const void *data, size_t len, uint64_t *user_pml4,
              uint64_t stack_top,
-             char kargv[][EXECVE_MAX_STRLEN], int argc,
-             char kenvp[][EXECVE_MAX_STRLEN], int envc,
+             const char *const *argv, int argc,
+             const char *const *envp, int envc,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out) {
     elf_info_t info;
     if (elf_load_ex(data, len, user_pml4, 0, &info) < 0)
         return -1;
 
     uint64_t sp = build_user_stack(user_pml4, stack_top,
-                                    kargv, argc, kenvp, envc, &info);
+                                    argv, argc, envp, envc, &info);
     if (!sp) return -1;
 
     *entry = info.entry;

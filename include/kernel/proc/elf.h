@@ -100,8 +100,8 @@ typedef struct {
 #define ELF_LOAD_MAX_STRLEN 256
 int elf_load(const void *data, size_t len, uint64_t *pml4,
              uint64_t stack_top,
-             char kargv[][ELF_LOAD_MAX_STRLEN], int argc,
-             char kenvp[][ELF_LOAD_MAX_STRLEN], int envc,
+             const char *const *argv, int argc,
+             const char *const *envp, int envc,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
 
 /* Extended ELF load: maps segments + returns metadata for dynamic linking.
