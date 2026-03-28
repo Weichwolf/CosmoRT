@@ -199,38 +199,53 @@ Noch offen:
 
 ---
 
-## Offen — TCP Advanced
+## TCP Advanced — erledigt
 
-- [ ] TCP Timestamps (RFC 7323): RTTM + PAWS
-- [ ] ECN (RFC 3168): IP ECN Bits + TCP CWR/ECE
-- [ ] TFO (TCP Fast Open, RFC 7413): Daten im SYN, Cookie-Management
+Timestamps (RFC 7323): RTTM + PAWS. ECN (RFC 3168): CWR/ECE + IP ECT(0).
+TFO (RFC 7413): 64-Entry Cookie Cache, Client SYN mit Cookie.
 
 ---
 
-## Offen — Security Hardening
+## Security Hardening
 
-### Sec-A: ASLR
+### Sec-A: ASLR — erledigt
 
-- [ ] Stack/mmap/PIE/Heap/KASLR Randomisierung
-- [ ] test: zwei execve → unterschiedliche Adressen
+Stack 22-bit, mmap 28-bit, PIE 28-bit, Heap 13-bit, KASLR 9-bit.
 
-### Sec-B: SMEP + SMAP
+### Sec-B: SMEP + SMAP — erledigt
 
-- [ ] CR4.SMEP=1, CR4.SMAP=1 bei Boot
-- [ ] STAC/CLAC um copy_from_user/copy_to_user
+CR4 Bits 20+21 auf BSP+AP, STAC/CLAC in Syscall-Entry + Signal-Frame.
 
-### Sec-C: W^X Enforcement
+### Sec-C: W^X — erledigt
 
-- [ ] mmap(PROT_WRITE|PROT_EXEC) = -EINVAL
-- [ ] Kernel .text RX, .data RW, nie beides
+mmap/mprotect(WRITE|EXEC) → -EINVAL.
 
-### Sec-D: Stack Guard Pages
+### Sec-D: Stack Guard Pages — erledigt
 
-- [ ] Unmapped Page am Stack-Ende, Thread-Stacks
+PROT_NONE Guard Page unter jedem User-Stack.
 
 ### Sec-E: Spectre/Meltdown
 
-- [ ] Retpoline, IBPB, KPTI (geplant)
+#### Sec-E1: KPTI (Kernel Page Table Isolation)
+
+- [ ] Separate Kernel/User Page Tables (pro Prozess)
+- [ ] SYSCALL/SYSRET Switch: User-PML4 hat nur Trampoline-Page, kein Kernel-Mapping
+- [ ] Interrupt-Entry: switch zu Kernel-PML4 vor Handler
+- [ ] PCID fuer TLB-Performance (vermeidet Flush bei jedem Switch)
+- [ ] test: User-Code kann Kernel-Adressen nicht lesen
+
+#### Sec-E2: Retpoline + IBRS
+
+- [ ] -mindirect-branch=thunk in CFLAGS (GCC Retpoline)
+- [ ] IBRS (Indirect Branch Restricted Speculation): IA32_SPEC_CTRL MSR
+- [ ] IBPB (Indirect Branch Prediction Barrier): bei Context-Switch
+- [ ] STIBP (Single Thread Indirect Branch Predictors): bei SMT
+
+#### Sec-E3: SSBD + MDS
+
+- [ ] SSBD (Speculative Store Bypass Disable): IA32_SPEC_CTRL Bit 2
+- [ ] MDS Mitigations: VERW bei Kernel-Entry (MD_CLEAR)
+- [ ] test: Spectre-v1/v2 PoC laeuft nicht
 
 ---
 
@@ -238,17 +253,63 @@ Noch offen:
 
 ### IPv6
 
-- [ ] RFC 8200, RFC 4861 (NDP), RFC 4862 (SLAAC)
-- [ ] Dual-Stack, AF_INET6
+#### IPv6-A: Basis (RFC 8200)
+
+- [ ] IPv6 Header Parsing + Generierung (128-bit Adressen)
+- [ ] Next Header Chain (Extension Headers)
+- [ ] AF_INET6 Socket-Familie
+- [ ] Dual-Stack: AF_INET6 Socket akzeptiert IPv4 (::ffff:a.b.c.d)
+- [ ] test: ping6 localhost
+
+#### IPv6-B: NDP (RFC 4861)
+
+- [ ] Neighbor Solicitation / Advertisement (ersetzt ARP)
+- [ ] Router Solicitation / Advertisement
+- [ ] Neighbor Cache (analog zu ARP Cache)
+- [ ] test: IPv6 Neighbor Discovery funktioniert
+
+#### IPv6-C: SLAAC (RFC 4862)
+
+- [ ] Stateless Address Auto-Configuration
+- [ ] Link-Local Address (fe80::)
+- [ ] Global Address aus Router Advertisement
+- [ ] DAD (Duplicate Address Detection)
+- [ ] test: automatische IPv6-Adresse nach Boot
 
 ---
 
-## Offen — Moderne Syscalls
+## Offen — io_uring (Node.js 22+ Performance)
 
-- [ ] io_uring (Node.js 22+)
-- [ ] memfd_create (Chrome, Wayland)
-- [ ] copy_file_range, close_range
-- [ ] pidfd_open + pidfd_send_signal
+### io_uring-A: Kern-Infrastruktur
+
+- [ ] Shared Ring-Buffer: Submission Queue (SQ) + Completion Queue (CQ)
+- [ ] io_uring_setup: alloziert SQ/CQ, gibt fd zurueck
+- [ ] io_uring_enter: submitted Entries verarbeiten, auf Completions warten
+- [ ] io_uring_register: Buffers/Files registrieren
+- [ ] mmap fuer SQ/CQ Ring-Pages (User-Shared Memory)
+
+### io_uring-B: Operationen
+
+- [ ] IORING_OP_READV / WRITEV: File I/O
+- [ ] IORING_OP_READ / WRITE: vereinfachte Variante
+- [ ] IORING_OP_OPENAT / CLOSE: File-Lifecycle
+- [ ] IORING_OP_ACCEPT / CONNECT: Socket I/O
+- [ ] IORING_OP_SEND / RECV: Netzwerk
+- [ ] IORING_OP_TIMEOUT: Timer
+- [ ] IORING_OP_POLL_ADD / REMOVE: Event-Polling
+
+### io_uring-C: Performance
+
+- [ ] SQPOLL: Kernel-Thread pollt SQ (kein Syscall pro Submit)
+- [ ] Fixed Buffers: vorab-registrierte I/O Buffer
+- [ ] Fixed Files: vorab-registrierte FDs
+- [ ] test: Node.js 22 I/O Benchmark laeuft
+
+---
+
+## Offen — Moderne Syscalls (Rest)
+
+- [ ] pidfd_open + pidfd_send_signal + pidfd_getfd
 - [ ] SO_REUSEPORT, MSG_ZEROCOPY
 
 ---
