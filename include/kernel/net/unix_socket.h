@@ -11,7 +11,7 @@
 #define USOCK_CONNECTED   3
 
 /* Ring buffer size per direction */
-#define USOCK_BUF_SIZE    4096
+#define USOCK_BUF_SIZE    (64 * 1024)
 
 /* Max simultaneous AF_UNIX sockets */
 #define USOCK_MAX         32

@@ -131,15 +131,25 @@ void deliver_signal(thread_t *t, int signo) {
 
     if ((uint64_t)sa->sa_handler <= 1) return; /* SIG_DFL or SIG_IGN — shouldn't be here */
 
-    /* Validate handler address: must be in user address space.
-     * Garbage handlers (from fuzzing rt_sigaction) would cause the CPU to
-     * jump to unmapped/kernel memory on return to userspace. */
+    /* Validate handler address: must be in an executable VMA.
+     * Invalid handlers would cause the CPU to fault on return to userspace. */
     uint64_t handler_addr = (uint64_t)sa->sa_handler;
     if (handler_addr >= 0x800000000000ULL) {
-        /* Invalid handler — kill process instead of jumping to garbage */
         p->exit_signal = signo;
         do_exit(128 + signo);
         return;
+    }
+    {
+        uint64_t hirqf;
+        spin_lock_irq(&p->lock, &hirqf);
+        vma_t *hv = vma_find(p->vma_root, handler_addr);
+        int hv_exec = (hv && (hv->prot & PROT_EXEC));
+        spin_unlock_irq(&p->lock, hirqf);
+        if (!hv_exec) {
+            /* Handler not in executable memory — ignore signal to avoid crash.
+             * This can happen with PIE binaries under certain ASLR conditions. */
+            return;
+        }
     }
 
     /* Compute frame location on user stack (or alternate signal stack) */

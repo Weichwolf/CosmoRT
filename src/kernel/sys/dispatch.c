@@ -234,32 +234,7 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
         return -EFAULT;
     }
     cpu->fault_recover = 1;
-    /* Debug: trace vfork for pid=2 */
-    {
-        process_t *_dp = proc_current();
-        if (_dp && _dp->pid == 2 && (num == 58 || num == 57 || num == 56)) {
-            syscall_frame_t *_f = (syscall_frame_t *)cpu->syscall_frame;
-            serial_puts("PRE_FORK: rip=");
-            serial_hex64(_f->rcx);
-            serial_puts(" rsp=");
-            serial_hex64(cpu->user_rsp);
-            serial_putchar('\n');
-        }
-    }
     long result = sys_dispatch(num, a1, a2, a3, a4, a5, a6);
-    {
-        process_t *_dp = proc_current();
-        if (_dp && _dp->pid == 2 && (num == 58 || num == 57 || num == 56)) {
-            syscall_frame_t *_f = (syscall_frame_t *)cpu->syscall_frame;
-            serial_puts("POST_FORK: rip=");
-            serial_hex64(_f->rcx);
-            serial_puts(" rsp=");
-            serial_hex64(cpu->user_rsp);
-            serial_puts(" ret=");
-            serial_hex64((uint64_t)result);
-            serial_putchar('\n');
-        }
-    }
     cpu->fault_recover = 0;
     check_signals_syscall_path(&result, num);
     return result;

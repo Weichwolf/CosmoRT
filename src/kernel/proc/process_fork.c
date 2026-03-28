@@ -322,9 +322,6 @@ long do_fork(void) {
 
     /* Add child thread to scheduler */
     sched_add(ct);
-    serial_puts("FORK:");
-    serial_hex64((uint64_t)(unsigned)child->pid);
-    serial_putchar('\n');
 
     return (long)child->pid;
 }

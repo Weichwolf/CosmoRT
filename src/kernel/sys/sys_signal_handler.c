@@ -86,13 +86,6 @@ long do_rt_sigaction(int sig, const void *act_,
         int r = copy_from_user(&k_act, act, sizeof(k_act));
         if (r) return r;
         p->sig_actions[sig] = k_act;
-        if (sig == 17 && (uint64_t)k_act.sa_handler > 1) {
-            serial_puts("SIGCHLD_SET: handler=");
-            serial_hex64((uint64_t)k_act.sa_handler);
-            serial_puts(" pid=");
-            serial_hex64((uint64_t)(unsigned)p->pid);
-            serial_putchar('\n');
-        }
     }
 
     return 0;
