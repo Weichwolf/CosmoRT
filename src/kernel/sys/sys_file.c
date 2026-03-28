@@ -720,11 +720,14 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
                 return 0;
             }
         }
-        ws->ws_row = (uint16_t)vt_rows();
-        ws->ws_col = (uint16_t)vt_cols();
-        ws->ws_xpixel = 0;
-        ws->ws_ypixel = 0;
-        return 0;
+        if (fde->type == FD_SERIAL) {
+            ws->ws_row = (uint16_t)vt_rows();
+            ws->ws_col = (uint16_t)vt_cols();
+            ws->ws_xpixel = 0;
+            ws->ws_ypixel = 0;
+            return 0;
+        }
+        return -ENOTTY;
     }
     if (request == TIOCSWINSZ) {
         if (!user_ok(arg, sizeof(struct winsize))) return -EFAULT;

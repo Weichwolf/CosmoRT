@@ -27,6 +27,16 @@ static void test_winsize(void) {
     check_val("TIOCGWINSZ after SET returns 0", r, 0);
     check_val("ws_row roundtrip", (long)got.ws_row, 50);
     check_val("ws_col roundtrip", (long)got.ws_col, 132);
+
+    /* TIOCGWINSZ on a pipe must return -ENOTTY (isatty correctness) */
+    int pipefd[2];
+    r = sc2(SYS_PIPE2, (long)pipefd, 0);
+    check_val("pipe2 ok", r, 0);
+    struct winsize pw = {0};
+    r = sc3(SYS_IOCTL, pipefd[0], TIOCGWINSZ, (long)&pw);
+    check_val("TIOCGWINSZ on pipe = -ENOTTY", r, -25);
+    sc1(SYS_CLOSE, pipefd[0]);
+    sc1(SYS_CLOSE, pipefd[1]);
 }
 
 TEST("winsize", test_winsize);
