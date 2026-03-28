@@ -1,23 +1,23 @@
-/* Crash test: W^X enforcement.
- * mmap/mprotect with PROT_WRITE|PROT_EXEC must return -EINVAL. */
+/* Crash test: mmap/mprotect protection flags.
+ * RWX is allowed (required by JIT engines like V8). */
 #include "ktest.h"
 
-#define EINVAL 22
-
 static void test_wxe(void) {
-    puts("\n[W^X Enforcement]\n");
+    puts("\n[Memory Protection Flags]\n");
 
-    /* mmap(RWX) must fail */
+    /* mmap(RWX) must succeed (JIT needs this) */
     long r = sc6(SYS_MMAP, 0, 4096,
                  PROT_READ | PROT_WRITE | PROT_EXEC,
                  MAP_PRIV_ANON, -1, 0);
-    check_val("mmap(RWX) → -EINVAL", r, -EINVAL);
+    check("mmap(RWX) succeeds", r > 0);
+    if (r > 0) sc2(SYS_MUNMAP, r, 4096);
 
-    /* mmap(WX) must fail */
+    /* mmap(WX) must succeed */
     r = sc6(SYS_MMAP, 0, 4096,
             PROT_WRITE | PROT_EXEC,
             MAP_PRIV_ANON, -1, 0);
-    check_val("mmap(WX) → -EINVAL", r, -EINVAL);
+    check("mmap(WX) succeeds", r > 0);
+    if (r > 0) sc2(SYS_MUNMAP, r, 4096);
 
     /* mmap(RX) must succeed */
     r = sc6(SYS_MMAP, 0, 4096,
@@ -33,16 +33,16 @@ static void test_wxe(void) {
     check("mmap(RW) succeeds", r > 0);
     long rw_addr = r;
 
-    /* mprotect(RW→RWX) must fail */
+    /* mprotect(RW→RWX) must succeed (V8 JIT pattern) */
     if (rw_addr > 0) {
         r = sc3(SYS_MPROTECT, rw_addr, 4096,
                 PROT_READ | PROT_WRITE | PROT_EXEC);
-        check_val("mprotect(RW→RWX) → -EINVAL", r, -EINVAL);
+        check_val("mprotect(RW→RWX) → 0", r, 0);
 
-        /* mprotect(RW→RX) must succeed */
+        /* mprotect(RWX→RX) must succeed */
         r = sc3(SYS_MPROTECT, rw_addr, 4096,
                 PROT_READ | PROT_EXEC);
-        check_val("mprotect(RW→RX) → 0", r, 0);
+        check_val("mprotect(RWX→RX) → 0", r, 0);
 
         sc2(SYS_MUNMAP, rw_addr, 4096);
     }

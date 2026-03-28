@@ -452,10 +452,6 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
 
-    /* W^X: reject simultaneous WRITE+EXEC (no RWX pages) */
-    if ((prot & PROT_WRITE) && (prot & PROT_EXEC))
-        return -EINVAL;
-
     /* MAP_SHARED: mark VMA so fork shares physical pages (not COW).
      * File-backed MAP_SHARED uses page cache for cross-process sharing. */
     if (flags & MAP_SHARED)
@@ -725,10 +721,6 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     if (!p) return -EFAULT;
     if (addr & 0xFFF) return -EINVAL;
     if (addr >= 0x800000000000ULL) return -ENOMEM;
-
-    /* W^X: reject simultaneous WRITE+EXEC */
-    if ((prot & PROT_WRITE) && (prot & PROT_EXEC))
-        return -EINVAL;
 
     len = (len + 0xFFF) & ~0xFFFULL;
     if (len == 0) return 0;
