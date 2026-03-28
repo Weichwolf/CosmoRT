@@ -122,7 +122,7 @@ static void test_tcp_server(void) {
         char buf[4096];
         for (int i = 0; i < 4096; i++) buf[i] = (char)(i & 0xFF);
         r = sc6(SYS_SENDTO, fd, (long)buf, 4096, 0, 0, 0);
-        check_val("sendto unconnected -> EBADF", r, -EBADF);
+        check_val("sendto unconnected -> ENOTCONN", r, -ENOTCONN);
         sc1(SYS_CLOSE, fd);
     }
 

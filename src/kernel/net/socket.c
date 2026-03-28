@@ -94,6 +94,17 @@ static socket_t *sock_from_fd(int fd) {
     return (socket_t *)fde->obj;
 }
 
+/* Finalize non-blocking connect if TCP handshake completed.
+ * Must be called before any read/write/send/recv on a socket
+ * that may have been connected with O_NONBLOCK. */
+static void sock_finalize_connect(socket_t *s) {
+    if ((s->sockflags & SOCKF_CONNECTING) && s->tcp.state == TCP_ESTABLISHED) {
+        s->state = SOCK_CONNECTED;
+        s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+        s->tcp.wait_thread = 0;
+    }
+}
+
 /* Byte-swap helpers */
 static inline uint16_t bswap16(uint16_t v) {
     return (uint16_t)((v >> 8) | (v << 8));
@@ -284,7 +295,8 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     }
 
     /* ── TCP (SOCK_STREAM) ── */
-    if (s->state != SOCK_CONNECTED) return -EBADF;
+    sock_finalize_connect(s);
+    if (s->state != SOCK_CONNECTED) return -ENOTCONN;
     uint8_t kbuf[1460];
     const uint8_t *ubuf = (const uint8_t *)buf;
     long total = 0;
@@ -352,7 +364,8 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     }
 
     /* ── TCP (SOCK_STREAM) ── */
-    if (s->state != SOCK_CONNECTED) return -EBADF;
+    sock_finalize_connect(s);
+    if (s->state != SOCK_CONNECTED) return -ENOTCONN;
     {
         int nonblock = (flags & 0x40);
         { process_t *rp = proc_current();
@@ -389,7 +402,8 @@ long socket_read(int fd, void *buf, long count) {
     if (!s) return -EBADF;
     if (s->shut_rd) return 0;
     if (s->is_dgram) return do_recvfrom(fd, buf, count, 0, 0, 0);
-    if (s->state != SOCK_CONNECTED) return -EBADF;
+    sock_finalize_connect(s);
+    if (s->state != SOCK_CONNECTED) return -ENOTCONN;
     {
         int nonblock = 0;
         { process_t *rp = proc_current();
@@ -425,7 +439,8 @@ long socket_write(int fd, const void *buf, long count) {
     if (s->shut_wr) return send_sigpipe();
     /* DGRAM: delegate to sendto (uses stored connect addr) */
     if (s->is_dgram) return do_sendto(fd, buf, count, 0, 0, 0);
-    if (s->state != SOCK_CONNECTED) return -EBADF;
+    sock_finalize_connect(s);
+    if (s->state != SOCK_CONNECTED) return -ENOTCONN;
     long total = 0;
     while (total < count) {
         uint8_t kbuf[1460];
@@ -786,9 +801,17 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
         case SO_ERROR:
             /* Return and clear connect error for non-blocking connect */
             if (s->sockflags & SOCKF_CONNECTING) {
-                if (s->tcp.got_rst) val = ECONNREFUSED;
-                else if (s->tcp.state == TCP_ESTABLISHED) val = 0;
-                else val = EINPROGRESS;
+                if (s->tcp.got_rst) {
+                    val = ECONNREFUSED;
+                    s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+                } else if (s->tcp.state == TCP_ESTABLISHED) {
+                    val = 0;
+                    s->state = SOCK_CONNECTED;
+                    s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+                    s->tcp.wait_thread = 0;
+                } else {
+                    val = EINPROGRESS;
+                }
             }
             break;
         case SO_RCVTIMEO: {

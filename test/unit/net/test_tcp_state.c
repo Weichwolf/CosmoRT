@@ -15,7 +15,7 @@ static void test_tcp_state(void) {
     /* Verify: read on unconnected socket fails */
     char buf[16];
     long r = sc3(SYS_READ, fd, (long)buf, 16);
-    check("read unconnected → EBADF", r == -EBADF);
+    check("read unconnected → ENOTCONN", r == -ENOTCONN);
 
     /* 2. Connect → ESTABLISHED (SYN_SENT→ESTABLISHED internally) */
     struct { uint16_t family; uint16_t port; uint32_t addr; char pad[8]; } sa;
