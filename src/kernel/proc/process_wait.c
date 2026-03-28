@@ -65,12 +65,29 @@ void proc_cleanup(process_t *p) {
 
 /* ── wait4 (2.2) ─────────────────────────────────── */
 
+#define SA_NOCLDWAIT_VAL 0x00000002
+
 long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     (void)rusage;
 
     thread_t *cur = thread_current();
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
+
+    /* SA_NOCLDWAIT + SIG_DFL for SIGCHLD: children are auto-reaped,
+     * wait4 returns -ECHILD immediately.
+     * SA_NOCLDWAIT + handler: children are still reaped via wait4, but
+     * become zombies only briefly. We handle the SIG_DFL case here. */
+    if ((parent->sig_actions[17 /* SIGCHLD */].sa_flags & SA_NOCLDWAIT_VAL) &&
+        parent->sig_actions[17].sa_handler == (void *)0 /* SIG_DFL */) {
+        /* Auto-reap all zombie children matching pid filter */
+        for (int i = 1; i < PID_TABLE_MAX; i++) {
+            process_t *child = pid_table[i];
+            if (!child || child->parent_pid != parent->pid) continue;
+            if (child->state == PROC_ZOMBIE) proc_cleanup(child);
+        }
+        return -ECHILD;
+    }
 
     if (wstatus && !((uint64_t)wstatus < 0x800000000000ULL &&
                      (uint64_t)wstatus + sizeof(int) <= 0x800000000000ULL &&

@@ -184,6 +184,9 @@ long do_clone(unsigned long flags, void *child_stack,
     thread_t *cur = cpu->current_thread;
     if (!cur || !cur->proc) return -EFAULT;
 
+    /* Namespace flags: single-user system, no containers */
+    if (flags & CLONE_NS_FLAGS) return -EINVAL;
+
     /* Without CLONE_VM: fork semantics — create a new process (COW).
      * musl libc's fork() uses clone(SIGCHLD, 0) — no CLONE_VM.
      * Delegate to do_fork() which handles COW + new process_t. */
@@ -373,6 +376,20 @@ long do_prctl(int option, unsigned long a2, unsigned long a3,
     switch (option) {
     case PR_SET_PDEATHSIG:
         return 0; /* no-op: single-user, not critical */
+    case PR_GET_PDEATHSIG:
+        /* Return 0 (no parent-death signal set) */
+        if (!user_ok(a2, 4)) return -EFAULT;
+        return copy_to_user((void *)a2, &(int){0}, 4);
+
+    case PR_SET_DUMPABLE:
+        return 0; /* no-op: no core dumps */
+    case PR_GET_DUMPABLE:
+        return 1; /* always "dumpable" (SUID_DUMP_USER) */
+
+    case PR_SET_NO_NEW_PRIVS:
+        return 0; /* no-op: single-user, always unprivileged */
+    case PR_GET_NO_NEW_PRIVS:
+        return 0; /* not set */
 
     case PR_SET_NAME: {
         char kname[16];

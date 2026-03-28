@@ -452,6 +452,14 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
 
+    /* MAP_HUGETLB: no huge page support via this flag — reject */
+    if (flags & MAP_HUGETLB) return -EINVAL;
+
+    /* Accept-and-ignore hint flags (no-ops):
+     * MAP_NORESERVE (no swap), MAP_GROWSDOWN (stack hint),
+     * MAP_DENYWRITE (deprecated), MAP_STACK (hint), MAP_LOCKED (handled below),
+     * MAP_32BIT (no x32 compat). Strip to avoid polluting VMA flags. */
+
     /* MAP_SHARED: mark VMA so fork shares physical pages (not COW).
      * File-backed MAP_SHARED uses page cache for cross-process sharing. */
     if (flags & MAP_SHARED)
@@ -577,7 +585,8 @@ long do_mmap(unsigned long addr, size_t length, int prot,
 
     /* Create VMA */
     int vma_flags = flags;
-    if (p->mlockall_flags & MCL_FUTURE) vma_flags |= VMA_LOCKED;
+    if ((flags & MAP_LOCKED) || (p->mlockall_flags & MCL_FUTURE))
+        vma_flags |= VMA_LOCKED;
     /* Mark large anonymous mappings as eligible for transparent huge pages */
     if ((flags & MAP_ANONYMOUS) && length >= HUGE_PAGE_SIZE)
         vma_flags |= VMA_HUGEPAGE;
@@ -923,11 +932,55 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
     /* old_addr must be VMA start and old_size must match */
     if (v->start != old_addr) { spin_unlock_irq(&p->lock, irqf); return -EFAULT; }
 
-    /* MREMAP_FIXED not supported yet */
+    /* MREMAP_FIXED: move to specific address (requires MREMAP_MAYMOVE) */
     if (flags & MREMAP_FIXED) {
-        (void)new_addr;
+        if (!(flags & MREMAP_MAYMOVE)) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -EINVAL;
+        }
+        if (new_addr & 0xFFF) { spin_unlock_irq(&p->lock, irqf); return -EINVAL; }
+        if (new_addr + new_size > 0x800000000000ULL) {
+            spin_unlock_irq(&p->lock, irqf);
+            return -ENOMEM;
+        }
+
+        /* Unmap anything at [new_addr, new_addr+new_size) */
+        unmap_range(p->pml4, new_addr, new_addr + new_size);
+        /* Remove overlapping VMAs */
+        for (;;) {
+            vma_t *ov = vma_find_overlap(p->vma_root, new_addr, new_addr + new_size);
+            if (!ov) break;
+            if (ov->start >= new_addr && ov->end <= new_addr + new_size)
+                vma_remove(&p->vma_root, ov);
+            else if (ov->start < new_addr)
+                ov->end = new_addr;
+            else {
+                uint64_t ns = new_addr + new_size, ne = ov->end;
+                int np = ov->prot, nf = ov->flags;
+                vma_remove(&p->vma_root, ov);
+                vma_insert(&p->vma_root, ns, ne, np, nf);
+            }
+        }
+
+        int v_prot = v->prot;
+        int v_flags = v->flags;
+        vma_t *nv = vma_insert(&p->vma_root, new_addr, new_addr + new_size, v_prot, v_flags);
+        if (!nv) { spin_unlock_irq(&p->lock, irqf); return -ENOMEM; }
+        nv->file_ino = v->file_ino;
+        nv->file_offset = v->file_offset;
+        nv->file_backend = v->file_backend;
+
+        copy_user_pages(p->pml4, new_addr, old_addr, old_size < new_size ? old_size : new_size, v_prot);
+        unmap_range(p->pml4, old_addr, old_addr + old_size);
+        arch_flush_tlb();
+        tlb_shootdown(virt_to_phys(p->pml4));
+
+        vma_t *old_v = vma_find(p->vma_root, old_addr);
+        if (old_v && old_v->start == old_addr)
+            vma_remove(&p->vma_root, old_v);
+
         spin_unlock_irq(&p->lock, irqf);
-        return -ENOSYS;
+        return (long)new_addr;
     }
 
     if (new_size == old_size) { spin_unlock_irq(&p->lock, irqf); return (long)old_addr; }

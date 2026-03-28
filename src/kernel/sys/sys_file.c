@@ -646,6 +646,9 @@ long do_getdents64(int fd, void *buf, size_t count) {
 #define TIOCSWINSZ 0x5414
 #define FIONREAD   0x541B
 #define TIOCNOTTY  0x5422
+#define TIOCGSID   0x5429
+#define TIOCOUTQ   0x5411
+#define TIOCINQ    FIONREAD
 #define TIOCGPTN   0x80045430
 #define TIOCSPTLCK 0x40045431
 #define F_DUPFD         0
@@ -653,6 +656,10 @@ long do_getdents64(int fd, void *buf, size_t count) {
 #define F_SETFD         2
 #define F_GETFL         3
 #define F_SETFL         4
+#define F_GETOWN        9
+#define F_SETOWN        8
+#define F_GETPIPE_SZ    1032
+#define F_SETPIPE_SZ    1031
 #define F_DUPFD_CLOEXEC 1030
 
 struct winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
@@ -787,6 +794,17 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         }
         return copy_to_user((void *)arg, &pgid, 4);
     }
+    /* TIOCGSID: get session ID */
+    if (request == TIOCGSID) {
+        int32_t sid = (int32_t)p->sid;
+        return copy_to_user((void *)arg, &sid, 4);
+    }
+    /* TIOCOUTQ: bytes in output queue (always 0 — we drain immediately) */
+    if (request == TIOCOUTQ) {
+        if (!user_ok(arg, 4)) return -EFAULT;
+        *(int *)arg = 0;
+        return 0;
+    }
     /* FIONBIO: set/clear O_NONBLOCK */
     if (request == 0x5421 /* FIONBIO */) {
         if (!user_ok(arg, 4)) return -EFAULT;
@@ -831,11 +849,20 @@ long do_fcntl(int fd, int cmd, long arg) {
         /* Single-user system: advisory locks always succeed */
         if (!user_ok((uint64_t)arg, sizeof(struct k_flock))) return -EFAULT;
         return 0;
+    case F_GETOWN:
+        return 0; /* no SIGIO support — always returns 0 */
+    case F_SETOWN:
+        return 0; /* no-op: no SIGIO support */
+    case F_GETPIPE_SZ:
+        return 65536; /* default pipe buffer size */
+    case F_SETPIPE_SZ:
+        return 65536; /* accept but return fixed size */
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
         int i = fd_find_free(&p->fds, (int)arg);
         if (i < 0) return -EMFILE;
         p->fds.entries[i] = *fde;
+        p->fds.entries[i].flags &= ~O_CLOEXEC; /* F_DUPFD: always clear */
         fd_mark_used(&p->fds, i);
         if (cmd == F_DUPFD_CLOEXEC)
             p->fds.entries[i].flags |= O_CLOEXEC;

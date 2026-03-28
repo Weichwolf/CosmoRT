@@ -11,12 +11,23 @@
 #define SOCK_DGRAM      2
 #define SOL_SOCKET      1
 #define SO_REUSEADDR    2
+#define SO_BROADCAST    6
+#define SO_SNDBUF       7
+#define SO_RCVBUF       8
 #define SO_KEEPALIVE    9
+#define SO_OOBINLINE    10
+#define SO_LINGER       13
+#define SO_REUSEPORT    15
 #define SO_RCVTIMEO     20
 #define SO_SNDTIMEO     21
 #define SO_ERROR        4
 #define IPPROTO_TCP     6
 #define TCP_NODELAY     1
+#define TCP_CORK        3
+#define TCP_KEEPIDLE    4
+#define TCP_KEEPINTVL   5
+#define TCP_KEEPCNT     6
+#define TCP_QUICKACK    12
 #define TCP_FASTOPEN    23
 #define TCP_FASTOPEN_CONNECT 30
 

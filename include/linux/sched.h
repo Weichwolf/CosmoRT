@@ -16,4 +16,17 @@
 #define CLONE_CHILD_CLEARTID 0x00200000
 #define CLONE_CHILD_SETTID   0x01000000
 
+/* Namespace flags — not supported (single-user, no containers) */
+#define CLONE_NEWNS          0x00020000
+#define CLONE_NEWCGROUP      0x02000000
+#define CLONE_NEWUTS         0x04000000
+#define CLONE_NEWIPC         0x08000000
+#define CLONE_NEWUSER        0x10000000
+#define CLONE_NEWPID         0x20000000
+#define CLONE_NEWNET         0x40000000
+
+#define CLONE_NS_FLAGS       (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
+                              CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | \
+                              CLONE_NEWNET)
+
 #endif /* COSMO_LINUX_SCHED_H */

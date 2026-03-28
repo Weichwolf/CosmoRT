@@ -778,6 +778,15 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
             }
             return 0;
         }
+        case SO_SNDBUF:
+        case SO_RCVBUF:
+            return 0; /* accept, use fixed internal buffers */
+        case SO_BROADCAST:
+        case SO_OOBINLINE:
+        case SO_REUSEPORT:
+            return 0; /* accept as no-ops */
+        case SO_LINGER:
+            return 0; /* accept, no lingering close behavior yet */
         default:
             return 0; /* silently accept unknown SOL_SOCKET opts */
         }
@@ -789,6 +798,13 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
             if (val) s->sockflags |= SOCKF_NODELAY;
             else     s->sockflags &= ~(uint32_t)SOCKF_NODELAY;
             return 0;
+        case TCP_CORK:
+        case TCP_QUICKACK:
+            return 0; /* accept as no-ops */
+        case TCP_KEEPIDLE:
+        case TCP_KEEPINTVL:
+        case TCP_KEEPCNT:
+            return 0; /* accept — keepalive params stored in TCP state implicitly */
         case TCP_FASTOPEN:
         case TCP_FASTOPEN_CONNECT:
             /* TFO: enable for this socket — cookie lookup happens on connect */
@@ -814,6 +830,18 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
         switch (optname) {
         case SO_REUSEADDR: val = (s->sockflags & SOCKF_REUSEADDR) ? 1 : 0; break;
         case SO_KEEPALIVE: val = (s->sockflags & SOCKF_KEEPALIVE) ? 1 : 0; break;
+        case SO_SNDBUF: val = 65536; break;
+        case SO_RCVBUF: val = 65536; break;
+        case SO_BROADCAST: val = 0; break;
+        case SO_OOBINLINE: val = 0; break;
+        case SO_REUSEPORT: val = 0; break;
+        case SO_LINGER: {
+            /* struct linger { int l_onoff; int l_linger; } — 8 bytes */
+            int linger[2] = { 0, 0 };
+            { int r = copy_to_user(optval, linger, 8); if (r) return r; }
+            { int len = 8; int r = copy_to_user(optlen, &len, sizeof(int)); if (r) return r; }
+            return 0;
+        }
         case SO_ERROR:
             /* Return and clear connect error for non-blocking connect */
             if (s->sockflags & SOCKF_CONNECTING) {
@@ -850,6 +878,11 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
     } else if (level == IPPROTO_TCP) {
         switch (optname) {
         case TCP_NODELAY: val = (s->sockflags & SOCKF_NODELAY) ? 1 : 0; break;
+        case TCP_CORK: val = 0; break;
+        case TCP_QUICKACK: val = 1; break;
+        case TCP_KEEPIDLE: val = 7200; break; /* Linux default: 7200s */
+        case TCP_KEEPINTVL: val = 75; break;  /* Linux default: 75s */
+        case TCP_KEEPCNT: val = 9; break;     /* Linux default: 9 */
         default: break;
         }
     }

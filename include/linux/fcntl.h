@@ -15,7 +15,10 @@
 #define O_NOCTTY        0x100
 #define O_DIRECTORY     0x10000
 #define O_NOFOLLOW      0x20000
+#define O_NOATIME       0x40000
 #define O_CLOEXEC       0x80000
+#define O_PATH          0x200000
+#define O_TMPFILE       0x410000  /* O_TMPFILE | O_DIRECTORY */
 
 /* fcntl commands */
 #define F_DUPFD         0
@@ -26,6 +29,10 @@
 #define F_GETLK         5
 #define F_SETLK         6
 #define F_SETLKW        7
+#define F_GETOWN        9
+#define F_SETOWN        8
+#define F_GETPIPE_SZ    1032
+#define F_SETPIPE_SZ    1031
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC      1
 
