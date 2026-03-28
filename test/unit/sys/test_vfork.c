@@ -5,7 +5,7 @@
 static void test_vfork(void) {
     puts("\n[vfork]\n");
 
-    /* vfork should work (currently aliased to fork) */
+    /* vfork: parent blocks until child execs or exits */
     long pid = sc0(SYS_VFORK);
     if (pid < 0) {
         check("vfork succeeded", 0);

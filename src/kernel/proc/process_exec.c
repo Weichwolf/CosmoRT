@@ -426,8 +426,8 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (p->vfork_parent_tid) {
         thread_t *pt = thread_find_by_tid(p->vfork_parent_tid);
         if (pt) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(pt, 2 /* EQ_VFORK_DONE */, (uint64_t)p->pid);
+            extern void sched_wake(thread_t *t);
+            sched_wake(pt);
         }
         p->vfork_parent_tid = 0;
     }

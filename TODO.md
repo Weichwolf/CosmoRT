@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-27. 1056+ ktest PASS (923 unit + 133 crash). Alpine Linux interaktive Shell funktioniert.
+Stand: 2026-03-28. 1069 ktest PASS. Alpine Linux interaktive Shell funktioniert.
 
 ---
 
@@ -426,7 +426,7 @@ RT-Core 1000Hz (1ms), Compute 100Hz (10ms). IPI → sched_preempt direkt. Wake <
       Userspace-Memory nur ueber VMA + Page Fault Handler (alloc_page pro Fault).
       pages_alloc nur fuer Kernel-Interna (DMA, Kernel Stacks).
 - [ ] Review: alle pages_alloc Caller pruefen — wer nutzt grosse Orders fuer Userspace?
-- [ ] vfork: echte CLONE_VM|CLONE_VFORK Semantik (Parent blockiert, Kind exec/exit weckt)
+- [x] vfork: echte CLONE_VM|CLONE_VFORK Semantik (Parent blockiert, Kind exec/exit weckt)
 
 ### Syscalls/Prozesse
 
