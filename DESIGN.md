@@ -24,7 +24,7 @@ Entscheidung: x86_64 only (ARM64/RISC-V geplant via src/arch/).
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Intel SDM Vol 3 Chapter 4 | 4-Level Paging (PML4) | 4KB Pages + 2MB Huge Pages (PS-Bit) |
-| Intel SDM Vol 3 §4.6 | Access/Dirty Bits | Page-Age Tracking (KSM) |
+| Intel SDM Vol 3 §4.6 | Access/Dirty Bits | Page-Age Tracking |
 | Intel SDM Vol 3 §4.7 | Page-Fault Exception (#PF) | COW, Demand-Paging, THP |
 
 PTE Software-Bits:
@@ -45,7 +45,7 @@ Entscheidung: Alle IRQs auf Core 0 (RT-Core). Kein IRQ-Balancing.
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| Intel SDM Vol 1 Chapter 10 | SSE/SSE2 | Userspace + RT-Core Hash-Engine |
+| Intel SDM Vol 1 Chapter 10 | SSE/SSE2 | Userspace SSE/SSE2 |
 | Intel SDM Vol 1 §10.5 | FXSAVE/FXRSTOR (512 Bytes) | Context Switch, fork, Signal |
 | Intel SDM Vol 2 | MXCSR Register | Init 0x1F80, sanitized bei sigreturn |
 
@@ -268,12 +268,11 @@ Entscheidung: Kernel-DNS nur fuer Boot. Userspace-DNS fuer alles andere.
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| FIPS 180-4 | Secure Hash Standard (SHA-256) | Block-Hashing, KSM, CosmoFS Dedup |
-| FIPS 197 | AES | Geplant (CosmoFS Encryption) |
+| FIPS 180-4 | Secure Hash Standard (SHA-256) | Block-Hashing |
+| FIPS 197 | AES | Geplant |
 | Intel SHA Extensions | SHA-NI (sha256rnds2, sha256msg1/2) | Geplant (CPUID Check) |
 
 Entscheidung: SHA-256 als universelle Hash-Funktion. Integer-Arithmetik, kein FP.
-RT-Core Hash-Engine: SSE-Register frei (kein User-FPU auf Core 0).
 
 ---
 
@@ -348,7 +347,6 @@ Entscheidung: io_uring ist Pflicht (Node.js Performance). memfd_create ist Pflic
 | /proc/pid/status | Linux procfs | Prozess-Status (Name, State, VmRSS) |
 | /proc/pid/cmdline | Linux procfs | Kommandozeile (ps, htop) |
 | /proc/meminfo | Linux procfs | Systemweiter Speicher-Status |
-| /proc/ksm | CosmoRT | KSM Dedup Statistik |
 | perf_event_open | man 2 perf_event_open | Hardware Performance Counters (geplant) |
 
 ---
@@ -400,7 +398,7 @@ Alle Geraetetreiber in Userspace oder als Kernel-Module ueber cosmort.h.
 | Intel HD Audio Spec | Intel | Audio Codec, Streams, DMA Buffer Descriptor List |
 | AHCI Spec 1.3.1 | Intel | SATA Controller (Legacy-SSDs/HDDs) |
 
-Entscheidung: Alle Geraetetreiber ausser NIC/CosmoFS in Userspace via cosmort.h.
+Entscheidung: Alle Geraetetreiber ausser NIC in Userspace via cosmort.h.
 
 ---
 
@@ -425,15 +423,13 @@ Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | POSIX.1-2017 File System | IEEE 1003.1 | Path Resolution, Symlinks, Permissions |
-| Linux procfs | Documentation/filesystems/proc.rst | /proc/pid/*, /proc/meminfo, /proc/ksm |
 
-### 11.2 CosmoFS v2 (geplant)
+### 11.2 ext2 (Root-Filesystem)
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| Merkle Tree / Content-Addressing | — | SHA-256 pro 4KB Block |
-| Copy-on-Write B+ Tree | — | Crash-Safe ohne Journal |
-| S3 API | https://docs.aws.amazon.com/s3/ | Cloud-Sync Backend |
+| ext2 | https://www.nongnu.org/ext2-disk/ | Read-Write, Direct+Indirect+Double-Indirect Blocks |
+| mkfs.ext2 | Host-Tool | Image-Erstellung mit -d (Directory Population) |
 
 ---
 
@@ -451,10 +447,9 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 | SSE2 Maximum (kein AVX) | WASM SIMD Limit, FXSAVE reicht |
 | Single-User | Kein UID/GID Enforcement, Permissions gespeichert aber nur +x enforced |
 | Kernel-DNS/DHCP nur Boot | Anwendungsprotokolle gehoeren in Userspace |
-| CosmoFS einziger Kernel-FS | Externe FS (FAT32, ext4, NTFS) als Userspace-Daemons |
-| SHA-256 als universeller Hash | KSM, CosmoFS Dedup, Cloud-Sync — eine Engine, drei Konsumenten |
+| ext2 als Kernel-FS | Standard-Format, mkfs.ext2 auf Host, read-write |
 | CUBIC statt Reno | Modern, RFC 8312, bessere Performance bei hoher Bandbreite |
-| Kein Swap | MADV_FREE + KSM-Dedup + THP statt Disk-Swap |
+| Kein Swap | MADV_FREE + THP statt Disk-Swap |
 
 ---
 
@@ -551,10 +546,10 @@ Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 |---------|-------|---------|-------|
 | IRQ-Verteilung | RSS/RPS/RFS | Alle auf Core 0 | RT-Core Modell |
 | Scheduler | CFS (fair) | EDF + Priority | Realtime-faehig |
-| Page-Reclaim | kswapd + Direct Reclaim | MADV_FREE Lazy + KSM | Kein Swap-Device |
+| Page-Reclaim | kswapd + Direct Reclaim | MADV_FREE Lazy + THP | Kein Swap-Device |
 | Netfilter | iptables/nftables | Keiner | Single-User, kein Firewall im Kernel |
 | Namespaces | cgroups + namespaces | Keine | Single-User |
 | Security Modules | SELinux/AppArmor | Keiner | Single-User |
 | SysV IPC | shmget/semget/msgget | Nicht implementiert | Pipes/Unix-Sockets/Futex reichen |
-| Filesystem Journaling | ext4 Journal | CosmoFS COW (kein Journal) | COW = crash-safe by design |
+| Filesystem Journaling | ext4 Journal | ext2 (kein Journal) | Einfachheit, fsck bei Bedarf |
 | Dynamic Linker | ld-linux.so | ld-musl-x86_64.so.1 | musl libc (statisch + dynamisch) |

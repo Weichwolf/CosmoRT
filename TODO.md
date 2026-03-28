@@ -12,7 +12,7 @@ EINPROGRESS, SO_RCVTIMEO, Sleep/Wake statt Polling, TX-Ring.
 
 RT/Compute A-E: SPSC Channels, IPI+Wake, TX-Ring, Timer-Wheel, Priorisierte Polling-Schleife.
 
-G1-G2: SHA-256 Hash-Engine auf RT-Core, KSM RAM-Dedup mit Page-Age Tracking.
+
 
 MM: COW fork, MADV_FREE, Transparent Huge Pages (2MB).
 
@@ -35,7 +35,7 @@ SH-C: MAP_SHARED komplett (Page Cache, Demand Paging, Dirty Tracking + Write-Bac
 
 Security: cosmo_dispatch EPERM fuer Non-Driver, is_driver nicht vererbt bei fork.
 
-ELF-Loader: 4→1 Variante, CosmoFS-Loader eliminiert (Layering-Fix), crt0.S (ABI),
+ELF-Loader: 4→1 Variante, CosmoFS→ext2 migriert (Layering-Fix), crt0.S (ABI),
 AT_PHDR Fix, build_user_stack fuer proc_create_elf (argv/envp/auxv korrekt).
 
 procfs: /proc/version, uptime, loadavg, filesystems, pid/status, pid/cwd, pid/environ,
@@ -47,9 +47,9 @@ geloescht (-3400 Zeilen). init.c minimal (15 Zeilen, execve /bin/sh).
 Parallele Tests: fork pro Test (BATCH=4), MAP_SHARED Slots, Kernel-Fix orphaned Threads.
 
 Alpine Bootstrap Phase 1-3: Interaktive Alpine Shell auf CosmoRT.
-Dynamic Linking (ld-musl), CosmoFS Root, PTY/termios (TCGETS/TCSETS real,
+Dynamic Linking (ld-musl), ext2 Root, PTY/termios (TCGETS/TCSETS real,
 poll()-Wake, timer-vt_flush, /dev/console, pty_input_direct).
-CosmoFS Symlink-Resolution. make qemu-alpine bootet Alpine von Disk.
+ext2 Symlink-Resolution. make qemu-alpine bootet Alpine von Disk.
 
 ---
 
@@ -124,11 +124,11 @@ TIOCGWINSZ/TIOCSWINSZ, winsize in PTY-State, PTY-Index Bug Fix. 9 Tests.
 
 ### SH-H: Symlinks — erledigt
 
-Symlinks komplett: ramfs + CosmoFS, path resolution mit ELOOP (max 8 Hops),
+Symlinks komplett: ramfs + ext2, path resolution mit ELOOP (max 8 Hops),
 lstat S_IFLNK, O_NOFOLLOW, unlink Symlink. 25 Tests.
 
 Noch offen:
-- [ ] CosmoFS: rwx Bits speichern (chmod), nur +x enforced
+- [ ] ext2: rwx Bits korrekt enforced (chmod)
 
 ### Job Control — erledigt (EQ-C)
 
@@ -157,12 +157,12 @@ Userland = Alpine Linux (musl-nativ). Kein eigenes Userland.
 
 Busybox 1.36.1 (musl-gcc, statisch, 1.17MB). Eingebettet als /bin/sh in ramfs.
 init.c execve'd /bin/sh → ash Prompt. AT_PHDR Fix (prog_phdr aus PT_LOAD vaddr).
-ELF-Loader Refactoring: 4→1 Variante, CosmoFS-Loader eliminiert, crt0.S ABI-korrekt.
+ELF-Loader Refactoring: 4→1 Variante, CosmoFS→ext2 migriert, crt0.S ABI-korrekt.
 make qemu-busybox zum Testen.
 
 ### Phase 2: Kernel-Features fuer Alpine — erledigt
 
-Symlinks: komplett (ramfs + CosmoFS, path resolution, ELOOP, 25 Tests).
+Symlinks: komplett (ramfs + ext2, path resolution, ELOOP, 25 Tests).
 futex: Spin-Wait → event_wait/event_post, Timeouts, PI, WAKE_OP, 6 Tests.
 
 Noch offen (nicht blockierend fuer Phase 3):
@@ -171,11 +171,11 @@ Noch offen (nicht blockierend fuer Phase 3):
 
 ### Phase 3: Alpine Base — erledigt
 
-Alpine minirootfs bootet von CosmoFS. Dynamic Linking (ld-musl-x86_64.so.1).
+Alpine minirootfs bootet von ext2. Dynamic Linking (ld-musl-x86_64.so.1).
 Interaktive busybox ash Shell: echo, ls, cat, uname funktionieren.
 PTY/termios: TCGETS/TCSETS real, pty_input_direct (DSR bypass), poll()-Wake
 fuer PTY-Input, timer-getriebener vt_flush, /dev/console.
-make qemu-alpine bootet Alpine von CosmoFS Disk-Image.
+make qemu-alpine bootet Alpine von ext2 Disk-Image.
 
 Noch offen:
 - [ ] ash crasht nach externem Kommando im interaktiven Modus (Signal-Frame?)
@@ -297,7 +297,7 @@ Kein Custom-Backend, kein SDL3-Fork. apk add sdl3 funktioniert direkt.
 
 ### VT-C: Keymaps + AltGr
 
-- [ ] .keymap Dateien auf CosmoFS, AltGr, DE-QWERTZ
+- [ ] .keymap Dateien auf ext2, AltGr, DE-QWERTZ
 
 ### VT-D: Alternate Screen
 
@@ -339,9 +339,7 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 - [ ] ARINC-D: Bounded Data Structures
 - [ ] ARINC-E: RT-Core Memory-Isolation
 
-### G3: CosmoFS Block-Dedup (Abhaengigkeit: CosmoFS v2)
 
-### G4: Cloud-Sync Hash-Readiness (Abhaengigkeit: CosmoFS v2)
 
 ### SHA-NI Upgrade (CPUID Check, sha256rnds2)
 
@@ -366,11 +364,9 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 
 ### Dateisystem
 
-- [ ] Hard Links in CosmoFS (vfs_dirops.c:164)
+- [ ] Hard Links in ext2 (vfs_dirops.c:164)
 - [ ] renameat2 RENAME_EXCHANGE (sys_fs.c:53)
 - [ ] futimens auf FD (sys_fs.c:147, aktuell no-op)
-- [ ] CosmoFS Triple-Indirect Blocks: grosse Dateien (cosmofs.c:398)
-- [ ] CosmoFS xattr/Extended Attributes (cosmofs.c:683)
 - [ ] B+ Tree Rebalancing nach Delete (btree.c:589)
 - [ ] /proc/pid/maps: shared/private korrekt anzeigen (procfs.c:231)
 

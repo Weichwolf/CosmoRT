@@ -16,7 +16,7 @@ include/kernel/
   proc/       process.h, thread.h, elf.h
   sys/        syscall.h
   ipc/        futex.h, ipc.h
-  fs/         vfs.h, cosmofs.h, procfs.h, bcache.h, btree.h, journal.h
+  fs/         vfs.h, ext2.h, procfs.h, bcache.h
   net/        net.h, socket.h, unix_socket.h, tcp.h, udp.h, arp.h, ip.h, dns.h, dhcp.h, net_port.h, net_util.h
   event/      epoll.h, fd.h
   vt/         vt.h, pty.h, fb.h, input.h
@@ -75,11 +75,11 @@ USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → B
 ## Filesysteme
 
 ```
-Kernel:     CosmoFS (Root, Performance-kritisch), ramfs, procfs
+Kernel:     ext2 (Root, read-write), ramfs, procfs
 Userspace:  FAT32, ext4, NTFS, NFS, SMB (Latenz-tolerant, ueber Block-I/O)
 ```
 
-CosmoFS ist der einzige FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
+ext2 ist der Root-FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
 werden von Userspace-Daemons gemountet die Block-I/O ueber cosmort.h sprechen.
 
 ## Core-Modell: RT + Compute (SMP 2+)
@@ -133,14 +133,14 @@ src/kernel/
   proc/          process, elf
   sys/           dispatch, sys_{file,fs,mem,proc,sched,signal,time,ipc,net,event,id,cosmo}, stubs
   ipc/           futex, pipe, net_port
-  fs/            vfs, cosmofs, procfs
+  fs/            vfs, ext2, procfs
   net/           TCP/IP, socket, unix_socket
   event/         epoll, eventfd, timerfd, inotify
   vt/            VT, pty, framebuffer, input
   hw/            kexec, serial, hyperv
 src/drivers/     NUR include/public/ (kein Zugriff auf Kernel-Interna)
 src/boot/        UEFI Bootloader
-src/user/        init, ktest, e1000d, svcmgr
+src/user/        init, crt0.S
 test/            unit/ + crash/ (Self-Registering: TEST/CRASH_TEST Macros)
 tools/           mkfs, cosmocp, mkimage.sh, mkfont.py
 ```
@@ -151,7 +151,7 @@ tools/           mkfs, cosmocp, mkimage.sh, mkfont.py
 make                # Kernel → build/BOOTX64.EFI
 make test-hw        # ktest-Suite in QEMU
 make qemu-gui       # VT mit Bernstein-Palette
-make qemu-disk      # Boot von disk.img (GPT: ESP + CosmoFS)
+make qemu-disk      # Boot von disk.img (GPT: ESP + ext2)
 make vhdx           # Hyper-V Image
 ```
 
