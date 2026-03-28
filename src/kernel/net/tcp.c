@@ -733,6 +733,9 @@ void tcp_input(const uint8_t *pkt, int len) {
         /* Set rcv_wscale now that negotiation is done */
         if (c->wscale_ok)
             c->rcv_wscale = RCV_WSCALE;
+        /* Initialize snd_wnd from SYN-ACK (missed if we return early) */
+        { uint32_t raw_wnd = get16(pkt + 48);
+          c->snd_wnd = c->wscale_ok ? (raw_wnd << c->snd_wscale) : raw_wnd; }
         /* ECN negotiation: SYN-ACK must have ECE but not CWR */
         if ((flags & 0xC0) == 0x40) /* ECE only */
             c->ecn_enabled = 1;
@@ -1009,8 +1012,16 @@ int net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms) {
         }
         return -1;
     }
+    int free_before = rxring_free(&c->rx);
     int got = rxring_pop(&c->rx, buf, bufsize);
-    if (got > 0) return got;
+    if (got > 0) {
+        /* RFC 1122 §4.2.2.17: send window update when free space crosses
+         * MSS threshold or window was zero.  Prevents sender stall. */
+        int free_after = rxring_free(&c->rx);
+        if (free_before < MSS && free_after >= MSS)
+            send_tcp(c, 0x10, 0, 0);
+        return got;
+    }
     if (c->got_fin) return 0;
     if (c->got_rst) return -1;
     return -11;

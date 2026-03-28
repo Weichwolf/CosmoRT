@@ -371,24 +371,31 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         { process_t *rp = proc_current();
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
-        uint64_t recv_deadline = timer_ms() + timeo;
+        /* Persistent deadline: survives syscall restart from event_wait */
+        uint64_t now = timer_ms();
+        if (s->recv_deadline) {
+            if (now >= s->recv_deadline) { s->recv_deadline = 0; return -EAGAIN; }
+        } else {
+            uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
+            s->recv_deadline = now + timeo;
+        }
         for (;;) {
             uint8_t kbuf[4096];
             int want = (int)len > 4096 ? 4096 : (int)len;
             int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
             if (r != -11) {
                 s->tcp.wait_thread = 0;
+                s->recv_deadline = 0;
                 if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
                 if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 return r;
             }
-            if (nonblock) return -EAGAIN;
-            if (timer_ms() >= recv_deadline) return -EAGAIN;
+            if (nonblock) { s->recv_deadline = 0; return -EAGAIN; }
+            if (timer_ms() >= s->recv_deadline) { s->recv_deadline = 0; return -EAGAIN; }
             thread_t *t = thread_current();
             __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
-            int remain = (int)(recv_deadline - timer_ms());
-            if (remain <= 0) return -EAGAIN;
+            int remain = (int)(s->recv_deadline - timer_ms());
+            if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
             event_wait(&t->eq, &ev, remain);
         }
@@ -409,24 +416,33 @@ long socket_read(int fd, void *buf, long count) {
         { process_t *rp = proc_current();
           if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
-        uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
-        uint64_t recv_deadline = timer_ms() + timeo;
+        /* Persistent deadline: survives syscall restart from event_wait.
+         * If deadline is set and expired, the timeout fired — return EAGAIN.
+         * If deadline is not set, this is a fresh read — compute new deadline. */
+        uint64_t now = timer_ms();
+        if (s->recv_deadline) {
+            if (now >= s->recv_deadline) { s->recv_deadline = 0; return -EAGAIN; }
+        } else {
+            uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
+            s->recv_deadline = now + timeo;
+        }
         for (;;) {
             uint8_t kbuf[4096];
             int want = (int)count > 4096 ? 4096 : (int)count;
             int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
             if (r != -11) {
                 s->tcp.wait_thread = 0;
+                s->recv_deadline = 0;
                 if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
                 if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 return r;
             }
-            if (nonblock) return -EAGAIN;
-            if (timer_ms() >= recv_deadline) return -EAGAIN;
+            if (nonblock) { s->recv_deadline = 0; return -EAGAIN; }
+            if (timer_ms() >= s->recv_deadline) { s->recv_deadline = 0; return -EAGAIN; }
             thread_t *t = thread_current();
             __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
-            int remain = (int)(recv_deadline - timer_ms());
-            if (remain <= 0) return -EAGAIN;
+            int remain = (int)(s->recv_deadline - timer_ms());
+            if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
             event_wait(&t->eq, &ev, remain);
         }

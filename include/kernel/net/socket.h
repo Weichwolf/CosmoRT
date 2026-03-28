@@ -62,6 +62,9 @@ struct socket {
     int           accept_head;
     int           accept_count;
 
+    /* Recv deadline across syscall restarts (0 = not set) */
+    uint64_t     recv_deadline;
+
     /* Active-list linkage (intrusive doubly-linked) */
     socket_t     *next_active;
     socket_t     *prev_active;
