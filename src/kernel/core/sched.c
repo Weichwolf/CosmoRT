@@ -128,15 +128,26 @@ void sched_add(thread_t *t) {
             else
                 cpu = 1;
         } else {
-            /* Round-robin across cores */
-            static volatile int next_cpu = 0;
-            cpu = __sync_fetch_and_add(&next_cpu, 1) % ncores;
+            /* Round-robin across Compute cores only (1..N).
+             * Core 0 = RT, never receives SCHED_OTHER. */
+            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
+                cpu = 0;
+            else {
+                static volatile int next_cpu = 0;
+                cpu = 1 + (__sync_fetch_and_add(&next_cpu, 1) % (ncores - 1));
+            }
         }
     }
 
-    /* Isolated core (4+ cores): only RT threads may run */
-    if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER)
-        cpu = (ncores == 2) ? 1 : 0;
+    /* Isolated core: only RT threads may run.
+     * SCHED_OTHER → find next non-isolated Compute core (never Core 0). */
+    if (core_isolated[cpu] && t->sched_policy == SCHED_OTHER) {
+        int found = -1;
+        for (int c = 1; c < ncores; c++) {
+            if (!core_isolated[c]) { found = c; break; }
+        }
+        cpu = (found >= 0) ? found : 1; /* fallback: Core 1 */
+    }
 
     t->state = THREAD_RUNNABLE;
     t->rq_next = 0;
@@ -331,9 +342,9 @@ static void sched_rebalance(void) {
  * Saves current thread, picks next, restores into frame.
  * frame layout: [r15..rax, vector, error, rip, cs, rflags, rsp, ss] */
 void sched_preempt(void *frame_ptr) {
-    /* Periodic rebalance (~1s at 10Hz) — only on BSP to avoid races */
+    /* Periodic rebalance (~1s at 1000Hz) — only on BSP to avoid races */
     static int rebalance_counter;
-    if (percpu_self()->core_id == 0 && ++rebalance_counter >= 10) {
+    if (percpu_self()->core_id == 0 && ++rebalance_counter >= 1000) {
         rebalance_counter = 0;
         sched_rebalance();
     }

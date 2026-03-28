@@ -542,7 +542,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
     /* Timer (vector 32): RT scheduler preemption */
     if (vector == 32) {
-        /* (tick debug removed) */
+        extern void sched_preempt(void *frame);
+        sched_preempt(frame);
+    }
+
+    /* Reschedule IPI (vector 0xFD): preempt immediately instead of
+     * waiting for next timer tick. Gives <1ms wake-up latency. */
+    if (vector == 0xFD) {
         extern void sched_preempt(void *frame);
         sched_preempt(frame);
     }
@@ -799,9 +805,9 @@ void irq_init(void) {
 
     irq_register(32, timer_handler);
     lapic_write(LAPIC_TIMER_DIV, 0x03);
-    lapic_write(LAPIC_TIMER, 0x20020);
-    lapic_write(LAPIC_TIMER_INIT, 10000000);
-    serial_puts("IRQ: Timer started\n");
+    lapic_write(LAPIC_TIMER, 0x20020);    /* periodic, vector 32 */
+    lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) — RT-Core */
+    serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
 
     arch_sti();
 }
