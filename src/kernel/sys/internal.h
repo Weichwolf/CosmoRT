@@ -16,6 +16,8 @@
 #include "memops.h"
 #include "uaccess.h"
 #include "net/socket.h"
+#include "net/unix_socket.h"
+#include "net/udp.h"
 #include "cosmort.h"
 #include "net/net_port.h"
 #include "core/irq.h"

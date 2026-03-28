@@ -294,9 +294,13 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
     if (fde_type == FD_SOCKET) {
         socket_t *s = (socket_t *)fde_obj;
         if (__sync_sub_and_fetch(&s->refcount, 1) <= 0) {
-            if (s->state == SOCK_CONNECTED)
+            if (s->is_dgram && s->udp_local_port) {
+                udp_sock_t *us = udp_find(s->udp_local_port);
+                if (us) udp_unbind(us);
+            }
+            if (s->state == SOCK_CONNECTED && !s->is_dgram)
                 net_tcp_close(&s->tcp);
-            s->state = SOCK_UNUSED;
+            sock_free(s);
         }
     } else if (fde_type == FD_PIPE) {
         fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
@@ -462,6 +466,20 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             spin_unlock_irq(&tfd->lock, irqf);
         }
         if ((interest & EPOLLIN) && tfd->expirations > 0) ready |= EPOLLIN;
+        break;
+    }
+
+    case FD_UNIX_SOCK: {
+        unix_socket_t *us = (unix_socket_t *)fde->obj;
+        if (!us) { ready |= EPOLLERR; break; }
+        if (interest & EPOLLIN) {
+            if (us->count > 0) ready |= EPOLLIN;
+            if (!us->peer) ready |= EPOLLIN | EPOLLHUP; /* EOF */
+        }
+        if (interest & EPOLLOUT) {
+            if (!us->peer) ready |= EPOLLERR | EPOLLHUP;
+            else if (us->peer->count < USOCK_BUF_SIZE) ready |= EPOLLOUT;
+        }
         break;
     }
 

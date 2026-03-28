@@ -119,8 +119,15 @@ long do_write(int fd, const void *buf, size_t count) {
         return vfs_write(fd, buf, count);
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
-    if (fde->type == FD_UNIX_SOCK)
-        return usock_write(fd, buf, (long)count);
+    if (fde->type == FD_UNIX_SOCK) {
+        long r = usock_write(fd, buf, (long)count);
+        if (r != -EAGAIN) return r;
+        if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        extern long usock_write_blocking(unix_socket_t *s, const void *buf, long count);
+        unix_socket_t *us = usock_from_fd(fd);
+        if (!us) return -EBADF;
+        return usock_write_blocking(us, buf, (long)count);
+    }
     if (fde->type == FD_PIPE) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);

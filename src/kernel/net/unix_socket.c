@@ -412,6 +412,43 @@ long usock_write(int fd, const void *buf, long count) {
     return (long)n;
 }
 
+/* Blocking write: retry until at least 1 byte written or peer closes */
+long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
+    thread_t *t = thread_current();
+    if (!t) return -EAGAIN;
+
+    for (;;) {
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
+        unix_socket_t *peer = s->peer;
+        if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
+
+        int n = ring_write(peer, (const uint8_t *)buf, (int)count);
+        if (n > 0) {
+            thread_t *reader = 0;
+            if (peer->blocked_reader) {
+                reader = (thread_t *)peer->blocked_reader;
+                peer->blocked_reader = 0;
+            }
+            spin_unlock_irq(&usock_lock, irqf);
+            if (reader) {
+                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                event_post(reader, 8, 0);
+            }
+            extern void epoll_wake_all(void);
+            epoll_wake_all();
+            return (long)n;
+        }
+
+        /* Buffer full — register as blocked writer on peer, wait for drain */
+        spin_unlock_irq(&usock_lock, irqf);
+
+        /* Use event_wait with short timeout to avoid deadlock */
+        event_t ev;
+        event_wait(&t->eq, &ev, 50);
+    }
+}
+
 /* ── close ────────────────────────────────────── */
 
 long usock_close(int fd) {
@@ -499,6 +536,19 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     }
 done:
     if (total > 0) {
+        /* Wake blocked reader on peer */
+        uint64_t irqf2;
+        spin_lock_irq(&usock_lock, &irqf2);
+        thread_t *reader = 0;
+        if (peer->blocked_reader) {
+            reader = (thread_t *)peer->blocked_reader;
+            peer->blocked_reader = 0;
+        }
+        spin_unlock_irq(&usock_lock, irqf2);
+        if (reader) {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
+        }
         extern void epoll_wake_all(void);
         epoll_wake_all();
     }

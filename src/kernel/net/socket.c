@@ -484,6 +484,40 @@ long do_bind(int fd, const void *addr, int addrlen) {
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
     if (k_addr.sin_family != 2 /* AF_INET */) return -EAFNOSUPPORT;
 
+    /* Assign ephemeral port if port 0 requested */
+    if (k_addr.sin_port == 0) {
+        extern int random_get(void *, unsigned long);
+        uint16_t rnd;
+        if (random_get(&rnd, sizeof(rnd)) < 0)
+            rnd = (uint16_t)(timer_ms() & 0xFFFF);
+        /* Try up to 128 random ephemeral ports (49152-65535) */
+        uint64_t lflags;
+        spin_lock_irq(&sock_lock, &lflags);
+        for (int attempt = 0; attempt < 128; attempt++) {
+            uint16_t port_host = (uint16_t)(49152 + ((rnd + attempt) & 0x3FFF));
+            uint16_t port_be = bswap16(port_host);
+            int conflict = 0;
+            for (socket_t *o = sock_active_head; o; o = o->next_active) {
+                if (o == s) continue;
+                if (o->local_port == port_be) { conflict = 1; break; }
+            }
+            if (!conflict) {
+                s->local_ip = k_addr.sin_addr;
+                s->local_port = port_be;
+                if (s->is_dgram) {
+                    s->udp_local_port = port_host;
+                    spin_unlock_irq(&sock_lock, lflags);
+                    udp_bind(port_host);
+                    return 0;
+                }
+                spin_unlock_irq(&sock_lock, lflags);
+                return 0;
+            }
+        }
+        spin_unlock_irq(&sock_lock, lflags);
+        return -EADDRINUSE;
+    }
+
     /* Check for port conflict (unless SO_REUSEADDR) */
     uint64_t lflags;
     spin_lock_irq(&sock_lock, &lflags);
