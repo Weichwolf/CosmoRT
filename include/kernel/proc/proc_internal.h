@@ -15,6 +15,7 @@
 #include "fs/vfs.h"
 #include "fs/ext2.h"
 #include "memops.h"
+#include "uaccess.h"
 #include "sys/syscall.h"
 #include "core/irq.h"
 #include "core/event_queue.h"

@@ -33,6 +33,9 @@ typedef struct process {
     int         stop_signal;       /* signal that stopped the process (0 = not stopped) */
     int         was_continued;     /* 1 = continued since last wait4(WCONTINUED) */
 
+    /* vfork: TID of parent thread blocked until this child execs/exits (0 = none) */
+    int         vfork_parent_tid;
+
     /* Address space */
     uint64_t   *pml4;
 
@@ -123,6 +126,8 @@ int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int p
 
 /* Process fork/exec */
 long do_fork(void);
+long do_vfork(unsigned long flags, void *child_stack,
+              int *parent_tid, int *child_tid, unsigned long tls);
 long do_execve(const char *path, char *const argv[], char *const envp[]);
 long do_wait4(int pid, int *wstatus, int options, void *rusage);
 

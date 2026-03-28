@@ -37,7 +37,7 @@
     /* Process lifecycle */ \
     X(SYS_CLONE, clone, do_clone((unsigned long)a1, (void *)a2, (int *)a3, (int *)a4, (unsigned long)a5)) \
     X(SYS_FORK, fork, do_fork()) \
-    X(SYS_VFORK, vfork, do_fork()) \
+    X(SYS_VFORK, vfork, do_vfork(CLONE_VFORK, 0, 0, 0, 0)) \
     X(SYS_EXECVE, execve, do_execve((const char *)a1, (char *const *)a2, (char *const *)a3)) \
     X(SYS_WAIT4, wait4, do_wait4((int)a1, (int *)a2, (int)a3, (void *)a4)) \
     X(SYS_CLONE3, clone3, do_clone3((void *)a1, (size_t)a2)) \

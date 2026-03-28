@@ -41,6 +41,16 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     p->exit_code = status;
     /* exit_signal is set by caller for signal death, 0 for normal exit */
 
+    /* vfork: wake blocked parent if child exits without exec */
+    if (p->vfork_parent_tid) {
+        thread_t *pt = thread_find_by_tid(p->vfork_parent_tid);
+        if (pt) {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(pt, 2 /* EQ_VFORK_DONE */, (uint64_t)p->pid);
+        }
+        p->vfork_parent_tid = 0;
+    }
+
     /* Close all FDs immediately so pipe writers/readers see EOF */
     for (int i = 0; i < FD_MAX; i++) {
         int ftype = p->fds.entries[i].type;
@@ -179,6 +189,14 @@ long do_clone(unsigned long flags, void *child_stack,
      * Delegate to do_fork() which handles COW + new process_t. */
     if (!(flags & CLONE_VM))
         return do_fork();
+
+    /* CLONE_VM | CLONE_VFORK without CLONE_THREAD: vfork/posix_spawn semantics.
+     * musl's posix_spawn uses clone(CLONE_VM|CLONE_VFORK|SIGCHLD, child_stack).
+     * Child shares address space temporarily, then does exec (gets own AS).
+     * Must create a proper child process (for waitpid), not a thread.
+     * Parent blocks until child execs or exits. */
+    if ((flags & CLONE_VFORK) && !(flags & CLONE_THREAD))
+        return do_vfork(flags, child_stack, parent_tid, child_tid, tls);
 
     /* CLONE_VM set: in-process thread creation.
      * CLONE_FS, CLONE_FILES, CLONE_SIGHAND: with CLONE_VM, child shares

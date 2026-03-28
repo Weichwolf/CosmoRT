@@ -325,3 +325,200 @@ long do_fork(void) {
 
     return (long)child->pid;
 }
+
+/* ── vfork (CLONE_VM|CLONE_VFORK) ────────────────── */
+
+/* Used by musl's posix_spawn: clone(CLONE_VM|CLONE_VFORK|SIGCHLD, child_stack).
+ * Creates a real child process (COW fork) with the specified child stack.
+ * Parent blocks until child calls exec or exit. */
+long do_vfork(unsigned long flags, void *child_stack,
+              int *parent_tid, int *child_tid, unsigned long tls) {
+    percpu_t *cpu = percpu_self();
+    thread_t *cur = cpu->current_thread;
+    if (!cur || !cur->proc) return -EFAULT;
+    process_t *parent = cur->proc;
+
+    /* Reuse do_fork logic: allocate child process + COW address space */
+    process_t *child = proc_alloc();
+    if (!child) return -ENOMEM;
+    child->parent_pid = parent->pid;
+    child->pgid = parent->pgid;
+    child->sid  = parent->sid;
+    child->vma_root = 0;
+
+    /* Stop other parent threads during page copy */
+    int need_ipi = 0;
+    for (thread_t *t = parent->threads; t; t = t->proc_next) {
+        if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
+            t->state = THREAD_BLOCKED;
+            t->saved_priority = -2;
+            need_ipi = 1;
+        }
+    }
+    if (need_ipi) {
+        extern void tlb_shootdown(uint64_t pml4_phys);
+        tlb_shootdown(virt_to_phys(parent->pml4));
+    }
+
+    /* COW address space copy */
+    uint64_t fork_irqf;
+    spin_lock_irq(&parent->lock, &fork_irqf);
+    int copy_err = copy_address_space(child, parent);
+    spin_unlock_irq(&parent->lock, fork_irqf);
+
+    /* Resume suspended threads */
+    for (thread_t *t = parent->threads; t; t = t->proc_next) {
+        if (t != cur && t->saved_priority == -2) {
+            t->saved_priority = -1;
+            sched_add(t);
+        }
+    }
+
+    if (copy_err < 0) {
+        if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
+        vma_free_tree(child->vma_root);
+        child->vma_root = 0;
+        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
+        slab_free(&proc_slab, child);
+        return -ENOMEM;
+    }
+
+    /* Copy process metadata (same as do_fork) */
+    child->brk_base = parent->brk_base;
+    child->brk_current = parent->brk_current;
+    child->mmap_next = parent->mmap_next;
+    child->mlockall_flags = parent->mlockall_flags;
+    child->is_driver = 0;
+    for (int ci = 0; ci < 256; ci++) {
+        child->cwd[ci] = parent->cwd[ci];
+        if (!parent->cwd[ci]) break;
+    }
+    child->cmdline_len = parent->cmdline_len;
+    for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
+        child->cmdline[ci] = parent->cmdline[ci];
+    child->sig_pending = 0;
+    for (int si = 0; si < 64; si++)
+        child->sig_actions[si] = parent->sig_actions[si];
+
+    /* Duplicate fd_table */
+    for (int i = 0; i < FD_MAX; i++) {
+        child->fds.entries[i] = parent->fds.entries[i];
+        if (parent->fds.entries[i].obj) {
+            int ftype = parent->fds.entries[i].type;
+            if (ftype == FD_FILE)
+                vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
+            else if (ftype == FD_PIPE)
+                fd_obj_incref(ftype, parent->fds.entries[i].obj);
+            else if (ftype == FD_SOCKET || ftype == FD_EPOLL ||
+                     ftype == FD_EVENTFD || ftype == FD_TIMERFD ||
+                     ftype == FD_INOTIFY || ftype == FD_UNIX_SOCK)
+                fd_obj_incref(ftype, parent->fds.entries[i].obj);
+        }
+    }
+    child->fds.max_fd = parent->fds.max_fd;
+    for (int w = 0; w < FD_BITMAP_WORDS; w++)
+        child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
+
+    /* Create child thread */
+    thread_t *ct = thread_alloc();
+    if (!ct) {
+        free_address_space(child->pml4); child->pml4 = 0;
+        vma_free_tree(child->vma_root); child->vma_root = 0;
+        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
+        slab_free(&proc_slab, child);
+        return -ENOMEM;
+    }
+
+    /* Save parent user state (populates cur->rip, rsp, etc. from syscall frame) */
+    save_user_state_for_block(cur, 0);
+
+    /* Copy register state from parent — child gets RAX=0 */
+    ct->rip = cur->rip;
+    ct->rflags = cur->rflags;
+    ct->rax = 0;
+    ct->rbx = cur->rbx;
+    ct->rcx = cur->rcx;
+    ct->rdx = cur->rdx;
+    ct->rsi = cur->rsi;
+    ct->rdi = cur->rdi;
+    ct->rbp = cur->rbp;
+    ct->r8  = cur->r8;
+    ct->r9  = cur->r9;
+    ct->r10 = cur->r10;
+    ct->r11 = cur->r11;
+    ct->r12 = cur->r12;
+    ct->r13 = cur->r13;
+    ct->r14 = cur->r14;
+    ct->r15 = cur->r15;
+
+    /* Child uses the provided stack (clone semantics, not fork) */
+    ct->rsp = child_stack ? (uint64_t)child_stack : cur->rsp;
+
+    /* TLS */
+    if (flags & CLONE_SETTLS)
+        ct->fs_base = tls;
+    else
+        ct->fs_base = cur->fs_base;
+
+    kmemcpy(ct->fxsave_area, cur->fxsave_area, 512);
+    ct->sched_policy = cur->sched_policy;
+    ct->priority = cur->priority;
+    ct->saved_priority = -1;
+    ct->cpu_affinity = -1;
+    ct->timeslice = RR_TIMESLICE;
+    ct->proc = child;
+    ct->state = THREAD_RUNNABLE;
+    ct->sig_blocked = cur->sig_blocked;
+
+    /* CLONE_PARENT_SETTID */
+    if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
+        if (user_ok((uint64_t)parent_tid, 4))
+            *parent_tid = ct->tid;
+    }
+
+    /* CLONE_CHILD_SETTID */
+    if ((flags & CLONE_CHILD_SETTID) && child_tid) {
+        if (user_ok((uint64_t)child_tid, 4))
+            *child_tid = ct->tid;
+    }
+
+    /* CLONE_CHILD_CLEARTID */
+    ct->clear_child_tid = 0;
+    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
+        ct->clear_child_tid = child_tid;
+
+    /* Kernel stack */
+    ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
+    if (!ct->kstack) {
+        thread_free(ct);
+        free_address_space(child->pml4); child->pml4 = 0;
+        vma_free_tree(child->vma_root); child->vma_root = 0;
+        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
+        slab_free(&proc_slab, child);
+        return -ENOMEM;
+    }
+    ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
+
+    child->main_thread = ct;
+    child->threads = ct;
+    child->thread_count = 1;
+
+    /* Record parent thread TID so exec/exit can wake us */
+    child->vfork_parent_tid = cur->tid;
+
+    /* CLONE_VFORK: block parent until child execs or exits.
+     * Cannot use event_wait — it rewinds the syscall on wake (would re-clone).
+     * Instead: save state with return value = child PID, block, let wake re-add
+     * us to the run queue. Scheduler resumes us in userspace with RAX = child PID. */
+    cur->rax = (uint64_t)(long)child->pid; /* clone returns child PID in parent */
+    cur->state = THREAD_BLOCKED;
+
+    /* Schedule child first (it will exec/exit and then wake us) */
+    sched_add(ct);
+
+    extern uint64_t pml4[];
+    arch_set_cr3(virt_to_phys(pml4));
+    thread_return_to_kernel(cur);
+    /* unreachable — scheduler resumes us after child wakes us */
+    return (long)child->pid;
+}

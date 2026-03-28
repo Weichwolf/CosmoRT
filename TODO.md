@@ -419,10 +419,18 @@ RT-Core 1000Hz (1ms), Compute 100Hz (10ms). IPI → sched_preempt direkt. Wake <
 
 ## Offen — Fehlende Implementierungen (aus Source-Kommentaren)
 
+### Memory/Architektur
+
+- [ ] BUG: pages_alloc(N) wird im exec/mmap-Pfad fuer Userspace-Segmente aufgerufen
+      statt Demand Paging. "pages_alloc: order too large" bei grossen Binaries (cc1 ~50MB).
+      Userspace-Memory nur ueber VMA + Page Fault Handler (alloc_page pro Fault).
+      pages_alloc nur fuer Kernel-Interna (DMA, Kernel Stacks).
+- [ ] Review: alle pages_alloc Caller pruefen — wer nutzt grosse Orders fuer Userspace?
+- [ ] vfork: echte CLONE_VM|CLONE_VFORK Semantik (Parent blockiert, Kind exec/exit weckt)
+
 ### Syscalls/Prozesse
 
 - [ ] ARCH_SET_GS / ARCH_GET_GS: GS-Base Management (sys_proc.c:18)
-- [ ] vfork: echte Semantik (Parent suspended bis exec), aktuell Alias auf fork
 - [ ] prlimit64: set-Operationen ignoriert (sys_proc.c:489)
 - [ ] sendfile: nicht implementiert, return -ENOSYS (stubs.c:19)
 - [ ] MREMAP_FIXED: return -EINVAL (sys_mem.c:872)

@@ -422,6 +422,16 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         p->comm[ci] = '\0';
     }
 
+    /* vfork: wake blocked parent now that child has its own address space */
+    if (p->vfork_parent_tid) {
+        thread_t *pt = thread_find_by_tid(p->vfork_parent_tid);
+        if (pt) {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(pt, 2 /* EQ_VFORK_DONE */, (uint64_t)p->pid);
+        }
+        p->vfork_parent_tid = 0;
+    }
+
     /* Reset signal dispositions: POSIX requires that after exec, all signals
      * with user handlers are reset to SIG_DFL. SIG_IGN is preserved.
      * Pending signals survive exec — delivered under new disposition. */
