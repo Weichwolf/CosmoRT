@@ -420,6 +420,29 @@ Before fixing, ensure:
 
 ---
 
+## Restructure: src/kernel/vt/ → src/kernel/tty/
+
+Aktuell liegt alles unter `src/kernel/vt/`. Linux hat `drivers/tty/` — aber
+TTY braucht Kernel-Interna (Scheduler, Signals, Prozesse), passt nicht unter
+die Driver-Isolation (`src/drivers/` = nur `include/public/`).
+
+Ziel: `src/kernel/tty/` mit sauberer Trennung:
+
+```
+src/kernel/tty/
+  tty.c        termios Storage, ioctl Dispatch (TCGETS/TCSETS/TIOC*)
+  pty.c        PTY master/slave (open, read, write, close)
+  ldisc.c      Line Discipline (canonical/raw, c_cc[], VMIN/VTIME)
+  vt.c         VT Rendering, ANSI Parser, Cursor, Scrollback
+  fb.c         Framebuffer (Glyph Rendering, Dirty Tracking)
+  input.c      Keyboard/Input Routing (evdev → VT)
+```
+
+Aktuell: `pty.c` mischt Line Discipline + PTY I/O + termios.
+Linux trennt: `pty.c` (PTY), `n_tty.c` (Line Discipline), `tty_ioctl.c` (termios).
+
+---
+
 ## References
 
 - Linux kernel: `drivers/tty/tty_ioctl.c` (TCGETS/TCSETS)
