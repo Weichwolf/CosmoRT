@@ -19,9 +19,20 @@ static void test_clone_flags(void) {
     }
     check("clone(VM|FS|FILES|SIGHAND|SYSVSEM) tid > 0", tid > 0);
 
-    /* clone without CLONE_VM should fail (CosmoRT: threads only via clone) */
-    long r = sc5(SYS_CLONE, (long)(CLONE_FS | CLONE_FILES), stk + 4096, 0, 0, 0);
-    check_val("clone without CLONE_VM = -EINVAL", r, -EINVAL);
+    /* clone without CLONE_VM = fork (new process, COW).
+     * musl libc's fork() uses clone(SIGCHLD, 0). */
+    long r = sc5(SYS_CLONE, 17 /* SIGCHLD */, 0, 0, 0, 0);
+    if (r == 0) {
+        /* child: exit immediately */
+        sc1(SYS_EXIT_GROUP, 42);
+        __builtin_unreachable();
+    }
+    check("clone(SIGCHLD) = fork, pid > 0", r > 0);
+    /* Reap the child */
+    int wstatus = 0;
+    long w = sc4(SYS_WAIT4, r, (long)&wstatus, 0, 0);
+    check_val("wait4 reaps forked child", w, r);
+    check_val("child exit status 42", (wstatus >> 8) & 0xff, 42);
 
     sc2(SYS_MUNMAP, stk, 4096);
 }
