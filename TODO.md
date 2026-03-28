@@ -395,7 +395,6 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 - [ ] Fix: Round-Robin nur ueber Compute-Cores (1..N), nie Core 0
 - [ ] Fix: Isolation-Fallback auf naechsten nicht-isolierten Compute-Core
 - [ ] Invariante: Core 0 = RT, nur SCHED_FIFO/SCHED_RR. Immer. Unabhaengig von Core-Anzahl.
-- [ ] RT_CORE_COUNT Abstraktion, kein hardcoded Core 0
 
 ### ARINC 653 Partitionierung
 
