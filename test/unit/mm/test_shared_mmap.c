@@ -1,6 +1,18 @@
 #include "ktest.h"
 
-#define TEST_PATH "/tmp/shmmap_test"
+static int test_path_cnt;
+static char test_path_buf[64];
+static const char *next_test_path(void) {
+    int n = test_path_cnt++;
+    int i = 0;
+    const char *pfx = "/tmp/shmmap_";
+    while (pfx[i]) { test_path_buf[i] = pfx[i]; i++; }
+    test_path_buf[i++] = '0' + (char)(n / 10);
+    test_path_buf[i++] = '0' + (char)(n % 10);
+    test_path_buf[i] = 0;
+    return test_path_buf;
+}
+#define TEST_PATH next_test_path()
 #define PAGE 4096
 
 /* Helper: create file, write pattern, return fd (caller closes) */
