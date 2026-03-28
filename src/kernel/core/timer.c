@@ -67,6 +67,10 @@ uint64_t timer_ms(void) {
     return (rdtsc() - boot_tsc) / timer_tsc_per_ms;
 }
 
+uint32_t timer_epoch_sec(void) {
+    return (uint32_t)(rtc_epoch_sec + timer_ms() / 1000);
+}
+
 /* Kernel-only non-preemptible delay. For HW init timing (SMP SIPI, device
  * reset). NOT for userspace sleep — use event_wait with timeout instead. */
 void timer_sleep_ms(uint32_t ms) {

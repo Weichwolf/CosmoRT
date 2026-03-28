@@ -43,6 +43,7 @@ struct vfs_node {
     uint64_t ino;           /* inode number */
     uint32_t mode;          /* permission bits */
     uint32_t uid, gid;      /* owner (single-user: always 0) */
+    uint32_t atime, mtime, ctime; /* Unix epoch seconds */
     char symlink_target[256]; /* symlink target (VFS_SYMLINK only) */
     struct vfs_node *children;  /* linked list (for directories) */
     struct vfs_node *next;      /* sibling link */

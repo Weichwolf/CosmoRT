@@ -201,6 +201,9 @@ struct vfs_node *node_alloc(const char *name, int type) {
     n->mode = 0755;
     n->uid = 0;
     n->gid = 0;
+    { extern uint32_t timer_epoch_sec(void);
+      uint32_t now = timer_epoch_sec();
+      n->atime = now; n->mtime = now; n->ctime = now; }
     n->symlink_target[0] = 0;
     n->children = 0;
     n->next = 0;

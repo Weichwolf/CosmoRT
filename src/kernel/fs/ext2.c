@@ -29,7 +29,8 @@ static spinlock_t fs_lock = SPINLOCK_INIT;
 /* ── Helpers ──────────────────────────────────────── */
 
 static uint32_t now_sec(void) {
-    return (uint32_t)(timer_ms() / 1000);
+    extern uint32_t timer_epoch_sec(void);
+    return timer_epoch_sec();
 }
 
 static int kstrlen_s(const char *s) {

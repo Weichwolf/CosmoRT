@@ -155,6 +155,7 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
         done += chunk;
     }
     if (end > node->size) node->size = end;
+    { extern uint32_t timer_epoch_sec(void); node->mtime = timer_epoch_sec(); }
 
     vfs_notify_modify(node);
     return (long)count;

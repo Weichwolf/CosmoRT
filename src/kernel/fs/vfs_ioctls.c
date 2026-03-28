@@ -22,6 +22,10 @@ void fill_stat(struct vfs_node *node, struct k_stat *buf) {
         buf->st_mode = S_IFIFO | (S_IRUSR | S_IWUSR);
     else if (node->type == VFS_SYMLINK)
         buf->st_mode = S_IFLNK | 0777;
+
+    buf->st_atime_sec = node->atime;
+    buf->st_mtime_sec = node->mtime;
+    buf->st_ctime_sec = node->ctime;
 }
 
 void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
