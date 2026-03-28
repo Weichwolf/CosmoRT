@@ -253,7 +253,9 @@ long pipe_close(fd_entry_t *fde) {
     uint64_t flags;
     spin_lock_irq(&pp->lock, &flags);
     if (is_write) { if (pp->write_open > 0) pp->write_open--; }
-    else          { if (pp->read_open > 0)  pp->read_open--; }
+    else          {
+        if (pp->read_open > 0) pp->read_open--;
+    }
     int both_closed = (pp->read_open <= 0 && pp->write_open <= 0);
     /* Wake blocked reader if write end closed (EOF) */
     thread_t *reader = 0;

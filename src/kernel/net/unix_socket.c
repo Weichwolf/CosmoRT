@@ -132,6 +132,7 @@ long usock_socket(int type) {
 /* ── socketpair(AF_UNIX, SOCK_STREAM, 0, sv[2]) ─ */
 
 long usock_socketpair(int type, int *sv) {
+    serial_puts("SPAIR\n");
     if (!user_ok((uint64_t)sv, 2 * sizeof(int))) return -EFAULT; /* validated early, copy_to_user below */
 
     int base_type = type & 0xF;

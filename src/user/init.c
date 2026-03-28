@@ -31,7 +31,7 @@ void _start_c(void) {
         if (fd > 2) sc1(SYS_CLOSE, fd);
         sc3(SYS_IOCTL, 0, TIOCSCTTY, 1);
     }
-    char *argv[] = { "sh", (char *)0 };
+    char *argv[] = { "sh", "/tmp/test_https.sh", (char *)0 };
     char *envp[] = { "HOME=/", "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
                      "TERM=dumb", (char *)0 };
     sc3(SYS_EXECVE, (long)"/bin/sh", (long)argv, (long)envp);

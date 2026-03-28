@@ -251,7 +251,7 @@ long do_fork(void) {
                 fd_obj_incref(ftype, parent->fds.entries[i].obj);
             else if (ftype == FD_SOCKET || ftype == FD_EPOLL ||
                      ftype == FD_EVENTFD || ftype == FD_TIMERFD ||
-                     ftype == FD_INOTIFY)
+                     ftype == FD_INOTIFY || ftype == FD_UNIX_SOCK)
                 fd_obj_incref(ftype, parent->fds.entries[i].obj);
         }
     }
@@ -322,6 +322,9 @@ long do_fork(void) {
 
     /* Add child thread to scheduler */
     sched_add(ct);
+    serial_puts("FORK:");
+    serial_hex64((uint64_t)(unsigned)child->pid);
+    serial_putchar('\n');
 
     return (long)child->pid;
 }

@@ -140,7 +140,7 @@ static void segfault_log(uint64_t cr2, uint64_t rip, uint64_t error, int pid) {
     serial_hex64(error);
     if (pid >= 0) {
         serial_puts(" pid=");
-        serial_putchar('0' + (pid % 10));
+        serial_hex64((uint64_t)(unsigned)pid);
         serial_puts(" killed\n");
     }
 }

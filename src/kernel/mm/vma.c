@@ -280,3 +280,24 @@ uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size) {
 
     return 0;
 }
+
+/* Debug: dump first N VMAs in-order */
+static void vma_dump_inorder(vma_t *n, int *count, int max) {
+    if (!n || *count >= max) return;
+    vma_dump_inorder(n->left, count, max);
+    if (*count >= max) return;
+    serial_puts("  VMA ");
+    serial_hex64(n->start);
+    serial_puts("-");
+    serial_hex64(n->end);
+    serial_puts(" p=");
+    serial_putchar('0' + (n->prot & 7));
+    serial_putchar('\n');
+    (*count)++;
+    vma_dump_inorder(n->right, count, max);
+}
+
+void vma_dump_first(vma_t *root, int max) {
+    int count = 0;
+    vma_dump_inorder(root, &count, max);
+}
