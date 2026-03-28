@@ -41,6 +41,11 @@ void net_send_raw(const uint8_t *data, uint16_t len);
 void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
                       const uint8_t *dst_ip, uint8_t proto, uint16_t plen);
 
+/* IP header build with TOS byte (ECN support) */
+void net_build_ip_hdr_tos(uint8_t *pkt, const uint8_t *dst_mac,
+                          const uint8_t *dst_ip, uint8_t proto,
+                          uint16_t plen, uint8_t tos);
+
 /* Queue type — each queue has its own spinlock.
  *
  * Lock ordering (lower number = outer lock):

@@ -1,6 +1,7 @@
 /* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine, Hash-Lookup
  * CUBIC (RFC 8312), SACK (RFC 2018), Window Scaling (RFC 7323),
- * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928). */
+ * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928),
+ * Timestamps/PAWS (RFC 7323), ECN (RFC 3168), TFO (RFC 7413). */
 
 #include "net/tcp.h"
 #include "net/net.h"
@@ -136,6 +137,40 @@ net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *sr
     return 0;
 }
 
+/* ── TFO Cookie Cache (RFC 7413) ──────────────────── */
+
+static tfo_cache_entry_t tfo_cache[NET_TFO_CACHE_MAX];
+
+int tfo_cache_lookup(const uint8_t *ip, uint8_t *cookie_out, uint8_t *len_out) {
+    for (int i = 0; i < NET_TFO_CACHE_MAX; i++) {
+        if (tfo_cache[i].cookie_len &&
+            tfo_cache[i].ip[0] == ip[0] && tfo_cache[i].ip[1] == ip[1] &&
+            tfo_cache[i].ip[2] == ip[2] && tfo_cache[i].ip[3] == ip[3]) {
+            mcpy(cookie_out, tfo_cache[i].cookie, tfo_cache[i].cookie_len);
+            *len_out = tfo_cache[i].cookie_len;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void tfo_cache_store(const uint8_t *ip, const uint8_t *cookie, uint8_t len) {
+    if (len < 4 || len > 16) return;
+    /* Overwrite existing entry for same IP, else use first empty, else slot 0 */
+    int slot = -1;
+    for (int i = 0; i < NET_TFO_CACHE_MAX; i++) {
+        if (tfo_cache[i].cookie_len == 0) { if (slot < 0) slot = i; continue; }
+        if (tfo_cache[i].ip[0] == ip[0] && tfo_cache[i].ip[1] == ip[1] &&
+            tfo_cache[i].ip[2] == ip[2] && tfo_cache[i].ip[3] == ip[3]) {
+            slot = i; break;
+        }
+    }
+    if (slot < 0) slot = 0;
+    mcpy(tfo_cache[slot].ip, ip, 4);
+    mcpy(tfo_cache[slot].cookie, cookie, len);
+    tfo_cache[slot].cookie_len = len;
+}
+
 /* ── TCP Checksum ──────────────────────────────────── */
 
 static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip,
@@ -158,16 +193,45 @@ static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip,
 
 /* ── Send TCP Segment (with options support) ──────── */
 
+/* Build Timestamp option (10 bytes): NOP+NOP+Kind8+Len10+TSval+TSecr */
+static int ts_build_opt(net_tcp_t *c, uint8_t *buf) {
+    if (!c->ts_enabled) return 0;
+    buf[0] = 1; buf[1] = 1; /* NOP NOP for alignment */
+    buf[2] = 8; buf[3] = 10;
+    put32(buf + 4, (uint32_t)timer_ms());
+    put32(buf + 8, c->ts_recent);
+    return 12;
+}
+
 static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
                           const void *data, int dlen,
                           const uint8_t *opts, int optlen) {
     uint8_t pkt[1536];
-    int thdr = 20 + optlen;
-    /* pad to 4-byte boundary */
+
+    /* Append Timestamp option if enabled and not a SYN (SYN builds its own) */
+    uint8_t ts_opt[12];
+    int ts_len = 0;
+    if (c->ts_enabled && !(flags & 0x02))
+        ts_len = ts_build_opt(c, ts_opt);
+
+    int total_optlen = optlen + ts_len;
+    int thdr = 20 + total_optlen;
     while (thdr & 3) thdr++;
     int tt = thdr + dlen;
-    mzero(pkt, 54 + optlen + dlen);
-    net_build_ip_hdr(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt);
+    mzero(pkt, 54 + total_optlen + dlen);
+
+    /* ECN: set ECT(0) = 0x02 on outgoing TCP if ECN negotiated */
+    uint8_t tos = 0;
+    if (c->ecn_enabled && !(flags & 0x02)) /* not on SYN */
+        tos = 0x02; /* ECT(0) */
+
+    /* ECN TCP flags: ECE if CE received, CWR after cwnd reduction */
+    if (c->ecn_enabled && !(flags & 0x02)) {
+        if (c->ecn_ce_pending)   flags |= 0x40; /* ECE */
+        if (c->ecn_cwr_sent)  { flags |= 0x80; c->ecn_cwr_sent = 0; }
+    }
+
+    net_build_ip_hdr_tos(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt, tos);
     uint8_t *t = pkt + 34;
     put16(t, c->local_port);
     put16(t + 2, c->remote_port);
@@ -190,6 +254,7 @@ static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
     put16(t + 16, 0);
     put16(t + 18, 0);
     if (optlen > 0 && opts) mcpy(t + 20, opts, optlen);
+    if (ts_len > 0) mcpy(t + 20 + optlen, ts_opt, ts_len);
     if (dlen > 0 && data) mcpy(t + thdr, data, dlen);
     uint16_t ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
     t[16] = (uint8_t)(ck >> 8);
@@ -216,29 +281,75 @@ static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     send_tcp_opts(c, flags, data, dlen, 0, 0);
 }
 
-/* ── SYN Options: Window Scale + SACK Permitted + MSS ── */
+/* ── SYN Options: MSS + WScale + SACK-Perm + Timestamps + TFO cookie ── */
 
 static void send_syn(net_tcp_t *c, uint8_t flags) {
-    /* MSS(4) + WScale(3) + SACK-Perm(2) + NOP(1) = 10, padded to 12 */
-    uint8_t opts[12];
-    mzero(opts, 12);
+    /* MSS(4) + WScale(3) + NOP(1) + SACK-Perm(2) + NOP+NOP + Timestamp(10)
+     * + TFO cookie request(2-18) */
+    uint8_t opts[48];
+    int olen = 0;
+    mzero(opts, sizeof(opts));
+
     /* MSS option: Kind=2, Len=4, Value=1460 */
-    opts[0] = 2; opts[1] = 4;
-    put16(opts + 2, MSS);
+    opts[olen++] = 2; opts[olen++] = 4;
+    put16(opts + olen, MSS); olen += 2;
+
     /* Window Scale: Kind=3, Len=3, Shift=RCV_WSCALE */
-    opts[4] = 3; opts[5] = 3; opts[6] = RCV_WSCALE;
+    opts[olen++] = 3; opts[olen++] = 3; opts[olen++] = RCV_WSCALE;
+
     /* NOP padding */
-    opts[7] = 1;
+    opts[olen++] = 1;
+
     /* SACK Permitted: Kind=4, Len=2 */
-    opts[8] = 4; opts[9] = 2;
-    /* NOP + NOP to align to 4 bytes */
-    opts[10] = 1; opts[11] = 1;
-    send_tcp_opts(c, flags, 0, 0, opts, 12);
+    opts[olen++] = 4; opts[olen++] = 2;
+
+    /* NOP + NOP for alignment before Timestamp */
+    opts[olen++] = 1; opts[olen++] = 1;
+
+    /* Timestamp option: Kind=8, Len=10, TSval, TSecr=0 (SYN) */
+    opts[olen++] = 8; opts[olen++] = 10;
+    put32(opts + olen, (uint32_t)timer_ms()); olen += 4;
+    put32(opts + olen, 0); olen += 4; /* TSecr=0 on SYN */
+
+    /* ECN: set CWR+ECE on outgoing SYN to negotiate */
+    if (flags == 0x02) /* SYN only (client), not SYN-ACK */
+        flags |= 0xC0; /* CWR(0x80) + ECE(0x40) */
+    else if (flags == 0x12 && c->ecn_enabled) /* SYN-ACK: respond with ECE only */
+        flags |= 0x40;
+
+    /* TFO cookie: on SYN, request or send cached cookie */
+    if (!(flags & 0x10)) { /* SYN only, not SYN-ACK */
+        uint8_t cookie[16];
+        uint8_t cookie_len = 0;
+        if (tfo_cache_lookup(c->dst_ip, cookie, &cookie_len) == 0) {
+            /* Have cookie: include it (Kind=34, Len=2+cookie_len) */
+            opts[olen++] = 34;
+            opts[olen++] = (uint8_t)(2 + cookie_len);
+            mcpy(opts + olen, cookie, cookie_len);
+            olen += cookie_len;
+        } else {
+            /* No cookie: request one (Kind=34, Len=2, empty) */
+            opts[olen++] = 34; opts[olen++] = 2;
+        }
+    }
+
+    /* Pad to 4-byte boundary */
+    while (olen & 3) opts[olen++] = 1; /* NOP */
+
+    send_tcp_opts(c, flags, 0, 0, opts, olen);
 }
 
 /* ── Parse TCP Options from SYN-ACK ──────────────── */
 
-static void parse_tcp_options(net_tcp_t *c, const uint8_t *opts, int optlen) {
+/* Parse result for per-packet timestamp values (not stored in conn on SYN-ACK parse) */
+typedef struct {
+    uint32_t tsval;    /* peer's TSval */
+    uint32_t tsecr;    /* echo of our TSval */
+    uint8_t  has_ts;   /* 1 if TSopt present */
+} tcp_opt_parsed_t;
+
+static void parse_tcp_options_ex(net_tcp_t *c, const uint8_t *opts, int optlen,
+                                 tcp_opt_parsed_t *parsed) {
     int i = 0;
     while (i < optlen) {
         uint8_t kind = opts[i];
@@ -265,9 +376,41 @@ static void parse_tcp_options(net_tcp_t *c, const uint8_t *opts, int optlen) {
                 c->sack_blocks[j].left  = get32(opts + i + 2 + j * 8);
                 c->sack_blocks[j].right = get32(opts + i + 2 + j * 8 + 4);
             }
+        } else if (kind == 8 && olen == 10) {
+            /* Timestamp (RFC 7323): TSval + TSecr */
+            uint32_t tsval = get32(opts + i + 2);
+            uint32_t tsecr = get32(opts + i + 6);
+            if (parsed) {
+                parsed->tsval = tsval;
+                parsed->tsecr = tsecr;
+                parsed->has_ts = 1;
+            }
+            /* Negotiate: if we see it in SYN/SYN-ACK, enable */
+            c->ts_enabled = 1;
+            /* Update ts_recent for PAWS */
+            if ((int32_t)(tsval - c->ts_recent) >= 0) {
+                c->ts_recent = tsval;
+                c->ts_recent_age = timer_ms();
+            }
+        } else if (kind == 34) {
+            /* TFO Cookie (RFC 7413) */
+            if (olen > 2) {
+                /* Server sent us a cookie — cache it */
+                uint8_t clen = olen - 2;
+                if (clen >= 4 && clen <= 16) {
+                    tfo_cache_store(c->dst_ip, opts + i + 2, clen);
+                    c->tfo_cookie_len = clen;
+                    mcpy(c->tfo_cookie, opts + i + 2, clen);
+                    c->tfo_enabled = 1;
+                }
+            }
         }
         i += olen;
     }
+}
+
+static void parse_tcp_options(net_tcp_t *c, const uint8_t *opts, int optlen) {
+    parse_tcp_options_ex(c, opts, optlen, 0);
 }
 
 /* ── SACK Block Management (RX side) ─────────────── */
@@ -555,10 +698,28 @@ void tcp_input(const uint8_t *pkt, int len) {
     uint32_t tseq = get32(pkt + 38);
 
     /* Parse TCP options from any packet with options */
+    tcp_opt_parsed_t opt_parsed;
+    mzero(&opt_parsed, sizeof(opt_parsed));
     if (doff > 20) {
         const uint8_t *opts = pkt + 34 + 20;
         int optlen = doff - 20;
-        parse_tcp_options(c, opts, optlen);
+        parse_tcp_options_ex(c, opts, optlen, &opt_parsed);
+    }
+
+    /* PAWS (RFC 7323): drop segment with old timestamp */
+    if (c->ts_enabled && opt_parsed.has_ts && c->state >= TCP_ESTABLISHED) {
+        if ((int32_t)(opt_parsed.tsval - c->ts_recent) < 0 && !(flags & 0x04)) {
+            /* Timestamp older than ts_recent and not RST — drop, send ACK */
+            send_tcp(c, 0x10, 0, 0);
+            return;
+        }
+    }
+
+    /* ECN: check IP header CE marking (bits 0-1 of TOS byte = pkt[15]) */
+    if (c->ecn_enabled && c->state >= TCP_ESTABLISHED) {
+        uint8_t ecn_bits = pkt[15] & 0x03;
+        if (ecn_bits == 0x03) /* CE (Congestion Experienced) */
+            c->ecn_ce_pending = 1;
     }
 
     /* SYN-ACK for outgoing connect */
@@ -566,12 +727,17 @@ void tcp_input(const uint8_t *pkt, int len) {
         c->rcv_nxt = tseq + 1;
         c->snd_nxt++;
         c->snd_una = c->snd_nxt;
-        /* Parse SYN-ACK options for Window Scale, SACK */
+        /* Parse SYN-ACK options for Window Scale, SACK, Timestamps, TFO */
         if (doff > 20)
             parse_tcp_options(c, pkt + 34 + 20, doff - 20);
         /* Set rcv_wscale now that negotiation is done */
         if (c->wscale_ok)
             c->rcv_wscale = RCV_WSCALE;
+        /* ECN negotiation: SYN-ACK must have ECE but not CWR */
+        if ((flags & 0xC0) == 0x40) /* ECE only */
+            c->ecn_enabled = 1;
+        else
+            c->ecn_enabled = 0; /* peer doesn't support ECN */
         send_tcp(c, 0x10, 0, 0);
         c->state = TCP_ESTABLISHED;
         c->connect_err = 0;
@@ -599,6 +765,32 @@ void tcp_input(const uint8_t *pkt, int len) {
         if ((int32_t)(ack_num - c->snd_una) > 0) {
             uint32_t bytes_acked = ack_num - c->snd_una;
             c->snd_una = ack_num;
+
+            /* Timestamp-based RTT measurement (RFC 7323) */
+            if (c->ts_enabled && opt_parsed.has_ts && opt_parsed.tsecr) {
+                uint64_t rtt = timer_ms() - (uint64_t)opt_parsed.tsecr;
+                if (rtt > 0 && rtt < 120000) {
+                    /* Karn's algorithm: use timestamp RTT, update RTO */
+                    /* Simple SRTT: RTO = max(200, rtt * 2) capped at MAX_RTO */
+                    uint64_t new_rto = rtt * 2;
+                    if (new_rto < 200) new_rto = 200;
+                    if (new_rto > NET_TCP_MAX_RTO_MS) new_rto = NET_TCP_MAX_RTO_MS;
+                    c->rto_ms = new_rto;
+                }
+            }
+
+            /* ECN: if peer sent ECE, reduce cwnd and send CWR */
+            if (c->ecn_enabled && (flags & 0x40)) { /* ECE */
+                if (!c->ecn_cwr_sent) {
+                    cc_on_loss(c);
+                    c->ecn_cwr_sent = 1;
+                }
+                /* Clear ce_pending when we see our CWR acknowledged */
+            }
+            /* ECN: if peer sent CWR, stop sending ECE */
+            if (c->ecn_enabled && (flags & 0x80))
+                c->ecn_ce_pending = 0;
+
             cc_on_ack(c, bytes_acked);
         } else if (ack_num == c->snd_una && plen == 0) {
             /* Duplicate ACK */
@@ -732,12 +924,16 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     c->snd_una = rseq;
     c->rcv_wnd = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
 
-    /* Parse SYN options from client */
+    /* Parse SYN options from client (Timestamps, Window Scale, SACK, TFO) */
     int doff = (pkt[46] >> 4) * 4;
     if (doff > 20) {
         parse_tcp_options(c, pkt + 34 + 20, doff - 20);
         if (c->wscale_ok) c->rcv_wscale = RCV_WSCALE;
     }
+
+    /* ECN negotiation: if client SYN has CWR+ECE, enable ECN */
+    if ((fl & 0xC0) == 0xC0)
+        c->ecn_enabled = 1;
 
     /* Send SYN-ACK with options */
     send_syn(c, 0x12);

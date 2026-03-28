@@ -724,6 +724,11 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
             if (val) s->sockflags |= SOCKF_NODELAY;
             else     s->sockflags &= ~(uint32_t)SOCKF_NODELAY;
             return 0;
+        case TCP_FASTOPEN:
+        case TCP_FASTOPEN_CONNECT:
+            /* TFO: enable for this socket — cookie lookup happens on connect */
+            s->tcp.tfo_enabled = val ? 1 : 0;
+            return 0;
         default:
             return 0;
         }

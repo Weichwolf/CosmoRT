@@ -1,6 +1,7 @@
 /* CosmoRT TCP — Per-Socket Ringbuffer, State-Machine (RFC 793)
  * Congestion: CUBIC (RFC 8312), SACK (RFC 2018), Window Scaling (RFC 7323)
- * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928) */
+ * Fast Retransmit/Recovery (RFC 5681 §3.2), IW=10 (RFC 6928)
+ * Timestamps/PAWS (RFC 7323), ECN (RFC 3168), TFO (RFC 7413) */
 #ifndef TCP_H
 #define TCP_H
 
@@ -14,6 +15,7 @@ struct thread; /* forward declaration for wait_thread */
 
 #define NET_TCP_MAX       256
 #define NET_TCP_OOO_SLOTS 4
+#define NET_TFO_CACHE_MAX 64
 
 /* ── TCP States (RFC 793) ─────────────────────────── */
 
@@ -106,12 +108,38 @@ typedef struct net_tcp {
     /* Non-blocking connect state */
     int8_t   connect_err;     /* 0=ok, <0=error code from async connect */
 
+    /* Timestamps (RFC 7323) */
+    uint8_t  ts_enabled;      /* 1 = peer negotiated timestamps */
+    uint32_t ts_recent;       /* most recent TSval from peer */
+    uint64_t ts_recent_age;   /* timer_ms() when ts_recent was set */
+
+    /* ECN (RFC 3168) */
+    uint8_t  ecn_enabled;     /* 1 = ECN negotiated */
+    uint8_t  ecn_ce_pending;  /* 1 = received CE-marked packet, send ECE */
+    uint8_t  ecn_cwr_sent;    /* 1 = CWR sent, awaiting ECE clear */
+
+    /* TFO (RFC 7413) */
+    uint8_t  tfo_enabled;     /* 1 = TFO cookie stored for this server */
+    uint8_t  tfo_cookie[16];  /* cached cookie */
+    uint8_t  tfo_cookie_len;  /* 0 = no cookie */
+
     /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
     struct thread *wait_thread;
 
     /* Hash-table chaining (tcp_hash bucket linked list) */
     struct net_tcp *hash_next;
 } net_tcp_t;
+
+/* ── TFO Cookie Cache (RFC 7413) ─────────────────── */
+
+typedef struct {
+    uint8_t  ip[4];
+    uint8_t  cookie[16];
+    uint8_t  cookie_len;    /* 4-16, 0 = empty slot */
+} tfo_cache_entry_t;
+
+int  tfo_cache_lookup(const uint8_t *ip, uint8_t *cookie_out, uint8_t *len_out);
+void tfo_cache_store(const uint8_t *ip, const uint8_t *cookie, uint8_t len);
 
 /* ── TCP Hash Table ───────────────────────────────── */
 
@@ -138,6 +166,9 @@ void tcp_input(const uint8_t *pkt, int len);
 void net_send_raw(const uint8_t *data, uint16_t len);
 void net_build_ip_hdr(uint8_t *pkt, const uint8_t *dst_mac,
                       const uint8_t *dst_ip, uint8_t proto, uint16_t plen);
+void net_build_ip_hdr_tos(uint8_t *pkt, const uint8_t *dst_mac,
+                          const uint8_t *dst_ip, uint8_t proto,
+                          uint16_t plen, uint8_t tos);
 int  net_arp_resolve(const uint8_t *ip, uint8_t *mac_out);
 
 #endif

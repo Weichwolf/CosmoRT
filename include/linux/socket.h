@@ -17,6 +17,8 @@
 #define SO_ERROR        4
 #define IPPROTO_TCP     6
 #define TCP_NODELAY     1
+#define TCP_FASTOPEN    23
+#define TCP_FASTOPEN_CONNECT 30
 
 #define SHUT_RD         0
 #define SHUT_WR         1

@@ -10,6 +10,11 @@
 void ip_build_header(uint8_t *pkt, const uint8_t *dst_mac,
                      const uint8_t *dst_ip, uint8_t proto, uint16_t plen);
 
+/* Same but with explicit TOS byte (for ECN: ECT(0)=0x02, CE=0x03). */
+void ip_build_header_tos(uint8_t *pkt, const uint8_t *dst_mac,
+                         const uint8_t *dst_ip, uint8_t proto,
+                         uint16_t plen, uint8_t tos);
+
 /* Send raw Ethernet frame via NIC (or loopback). */
 void ip_send_raw(const uint8_t *data, uint16_t len);
 
