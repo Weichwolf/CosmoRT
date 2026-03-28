@@ -221,12 +221,20 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
 
     /* Identify file source: ext2 inode or ramfs node */
     extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
-    uint64_t ext2_ino = vfs_ext2_lookup(kpath);
-    struct vfs_node *ramfs_node = 0;
-    size_t elf_len = 0;
+    uint64_t ext2_ino;
+    struct vfs_node *ramfs_node;
+    size_t elf_len;
 
     /* Macro to free string buffer on early exit */
     #define EXECVE_FAIL(err) do { pages_free(strbuf, EXECVE_BUF_PAGES); return (err); } while(0)
+
+    int shebang_depth = 0;
+    #define SHEBANG_MAX_DEPTH 4
+
+shebang_retry:
+    ext2_ino = vfs_ext2_lookup(kpath);
+    ramfs_node = 0;
+    elf_len = 0;
 
     if (ext2_ino) {
         struct ext2_inode ip;
@@ -239,6 +247,98 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
         if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;
+    }
+
+    /* ── Shebang (#!) detection ─────────────────── */
+    {
+        uint8_t shebang_buf[256];
+        size_t peek_len = elf_len < 256 ? elf_len : 256;
+        if (ext2_ino) {
+            extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+            if (ext2_read((uint32_t)ext2_ino, shebang_buf, 0, peek_len) < (int)peek_len)
+                EXECVE_FAIL(-EIO);
+        } else {
+            kmemcpy(shebang_buf, ramfs_node->data, peek_len);
+        }
+
+        if (peek_len >= 2 && shebang_buf[0] == '#' && shebang_buf[1] == '!') {
+            if (++shebang_depth > SHEBANG_MAX_DEPTH)
+                EXECVE_FAIL(-ELOOP);
+
+            /* Find end of first line */
+            int eol = 2;
+            while (eol < (int)peek_len && shebang_buf[eol] != '\n') eol++;
+
+            /* Strip trailing \r (Windows line endings) */
+            int line_end = eol;
+            if (line_end > 2 && shebang_buf[line_end - 1] == '\r') line_end--;
+
+            /* Skip whitespace after #! */
+            int pos = 2;
+            while (pos < line_end && (shebang_buf[pos] == ' ' || shebang_buf[pos] == '\t')) pos++;
+
+            /* Extract interpreter path */
+            int interp_start = pos;
+            while (pos < line_end && shebang_buf[pos] != ' ' && shebang_buf[pos] != '\t') pos++;
+            int interp_end = pos;
+
+            if (interp_start == interp_end)
+                EXECVE_FAIL(-ENOEXEC); /* empty interpreter */
+
+            /* Extract optional single argument */
+            while (pos < line_end && (shebang_buf[pos] == ' ' || shebang_buf[pos] == '\t')) pos++;
+            int arg_start = pos;
+            while (pos < line_end && shebang_buf[pos] != ' ' && shebang_buf[pos] != '\t') pos++;
+            int arg_end = pos;
+            int has_arg = (arg_start < arg_end);
+
+            /* Save original script path (current kpath) into strbuf */
+            char *script_path = strbuf + buf_off;
+            int si = 0;
+            while (si < PATH_MAX_PROC - 1 && kpath[si]) {
+                strbuf[buf_off + (size_t)si] = kpath[si]; si++;
+            }
+            strbuf[buf_off + (size_t)si] = '\0';
+            buf_off += (size_t)si + 1;
+
+            /* Copy interpreter path to kpath */
+            int ilen = interp_end - interp_start;
+            if (ilen >= PATH_MAX_PROC) EXECVE_FAIL(-ENAMETOOLONG);
+            for (int i = 0; i < ilen; i++) kpath[i] = (char)shebang_buf[interp_start + i];
+            kpath[ilen] = '\0';
+
+            /* Copy optional arg to strbuf */
+            char *shebang_arg = 0;
+            if (has_arg) {
+                int alen = arg_end - arg_start;
+                shebang_arg = strbuf + buf_off;
+                for (int i = 0; i < alen; i++)
+                    strbuf[buf_off + (size_t)i] = (char)shebang_buf[arg_start + i];
+                strbuf[buf_off + (size_t)alen] = '\0';
+                buf_off += (size_t)alen + 1;
+            }
+
+            /* Build new argv: [interp, opt_arg, script_path, orig_argv[1:]] */
+            const char *new_argv[EXECVE_MAX_ARGS];
+            int new_argc = 0;
+
+            /* Copy interpreter basename as argv[0] — actually use full path */
+            new_argv[new_argc++] = kpath;
+            if (has_arg && new_argc < EXECVE_MAX_ARGS)
+                new_argv[new_argc++] = shebang_arg;
+            if (new_argc < EXECVE_MAX_ARGS)
+                new_argv[new_argc++] = script_path;
+
+            /* Append original argv[1:] */
+            for (int i = 1; i < argc && new_argc < EXECVE_MAX_ARGS; i++)
+                new_argv[new_argc++] = kargv_ptrs[i];
+
+            /* Replace argv */
+            argc = new_argc;
+            for (int i = 0; i < argc; i++) kargv_ptrs[i] = new_argv[i];
+
+            goto shebang_retry;
+        }
     }
 
     if (elf_len < sizeof(Elf64_Ehdr)) EXECVE_FAIL(-ENOEXEC);
