@@ -396,6 +396,15 @@ Skal-M (PROC_MAX dynamisch), Skal-N (Event-Pool Slab).
 - [ ] Fix: Isolation-Fallback auf naechsten nicht-isolierten Compute-Core
 - [ ] Invariante: Core 0 = RT, nur SCHED_FIFO/SCHED_RR. Immer. Unabhaengig von Core-Anzahl.
 
+### RT/Compute-G: Timer-Frequenz + IPI Preemption
+
+- [ ] BUG: Timer 10Hz (100ms Ticks) — absurd langsam
+- [ ] RT-Core (Core 0): LAPIC Timer 1000Hz (1ms Ticks, Audio/Input Praezision)
+- [ ] Compute-Cores (1..N): LAPIC Timer 100Hz (10ms Ticks, faire Preemption)
+- [ ] IPI-Handler: sofortige Preemption (nicht auf Timer-Tick warten)
+- [ ] IPI auf Compute-Core → sched_preempt direkt im IPI-Handler
+- [ ] Wake-Latenz: <1ms statt bis zu 100ms
+
 ### ARINC 653 Partitionierung
 
 - [ ] ARINC-A: Shared Locks eliminieren

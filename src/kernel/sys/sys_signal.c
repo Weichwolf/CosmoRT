@@ -43,6 +43,16 @@ void check_pending_signals(void) {
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
+        /* Debug: log signal delivery for pid=2 */
+        if (p->pid == 2 && handler > 1) {
+            serial_puts("SIG_DELIVER: sig=");
+            serial_hex64((uint64_t)(unsigned)sig);
+            serial_puts(" handler=");
+            serial_hex64(handler);
+            serial_puts(" rip=");
+            serial_hex64(t->rip);
+            serial_putchar('\n');
+        }
 
         if (handler == 1) continue; /* SIG_IGN */
 
