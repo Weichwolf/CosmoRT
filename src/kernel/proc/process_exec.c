@@ -431,11 +431,23 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
             kmemset(&p->sig_actions[si], 0, sizeof(struct k_sigaction));
     }
 
-    /* Close O_CLOEXEC fds */
-    for (int i = 0; i < FD_MAX; i++) {
-        if (p->fds.entries[i].type != FD_NONE &&
-            (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
-            fd_close(&p->fds, i);
+    /* Close O_CLOEXEC fds — must use full close (pipe_close, fd_cleanup_entry)
+     * not just fd_close, so pipe write_open/read_open decrements happen and
+     * blocked readers/writers get woken (e.g., posix_spawn error-check pipe). */
+    {
+        extern void vfs_file_free_obj(void *obj);
+        extern void fd_cleanup_entry(int fde_type, void *fde_obj);
+        for (int i = 0; i < FD_MAX; i++) {
+            if (p->fds.entries[i].type != FD_NONE &&
+                (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
+                int ftype = p->fds.entries[i].type;
+                if (ftype == FD_FILE) {
+                    vfs_file_free_obj(p->fds.entries[i].obj);
+                } else if (ftype != FD_SERIAL) {
+                    fd_cleanup_entry(ftype, p->fds.entries[i].obj);
+                }
+                fd_close(&p->fds, i);
+            }
         }
     }
 
