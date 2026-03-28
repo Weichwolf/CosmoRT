@@ -422,6 +422,14 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         p->comm[ci] = '\0';
     }
 
+    /* Reset signal dispositions: POSIX requires that after exec, all signals
+     * with user handlers are reset to SIG_DFL. SIG_IGN is preserved.
+     * Pending signals survive exec — delivered under new disposition. */
+    for (int si = 1; si < 64; si++) {
+        if ((uint64_t)p->sig_actions[si].sa_handler > 1)
+            kmemset(&p->sig_actions[si], 0, sizeof(struct k_sigaction));
+    }
+
     /* Close O_CLOEXEC fds */
     for (int i = 0; i < FD_MAX; i++) {
         if (p->fds.entries[i].type != FD_NONE &&
