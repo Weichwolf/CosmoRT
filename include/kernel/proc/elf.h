@@ -111,4 +111,13 @@ int elf_load(const void *data, size_t len, uint64_t *pml4,
 int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
                 uint64_t base_hint, elf_info_t *info);
 
+/* Streaming ELF load: reads from ext2 inode page-by-page.
+ * No large contiguous allocation needed. */
+int elf_load_ext2(uint32_t ino, size_t file_size, uint64_t *pml4,
+                  uint64_t base_hint, elf_info_t *info);
+
+/* Streaming ELF load: reads from ramfs node page-by-page. */
+int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
+                   uint64_t base_hint, elf_info_t *info);
+
 #endif

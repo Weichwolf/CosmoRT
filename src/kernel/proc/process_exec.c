@@ -184,70 +184,98 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Load binary into buffer — ramfs or ext2, one path */
-    uint8_t *elf_buf = 0;
-    size_t elf_len = 0;
-    int elf_pages = 0;
-
+    /* Identify file source: ext2 inode or ramfs node */
+    extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
     uint64_t ext2_ino = vfs_ext2_lookup(kpath);
+    struct vfs_node *ramfs_node = 0;
+    size_t elf_len = 0;
+
     if (ext2_ino) {
-        /* ext2: read entire file into buffer */
-        extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
-        extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
         struct ext2_inode ip;
-        if (ext2_inode_read((uint32_t)ext2_ino, &ip) < 0 || ip.i_size == 0) return -ENOEXEC;
+        if (ext2_inode_read((uint32_t)ext2_ino, &ip) < 0 || ip.i_size == 0)
+            return -ENOEXEC;
         elf_len = ip.i_size;
-        elf_pages = (int)((elf_len + 4095) / 4096);
-        elf_buf = (uint8_t *)pages_alloc(elf_pages);
-        if (!elf_buf) return -ENOMEM;
-        int rd = ext2_read((uint32_t)ext2_ino, elf_buf, 0, elf_len);
-        if (rd < (int)elf_len) { pages_free(elf_buf, elf_pages); return -EIO; }
     } else {
-        /* ramfs: copy from node */
-        struct vfs_node *node = vfs_lookup(kpath);
-        if (!node) return -ENOENT;
-        if (node->type != VFS_FILE) return -EACCES;
-        if (!node->data || node->size == 0) return -ENOEXEC;
-        elf_len = node->size;
-        elf_pages = (int)((elf_len + 4095) / 4096);
-        elf_buf = (uint8_t *)pages_alloc(elf_pages);
-        if (!elf_buf) return -ENOMEM;
-        kmemcpy(elf_buf, node->data, elf_len);
+        ramfs_node = vfs_lookup(kpath);
+        if (!ramfs_node) return -ENOENT;
+        if (ramfs_node->type != VFS_FILE) return -EACCES;
+        if (!ramfs_node->data || ramfs_node->size == 0) return -ENOEXEC;
+        elf_len = ramfs_node->size;
     }
 
-    /* ELF header from buffer */
-    if (elf_len < sizeof(Elf64_Ehdr)) {
-        pages_free(elf_buf, elf_pages);
-        return -ENOEXEC;
-    }
-    const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)elf_buf;
+    if (elf_len < sizeof(Elf64_Ehdr)) return -ENOEXEC;
 
-    /* Determine if dynamic and check for PT_INTERP */
+    /* Read only the ELF header to determine type and check for PT_INTERP.
+     * elf_load_ext2/elf_load_ramfs will read the full header internally,
+     * but we need e_type + interp path before destroying the address space. */
+    uint8_t hdr_buf[sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr)];
+    size_t hdr_read = sizeof(Elf64_Ehdr);
+    if (ext2_ino) {
+        extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+        if (ext2_read((uint32_t)ext2_ino, hdr_buf, 0, hdr_read) < (int)hdr_read)
+            return -EIO;
+    } else {
+        kmemcpy(hdr_buf, ramfs_node->data, hdr_read);
+    }
+    const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)hdr_buf;
+
+    /* Read program headers too */
+    if (peek_eh->e_phnum > 64) return -ENOEXEC;
+    size_t phdrs_end = (size_t)(peek_eh->e_phoff + (uint64_t)peek_eh->e_phnum * peek_eh->e_phentsize);
+    if (phdrs_end > sizeof(hdr_buf) || phdrs_end > elf_len) return -ENOEXEC;
+    if (phdrs_end > hdr_read) {
+        size_t extra = phdrs_end - hdr_read;
+        if (ext2_ino) {
+            extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+            if (ext2_read((uint32_t)ext2_ino, hdr_buf + hdr_read, hdr_read, extra) < (int)extra)
+                return -EIO;
+        } else {
+            kmemcpy(hdr_buf + hdr_read, ramfs_node->data + hdr_read, extra);
+        }
+    }
+
+    /* Scan for PT_INTERP */
     int has_interp = 0;
-    uint8_t *interp_buf = 0;
+    char interp_path[256];
+    interp_path[0] = '\0';
+    /* Track interpreter source for streaming load */
+    uint64_t interp_ext2_ino = 0;
+    struct vfs_node *interp_ramfs = 0;
     size_t interp_len = 0;
-    int interp_pages = 0;
 
     if (peek_eh->e_type == ET_DYN || peek_eh->e_type == ET_EXEC) {
-        /* Scan phdrs for PT_INTERP */
         for (int i = 0; i < peek_eh->e_phnum && i < 64; i++) {
             size_t phoff = (size_t)(peek_eh->e_phoff + (uint64_t)i * peek_eh->e_phentsize);
-            if (phoff + sizeof(Elf64_Phdr) > elf_len) break;
-            Elf64_Phdr ph;
-            kmemcpy(&ph, elf_buf + phoff, sizeof(ph));
-            if (ph.p_type == PT_INTERP) {
+            if (phoff + sizeof(Elf64_Phdr) > phdrs_end) break;
+            const Elf64_Phdr *ph = (const Elf64_Phdr *)(hdr_buf + phoff);
+            if (ph->p_type == PT_INTERP) {
                 has_interp = 1;
-                char ipath[256];
-                size_t iplen = ph.p_filesz;
-                if (iplen >= sizeof(ipath)) iplen = sizeof(ipath) - 1;
-                if (ph.p_offset + iplen <= elf_len)
-                    kmemcpy(ipath, elf_buf + ph.p_offset, iplen);
-                ipath[iplen] = '\0';
-                while (iplen > 0 && ipath[iplen - 1] == '\0') iplen--;
+                size_t iplen = ph->p_filesz;
+                if (iplen >= sizeof(interp_path)) iplen = sizeof(interp_path) - 1;
+                if (ph->p_offset + iplen <= phdrs_end) {
+                    kmemcpy(interp_path, hdr_buf + ph->p_offset, iplen);
+                } else if (ext2_ino) {
+                    extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+                    ext2_read((uint32_t)ext2_ino, interp_path, (size_t)ph->p_offset, iplen);
+                } else {
+                    kmemcpy(interp_path, ramfs_node->data + ph->p_offset, iplen);
+                }
+                interp_path[iplen] = '\0';
+                while (iplen > 0 && interp_path[iplen - 1] == '\0') iplen--;
 
-                int irc = vfs_read_file(ipath, &interp_buf, &interp_len);
-                if (irc == 0)
-                    interp_pages = (int)((interp_len + 4095) / 4096);
+                /* Locate interpreter: try ramfs first, then ext2 */
+                struct vfs_node *inode = vfs_lookup(interp_path);
+                if (inode && inode->type == VFS_FILE && inode->data && inode->size > 0) {
+                    interp_ramfs = inode;
+                    interp_len = inode->size;
+                } else {
+                    interp_ext2_ino = vfs_ext2_lookup(interp_path);
+                    if (interp_ext2_ino) {
+                        struct ext2_inode iip;
+                        if (ext2_inode_read((uint32_t)interp_ext2_ino, &iip) == 0)
+                            interp_len = iip.i_size;
+                    }
+                }
                 break;
             }
         }
@@ -268,8 +296,6 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     /* Create new PML4 */
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
-        if (elf_buf) pages_free(elf_buf, elf_pages);
-        if (interp_buf) pages_free(interp_buf, interp_pages);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
@@ -283,116 +309,81 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
 
+    /* Load ELF via streaming (page-by-page, no large contiguous buffer) */
     uint64_t entry, stack_ptr;
-    int use_ex = (peek_eh->e_type == ET_DYN || has_interp);
+    elf_info_t info;
+    int load_rc;
 
-    if (use_ex) {
-        /* Extended path: ET_DYN and/or PT_INTERP */
-        elf_info_t info;
-        int load_rc;
-        load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
+    if (ext2_ino)
+        load_rc = elf_load_ext2((uint32_t)ext2_ino, elf_len, p->pml4, 0, &info);
+    else
+        load_rc = elf_load_ramfs(ramfs_node->data, elf_len, p->pml4, 0, &info);
 
-        if (load_rc < 0) {
-            if (elf_buf) pages_free(elf_buf, elf_pages);
-            if (interp_buf) pages_free(interp_buf, interp_pages);
-            p->state = PROC_ZOMBIE;
-            cur->state = THREAD_DEAD;
-            arch_set_cr3(virt_to_phys(pml4));
-            thread_return_to_kernel(cur);
-            return -ENOEXEC;
-        }
+    if (load_rc < 0) {
+        p->state = PROC_ZOMBIE;
+        cur->state = THREAD_DEAD;
+        arch_set_cr3(virt_to_phys(pml4));
+        thread_return_to_kernel(cur);
+        return -ENOEXEC;
+    }
 
-        /* Create VMAs (skip for CosmoFS — segments already mapped) */
-        spin_lock_irq(&p->lock, &exec_irqf);
-        create_elf_vmas(&p->vma_root, elf_buf, elf_len, info.load_base);
+    /* Create VMAs from header buffer (phdrs already in hdr_buf) */
+    spin_lock_irq(&p->lock, &exec_irqf);
+    create_elf_vmas(&p->vma_root, hdr_buf, phdrs_end, info.load_base);
 
-        /* Load interpreter if present */
-        if (has_interp && interp_buf) {
-            uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
-            elf_info_t interp_info;
-            if (elf_load_ex(interp_buf, interp_len, p->pml4,
-                            interp_base_hint, &interp_info) < 0) {
-                serial_puts("execve: failed to load interpreter\n");
+    /* Load interpreter if present */
+    if (has_interp && (interp_ramfs || interp_ext2_ino) && interp_len > 0) {
+        uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
+        elf_info_t interp_info;
+        int irc;
+        if (interp_ramfs)
+            irc = elf_load_ramfs(interp_ramfs->data, interp_len, p->pml4,
+                                 interp_base_hint, &interp_info);
+        else
+            irc = elf_load_ext2((uint32_t)interp_ext2_ino, interp_len, p->pml4,
+                                interp_base_hint, &interp_info);
+        if (irc < 0) {
+            serial_puts("execve: failed to load interpreter\n");
+        } else {
+            info.interp_base = interp_info.load_base;
+            info.entry = interp_info.prog_entry;
+            /* Create interp VMAs: read interp header for phdr info */
+            /* interp_info already has the metadata; use load_base for VMA offset.
+             * We need the interp phdrs — re-read into a small buffer. */
+            uint8_t ihdr[sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr)];
+            size_t ihr = sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr);
+            if (ihr > interp_len) ihr = interp_len;
+            if (interp_ramfs) {
+                kmemcpy(ihdr, interp_ramfs->data, ihr);
             } else {
-                info.interp_base = interp_info.load_base;
-                info.entry = interp_info.prog_entry;
-                create_elf_vmas(&p->vma_root, interp_buf, interp_len,
-                                interp_info.load_base);
+                extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+                ext2_read((uint32_t)interp_ext2_ino, ihdr, 0, ihr);
             }
-        }
-
-        p->brk_base = info.brk;
-        p->brk_current = info.brk;
-        entry = info.entry;
-
-        uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-        uint64_t guard_bottom = stack_bottom - 4096;
-        vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-                   0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
-        vma_insert(&p->vma_root, stack_bottom, stack_top,
-                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        spin_unlock_irq(&p->lock, exec_irqf);
-        /* brk VMA created on first brk() call, not here (avoid zero-length VMA) */
-
-        stack_ptr = build_user_stack(p->pml4, stack_top,
-                                     kargv, argc, kenvp, envc, &info);
-        if (!stack_ptr) {
-            if (elf_buf) pages_free(elf_buf, elf_pages);
-            if (interp_buf) pages_free(interp_buf, interp_pages);
-            p->state = PROC_ZOMBIE;
-            cur->state = THREAD_DEAD;
-            arch_set_cr3(virt_to_phys(pml4));
-            thread_return_to_kernel(cur);
-            return -ENOMEM;
-        }
-    } else {
-        /* Fast path: plain ET_EXEC, no interpreter — use elf_load_ex + build_user_stack */
-        elf_info_t info;
-        int load_rc;
-        load_rc = elf_load_ex(elf_buf, elf_len, p->pml4, 0, &info);
-
-        if (load_rc < 0) {
-            if (elf_buf) pages_free(elf_buf, elf_pages);
-            if (interp_buf) pages_free(interp_buf, interp_pages);
-            p->state = PROC_ZOMBIE;
-            cur->state = THREAD_DEAD;
-            arch_set_cr3(virt_to_phys(pml4));
-            thread_return_to_kernel(cur);
-            return -ENOEXEC;
-        }
-
-        p->brk_base = info.brk;
-        p->brk_current = info.brk;
-        entry = info.entry;
-
-        /* Stack VMA with guard page */
-        spin_lock_irq(&p->lock, &exec_irqf);
-        uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-        uint64_t guard_bottom = stack_bottom - 4096;
-        vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-                   0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
-        vma_insert(&p->vma_root, stack_bottom, stack_top,
-                   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-
-        /* Create VMAs for ELF segments */
-        create_elf_vmas(&p->vma_root, elf_buf, elf_len, 0);
-        spin_unlock_irq(&p->lock, exec_irqf);
-
-        stack_ptr = build_user_stack(p->pml4, stack_top,
-                                      kargv, argc, kenvp, envc, &info);
-        if (!stack_ptr) {
-            if (elf_buf) pages_free(elf_buf, elf_pages);
-            if (interp_buf) pages_free(interp_buf, interp_pages);
-            p->state = PROC_ZOMBIE;
-            cur->state = THREAD_DEAD;
-            arch_set_cr3(virt_to_phys(pml4));
-            thread_return_to_kernel(cur);
-            return -ENOMEM;
+            create_elf_vmas(&p->vma_root, ihdr, ihr, interp_info.load_base);
         }
     }
 
-    if (elf_buf) pages_free(elf_buf, elf_pages);
-    if (interp_buf) pages_free(interp_buf, interp_pages);
+    p->brk_base = info.brk;
+    p->brk_current = info.brk;
+    entry = info.entry;
+
+    uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
+    uint64_t guard_bottom = stack_bottom - 4096;
+    vma_insert(&p->vma_root, guard_bottom, stack_bottom,
+               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
+    vma_insert(&p->vma_root, stack_bottom, stack_top,
+               PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    spin_unlock_irq(&p->lock, exec_irqf);
+
+    stack_ptr = build_user_stack(p->pml4, stack_top,
+                                 kargv, argc, kenvp, envc, &info);
+    if (!stack_ptr) {
+        p->state = PROC_ZOMBIE;
+        cur->state = THREAD_DEAD;
+        arch_set_cr3(virt_to_phys(pml4));
+        thread_return_to_kernel(cur);
+        return -ENOMEM;
+    }
 
     /* Store executable path for /proc/self/exe */
     {

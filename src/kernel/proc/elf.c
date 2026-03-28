@@ -170,6 +170,235 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
     return 0;
 }
 
+/* ── Streaming ELF loader — reads from ext2/ramfs page-by-page ── */
+
+/* Reader abstraction: read `len` bytes at `offset` into `buf`.
+ * Returns bytes read (>= 0) or negative errno. */
+typedef int (*elf_reader_fn)(void *ctx, void *buf, size_t offset, size_t len);
+
+static int elf_read_ext2(void *ctx, void *buf, size_t offset, size_t len) {
+    uint32_t ino = (uint32_t)(uintptr_t)ctx;
+    extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
+    return ext2_read(ino, buf, offset, len);
+}
+
+static int elf_read_ramfs(void *ctx, void *buf, size_t offset, size_t len) {
+    /* ctx points to {uint8_t *data, size_t size} packed as two uint64_t */
+    uint64_t *pair = (uint64_t *)ctx;
+    uint8_t *data = (uint8_t *)pair[0];
+    size_t size = (size_t)pair[1];
+    if (offset >= size) return 0;
+    if (offset + len > size) len = size - offset;
+    kmemcpy(buf, data + offset, len);
+    return (int)len;
+}
+
+/* Map PT_LOAD segments by reading page-by-page from a reader function.
+ * `hdr_buf` contains the ELF header + program headers (already read).
+ * `hdr_len` is the size of hdr_buf.
+ * `file_size` is the total file size.
+ * Returns highest loaded address (for brk), or 0 on error. */
+static uint64_t elf_map_segments_stream(const Elf64_Ehdr *eh, size_t hdr_len,
+                                        size_t file_size, uint64_t *user_pml4,
+                                        uint64_t base,
+                                        elf_reader_fn reader, void *ctx) {
+    uint64_t brk_end = 0;
+
+    for (int i = 0; i < eh->e_phnum; i++) {
+        size_t ph_off = (size_t)(eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph_off + sizeof(Elf64_Phdr) > hdr_len)
+            return 0;
+
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)
+            ((const uint8_t *)eh + ph_off);
+
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_memsz == 0) continue;
+
+        uint64_t vaddr = ph->p_vaddr + base;
+
+        if (ph->p_filesz > file_size || vaddr + ph->p_filesz < vaddr)
+            return 0;
+
+        int seg_prot = 0;
+        if (ph->p_flags & PF_R) seg_prot |= PROT_READ;
+        if (ph->p_flags & PF_W) seg_prot |= PROT_WRITE;
+        if (ph->p_flags & PF_X) seg_prot |= PROT_EXEC;
+
+        uint64_t seg_start = vaddr & ~0xFFFULL;
+        uint64_t seg_end = (vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
+
+        for (uint64_t va = seg_start; va < seg_end; va += 4096) {
+            uint64_t *page = alloc_page();
+            if (!page) { serial_puts("elf: OOM\n"); return 0; }
+
+            if (va < vaddr + ph->p_filesz) {
+                uint64_t page_start = va;
+                uint64_t copy_start = page_start < vaddr ? vaddr : page_start;
+                uint64_t copy_end = page_start + 4096;
+                uint64_t file_end = vaddr + ph->p_filesz;
+                if (copy_end > file_end) copy_end = file_end;
+
+                if (copy_start < copy_end) {
+                    uint64_t file_off = ph->p_offset + (copy_start - vaddr);
+                    uint64_t page_off = copy_start - page_start;
+                    uint64_t nbytes = copy_end - copy_start;
+
+                    int rd = reader(ctx, (uint8_t *)page + page_off,
+                                    (size_t)file_off, (size_t)nbytes);
+                    if (rd < (int)nbytes) {
+                        serial_puts("elf: short read\n");
+                        return 0;
+                    }
+                }
+            }
+            /* BSS (memsz > filesz) already zeroed by alloc_page */
+
+            if (map_user_page(user_pml4, va, virt_to_phys(page), seg_prot) < 0) {
+                serial_puts("elf: map failed\n");
+                return 0;
+            }
+        }
+
+        uint64_t seg_data_end = vaddr + ph->p_memsz;
+        if (seg_data_end > brk_end) brk_end = seg_data_end;
+    }
+
+    return brk_end ? brk_end : 1;
+}
+
+/* Streaming elf_load_ex: reads only ELF header + phdrs, then maps
+ * segments page-by-page via reader function. No large contiguous buffer. */
+int elf_load_ex_stream(elf_reader_fn reader, void *ctx, size_t file_size,
+                       uint64_t *pml4, uint64_t base_hint, elf_info_t *info) {
+    /* Read ELF header + all program headers into a single page.
+     * Max: 64 bytes (ehdr) + 64 * 56 bytes (phdrs) = 3648 bytes < 4096. */
+    uint8_t *hdr_page = (uint8_t *)alloc_page();
+    if (!hdr_page) return -1;
+
+    /* Read header first */
+    if (reader(ctx, hdr_page, 0, sizeof(Elf64_Ehdr)) < (int)sizeof(Elf64_Ehdr)) {
+        page_free(hdr_page);
+        return -1;
+    }
+
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)hdr_page;
+
+    /* Validate ELF magic */
+    if (eh->e_ident[0] != ELFMAG0 || eh->e_ident[1] != ELFMAG1 ||
+        eh->e_ident[2] != ELFMAG2 || eh->e_ident[3] != ELFMAG3) {
+        serial_puts("elf_stream: bad magic\n");
+        page_free(hdr_page);
+        return -1;
+    }
+    if (eh->e_ident[4] != 2) { page_free(hdr_page); return -1; }
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) {
+        page_free(hdr_page);
+        return -1;
+    }
+    if (eh->e_machine != EM_X86_64) { page_free(hdr_page); return -1; }
+    if (eh->e_phentsize < sizeof(Elf64_Phdr)) { page_free(hdr_page); return -1; }
+    if (eh->e_phnum > 64) { page_free(hdr_page); return -1; }
+
+    /* Read program headers */
+    size_t phdrs_size = (size_t)eh->e_phnum * eh->e_phentsize;
+    size_t hdr_total = (size_t)eh->e_phoff + phdrs_size;
+    if (hdr_total > 4096) {
+        /* Extremely rare: phdrs don't fit in one page. Bail out. */
+        serial_puts("elf_stream: phdrs too large\n");
+        page_free(hdr_page);
+        return -1;
+    }
+    if (eh->e_phoff > 0) {
+        size_t read_start = sizeof(Elf64_Ehdr); /* already have this */
+        size_t read_len = hdr_total - read_start;
+        if (read_len > 0) {
+            int rd = reader(ctx, hdr_page + read_start, read_start, read_len);
+            if (rd < (int)read_len) {
+                page_free(hdr_page);
+                return -1;
+            }
+        }
+    }
+
+    /* Choose load base */
+    uint64_t base = 0;
+    if (eh->e_type == ET_DYN) {
+        if (base_hint) {
+            base = base_hint;
+        } else {
+            base = 0x400000 + (elf_aslr_rand() & 0x1FFFF000ULL);
+        }
+    }
+
+    /* Scan for PT_INTERP */
+    info->interp[0] = '\0';
+    for (int i = 0; i < eh->e_phnum; i++) {
+        size_t ph_off = (size_t)(eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph_off + sizeof(Elf64_Phdr) > hdr_total) break;
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)(hdr_page + ph_off);
+        if (ph->p_type == PT_INTERP) {
+            size_t plen = ph->p_filesz;
+            if (plen >= sizeof(info->interp)) plen = sizeof(info->interp) - 1;
+            /* Read interp path from file (may not be in hdr_page) */
+            int rd = reader(ctx, info->interp, (size_t)ph->p_offset, plen);
+            if (rd < (int)plen) {
+                info->interp[0] = '\0';
+            } else {
+                info->interp[plen] = '\0';
+            }
+            break;
+        }
+    }
+
+    /* Map segments page-by-page */
+    uint64_t brk_end = elf_map_segments_stream(eh, hdr_total, file_size,
+                                                pml4, base, reader, ctx);
+    if (brk_end == 0) {
+        page_free(hdr_page);
+        return -1;
+    }
+
+    /* AT_PHDR */
+    info->prog_phdr = 0;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        size_t ph_off = (size_t)(eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)(hdr_page + ph_off);
+        if (ph->p_type == PT_LOAD &&
+            eh->e_phoff >= ph->p_offset &&
+            eh->e_phoff < ph->p_offset + ph->p_filesz) {
+            info->prog_phdr = base + ph->p_vaddr + (eh->e_phoff - ph->p_offset);
+            break;
+        }
+    }
+    info->prog_phent = eh->e_phentsize;
+    info->prog_phnum = eh->e_phnum;
+    info->prog_entry = base + eh->e_entry;
+    info->entry = info->prog_entry;
+    info->interp_base = 0;
+    info->brk = (brk_end + 0xFFF) & ~0xFFFULL;
+    info->stack_ptr = 0;
+    info->load_base = base;
+
+    page_free(hdr_page);
+    return 0;
+}
+
+/* Public wrappers for streaming loader */
+
+int elf_load_ext2(uint32_t ino, size_t file_size, uint64_t *pml4,
+                  uint64_t base_hint, elf_info_t *info) {
+    return elf_load_ex_stream(elf_read_ext2, (void *)(uintptr_t)ino,
+                              file_size, pml4, base_hint, info);
+}
+
+int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
+                   uint64_t base_hint, elf_info_t *info) {
+    uint64_t pair[2] = { (uint64_t)(uintptr_t)data, (uint64_t)size };
+    return elf_load_ex_stream(elf_read_ramfs, pair,
+                              size, pml4, base_hint, info);
+}
+
 /* ── elf_load: thin wrapper — elf_load_ex + build_user_stack ── */
 
 int elf_load(const void *data, size_t len, uint64_t *user_pml4,
