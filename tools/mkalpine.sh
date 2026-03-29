@@ -45,7 +45,7 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
         # ── Packages ──
         echo ">>> Installing packages..."
         apk add --no-cache \
-            bash gcc musl-dev make git nodejs npm \
+            openrc bash gcc musl-dev make git nodejs npm \
             stress-ng linux-headers autoconf automake libtool m4 pkgconf
 
 

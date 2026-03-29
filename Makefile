@@ -348,4 +348,4 @@ test-boot-disk: $(BUILD)/disk.img
 	  echo "=== PASS ===" || echo "=== FAIL ==="
 
 clean:
-	rm -rf $(BUILD)
+	find $(BUILD) -mindepth 1 -maxdepth 1 ! -name alpine-root -exec rm -rf {} + 2>/dev/null || true

@@ -15,7 +15,7 @@
 #include "mm/page_alloc.h"
 #include "gen/font_atlas.h"
 
-#define VT_MAX 4
+#define VT_MAX 12
 
 /* ── ANSI 16-color palette ─────────────────────────── */
 

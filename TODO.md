@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-29. 1094 ktest PASS. Node.js + gcc + npm auf CosmoRT.
+Stand: 2026-03-29. 1201 ktest PASS. Node.js + gcc + npm auf CosmoRT.
 
 ---
 
@@ -29,10 +29,13 @@ Stand: 2026-03-29. 1094 ktest PASS. Node.js + gcc + npm auf CosmoRT.
 
 ### Terminal (siehe notes/TERMINAL.md)
 
-- [ ] Volle termios Speicherung (c_iflag, c_oflag, c_cflag, c_lflag, c_cc[19])
+- [x] Volle termios Speicherung (c_iflag, c_oflag, c_cflag, c_lflag, c_cc[19])
+- [x] ICRNL (CR→NL Input-Translation)
+- [x] OPOST+ONLCR (NL→CR+NL Output-Translation)
+- [x] Konfigurierbare Control Characters aus c_cc[] (VINTR, VQUIT, VSUSP, VEOF, VERASE, VKILL, VWERASE)
+- [x] ISIG-Flag steuert Signal-Generierung
+- [x] /dev/tty1-tty4, /dev/console, /dev/pts/0-3 Device Nodes
 - [ ] VMIN/VTIME fuer Raw-Mode Timeout-Reads
-- [ ] ICRNL (CR→NL Input-Translation)
-- [ ] OPOST+ONLCR (NL→CR+NL Output-Translation)
 - [ ] SIGTTIN/SIGTTOU fuer Background Terminal-Zugriff
 - [ ] Interaktive Shell: ash crasht nach externem Kommando
 - [ ] Restructure: src/kernel/vt/ → src/kernel/tty/ (siehe notes/TERMINAL.md)

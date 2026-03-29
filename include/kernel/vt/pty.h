@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include "spinlock.h"
 
-#define PTY_MAX       4
+#define PTY_MAX       12
 #define PTY_BUF_SIZE  4096
 #define PTY_LINE_MAX  256
 
