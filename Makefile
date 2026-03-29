@@ -281,7 +281,7 @@ qemu-alpine-gui: alpine-image
 # make alpine-test — headless boot test (musl + LTP, fail-fast + poweroff)
 alpine-test:
 	rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
-	INIT=/tmp/boot-test.sh $(MAKE) alpine-image
+	INIT=/opt/boot-test.sh $(MAKE) alpine-image
 	@rm -f /tmp/cosmo-serial.log
 	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="

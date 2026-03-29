@@ -113,8 +113,8 @@ done
 sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
 
 # ── Copy tools into rootfs ───────────────────────────
-cp tools/boot-test.sh "$ALPINE_ROOT/tmp/boot-test.sh" 2>/dev/null || true
-chmod +x "$ALPINE_ROOT/tmp/boot-test.sh" 2>/dev/null || true
+cp tools/boot-test.sh "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
+chmod +x "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 cp tools/ltp_required.txt "$ALPINE_ROOT/opt/ltp_required.txt" 2>/dev/null || true
 
 # ── Step 2: Create ext2 image ────────────────────────
