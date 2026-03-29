@@ -280,10 +280,10 @@ void deliver_signal(thread_t *t, int signo) {
 
     /* Block this signal during handler (unless SA_NODEFER) + sa_mask */
     if (!(sa->sa_flags & SA_NODEFER))
-        t->sig_blocked |= (1ULL << signo);
+        t->sig_blocked |= SIG_BIT(signo);
     t->sig_blocked |= sa->sa_mask;
     /* SIGKILL/SIGSTOP never blocked */
-    t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19));
+    t->sig_blocked &= ~(SIG_BIT(9) | SIG_BIT(19));
 
     /* SA_RESETHAND: one-shot handler, reset to SIG_DFL after delivery */
     if (sa->sa_flags & SA_RESETHAND)
@@ -365,7 +365,7 @@ long do_rt_sigreturn(void) {
 
     /* Restore signal mask (first word of 128-byte sigset) */
     t->sig_blocked = uc.uc_sigmask[0];
-    t->sig_blocked &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
+    t->sig_blocked &= ~(SIG_BIT(9) | SIG_BIT(19)); /* SIGKILL/SIGSTOP never blocked */
 
     /* Return value doesn't matter — RAX is restored from ucontext.
      * But the syscall_entry.asm overwrites RAX with our return value AFTER

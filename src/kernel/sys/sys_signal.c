@@ -23,7 +23,7 @@ void check_pending_signals(void) {
             do_exit(128 + SIGALRM);
             return;
         } else {
-            p->sig_pending |= (1ULL << SIGALRM);
+            p->sig_pending |= SIG_BIT(SIGALRM);
         }
     }
 
@@ -38,8 +38,8 @@ void check_pending_signals(void) {
     if (!deliverable) return;
 
     for (int sig = 1; sig < 64; sig++) {
-        if (!(deliverable & (1ULL << sig))) continue;
-        p->sig_pending &= ~(1ULL << sig);
+        if (!(deliverable & SIG_BIT(sig))) continue;
+        p->sig_pending &= ~SIG_BIT(sig);
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -169,7 +169,7 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
         int r = copy_from_user(&k_set, set, 8); /* only first 8 bytes matter */
         if (r) return r;
         uint64_t mask = k_set;
-        mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL, SIGSTOP cannot be blocked */
+        mask &= ~(SIG_BIT(9) | SIG_BIT(19)); /* SIGKILL, SIGSTOP cannot be blocked */
         switch (how) {
         case 0: t->sig_blocked |= mask; break;  /* SIG_BLOCK */
         case 1: t->sig_blocked &= ~mask; break; /* SIG_UNBLOCK */
@@ -200,7 +200,7 @@ static long kill_one(process_t *target, int sig) {
         if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
             /* Set pending for delivery in check_pending_signals (process context).
              * For remote stop, set pending + wake blocked threads. */
-            target->sig_pending |= (1ULL << sig);
+            target->sig_pending |= SIG_BIT(sig);
             {
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 thread_t *t = target->threads;
@@ -215,8 +215,8 @@ static long kill_one(process_t *target, int sig) {
         /* Continue: SIGCONT — resume stopped threads */
         if (sig == SIGCONT) {
             /* Clear any pending stop signals */
-            target->sig_pending &= ~((1ULL << SIGSTOP) | (1ULL << SIGTSTP) |
-                                      (1ULL << SIGTTIN) | (1ULL << SIGTTOU));
+            target->sig_pending &= ~(SIG_BIT(SIGSTOP) | SIG_BIT(SIGTSTP) |
+                                      SIG_BIT(SIGTTIN) | SIG_BIT(SIGTTOU));
             /* Resume stopped threads directly */
             {
                 extern void sched_add(thread_t *t);
@@ -256,12 +256,12 @@ static long kill_one(process_t *target, int sig) {
             int all_blocked = 1;
             thread_t *t = target->threads;
             while (t) {
-                if (!((1ULL << sig) & t->sig_blocked)) { all_blocked = 0; break; }
+                if (!(SIG_BIT(sig) & t->sig_blocked)) { all_blocked = 0; break; }
                 t = t->proc_next;
             }
             if (all_blocked) {
                 /* Signal blocked on all threads — just set pending */
-                target->sig_pending |= (1ULL << sig);
+                target->sig_pending |= SIG_BIT(sig);
                 return 0;
             }
         }
@@ -303,7 +303,7 @@ static long kill_one(process_t *target, int sig) {
 
     /* User handler registered — set pending bit.
      * Delivery happens on return to userspace via check_pending_signals. */
-    target->sig_pending |= (1ULL << sig);
+    target->sig_pending |= SIG_BIT(sig);
 
     /* Wake blocked threads that have this signal unblocked.
      * event_post wakes via sched_wake (BLOCKED→RUNNABLE CAS). */
@@ -311,7 +311,7 @@ static long kill_one(process_t *target, int sig) {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED && !((1ULL << sig) & t->sig_blocked))
+            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
                 event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             t = t->proc_next;
         }
@@ -390,8 +390,8 @@ long do_tgkill(int tgid, int tid, int sig) {
             return kill_one(p, sig);
 
         /* Everything else (fatal): check if signal is blocked on target thread */
-        if ((1ULL << sig) & target->sig_blocked) {
-            p->sig_pending |= (1ULL << sig);
+        if (SIG_BIT(sig) & target->sig_blocked) {
+            p->sig_pending |= SIG_BIT(sig);
             return 0;
         }
         /* Signal is deliverable — terminate via kill_one (process-level) */
@@ -399,8 +399,8 @@ long do_tgkill(int tgid, int tid, int sig) {
     }
 
     /* User handler — set pending and wake target thread */
-    p->sig_pending |= (1ULL << sig);
-    if (!((1ULL << sig) & target->sig_blocked)) {
+    p->sig_pending |= SIG_BIT(sig);
+    if (!(SIG_BIT(sig) & target->sig_blocked)) {
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
         if (target->state == THREAD_BLOCKED)
             event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
@@ -458,8 +458,8 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
     if (match) {
         int sig;
         for (sig = 1; sig < 64; sig++)
-            if (match & (1ULL << sig)) break;
-        p->sig_pending &= ~(1ULL << sig);
+            if (match & SIG_BIT(sig)) break;
+        p->sig_pending &= ~SIG_BIT(sig);
         /* Write siginfo (simplified: just si_signo at offset 0) */
         if (uinfo) {
             int ksi[32];
@@ -484,8 +484,8 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
     if (match) {
         int sig;
         for (sig = 1; sig < 64; sig++)
-            if (match & (1ULL << sig)) break;
-        p->sig_pending &= ~(1ULL << sig);
+            if (match & SIG_BIT(sig)) break;
+        p->sig_pending &= ~SIG_BIT(sig);
         if (uinfo) {
             int ksi[32];
             kmemset(ksi, 0, sizeof(ksi));
@@ -516,7 +516,7 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     if (!mask) return -EFAULT;
     uint64_t new_mask;
     { int r = copy_from_user(&new_mask, mask, 8); if (r) return r; }
-    new_mask &= ~((1ULL << 9) | (1ULL << 19)); /* SIGKILL/SIGSTOP never blocked */
+    new_mask &= ~(SIG_BIT(9) | SIG_BIT(19)); /* SIGKILL/SIGSTOP never blocked */
 
     uint64_t old_blocked = t->sig_blocked;
 

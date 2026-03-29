@@ -151,7 +151,7 @@ static void send_signal_to_fg(pty_t *p, int sig) {
         process_t *proc = proc_find((uint32_t)i);
         if (!proc) continue;
         if ((int)proc->pgid != pgid) continue;
-        proc->sig_pending |= (1ULL << sig);
+        proc->sig_pending |= SIG_BIT(sig);
         /* Wake blocked threads for signal delivery */
         thread_t *t = proc->threads;
         while (t) {

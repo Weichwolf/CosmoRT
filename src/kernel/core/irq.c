@@ -487,7 +487,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         if (t && t->proc) {
             process_t *faultp = t->proc;
             struct k_sigaction *sa = &faultp->sig_actions[11]; /* SIGSEGV=11 */
-            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & (1ULL << 11))) {
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(11))) {
                 /* User SIGSEGV handler registered and not blocked — deliver signal.
                  * Save IRQ frame into thread_t, deliver, write back. */
                 t->fault_addr = cr2;
@@ -595,7 +595,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];
             /* Only deliver if handler exists AND signal not already blocked
              * (blocked = we're already in the handler → avoid infinite loop) */
-            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & (1ULL << signo))) {
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(signo))) {
                 /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
                 if (vector == 14) {
                     t->fault_addr = arch_get_cr2();

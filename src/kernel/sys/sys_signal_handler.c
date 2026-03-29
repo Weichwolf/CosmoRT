@@ -98,7 +98,7 @@ long send_sigpipe(void) {
     if (p) {
         void *handler = p->sig_actions[SIGPIPE].sa_handler;
         if (handler != SIG_IGN)
-            p->sig_pending |= (1ULL << SIGPIPE);
+            p->sig_pending |= SIG_BIT(SIGPIPE);
     }
     return -EPIPE;
 }
@@ -157,7 +157,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
             do_exit(128 + SIGALRM);
             return;
         } else {
-            p->sig_pending |= (1ULL << SIGALRM);
+            p->sig_pending |= SIG_BIT(SIGALRM);
         }
     }
 
@@ -185,7 +185,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     if (*result_ptr == -EINTR && is_restartable_syscall(num)) {
         /* Find which signal will be delivered */
         for (int sig = 1; sig < 64; sig++) {
-            if (!(deliverable & (1ULL << sig))) continue;
+            if (!(deliverable & SIG_BIT(sig))) continue;
             struct k_sigaction *sa = &p->sig_actions[sig];
             if ((uint64_t)sa->sa_handler > 1 && (sa->sa_flags & SA_RESTART)) {
                 /* Rewind RIP to re-execute syscall instruction.

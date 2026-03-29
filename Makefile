@@ -277,7 +277,7 @@ qemu-alpine-gui: alpine-image
 
 # make alpine-test — headless boot test (musl + LTP, fail-fast + poweroff)
 # Temporarily replaces /etc/inittab, builds image, restores after
-alpine-test: $(EFI_BIN)
+alpine-test: $(ESP_IMG)
 	@cp $(ALPINE_ROOT)/etc/inittab $(ALPINE_ROOT)/etc/inittab.bak 2>/dev/null || true
 	@echo '::sysinit:/opt/boot-test.sh' > $(ALPINE_ROOT)/etc/inittab
 	@sh tools/mkalpine.sh $(ALPINE_ROOT)

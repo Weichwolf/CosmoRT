@@ -90,7 +90,7 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         process_t *parent = proc_find(p->parent_pid);
         if (parent) {
             /* SIGCHLD delivery (Linux ABI) */
-            __sync_fetch_and_or(&parent->sig_pending, 1ULL << SIGCHLD);
+            __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(SIGCHLD));
 
             extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             uint64_t pflags;
