@@ -302,6 +302,40 @@ int vfs_open(const char *path, int flags, int mode) {
         }
         return -ENOTTY; /* no controlling terminal */
     }
+    /* /dev/tty1 through /dev/tty12 → PTY slave for VT N-1
+     * tty1=VT0, tty2=VT1, tty3=VT2, tty4=VT3. tty5-tty12 → ENOENT */
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='t' && path[6]=='t' && path[7]=='y' &&
+        path[8] >= '1' && path[8] <= '9') {
+        int vt_num = 0;
+        const char *d = path + 8;
+        while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
+        if (*d == '\0' && vt_num >= 1 && vt_num <= 12) {
+            int vt_id = vt_num - 1; /* tty1 → VT0 */
+            if (vt_id >= PTY_MAX) return -ENOENT;
+            process_t *p = proc_current();
+            if (!p) return -EFAULT;
+            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)vt_id, flags & 3);
+            return fd < 0 ? -EMFILE : fd;
+        }
+    }
+    /* /dev/pts/N → PTY slave N (same as /dev/tty(N+1)) */
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='p' && path[6]=='t' && path[7]=='s' &&
+        path[8]=='/') {
+        int pts_id = 0;
+        const char *d = path + 9;
+        if (*d < '0' || *d > '9') goto not_pts;
+        while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
+        if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX) {
+            process_t *p = proc_current();
+            if (!p) return -EFAULT;
+            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)pts_id, flags & 3);
+            return fd < 0 ? -EMFILE : fd;
+        }
+        return -ENOENT;
+    }
+not_pts:
     if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||
         kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random")) {
         int devid = 0;

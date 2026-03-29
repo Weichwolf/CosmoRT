@@ -677,30 +677,20 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
          * (36 bytes: 4×uint32 flags + c_line + c_cc[19]). */
         if (fde->type == FD_SERIAL) {
             if (!user_ok(arg, 36)) return -EFAULT;
-            kmemset((void *)arg, 0, 36);
-            uint32_t *t = (uint32_t *)arg;
-            t[0] = 0x0500; /* c_iflag: ICRNL|IXON */
-            t[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
-            t[2] = 0x00BF; /* c_cflag: B38400|CS8|CREAD */
-            t[3] = 0x8A3B; /* c_lflag: ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
-            return 0;
+            /* Static termios for serial console */
+            struct kernel_termios st;
+            kmemset(&st, 0, sizeof(st));
+            st.c_iflag = ICRNL | IXON;
+            st.c_oflag = OPOST | ONLCR;
+            st.c_cflag = B38400 | CS8 | CREAD;
+            st.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | IEXTEN;
+            return copy_to_user((void *)arg, &st, 36);
         }
         if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
             pty_t *pt = pty_get((int)(long)fde->obj);
             if (!pt) return -ENOTTY;
             if (!user_ok(arg, 36)) return -EFAULT;
-            kmemset((void *)arg, 0, 36);
-            uint32_t *t = (uint32_t *)arg;
-            t[0] = 0x0500; /* c_iflag: ICRNL|IXON */
-            t[1] = 0x0005; /* c_oflag: OPOST|ONLCR */
-            t[2] = 0x00BF; /* c_cflag: B38400|CS8|CREAD */
-            /* Build c_lflag from PTY state */
-            uint32_t lflag = 0x8A20; /* ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
-            if (pt->canon) lflag |= 0x02; /* ICANON */
-            if (pt->echo)  lflag |= 0x08; /* ECHO */
-            lflag |= 0x01; /* ISIG */
-            t[3] = lflag;
-            return 0;
+            return copy_to_user((void *)arg, &pt->termios, 36);
         }
         return -ENOTTY;
     }
@@ -748,22 +738,21 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         do_kill(-(int)fg_pgid, SIGWINCH);
         return 0;
     }
-    /* Terminal set: accept and ignore (no real termios backend) */
+    /* Terminal set: store full termios */
     if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
-        /* Apply termios flags to PTY */
         if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
-            /* struct termios: c_iflag(4), c_oflag(4), c_cflag(4), c_lflag(4), ... */
-            struct { uint32_t c_iflag, c_oflag, c_cflag, c_lflag; } kterm;
-            if (copy_from_user(&kterm, (const void *)arg, sizeof(kterm)) == 0) {
+            struct kernel_termios kterm;
+            if (copy_from_user(&kterm, (const void *)arg, 36) == 0) {
                 pty_t *pt = pty_get((int)(long)fde->obj);
                 if (pt) {
                     uint64_t irqf;
                     spin_lock_irq(&pt->lock, &irqf);
-                    int was_canon = pt->canon;
-                    pt->canon = (kterm.c_lflag & 0x02) ? 1 : 0; /* ICANON */
-                    pt->echo  = (kterm.c_lflag & 0x08) ? 1 : 0; /* ECHO */
+                    int was_canon = (pt->termios.c_lflag & ICANON) != 0;
+                    int new_canon = (kterm.c_lflag & ICANON) != 0;
+                    /* Store complete termios */
+                    kmemcpy(&pt->termios, &kterm, sizeof(struct kernel_termios));
                     /* Flush line buffer when switching canonical → raw */
-                    if (was_canon && !pt->canon && pt->line_pos > 0) {
+                    if (was_canon && !new_canon && pt->line_pos > 0) {
                         for (int li = 0; li < pt->line_pos; li++) {
                             if (((pt->input_tail + 1) % PTY_BUF_SIZE) != pt->input_head)
                                 pt->input_buf[pt->input_tail] = pt->line_buf[li],

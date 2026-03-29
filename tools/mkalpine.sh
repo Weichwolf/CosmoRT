@@ -48,9 +48,7 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             bash gcc musl-dev make git nodejs npm \
             stress-ng linux-headers autoconf automake libtool m4 pkgconf
 
-        # ── /etc/passwd: root shell → bash ──
-        sed -i "s|root:x:0:0:root:/root:/bin/sh|root:x:0:0:root:/root:/bin/bash|" /etc/passwd
-        echo ">>> root shell: /bin/bash"
+        echo ">>> keeping default Alpine /etc/passwd (root:/bin/sh)"
 
         # ── LTP (Linux Test Project) ──
         if [ ! -d /opt/ltp/testcases ]; then

@@ -48,13 +48,51 @@ static void pty_output_str(pty_t *p, const char *s) {
     while (*s) pty_output_char(p, *s++);
 }
 
+/* Output with OPOST/ONLCR processing */
+static void pty_output_cooked(pty_t *p, char c) {
+    if ((p->termios.c_oflag & OPOST) && (p->termios.c_oflag & ONLCR) && c == '\n') {
+        pty_output_char(p, '\r');
+        pty_output_char(p, '\n');
+    } else {
+        pty_output_char(p, c);
+    }
+}
+
+/* ── Default termios (matches Linux defaults) ──────── */
+
+static void termios_init(struct kernel_termios *t) {
+    kmemset(t, 0, sizeof(*t));
+    t->c_iflag = ICRNL | IXON;
+    t->c_oflag = OPOST | ONLCR;
+    t->c_cflag = B38400 | CS8 | CREAD;
+    t->c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | IEXTEN;
+    t->c_line  = 0;
+    /* Control characters — Linux defaults */
+    t->c_cc[VINTR]    = 3;    /* ^C */
+    t->c_cc[VQUIT]    = 28;   /* ^\ */
+    t->c_cc[VERASE]   = 127;  /* DEL */
+    t->c_cc[VKILL]    = 21;   /* ^U */
+    t->c_cc[VEOF]     = 4;    /* ^D */
+    t->c_cc[VTIME]    = 0;
+    t->c_cc[VMIN]     = 1;
+    t->c_cc[VSWTC]    = 0;
+    t->c_cc[VSTART]   = 17;   /* ^Q */
+    t->c_cc[VSTOP]    = 19;   /* ^S */
+    t->c_cc[VSUSP]    = 26;   /* ^Z */
+    t->c_cc[VEOL]     = 0;
+    t->c_cc[VREPRINT] = 18;   /* ^R */
+    t->c_cc[VDISCARD] = 15;   /* ^O */
+    t->c_cc[VWERASE]  = 23;   /* ^W */
+    t->c_cc[VLNEXT]   = 22;   /* ^V */
+    t->c_cc[VEOL2]    = 0;
+}
+
 /* ── Init ──────────────────────────────────────────── */
 
 void pty_init(void) {
     kmemset(pty_pool, 0, sizeof(pty_pool));
     for (int i = 0; i < PTY_MAX; i++) {
-        pty_pool[i].echo = 1;
-        pty_pool[i].canon = 1;
+        termios_init(&pty_pool[i].termios);
         pty_pool[i].lock = (spinlock_t)SPINLOCK_INIT;
     }
     serial_puts("pty: ");
@@ -73,8 +111,7 @@ int pty_alloc(void) {
             pty_pool[i].line_pos = 0;
             pty_pool[i].slave_pid = 0;
             pty_pool[i].blocked_reader = 0;
-            pty_pool[i].echo = 1;
-            pty_pool[i].canon = 1;
+            termios_init(&pty_pool[i].termios);
             pty_pool[i].ws.ws_col = (uint16_t)vt_cols();
             pty_pool[i].ws.ws_row = (uint16_t)vt_rows();
             pty_pool[i].ws.ws_xpixel = 0;
@@ -91,6 +128,13 @@ pty_t *pty_get(int id) {
     if (id < 0 || id >= PTY_MAX) return 0;
     return &pty_pool[id];
 }
+
+/* ── Convenience accessors for termios fields ──────── */
+
+static inline int pty_canon(pty_t *p)  { return (p->termios.c_lflag & ICANON) != 0; }
+static inline int pty_echo(pty_t *p)   { return (p->termios.c_lflag & ECHO)   != 0; }
+static inline int pty_isig(pty_t *p)   { return (p->termios.c_lflag & ISIG)   != 0; }
+static inline int pty_icrnl(pty_t *p)  { return (p->termios.c_iflag & ICRNL)  != 0; }
 
 /* ── Master write: keyboard → line discipline → input buffer ── */
 
@@ -139,70 +183,97 @@ int pty_master_write(int id, const char *buf, int len) {
     for (int i = 0; i < len; i++) {
         char c = buf[i];
 
-        /* Canonical mode signal chars — only in cooked mode */
-        if (p->canon) {
-            /* Ctrl+C → SIGINT */
-            if (c == 3) {
+        /* ICRNL: CR → NL on input */
+        if (pty_icrnl(p) && c == '\r')
+            c = '\n';
+
+        /* Signal characters — only when ISIG is set */
+        if (pty_isig(p)) {
+            if (c == (char)p->termios.c_cc[VINTR]) {
                 send_signal_to_fg(p, SIGINT);
-                if (p->echo) pty_output_str(p, "^C\n");
+                if (pty_echo(p)) pty_output_str(p, "^C\n");
                 p->line_pos = 0;
                 continue;
             }
-            /* Ctrl+Z → SIGTSTP */
-            if (c == 26) {
+            if (c == (char)p->termios.c_cc[VQUIT]) {
+                send_signal_to_fg(p, SIGQUIT);
+                if (pty_echo(p)) pty_output_str(p, "^\\\n");
+                p->line_pos = 0;
+                continue;
+            }
+            if (c == (char)p->termios.c_cc[VSUSP]) {
                 send_signal_to_fg(p, SIGTSTP);
-                if (p->echo) pty_output_str(p, "^Z\n");
+                if (pty_echo(p)) pty_output_str(p, "^Z\n");
                 p->line_pos = 0;
                 continue;
             }
         }
-        /* Ctrl+D → EOF (flush line or signal EOF) */
-        if (c == 4) {
-            if (p->canon) {
-                if (p->line_pos > 0)
-                    line_flush(p);
-                /* else: EOF marker — leave input empty so read returns 0 */
-            }
-            continue;
-        }
-        /* Ctrl+L → clear screen */
-        if (c == 12) {
-            pty_output_str(p, "\033[2J\033[H");
-            continue;
-        }
-        /* Ctrl+\\ → SIGQUIT (only in canonical mode) */
-        if (c == 28 && p->canon) {
-            send_signal_to_fg(p, SIGQUIT);
-            if (p->echo) pty_output_str(p, "^\\\n");
-            p->line_pos = 0;
+
+        /* EOF (^D) — only in canonical mode */
+        if (pty_canon(p) && c == (char)p->termios.c_cc[VEOF]) {
+            if (p->line_pos > 0)
+                line_flush(p);
+            /* else: EOF marker — leave input empty so read returns 0 */
             continue;
         }
 
-        if (p->canon) {
-            /* Backspace */
-            if (c == '\b' || c == 127) {
+        if (pty_canon(p)) {
+            /* Backspace (VERASE) */
+            if (c == '\b' || c == (char)p->termios.c_cc[VERASE]) {
                 if (p->line_pos > 0) {
                     p->line_pos--;
-                    if (p->echo) pty_output_str(p, "\b \b");
+                    if (pty_echo(p)) pty_output_str(p, "\b \b");
+                }
+                continue;
+            }
+            /* Kill line (VKILL = ^U) */
+            if (c == (char)p->termios.c_cc[VKILL]) {
+                while (p->line_pos > 0) {
+                    p->line_pos--;
+                    if (pty_echo(p)) pty_output_str(p, "\b \b");
+                }
+                continue;
+            }
+            /* Word erase (VWERASE = ^W) */
+            if (c == (char)p->termios.c_cc[VWERASE] && p->termios.c_cc[VWERASE]) {
+                /* Skip trailing spaces */
+                while (p->line_pos > 0 && p->line_buf[p->line_pos - 1] == ' ') {
+                    p->line_pos--;
+                    if (pty_echo(p)) pty_output_str(p, "\b \b");
+                }
+                /* Delete word */
+                while (p->line_pos > 0 && p->line_buf[p->line_pos - 1] != ' ') {
+                    p->line_pos--;
+                    if (pty_echo(p)) pty_output_str(p, "\b \b");
                 }
                 continue;
             }
             /* Enter → flush line */
-            if (c == '\n' || c == '\r') {
-                if (p->echo) pty_output_char(p, '\n');
+            if (c == '\n') {
+                if (pty_echo(p)) pty_output_cooked(p, '\n');
                 line_flush(p);
                 continue;
             }
             /* Buffer printable chars */
             if (p->line_pos < PTY_LINE_MAX - 1) {
                 p->line_buf[p->line_pos++] = c;
-                if (p->echo) pty_output_char(p, c);
+                if (pty_echo(p)) {
+                    /* ECHOCTL: echo control chars as ^X */
+                    if ((p->termios.c_lflag & ECHOCTL) &&
+                        (unsigned char)c < 32 && c != '\t' && c != '\n')
+                    {
+                        pty_output_char(p, '^');
+                        pty_output_char(p, (char)(c + '@'));
+                    } else {
+                        pty_output_cooked(p, c);
+                    }
+                }
             }
         } else {
             /* Raw mode: pass directly to input */
             if (ring_space(p->input_head, p->input_tail) > 0)
                 ring_put(p->input_buf, &p->input_tail, c);
-            if (p->echo) pty_output_char(p, c);
+            if (pty_echo(p)) pty_output_cooked(p, c);
         }
     }
 
@@ -254,8 +325,15 @@ int pty_slave_write(int id, const char *buf, int len) {
 
     int wrote = 0;
     for (int i = 0; i < len; i++) {
-        if (ring_space(p->output_head, p->output_tail) <= 0) break;
-        ring_put(p->output_buf, &p->output_tail, buf[i]);
+        /* OPOST + ONLCR: NL → CR+NL on output */
+        if ((p->termios.c_oflag & OPOST) && (p->termios.c_oflag & ONLCR) && buf[i] == '\n') {
+            if (ring_space(p->output_head, p->output_tail) < 2) break;
+            ring_put(p->output_buf, &p->output_tail, '\r');
+            ring_put(p->output_buf, &p->output_tail, '\n');
+        } else {
+            if (ring_space(p->output_head, p->output_tail) <= 0) break;
+            ring_put(p->output_buf, &p->output_tail, buf[i]);
+        }
         wrote++;
     }
 
