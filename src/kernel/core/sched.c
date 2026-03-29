@@ -357,6 +357,13 @@ void sched_preempt(void *frame_ptr) {
         epoll_check_timeouts();
     }
 
+    /* Check alarm timers — BSP only (process table is global).
+     * Expired alarms set SIGALRM pending + wake blocked threads. */
+    if (percpu_self()->core_id == 0) {
+        extern void check_alarm_timers(void);
+        check_alarm_timers();
+    }
+
     /* VT flush (BSP only — framebuffer access is single-threaded) */
     if (percpu_self()->core_id == 0) {
         extern void vt_flush(int vt_id);

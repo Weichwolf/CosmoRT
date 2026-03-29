@@ -126,6 +126,39 @@ long do_alarm(unsigned int seconds) {
     return (long)remaining;
 }
 
+/* Check all processes for expired alarm timers.
+ * Called from timer tick on BSP. Sets SIGALRM pending + wakes blocked threads. */
+void check_alarm_timers(void) {
+    uint64_t now = timer_ms();
+    extern process_t *pid_table[];
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *p = pid_table[i];
+        if (!p || p->state != PROC_ALIVE) continue;
+        if (p->alarm_deadline_ms == 0 || now < p->alarm_deadline_ms) continue;
+        p->alarm_deadline_ms = 0;
+        void *handler = p->sig_actions[SIGALRM].sa_handler;
+        if (handler == SIG_IGN) continue;
+        if (handler == SIG_DFL) {
+            /* Default: terminate */
+            p->exit_signal = SIGALRM;
+            p->state = PROC_ZOMBIE;
+            p->exit_code = 128 + SIGALRM;
+            continue;
+        }
+        /* User handler: set pending + wake blocked threads */
+        p->sig_pending |= SIG_BIT(SIGALRM);
+        {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            thread_t *t = p->threads;
+            while (t) {
+                if (t->state == THREAD_BLOCKED)
+                    event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)SIGALRM);
+                t = t->proc_next;
+            }
+        }
+    }
+}
+
 /* Check and deliver signals in the SYSCALL return path.
  * Syncs percpu syscall frame <-> thread_t around delivery.
  * Called from syscall_entry.asm between sys_handler return and SYSRET.

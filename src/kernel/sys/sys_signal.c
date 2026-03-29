@@ -188,16 +188,31 @@ static long kill_one(process_t *target, int sig) {
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
         /* Stop: SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU */
         if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
-            /* Set pending for delivery in check_pending_signals (process context).
-             * For remote stop, set pending + wake blocked threads. */
-            target->sig_pending |= SIG_BIT(sig);
+            /* Stop all threads immediately — don't defer to check_pending_signals.
+             * Threads on other cores will be preempted and see THREAD_STOPPED. */
             {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
                 thread_t *t = target->threads;
                 while (t) {
-                    if (t->state == THREAD_BLOCKED)
-                        event_post(t, EQ_CHILD_EXITED, (uint64_t)sig);
+                    if (t->state == THREAD_RUNNING || t->state == THREAD_RUNNABLE)
+                        t->state = THREAD_STOPPED;
+                    else if (t->state == THREAD_BLOCKED)
+                        t->state = THREAD_STOPPED;
                     t = t->proc_next;
+                }
+            }
+            target->stop_signal = sig;
+            target->was_continued = 0;
+            /* Notify parent */
+            if (target->parent_pid) {
+                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
+                process_t *parent = proc_find(target->parent_pid);
+                if (parent) {
+                    thread_t *pt = parent->threads;
+                    while (pt) {
+                        event_post(pt, EQ_CHILD_STOPPED, ((uint64_t)sig << 32) | target->pid);
+                        pt = pt->proc_next;
+                    }
                 }
             }
             return 0;
