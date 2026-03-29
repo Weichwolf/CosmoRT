@@ -75,6 +75,36 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             echo ">>> musl libc-test built"
         fi
 
+        # ── /etc/issue ──
+        cat > /etc/issue << "ISSUE"
+Welcome to CosmoRT 0.1.0 / Alpine Linux 3.21
+\s \r on \m (\l)
+
+ISSUE
+
+        # ── /etc/inittab: autologin on tty1 ──
+        cat > /etc/inittab << "INITTAB"
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+tty1::respawn:/sbin/getty -n -l /bin/sh 38400 tty1
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
+tty4::respawn:/sbin/getty 38400 tty4
+tty5::respawn:/sbin/getty 38400 tty5
+tty6::respawn:/sbin/getty 38400 tty6
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown
+INITTAB
+
+        # ── /root/.profile: auto-poweroff after login ──
+        cat > /root/.profile << "ROOTPROFILE"
+echo "CosmoRT 0.1.0 — logged in as root"
+uname -a
+echo ""
+poweroff
+ROOTPROFILE
+
         # ── /root/.bash_profile ──
         cat > /root/.bash_profile << "PROFILE"
 [ -f ~/.bashrc ] && . ~/.bashrc

@@ -356,7 +356,7 @@ long do_uname(void *buf_) {
     struct utsname kbuf;
     kstrcpy(kbuf.sysname, "CosmoRT", 65);
     kstrcpy(kbuf.nodename, "cosmo", 65);
-    kstrcpy(kbuf.release, "CosmoRT 0.1.0", 65);
+    kstrcpy(kbuf.release, "0.1.0", 65);
     kstrcpy(kbuf.version, "CosmoRT 0.1", 65);
     kstrcpy(kbuf.machine, "x86_64", 65);
     kstrcpy(kbuf.domainname, "", 65);
