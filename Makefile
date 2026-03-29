@@ -276,9 +276,12 @@ qemu-alpine-gui: alpine-image
 	$(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display gtk -device virtio-keyboard-pci
 
 # make alpine-test — headless boot test (musl + LTP, fail-fast + poweroff)
-# Patches /etc/inittab to run boot-test.sh as sysinit, then poweroff
-alpine-test: alpine-image
-	@echo "::sysinit:/opt/boot-test.sh" | debugfs -w -R "write /dev/stdin /etc/inittab" $(BUILD)/alpine.img 2>/dev/null
+# Temporarily replaces /etc/inittab, builds image, restores after
+alpine-test: $(EFI_BIN)
+	@cp $(ALPINE_ROOT)/etc/inittab $(ALPINE_ROOT)/etc/inittab.bak 2>/dev/null || true
+	@echo '::sysinit:/opt/boot-test.sh' > $(ALPINE_ROOT)/etc/inittab
+	@sh tools/mkalpine.sh $(ALPINE_ROOT)
+	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
 	@rm -f /tmp/cosmo-serial.log
 	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
