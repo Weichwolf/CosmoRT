@@ -55,6 +55,10 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
         uint64_t now = timer_ms();
         uint64_t dl = t->nanosleep_deadline;
         t->nanosleep_deadline = 0;
+        /* Drain stale timeout events left by thread_block_ms.
+         * Without this, the next futex_wait picks up the stale EQ_TIMEOUT
+         * and spuriously returns -ETIMEDOUT (breaks pthread_join). */
+        { event_t ev; while (event_wait(&t->eq, &ev, 0) == 0) { /* drain */ } }
         if (now >= dl)
             return 0; /* sleep completed */
         /* Woken early (signal) — write remaining time */
@@ -100,6 +104,7 @@ long do_clock_nanosleep(int clk_id, int flags,
             uint64_t now = timer_ms();
             uint64_t dl = t->nanosleep_deadline;
             t->nanosleep_deadline = 0;
+            { event_t ev; while (event_wait(&t->eq, &ev, 0) == 0) { /* drain */ } }
             if (now >= dl)
                 return 0;
             /* TIMER_ABSTIME: no remaining time written (POSIX) */

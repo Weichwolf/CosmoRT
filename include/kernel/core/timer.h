@@ -13,6 +13,9 @@ uint64_t timer_ms(void);
 /* Sleep for ms milliseconds (busy-wait with HLT) */
 void timer_sleep_ms(uint32_t ms);
 
+/* Seconds since Unix epoch (boot RTC + uptime) */
+uint32_t timer_epoch_sec(void);
+
 /* TSC ticks per millisecond (after calibration) */
 extern uint64_t timer_tsc_per_ms;
 

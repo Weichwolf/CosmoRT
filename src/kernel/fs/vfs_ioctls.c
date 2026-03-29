@@ -1,6 +1,7 @@
 /* CosmoRT VFS — stat, fstat, lstat, chmod, fchmod, fchown, truncate, ftruncate, utimensat */
 
 #include "fs/vfs_internal.h"
+#include "core/timer.h"
 
 /* ── Stat helpers ────────────────────────────────── */
 
@@ -350,25 +351,53 @@ int vfs_ftruncate(int fd, int64_t length) {
 int vfs_utimensat(const char *path, const int64_t times[4], int flags) {
     (void)flags;
     /* times[0]=atime_sec, times[1]=atime_nsec, times[2]=mtime_sec, times[3]=mtime_nsec */
+    #define UTIME_NOW_  ((1L << 30) - 1L)
+    #define UTIME_OMIT_ ((1L << 30) - 2L)
 
     if (!path) return -EINVAL;
 
     if (!is_ramfs_path(path)) {
         uint64_t ino64 = ext2_walk(path);
         uint32_t ino = (uint32_t)ino64;
-        if (ino == 0) return -ENOENT;
+        if (ino == 0) goto try_ramfs; /* ext2 miss → try ramfs (e.g. /dev nodes) */
         struct ext2_inode ip;
         if (ext2_inode_read(ino, &ip) < 0) return -EIO;
         if (times) {
-            ip.i_atime = (uint32_t)times[0];
-            ip.i_mtime = (uint32_t)times[2];
+            uint32_t now = timer_epoch_sec();
+            int64_t atime_nsec = times[1], mtime_nsec = times[3];
+            if (atime_nsec != UTIME_OMIT_)
+                ip.i_atime = (atime_nsec == UTIME_NOW_) ? now : (uint32_t)times[0];
+            if (mtime_nsec != UTIME_OMIT_)
+                ip.i_mtime = (mtime_nsec == UTIME_NOW_) ? now : (uint32_t)times[2];
+        } else {
+            uint32_t now = timer_epoch_sec();
+            ip.i_atime = now;
+            ip.i_mtime = now;
         }
         ext2_inode_write(ino, &ip);
         return 0;
     }
 
-    /* ramfs: no timestamps stored, no-op */
-    struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+try_ramfs:;
+    /* ramfs: update timestamps on VFS node */
+    int lookup_err = 0;
+    extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
+    struct vfs_node *node = vfs_lookup_err(path, &lookup_err);
+    if (!node) return lookup_err ? lookup_err : -ENOENT;
+    if (times) {
+        #define UTIME_NOW  ((1L << 30) - 1L)
+        #define UTIME_OMIT ((1L << 30) - 2L)
+        uint32_t now = timer_epoch_sec();
+        int64_t atime_nsec = times[1], mtime_nsec = times[3];
+        if (atime_nsec != UTIME_OMIT)
+            node->atime = (atime_nsec == UTIME_NOW) ? now : (uint32_t)times[0];
+        if (mtime_nsec != UTIME_OMIT)
+            node->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint32_t)times[2];
+    } else {
+        /* NULL times = set both to current time */
+        uint32_t now = timer_epoch_sec();
+        node->atime = now;
+        node->mtime = now;
+    }
     return 0;
 }

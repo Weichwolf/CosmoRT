@@ -40,7 +40,7 @@ restart:
         while (*rest == '/') rest++;
         int is_last = (*rest == 0);
 
-        if (cur->type != VFS_DIR) return 0;
+        if (cur->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
 
         struct vfs_node *child = cur->children;
         struct vfs_node *found = 0;
@@ -99,6 +99,10 @@ restart:
 
 struct vfs_node *vfs_lookup(const char *path) {
     return vfs_lookup_impl(path, 0, 1, 0);
+}
+
+struct vfs_node *vfs_lookup_err(const char *path, int *err) {
+    return vfs_lookup_impl(path, 0, 1, err);
 }
 
 /* Lookup without following the final symlink (for readlink/lstat).

@@ -7,6 +7,13 @@ echo "========================================"
 echo ""
 
 echo ""
+echo "=== COND DEBUG ==="
+if [ -x /opt/cond_trace ]; then
+    timeout 30 /opt/cond_trace 2>&1
+    echo "rc=$?"
+fi
+
+echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 rm -f src/*/*.err
@@ -14,7 +21,10 @@ RUNNER=src/common/runtest.exe
 # musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
 # mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
 # strptime: %F/%s/%z parsing broken in musl 1.2.5
-SKIP="mntent mntent-static strptime strptime-static pthread_cond pthread_cond-static pthread_robust pthread_robust-static sem_open sem_open-static socket socket-static"
+# musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
+# mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
+# strptime: %F/%s/%z parsing broken in musl 1.2.5
+SKIP="mntent mntent-static strptime strptime-static"
 musl_pass=0; musl_fail=0; musl_skip=0
 for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
     name=$(basename "$exe" .exe)
@@ -29,9 +39,6 @@ for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | 
         echo "FAIL $name (rc=$rc)"
         musl_fail=$((musl_fail + 1))
         cat /tmp/musl_out.txt
-        echo "STOPPING: musl $name failed"
-        echo "musl so far: $musl_pass PASS, $musl_fail FAIL"
-        poweroff -f; exit 1
     fi
 done
 echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL"
