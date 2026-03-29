@@ -15,6 +15,7 @@
 #include "sys/syscall.h"
 #include "fs/procfs.h"
 #include "event/epoll.h"
+#include "vt/pty.h"
 
 /* ── Slab pools (defined in vfs.c) ── */
 

@@ -219,12 +219,34 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
     {
         static const char *devpaths[] = {
             "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
-            "/dev", "/proc", 0
+            "/dev/console", "/dev", "/proc", 0
         };
         for (const char **dp = devpaths; *dp; dp++) {
             const char *a = kpath, *b = *dp;
             while (*a && *a == *b) { a++; b++; }
             if (*a == 0 && *b == 0) { exists = 1; goto found; }
+        }
+        /* /dev/tty1-tty4 */
+        if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
+            kpath[4]=='/' && kpath[5]=='t' && kpath[6]=='t' && kpath[7]=='y' &&
+            kpath[8] >= '1' && kpath[8] <= '9') {
+            int vt_num = 0;
+            const char *d = kpath + 8;
+            while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
+            if (*d == '\0' && vt_num >= 1 && vt_num <= PTY_MAX)
+                { exists = 1; goto found; }
+        }
+        /* /dev/pts/0-3 */
+        if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
+            kpath[4]=='/' && kpath[5]=='p' && kpath[6]=='t' && kpath[7]=='s' &&
+            kpath[8]=='/') {
+            int pts_id = 0;
+            const char *d = kpath + 9;
+            if (*d >= '0' && *d <= '9') {
+                while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
+                if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX)
+                    { exists = 1; goto found; }
+            }
         }
     }
     /* ext2 on disk */

@@ -65,6 +65,50 @@ int vfs_stat(const char *path, struct k_stat *buf) {
         if (kstreq(path, "/dev/tty"))     buf->st_rdev = 0x0500;
         return 0;
     }
+    /* /dev/console → char device major 5, minor 1 */
+    if (kstreq(path, "/dev/console")) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFCHR | 0600;
+        buf->st_rdev = 0x0501;
+        buf->st_ino = 9;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+    /* /dev/tty1-tty12 → char device major 4, minor N */
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='t' && path[6]=='t' && path[7]=='y' &&
+        path[8] >= '1' && path[8] <= '9') {
+        int vt_num = 0;
+        const char *d = path + 8;
+        while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
+        if (*d == '\0' && vt_num >= 1 && vt_num <= 12) {
+            if (vt_num - 1 >= PTY_MAX) return -ENOENT;
+            kmemset(buf, 0, sizeof(struct k_stat));
+            buf->st_mode = S_IFCHR | 0620;
+            buf->st_rdev = (uint64_t)(0x0400 + vt_num); /* major 4, minor N */
+            buf->st_ino = (uint64_t)(100 + vt_num);
+            buf->st_blksize = 4096;
+            return 0;
+        }
+    }
+    /* /dev/pts/N → char device major 136, minor N */
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='p' && path[6]=='t' && path[7]=='s' &&
+        path[8]=='/') {
+        int pts_id = 0;
+        const char *d = path + 9;
+        if (*d >= '0' && *d <= '9') {
+            while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
+            if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX) {
+                kmemset(buf, 0, sizeof(struct k_stat));
+                buf->st_mode = S_IFCHR | 0620;
+                buf->st_rdev = (uint64_t)(0x8800 + pts_id); /* major 136, minor N */
+                buf->st_ino = (uint64_t)(200 + pts_id);
+                buf->st_blksize = 4096;
+                return 0;
+            }
+        }
+    }
 
     const char *pn = procfs_name(path);
     if (pn) {
