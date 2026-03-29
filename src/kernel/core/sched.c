@@ -357,8 +357,26 @@ void sched_preempt(void *frame_ptr) {
         epoll_check_timeouts();
     }
 
-    /* Check alarm timers — BSP only (process table is global).
-     * Expired alarms set SIGALRM pending + wake blocked threads. */
+    /* Check alarm timers for the CURRENT thread's process.
+     * Each core checks its own running thread — no cross-core scan needed.
+     * This ensures alarm delivery isn't delayed by BSP-only checking. */
+    {
+        thread_t *alarm_t = percpu_self()->current_thread;
+        if (alarm_t && alarm_t->proc) {
+            process_t *ap = alarm_t->proc;
+            if (ap->alarm_deadline_ms > 0 && timer_ms() >= ap->alarm_deadline_ms) {
+                ap->alarm_deadline_ms = 0;
+                void *handler = ap->sig_actions[SIGALRM].sa_handler;
+                if ((uint64_t)handler > 1)
+                    ap->sig_pending |= SIG_BIT(SIGALRM);
+                else if (handler == (void *)0) { /* SIG_DFL: terminate */
+                    ap->exit_signal = SIGALRM;
+                    ap->sig_pending |= SIG_BIT(SIGALRM);
+                }
+            }
+        }
+    }
+    /* BSP: also scan ALL processes for alarms (catches blocked threads on other cores) */
     if (percpu_self()->core_id == 0) {
         extern void check_alarm_timers(void);
         check_alarm_timers();

@@ -332,6 +332,14 @@ void *page_alloc(void) {
     return p;
 }
 
+uint64_t page_free_count(void) {
+    return (total_pages > alloc_count) ? (total_pages - alloc_count) : 0;
+}
+
+uint64_t page_total_count(void) {
+    return total_pages;
+}
+
 void page_free(void *page) {
     if (!page) return;
     uint64_t pfn = virt_to_phys(page) >> PAGE_SHIFT;

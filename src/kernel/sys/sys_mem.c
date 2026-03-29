@@ -300,6 +300,13 @@ long do_brk(unsigned long addr) {
     if (addr >= 0x800000000000ULL) return (long)p->brk_current;
     /* Cap brk growth to 256MB above base to prevent excessive virtual memory use */
     if (addr > p->brk_base + (256ULL << 20)) return (long)p->brk_current;
+    /* OOM guard: refuse brk growth when memory is critically low */
+    if (addr > p->brk_current) {
+        extern uint64_t page_free_count(void);
+        size_t grow = ((addr - p->brk_current) + 4095) / 4096;
+        if (page_free_count() < grow + 256)
+            return (long)p->brk_current;
+    }
     /* Fast reject: if we previously hit a VMA collision, don't re-scan */
     if (p->brk_ceiling && addr >= p->brk_ceiling) return (long)p->brk_current;
 
@@ -451,6 +458,17 @@ long do_mmap(unsigned long addr, size_t length, int prot,
                     int flags, int fd, long offset) {
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
+
+    /* OOM guard: reject new mappings when physical memory is critically low.
+     * Reserves 256 pages (1MB) for kernel operations and process cleanup.
+     * Without this, a single process can exhaust all pages, making the
+     * entire system unresponsive (no OOM killer implemented yet). */
+    {
+        extern uint64_t page_free_count(void);
+        size_t pages_needed = (length + 4095) / 4096;
+        if (!(flags & MAP_FIXED) && page_free_count() < pages_needed + 256)
+            return -ENOMEM;
+    }
 
     /* MAP_HUGETLB: no huge page support via this flag — reject */
     if (flags & MAP_HUGETLB) return -EINVAL;
