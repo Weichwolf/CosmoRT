@@ -5,9 +5,8 @@
 # First run: downloads Alpine minirootfs, installs packages, builds test suites.
 # Subsequent runs: reuses existing ALPINE_ROOT (fast — only mkfs.ext2).
 #
-# Input:  /tmp/alpine-root/ (or $1)
-# Output: build/alpine.img (raw ext2 image)
-#         build/disk.img   (GPT: ESP + ext2)
+# Boot chain: kernel init.c → /sbin/init → getty → login → bash (.bashrc)
+# .bashrc runs test suites on first boot.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -27,12 +26,11 @@ if [ ! -f "$ALPINE_ROOT/bin/busybox" ]; then
     wget -qO- "$ALPINE_URL" | tar xzf - -C "$ALPINE_ROOT"
 fi
 
-# ── Step 1: Install packages + build test suites ─────
-# Marker file: skip if already done
+# ── Step 1: Install packages + build test suites + configure ──
 if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
     echo "mkalpine: installing packages and building test suites..."
 
-    # Mount /dev for chroot (getrandom needs /dev/urandom)
+    # Dev nodes for chroot
     sudo mkdir -p "$ALPINE_ROOT/dev" 2>/dev/null || true
     sudo mknod -m 666 "$ALPINE_ROOT/dev/urandom" c 1 9 2>/dev/null || true
     sudo mknod -m 666 "$ALPINE_ROOT/dev/random" c 1 8 2>/dev/null || true
@@ -48,11 +46,9 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             bash gcc musl-dev make git nodejs npm \
             stress-ng linux-headers autoconf automake libtool m4 pkgconf
 
-        # ── Default shell: bash (via /etc/passwd) ──
-        if [ -f /bin/bash ]; then
-            sed -i "s|root:x:0:0:root:/root:/bin/sh|root:x:0:0:root:/root:/bin/bash|" /etc/passwd
-            echo ">>> root shell: /bin/bash (in /etc/passwd)"
-        fi
+        # ── /etc/passwd: root shell → bash ──
+        sed -i "s|root:x:0:0:root:/root:/bin/sh|root:x:0:0:root:/root:/bin/bash|" /etc/passwd
+        echo ">>> root shell: /bin/bash"
 
         # ── LTP (Linux Test Project) ──
         if [ ! -d /opt/ltp/testcases ]; then
@@ -64,7 +60,7 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             echo ">>> Building LTP..."
             make autotools
             ./configure --prefix=/opt/ltp/install
-            make -j4 -k || true  # -k: continue despite errors (some tests need glibc)
+            make -j4 -k || true
             make install -k || true
             echo ">>> LTP built"
         fi
@@ -80,19 +76,80 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             echo ">>> musl libc-test built"
         fi
 
-        echo ">>> All done"
+        # ── /root/.bash_profile ──
+        cat > /root/.bash_profile << "PROFILE"
+[ -f ~/.bashrc ] && . ~/.bashrc
+PROFILE
+
+        # ── /root/.bashrc: auto-run tests on first boot ──
+        cat > /root/.bashrc << "BASHRC"
+if [ ! -f /tmp/.tests-done ]; then
+    echo "========================================"
+    echo "  CosmoRT Test Suite Runner"
+    echo "========================================"
+    /bin/bash /tmp/test_suites.sh 2>&1 | tee /tmp/test_results.txt
+    touch /tmp/.tests-done
+fi
+BASHRC
+
+        # ── /tmp/test_suites.sh ──
+        cat > /tmp/test_suites.sh << "TESTS"
+#!/bin/bash
+echo ""
+echo "=== MUSL LIBC-TEST ==="
+cd /opt/libc-test
+make 2>&1 | grep -E "^(PASS|FAIL)" | tee /tmp/musl_results.txt
+pass=$(grep -c "^PASS" /tmp/musl_results.txt 2>/dev/null || echo 0)
+fail=$(grep -c "^FAIL" /tmp/musl_results.txt 2>/dev/null || echo 0)
+echo ""
+echo "musl libc-test: $pass PASS, $fail FAIL"
+if [ "$fail" -gt 0 ]; then
+    echo "Failures:"
+    grep "^FAIL" /tmp/musl_results.txt
+fi
+
+echo ""
+echo "=== LTP SYSCALL TESTS ==="
+cd /opt/ltp
+failed=0
+passed=0
+skipped=0
+for t in $(find . -path "*/kernel/syscalls/*" -type f -executable 2>/dev/null | sort); do
+    name=$(basename "$t")
+    timeout 10 "$t" > /tmp/ltp_out.txt 2>&1
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        passed=$((passed + 1))
+    elif [ $rc -eq 32 ]; then
+        skipped=$((skipped + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL $name (rc=$rc)"
+    fi
+done
+echo ""
+echo "LTP syscalls: $passed PASS, $failed FAIL, $skipped SKIP"
+
+echo ""
+echo "========================================"
+echo "  SUMMARY"
+echo "  musl: $pass PASS, $fail FAIL"
+echo "  LTP:  $passed PASS, $failed FAIL, $skipped SKIP"
+echo "========================================"
+TESTS
+        chmod +x /tmp/test_suites.sh
+
+        echo ">>> Configuration done"
     '
 
-    # Fix permissions for mkfs.ext2
     sudo chmod -R a+r "$ALPINE_ROOT/" 2>/dev/null || true
-
     touch "$ALPINE_ROOT/.mkalpine-done"
     echo "mkalpine: packages and test suites ready"
 else
     echo "mkalpine: reusing existing $ALPINE_ROOT"
 fi
 
-# Unmount any leftover bind mounts
+# Unmount leftover bind mounts
 sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
 sudo umount "$ALPINE_ROOT/dev" 2>/dev/null || true
 
@@ -101,7 +158,7 @@ echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
 dd if=/dev/zero of="$EXT2_TMP" bs=1M count="$FS_MB" 2>/dev/null
 mkfs.ext2 -q -d "$ALPINE_ROOT" "$EXT2_TMP"
 
-# Inject resolv.conf for QEMU SLIRP networking
+# Inject resolv.conf for QEMU SLIRP
 if command -v debugfs >/dev/null 2>&1; then
     echo "nameserver 10.0.2.3" | debugfs -w -R "write /dev/stdin /etc/resolv.conf" "$EXT2_TMP" 2>/dev/null || true
 fi
