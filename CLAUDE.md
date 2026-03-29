@@ -148,12 +148,42 @@ tools/           mkfs, cosmocp, mkimage.sh, mkfont.py
 ## Build
 
 ```sh
-make                # Kernel → build/BOOTX64.EFI
-make test-hw        # ktest-Suite in QEMU
-make qemu-gui       # VT mit Bernstein-Palette
-make qemu-disk      # Boot von disk.img (GPT: ESP + ext2)
-make vhdx           # Hyper-V Image
+make                    # Kernel → build/BOOTX64.EFI
+make test-hw            # ktest Unit-Tests in QEMU (eigenes ESP, eigenes init)
+make test-crash         # Crash/Adversarial Tests
+make test-fuzz          # Syscall Fuzzer
+make alpine-image       # ext2 Image aus build/alpine-root/
+make alpine-test        # TDD: Boot → musl + LTP Tests → Fail → Stop → Poweroff
+make qemu-alpine        # Normaler Alpine Boot (OpenRC → getty → login)
+make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 ```
+
+## TDD Workflow
+
+```
+1. make alpine-test        → Boot, Tests laufen, stoppt beim ersten Fail
+2. Fehler analysieren       → Serial-Log zeigt Test-Name + Output
+3. Kernel-Fix implementieren
+4. make alpine-test        → Kernel neu gebaut (wenn Source geaendert),
+                              Image neu gebaut (~30s), Boot, Tests laufen
+5. Wiederholen bis alle Tests passen
+```
+
+make alpine-test haengt von $(EFI_BIN) ab — Kernel wird nur bei Quellcode-
+Aenderungen neu kompiliert. mkalpine.sh checkt .mkalpine-done — Paket-
+Installation wird uebersprungen wenn schon erledigt, nur ext2 Image wird
+neu gebaut. Nach einem Kernel-Fix: ~30s bis zum naechsten Testlauf.
+
+Testsuites im Alpine Image (build/alpine-root/):
+- musl libc-test: /opt/libc-test/ (vorgebaut, ~479 Binaries)
+- LTP: /opt/ltp/ (vorgebaut, 298 Pflicht-Tests in tools/ltp_required.txt)
+- stress-ng: via apk installiert
+- Test-Script: tools/boot-test.sh → /opt/boot-test.sh im Image
+
+Separate Build-Pfade (kein Konflikt):
+- build/gen/init_bin.h → Kernel init (immer /sbin/init)
+- build/test/hw/gen/init_bin.h → ktest (Unit Tests)
+- make test-hw aendert nie den Kernel-Init
 
 ## Regeln
 
