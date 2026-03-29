@@ -11,7 +11,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-ALPINE_ROOT="${1:-/tmp/alpine-root}"
+ALPINE_ROOT="${1:-build/alpine-root}"
 IMG=build/disk.img
 ESP_MB=64
 FS_MB=2048
@@ -30,11 +30,13 @@ fi
 if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
     echo "mkalpine: installing packages and building test suites..."
 
-    # Dev nodes for chroot
-    sudo mkdir -p "$ALPINE_ROOT/dev" 2>/dev/null || true
-    sudo mknod -m 666 "$ALPINE_ROOT/dev/urandom" c 1 9 2>/dev/null || true
-    sudo mknod -m 666 "$ALPINE_ROOT/dev/random" c 1 8 2>/dev/null || true
-    sudo mknod -m 666 "$ALPINE_ROOT/dev/null" c 1 3 2>/dev/null || true
+    # Bind mount individual dev nodes + /proc (safe — no full /dev mount)
+    sudo mkdir -p "$ALPINE_ROOT/dev" "$ALPINE_ROOT/proc" 2>/dev/null || true
+    sudo mount --bind /proc "$ALPINE_ROOT/proc" 2>/dev/null || true
+    for d in null zero urandom random; do
+        sudo touch "$ALPINE_ROOT/dev/$d" 2>/dev/null || true
+        sudo mount --bind "/dev/$d" "$ALPINE_ROOT/dev/$d" 2>/dev/null || true
+    done
 
     sudo chroot "$ALPINE_ROOT" /bin/sh -c '
         set -e
@@ -150,8 +152,10 @@ else
 fi
 
 # Unmount leftover bind mounts
+for d in null zero urandom random; do
+    sudo umount "$ALPINE_ROOT/dev/$d" 2>/dev/null || true
+done
 sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
-sudo umount "$ALPINE_ROOT/dev" 2>/dev/null || true
 
 # ── Step 2: Create ext2 image ────────────────────────
 echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
