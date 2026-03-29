@@ -122,7 +122,38 @@ void check_pending_signals(void) {
             /* Terminate: everything else with SIG_DFL */
             default:
                 p->exit_signal = sig;
-                do_exit(128 + sig); /* doesn't return */
+                /* Preempt context: can't call do_exit (would corrupt IRQ frame).
+                 * Kill all threads, set zombie state, notify parent.
+                 * sched_preempt sees state!=RUNNING → longjmp without re-queue. */
+                if (percpu_self()->in_preempt) {
+                    t->state = THREAD_DEAD;
+                    p->state = PROC_ZOMBIE;
+                    p->exit_code = 128 + sig;
+                    /* Kill sibling threads */
+                    {
+                        thread_t *th = p->threads;
+                        while (th) {
+                            if (th != t && (th->state == THREAD_RUNNING ||
+                                th->state == THREAD_RUNNABLE || th->state == THREAD_BLOCKED))
+                                th->state = THREAD_DEAD;
+                            th = th->proc_next;
+                        }
+                    }
+                    /* Notify parent */
+                    if (p->parent_pid) {
+                        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                        process_t *parent = proc_find(p->parent_pid);
+                        if (parent) {
+                            thread_t *pt = parent->threads;
+                            while (pt) {
+                                event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
+                                pt = pt->proc_next;
+                            }
+                        }
+                    }
+                    return;
+                }
+                do_exit(128 + sig); /* syscall context — doesn't return */
             }
         }
 

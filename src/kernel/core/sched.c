@@ -408,6 +408,7 @@ void sched_preempt(void *frame_ptr) {
          * alarm to sig_pending, but we must enter it to trigger that. */
         int alarm_due = p && p->alarm_deadline_ms > 0 && timer_ms() >= p->alarm_deadline_ms;
         if (deliverable || alarm_due) {
+            cpu->in_preempt = 1;
             /* Save frame → thread_t */
             cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
             cur->r11 = f[4]; cur->r10 = f[5]; cur->r9 = f[6];  cur->r8 = f[7];
@@ -423,6 +424,7 @@ void sched_preempt(void *frame_ptr) {
             f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
             f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
             f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
+            cpu->in_preempt = 0;
         }
     }
 

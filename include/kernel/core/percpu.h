@@ -25,6 +25,7 @@ typedef struct percpu {
     uint64_t       fault_jmpbuf[8]; /* fault recovery setjmp buffer */
     int            fault_recover;   /* nonzero: kernel_longjmp on user-addr PF */
     volatile int   need_resched;    /* set by reschedule IPI, checked by sched_loop */
+    int            in_preempt;      /* 1 inside sched_preempt signal delivery */
 } percpu_t;
 
 extern percpu_t percpu_data[SMP_MAX_CORES];

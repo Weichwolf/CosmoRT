@@ -116,14 +116,16 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     if (timeout_ms == 0)
         return -11; /* EAGAIN */
 
-    /* Check for fatal signals (SIGKILL) before blocking — prevents
-     * unkillable processes. Only check SIGKILL, not all signals, to avoid
-     * spurious EINTR that breaks futex_wait/pthread_cond_wait. */
+    /* Check for fatal signals (SIGKILL/SIGTERM) before blocking.
+     * SIGKILL: always delivers (unkillable process prevention).
+     * SIGTERM with SIG_DFL: delivers (allows timeout/kill to terminate stuck processes).
+     * Other signals: NOT checked here — spurious EINTR breaks futex_wait/pthread_cond. */
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
     if (cur->proc) {
         uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        if (all_pending & SIG_BIT(9)) return -4; /* SIGKILL → EINTR */
+        uint64_t fatal = all_pending & (SIG_BIT(9) | SIG_BIT(15)); /* SIGKILL, SIGTERM */
+        if (fatal & ~cur->sig_blocked) return -4; /* EINTR */
     }
 
     /* Block: save user state for syscall restart.
