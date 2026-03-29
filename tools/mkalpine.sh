@@ -82,23 +82,8 @@ Welcome to CosmoRT 0.1.0 / Alpine Linux 3.21
 
 ISSUE
 
-        # ── OpenRC autostart service: runs tests then poweroff ──
-        mkdir -p /etc/init.d
-        cat > /etc/init.d/cosmort-test << "INITD"
-#!/sbin/openrc-run
-description="CosmoRT test suite"
-command="/tmp/test_suites.sh"
-command_background="no"
-depend() { after localmount; }
-start() {
-    ebegin "Running CosmoRT tests"
-    /tmp/test_suites.sh 2>&1 | tee /tmp/test_results.txt
-    eend $?
-    poweroff
-}
-INITD
-        chmod +x /etc/init.d/cosmort-test
-        rc-update add cosmort-test default 2>/dev/null || true
+        # ── Passwordless root login ──
+        passwd -d root
 
         # ── /root/.profile ──
         cat > /root/.profile << "ROOTPROFILE"

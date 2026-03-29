@@ -114,9 +114,12 @@ $(BUILD)/user/crt0.o: $(SRC)/user/crt0.S | $(BUILD)/user
 CRT0 = $(BUILD)/user/crt0.o
 
 # ── Init binary (embedded in kernel) ─────────────
+# INIT= sets the init path: make INIT=/tmp/test.sh → init execs /tmp/test.sh
+INIT ?= /sbin/init
+
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
-	      -fno-plt -mno-red-zone -nostdlib -O2 -c -o $@ $<
+	      -fno-plt -mno-red-zone -nostdlib -O2 -DINIT_PATH='"$(INIT)"' -c -o $@ $<
 
 $(BUILD)/user/init: $(CRT0) $(BUILD)/user/init.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/init.o
@@ -259,19 +262,32 @@ QEMU_FLAGS = -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
-# Boot Alpine Linux from CosmoFS disk image (serial console)
+# Alpine QEMU flags (shared)
+ALPINE_QEMU = $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+  -bios /usr/share/ovmf/OVMF.fd \
+  -drive file=$(ESP_IMG),format=raw \
+  -drive file=build/alpine.img,format=raw,if=virtio \
+  -device e1000,netdev=net0 \
+  -netdev user,id=net0
+
+# make qemu-alpine — normal boot (OpenRC + getty + login)
 qemu-alpine: alpine-image
+	$(ALPINE_QEMU) -serial stdio -display none -no-reboot
+
+# make qemu-alpine-gui — GUI with keyboard
+qemu-alpine-gui: alpine-image
+	$(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display gtk -device virtio-keyboard-pci
+
+# make alpine-test INIT=/tmp/test_suites.sh — headless test run
+alpine-test:
+	rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
+	INIT=$(or $(INIT),/tmp/test_suites.sh) $(MAKE) alpine-image
 	@rm -f /tmp/cosmo-serial.log
-	timeout 30 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
-	  -bios /usr/share/ovmf/OVMF.fd \
-	  -drive file=$(ESP_IMG),format=raw \
-	  -drive file=build/alpine.img,format=raw,if=virtio \
-	  -serial file:/tmp/cosmo-serial.log \
-	  -display none -no-reboot \
-	  -device e1000,netdev=net0 \
-	  -netdev user,id=net0 || true
+	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
+	@rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
+	$(MAKE) all
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
