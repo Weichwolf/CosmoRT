@@ -76,11 +76,9 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
     uint64_t ms = (uint64_t)kreq.tv_sec * 1000 + (uint64_t)(kreq.tv_nsec / 1000000);
     if (ms == 0) { ms = 1; }
 
-    /* Check pending signals before blocking (POSIX -EINTR) */
-    if (t->proc) {
-        uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-        if (deliverable) return -EINTR;
-    }
+    /* Don't check signals here — let thread_block_ms yield to scheduler.
+     * Signal delivery happens on syscall restart via check_signals_syscall_path.
+     * Checking here causes spurious EINTR that prevents blocking. */
 
     t->nanosleep_deadline = timer_ms() + ms;
     thread_block_ms((int)(ms > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : ms));

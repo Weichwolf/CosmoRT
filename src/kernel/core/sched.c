@@ -349,11 +349,13 @@ void sched_preempt(void *frame_ptr) {
         sched_rebalance();
     }
 
-    /* Check timed-out epoll/poll sleepers (every tick, BSP only) */
-    if (percpu_self()->core_id == 0) {
+    /* Check timed-out epoll/poll sleepers (every tick, all cores) */
+    {
         extern void epoll_check_timeouts(void);
         epoll_check_timeouts();
-        /* Flush active VT output (echo, process output) */
+    }
+    /* Flush active VT output (BSP only — serial port is BSP-owned) */
+    if (percpu_self()->core_id == 0) {
         extern void vt_flush(int vt_id);
         extern int vt_active(void);
         vt_flush(vt_active());

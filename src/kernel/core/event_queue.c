@@ -115,13 +115,14 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     if (timeout_ms == 0)
         return -11; /* EAGAIN */
 
-    /* Check for pending signals before blocking — return -EINTR so the
-     * syscall path delivers the signal instead of looping forever. */
+    /* Check for fatal signals (SIGKILL) before blocking — prevents
+     * unkillable processes. Only check SIGKILL, not all signals, to avoid
+     * spurious EINTR that breaks futex_wait/pthread_cond_wait. */
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
     if (cur->proc) {
-        uint64_t deliverable = (cur->proc->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked;
-        if (deliverable) return -4; /* EINTR */
+        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+        if (all_pending & SIG_BIT(9)) return -4; /* SIGKILL → EINTR */
     }
 
     /* Block: save user state for syscall restart.
