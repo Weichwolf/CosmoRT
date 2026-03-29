@@ -91,9 +91,6 @@ typedef struct thread {
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
 
-    /* ── Robust Mutex List: kernel walks on thread exit ── */
-    void *robust_list;     /* userspace robust_list_head pointer */
-
     /* ── Fault info for signal delivery ── */
     uint64_t fault_addr;   /* CR2 for SIGSEGV/SIGBUS delivery */
 
@@ -124,6 +121,9 @@ typedef struct thread {
 
     /* ── TSC-based wakeup deadline (after fxsave to avoid offset shifts) ── */
     uint64_t wake_at_tsc;  /* TSC deadline for sub-ms precision; 0 = use wake_at */
+
+    /* ── Robust Mutex List (at end to avoid shifting fxsave alignment) ── */
+    void *robust_list;     /* userspace robust_list_head pointer */
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */

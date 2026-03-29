@@ -22,13 +22,13 @@ EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
              -DGNU_EFI_USE_MS_ABI
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
-           -mno-red-zone -mgeneral-regs-only \
+           -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
            -Wall -Wextra -Werror -O2 -c \
            -Iinclude/public -Iinclude/kernel -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
 
 # Drivers: only public headers (cosmort.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
-           -mno-red-zone -mgeneral-regs-only \
+           -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
            -Wall -Wextra -Werror -O2 -c \
            -Iinclude/public -std=c11
 
@@ -169,8 +169,8 @@ $(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.asm | $(BUILD)/kernel
 
 # ── Architecture C (src/arch/x86_64/) ─────────────
 
-# SHA-256: compiled without -mgeneral-regs-only to allow SSE (RT-Core only, no user FPU state)
-SHA256_CFLAGS = $(subst -mgeneral-regs-only,,$(KCFLAGS))
+# SHA-256: compiled without -mno-sse (RT-Core has no user FPU state to protect)
+SHA256_CFLAGS = $(subst -mno-sse,,$(subst -mno-sse2,,$(subst -mno-mmx,,$(subst -mgeneral-regs-only,,$(KCFLAGS)))))
 $(BUILD)/arch/x86_64/sha256.o: $(ARCH_DIR)/sha256.c | $(BUILD)/arch/x86_64
 	$(CC) $(SHA256_CFLAGS) -o $@ $<
 
