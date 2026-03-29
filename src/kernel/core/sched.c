@@ -349,10 +349,15 @@ void sched_preempt(void *frame_ptr) {
         sched_rebalance();
     }
 
-    /* Check timed-out sleepers + VT flush (BSP only — 1000Hz, spinlock-protected) */
-    if (percpu_self()->core_id == 0) {
+    /* Check timed-out sleepers — each core checks its OWN per-core sleeper list.
+     * No cross-core lock contention. epoll_check_timeouts reads percpu core_id. */
+    {
         extern void epoll_check_timeouts(void);
         epoll_check_timeouts();
+    }
+
+    /* VT flush (BSP only — framebuffer access is single-threaded) */
+    if (percpu_self()->core_id == 0) {
         extern void vt_flush(int vt_id);
         extern int vt_active(void);
         vt_flush(vt_active());

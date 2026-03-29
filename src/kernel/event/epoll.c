@@ -16,6 +16,7 @@
 #include "memops.h"
 #include "net/net.h"
 #include "core/event_queue.h"
+#include "core/smp.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
@@ -170,7 +171,11 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     return 0;
 }
 
-/* ── Epoll sleeper list ──────────────────────────── */
+/* ── Per-core sleeper lists ──────────────────────── */
+/* Each core has its own sleeper list + spinlock. No cross-core contention.
+ * RT-Core (core 0) never acquires a Compute-Core's lock and vice versa.
+ * When a thread migrates, its sleeper entry stays on the original core —
+ * the timeout fires there and wakes via event_post/sched_wake (IPI-safe). */
 
 #define EPOLL_SLEEPER_MAX 32
 
@@ -178,73 +183,81 @@ static struct {
     thread_t  *threads[EPOLL_SLEEPER_MAX];
     int        count;
     spinlock_t lock;
-} epoll_sleepers = { .lock = SPINLOCK_INIT };
+} core_sleepers[SMP_MAX_CORES] = {
+    [0 ... SMP_MAX_CORES-1] = { .lock = SPINLOCK_INIT }
+};
 
 static void epoll_sleeper_add(thread_t *t) {
-    /* Caller holds no lock; we take sleeper lock with IRQs off. */
+    /* Add to CURRENT core's list — no cross-core lock acquisition. */
+    int cpu = percpu_self()->core_id;
     uint64_t irqf;
-    spin_lock_irq(&epoll_sleepers.lock, &irqf);
-    if (epoll_sleepers.count < EPOLL_SLEEPER_MAX)
-        epoll_sleepers.threads[epoll_sleepers.count++] = t;
-    spin_unlock_irq(&epoll_sleepers.lock, irqf);
+    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+    if (core_sleepers[cpu].count < EPOLL_SLEEPER_MAX)
+        core_sleepers[cpu].threads[core_sleepers[cpu].count++] = t;
+    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
 }
 
 /* External entry point for do_poll in socket.c */
 void epoll_sleeper_add_ext(thread_t *t) { epoll_sleeper_add(t); }
 
-/* Wake all blocked epoll/poll sleepers. IRQ-safe. */
+/* Wake all blocked epoll/poll sleepers across ALL cores. IRQ-safe.
+ * Rare path: called from IRQ handlers (NIC rx, pty write, eventfd, etc). */
 void epoll_wake_all(void) {
-    uint64_t irqf;
-    spin_lock_irq(&epoll_sleepers.lock, &irqf);
-    int n = epoll_sleepers.count;
-    thread_t *wake[EPOLL_SLEEPER_MAX];
-    for (int i = 0; i < n; i++) {
-        wake[i] = epoll_sleepers.threads[i];
-        epoll_sleepers.threads[i] = 0;
-    }
-    epoll_sleepers.count = 0;
-    spin_unlock_irq(&epoll_sleepers.lock, irqf);
-
     extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    for (int i = 0; i < n; i++)
-        event_post(wake[i], 7 /* EQ_EPOLL_READY */, 0);
+    int ncores = smp_num_cores();
+
+    for (int c = 0; c < ncores; c++) {
+        uint64_t irqf;
+        spin_lock_irq(&core_sleepers[c].lock, &irqf);
+        int n = core_sleepers[c].count;
+        thread_t *wake[EPOLL_SLEEPER_MAX];
+        for (int i = 0; i < n; i++) {
+            wake[i] = core_sleepers[c].threads[i];
+            core_sleepers[c].threads[i] = 0;
+        }
+        core_sleepers[c].count = 0;
+        spin_unlock_irq(&core_sleepers[c].lock, irqf);
+
+        for (int i = 0; i < n; i++)
+            event_post(wake[i], 7 /* EQ_EPOLL_READY */, 0);
+    }
 }
 
-/* Check timed-out sleepers. Called from timer IRQ (sched_preempt). */
+/* Check timed-out sleepers on CURRENT core only.
+ * Called from timer IRQ (sched_preempt) on each core — each core
+ * checks its own list, no shared lock across partitions.
+ * timerfd expiry check runs only on BSP (core 0) since timerfd state is global. */
 void epoll_check_timeouts(void) {
     uint64_t now = timer_ms();
+    int cpu = percpu_self()->core_id;
 
-    /* Also wake sleepers if any timerfd has expired — the timerfd
-     * may be registered in their epoll set but the sleeper doesn't
-     * know until they re-scan. */
-    int need_wake = 0;
-    if (timerfd_any_expired()) need_wake = 1;
-    /* NIC packet wakeup removed — IRQ handler calls epoll_wake_all directly.
-     * Timer-based wakeup caused spurious EPOLLIN on wrong sockets. */
-    if (need_wake) epoll_wake_all();
+    /* timerfd wakeup: only BSP checks (global timerfd slab, avoids cross-core) */
+    if (cpu == 0) {
+        int need_wake = 0;
+        if (timerfd_any_expired()) need_wake = 1;
+        if (need_wake) epoll_wake_all();
+    }
 
     uint64_t irqf;
-    spin_lock_irq(&epoll_sleepers.lock, &irqf);
+    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
 
     extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    for (int i = 0; i < epoll_sleepers.count; ) {
-        thread_t *t = epoll_sleepers.threads[i];
-        if (!t) { /* Race: another CPU removed the thread */
-            epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
+    for (int i = 0; i < core_sleepers[cpu].count; ) {
+        thread_t *t = core_sleepers[cpu].threads[i];
+        if (!t) {
+            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
             continue;
         }
         if (t->wake_at && now >= t->wake_at) {
-            /* Remove from list (swap with last) */
-            epoll_sleepers.threads[i] = epoll_sleepers.threads[--epoll_sleepers.count];
-            spin_unlock_irq(&epoll_sleepers.lock, irqf);
+            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
+            spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
             event_post(t, 10 /* EQ_TIMEOUT */, 0);
-            spin_lock_irq(&epoll_sleepers.lock, &irqf);
-            /* Don't increment i — swapped element needs checking */
+            spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
         } else {
             i++;
         }
     }
-    spin_unlock_irq(&epoll_sleepers.lock, irqf);
+    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
 }
 
 /* ── SYS_EPOLL_WAIT (232) ───────────────────────── */
