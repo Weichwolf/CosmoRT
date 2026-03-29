@@ -5,6 +5,13 @@ echo "  $(uname -a)"
 echo "========================================"
 
 echo ""
+echo "=== MINI PTHREAD_COND TEST ==="
+if [ -x /opt/futex_test ]; then
+    timeout 30 /opt/futex_test 2>&1
+    echo "futex_test rc=$?"
+fi
+
+echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 rm -f src/*/*.err

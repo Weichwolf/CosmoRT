@@ -77,7 +77,7 @@ static void ap_main(void) {
     *(volatile uint32_t *)LAPIC_TPR = 0;              /* accept all */
     *(volatile uint32_t *)LAPIC_TIMER_DIV = 0x03;     /* divide by 16 */
     *(volatile uint32_t *)LAPIC_TIMER_REG = 0x20020;  /* periodic, vector 32 */
-    *(volatile uint32_t *)LAPIC_TIMER_INIT = 1000000;  /* 100Hz (10ms) — Compute core */
+    *(volatile uint32_t *)LAPIC_TIMER_INIT = 100000;   /* 1000Hz (1ms) — match BSP for responsive scheduling */
 
     volatile uint32_t *lapic_id_reg = (volatile uint32_t *)LAPIC_ID;
     uint32_t apic_id = (*lapic_id_reg >> 24) & 0xFF;
