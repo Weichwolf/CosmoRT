@@ -507,10 +507,11 @@ static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type, void *
     else if (file_type == EXT2_FT_SYMLINK) d_type = 10; /* DT_LNK */
     else d_type = 8; /* default to DT_REG */
 
-    ctx->next_off++;
+    uint64_t new_off = ctx->next_off + 1;
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
-                           ino, ctx->next_off, d_type, name);
-    if (n == 0) { ctx->full = 1; return 1; /* stop */ }
+                           ino, new_off, d_type, name);
+    if (n == 0) { ctx->full = 1; return 1; /* stop — don't advance offset */ }
+    ctx->next_off = new_off;
     ctx->written += n;
     return 0; /* continue */
 }
@@ -525,10 +526,11 @@ struct procfs_getdents_ctx {
 
 static int procfs_getdents_cb(const char *name, void *arg) {
     struct procfs_getdents_ctx *ctx = (struct procfs_getdents_ctx *)arg;
-    ctx->next_off++;
+    uint64_t new_off = ctx->next_off + 1;
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
-                           ctx->next_off, ctx->next_off, 8 /* DT_REG */, name);
+                           new_off, new_off, 8 /* DT_REG */, name);
     if (n == 0) return 1; /* stop: buffer full */
+    ctx->next_off = new_off;
     ctx->written += n;
     return 0;
 }
