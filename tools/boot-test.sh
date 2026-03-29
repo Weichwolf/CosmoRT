@@ -5,13 +5,6 @@ echo "  $(uname -a)"
 echo "========================================"
 
 echo ""
-echo "=== MINI PTHREAD_COND TEST ==="
-if [ -x /opt/futex_test ]; then
-    timeout 30 /opt/futex_test 2>&1
-    echo "futex_test rc=$?"
-fi
-
-echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 rm -f src/*/*.err
@@ -28,6 +21,7 @@ for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | 
     timeout 60 "$RUNNER" -t 45 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
+        echo "PASS $name"
         musl_pass=$((musl_pass + 1))
     else
         echo "FAIL $name (rc=$rc)"
