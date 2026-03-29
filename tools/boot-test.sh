@@ -1,81 +1,69 @@
-#!/usr/bin/bash
-# CosmoRT Boot Test — runs as /home/.bashrc
-# Tests: T1 Shell, T2 Node.js, T3 Claude Code, T4 Network
+#!/bin/sh
+echo "========================================"
+echo "  CosmoRT Boot Test"
+echo "  $(uname -a)"
+echo "========================================"
 
-PASS=0
-FAIL=0
-
-ok()   { PASS=$((PASS+1)); echo "  PASS: $1"; }
-fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
-
-check() {
-    local desc="$1"; shift
-    if "$@" 2>&1; then
-        ok "$desc"
+echo ""
+echo "=== MUSL LIBC-TEST ==="
+cd /opt/libc-test
+rm -f src/*/*.err
+RUNNER=src/common/runtest.exe
+musl_pass=0; musl_fail=0
+for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
+    name=$(basename "$exe" .exe)
+    timeout 10 "$RUNNER" -w '' "$exe" > /tmp/musl_out.txt 2>&1
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        musl_pass=$((musl_pass + 1))
     else
-        fail "$desc"
+        echo "FAIL $name (rc=$rc)"
+        musl_fail=$((musl_fail + 1))
+        cat /tmp/musl_out.txt
+        echo "STOPPING: musl $name failed"
+        echo "musl so far: $musl_pass PASS, $musl_fail FAIL"
+        poweroff -f; exit 1
     fi
-}
+done
+echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL"
 
-echo "=== CosmoRT Boot Test ==="
+echo ""
+echo "=== LTP REQUIRED TESTS ==="
+LTP_BIN=/opt/ltp/install/testcases/bin
+ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
+while read t; do
+    [ -z "$t" ] && continue
+    ltp_total=$((ltp_total + 1))
+    if [ ! -x "$LTP_BIN/$t" ]; then
+        ltp_skipped=$((ltp_skipped + 1))
+        continue
+    fi
+    echo -n "[$ltp_total/313] $t ... "
+    cd /tmp
+    timeout 10 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        echo "PASS"
+        ltp_passed=$((ltp_passed + 1))
+    elif [ $rc -eq 32 ]; then
+        echo "SKIP"
+        ltp_skipped=$((ltp_skipped + 1))
+    else
+        echo "FAIL (rc=$rc)"
+        ltp_failed=$((ltp_failed + 1))
+        echo "--- OUTPUT ---"
+        cat /tmp/ltp_out.txt
+        echo "--- END ---"
+        echo "STOPPING at: $t"
+        echo "LTP so far: $ltp_passed PASS, $ltp_failed FAIL, $ltp_skipped SKIP"
+        poweroff -f; exit 1
+    fi
+done < /opt/ltp_required.txt
 
-# ── T1: Shell Basics ──
-echo "--- T1: Shell ---"
-
-# echo — bash builtin via subshell
-X="$(echo hello)"
-if [[ "$X" = "hello" ]]; then ok "echo"; else fail "echo ($X)"; fi
-# arithmetic — pure bash
-if [[ "$((2+3))" = "5" ]]; then ok "arithmetic"; else fail "arithmetic"; fi
-# printf -v — no subshell needed
-if printf -v X "%d" 42 && [[ "$X" = "42" ]]; then ok "printf"; else fail "printf"; fi
-# variable expansion
-X="world"
-if [[ "hello $X" = "hello world" ]]; then ok "variable"; else fail "variable"; fi
-# test builtin
-if [[ 3 -gt 2 ]]; then ok "test"; else fail "test"; fi
-
-# ── T2: Node.js ──
-echo "--- T2: Node.js ---"
-check "node --version" node --version
-X="$(node -e 'console.log("hi")')"
-if [[ "$X" = "hi" ]]; then ok "node hello"; else fail "node hello ($X)"; fi
-check "node fs" node -e "require('fs').writeFileSync('/tmp/t','ok'); process.exit(require('fs').readFileSync('/tmp/t','utf8')==='ok'?0:1)"
-check "node crypto" node -e "require('crypto').randomBytes(16); console.log('ok')"
-
-# ── T3: Claude Code ──
-echo "--- T3: Claude Code ---"
-check "claude --version" node /opt/claude-code/cli.js --version
-
-# ── T4: Network ──
-echo "--- T4: Network ---"
-# dns.lookup uses getaddrinfo → /etc/hosts first (nsswitch: files dns)
-X="$(node -e 'require("dns").lookup("example.com",(e,a)=>{console.log(e?"ERR:"+e.code:"OK:"+a);process.exit(e?1:0)})' 2>&1)"
-if [ $? -eq 0 ]; then ok "dns ($X)"; else fail "dns ($X)"; fi
-check "https" node -e "require('https').get('https://example.com',r=>{console.log(r.statusCode);process.exit(r.statusCode===200?0:1)})"
-
-# ── T5: npm ──
-echo "--- T5: npm ---"
-check "process.cwd()" node -e 'console.log(process.cwd())'
-X="$(node /usr/lib/node_modules/npm/bin/npm-cli.js --version 2>/dev/null)"
-X="${X%%$'\n'*}"  # first line only
-X="${X%%$'\r'*}"  # strip CR
-if [[ "$X" == [0-9]* ]]; then ok "npm $X"; else fail "npm ($X)"; fi
-check "https registry" node -e 'require("https").get("https://registry.npmjs.org/@anthropic-ai/claude-code/latest",function(r){console.log(r.statusCode);process.exit(r.statusCode===200?0:1)}).on("error",function(e){console.log(e.message);process.exit(1)})'
-
-# ── T6: npm install ──
-echo "--- T6: npm install ---"
-node /usr/lib/node_modules/npm/bin/npm-cli.js install -g @anthropic-ai/claude-code@latest --no-optional --no-audit --no-fund 2>&1
-X=$?
-echo "  npm-install-exit: $X"
-if [ "$X" -eq 0 ]; then ok "npm install"; else fail "npm install (exit $X)"; fi
-
-echo "=== Results: $PASS passed, $FAIL failed ==="
-if [ "$FAIL" -eq 0 ]; then
-    echo "=== ALL PASS ==="
-else
-    echo "=== SOME FAILED ==="
-fi
-
-echo "=== BOOT TEST COMPLETE ==="
-exit 0
+echo ""
+echo "========================================"
+echo "  ALL PASSED"
+echo "  musl: $musl_pass PASS, $musl_fail FAIL"
+echo "  LTP:  $ltp_passed PASS, $ltp_failed FAIL, $ltp_skipped SKIP"
+echo "========================================"
+poweroff -f

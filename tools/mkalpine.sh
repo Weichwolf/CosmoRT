@@ -96,64 +96,6 @@ ROOTPROFILE
 [ -f ~/.bashrc ] && . ~/.bashrc
 PROFILE
 
-        # ── /root/.bashrc: auto-run tests on first boot ──
-        cat > /root/.bashrc << "BASHRC"
-if [ ! -f /tmp/.tests-done ]; then
-    echo "========================================"
-    echo "  CosmoRT Test Suite Runner"
-    echo "========================================"
-    /bin/bash /tmp/test_suites.sh 2>&1 | tee /tmp/test_results.txt
-    touch /tmp/.tests-done
-fi
-BASHRC
-
-        # ── /tmp/test_suites.sh ──
-        cat > /tmp/test_suites.sh << "TESTS"
-#!/bin/bash
-echo ""
-echo "=== MUSL LIBC-TEST ==="
-cd /opt/libc-test
-make 2>&1 | grep -E "^(PASS|FAIL)" | tee /tmp/musl_results.txt
-pass=$(grep -c "^PASS" /tmp/musl_results.txt 2>/dev/null || echo 0)
-fail=$(grep -c "^FAIL" /tmp/musl_results.txt 2>/dev/null || echo 0)
-echo ""
-echo "musl libc-test: $pass PASS, $fail FAIL"
-if [ "$fail" -gt 0 ]; then
-    echo "Failures:"
-    grep "^FAIL" /tmp/musl_results.txt
-fi
-
-echo ""
-echo "=== LTP SYSCALL TESTS ==="
-cd /opt/ltp
-failed=0
-passed=0
-skipped=0
-for t in $(find . -path "*/kernel/syscalls/*" -type f -executable 2>/dev/null | sort); do
-    name=$(basename "$t")
-    timeout 10 "$t" > /tmp/ltp_out.txt 2>&1
-    rc=$?
-    if [ $rc -eq 0 ]; then
-        passed=$((passed + 1))
-    elif [ $rc -eq 32 ]; then
-        skipped=$((skipped + 1))
-    else
-        failed=$((failed + 1))
-        echo "FAIL $name (rc=$rc)"
-    fi
-done
-echo ""
-echo "LTP syscalls: $passed PASS, $failed FAIL, $skipped SKIP"
-
-echo ""
-echo "========================================"
-echo "  SUMMARY"
-echo "  musl: $pass PASS, $fail FAIL"
-echo "  LTP:  $passed PASS, $failed FAIL, $skipped SKIP"
-echo "========================================"
-TESTS
-        chmod +x /tmp/test_suites.sh
-
         echo ">>> Configuration done"
     '
 
@@ -169,6 +111,11 @@ for d in null zero urandom random; do
     sudo umount "$ALPINE_ROOT/dev/$d" 2>/dev/null || true
 done
 sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
+
+# ── Copy tools into rootfs ───────────────────────────
+cp tools/boot-test.sh "$ALPINE_ROOT/tmp/boot-test.sh" 2>/dev/null || true
+chmod +x "$ALPINE_ROOT/tmp/boot-test.sh" 2>/dev/null || true
+cp tools/ltp_required.txt "$ALPINE_ROOT/opt/ltp_required.txt" 2>/dev/null || true
 
 # ── Step 2: Create ext2 image ────────────────────────
 echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"

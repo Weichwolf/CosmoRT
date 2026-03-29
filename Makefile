@@ -278,10 +278,10 @@ qemu-alpine: alpine-image
 qemu-alpine-gui: alpine-image
 	$(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display gtk -device virtio-keyboard-pci
 
-# make alpine-test INIT=/tmp/test_suites.sh — headless test run
+# make alpine-test — headless boot test (musl + LTP, fail-fast + poweroff)
 alpine-test:
 	rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
-	INIT=$(or $(INIT),/tmp/test_suites.sh) $(MAKE) alpine-image
+	INIT=/tmp/boot-test.sh $(MAKE) alpine-image
 	@rm -f /tmp/cosmo-serial.log
 	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
