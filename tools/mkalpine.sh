@@ -49,7 +49,10 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             stress-ng linux-headers autoconf automake libtool m4 pkgconf
 
         # ── Default shell: bash ──
-        [ -f /bin/bash ] && echo ">>> bash installed"
+        if [ -f /bin/bash ]; then
+            ln -sf bash /bin/sh
+            echo ">>> /bin/sh → bash"
+        fi
 
         # ── LTP (Linux Test Project) ──
         if [ ! -d /opt/ltp/testcases ]; then
