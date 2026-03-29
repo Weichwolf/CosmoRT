@@ -105,7 +105,7 @@ static void test_signals(void) {
     sa.mask = 0;
     sc4(SYS_RT_SIGACTION, SIGUSR1, (long)&sa, 0, 8);
 
-    uint64_t block_mask = (1ULL << SIGUSR1);
+    uint64_t block_mask = (1ULL << (SIGUSR1 - 1)); /* sigset_t: signal N = bit N-1 */
     uint64_t old_mask = 0;
     sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&block_mask, (long)&old_mask, 8);
 

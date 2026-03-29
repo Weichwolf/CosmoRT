@@ -199,6 +199,21 @@ void check_signals_syscall_path(long *result_ptr, long num) {
 
     check_pending_signals();
 
+    /* SIGSTOP: thread was stopped by check_pending_signals.
+     * Yield to scheduler — on SIGCONT, syscall will restart. */
+    if (t->state == THREAD_STOPPED) {
+        extern uint64_t pml4[];
+        extern void thread_return_to_kernel(thread_t *t);
+        /* RIP already points at user code; back up to re-execute syscall on resume */
+        t->rip = frame->rcx;  /* original user RIP (pre-signal) */
+        t->rsp = cpu->user_rsp;
+        t->rax = frame->rax;  /* original syscall nr for restart */
+        t->rip -= 2;          /* back to `syscall` instruction (0F 05) */
+        arch_set_cr3(virt_to_phys(pml4));
+        thread_return_to_kernel(t);
+        /* unreachable */
+    }
+
     /* Write back thread_t -> syscall frame */
     frame->rcx = t->rip;
     frame->r11 = t->rflags;

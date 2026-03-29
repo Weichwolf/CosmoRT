@@ -82,26 +82,12 @@ void check_pending_signals(void) {
                         }
                     }
                 }
-                /* Current thread stopped — save state and yield to scheduler */
-                {
-                    extern void save_user_state_for_block(thread_t *t, long return_value);
-                    extern void thread_return_to_kernel(thread_t *t);
-                    extern uint64_t pml4[];
-                    percpu_t *cpu = percpu_self();
-                    typedef struct {
-                        uint64_t r15, r14, r13, r12, rbp, rbx;
-                        uint64_t r9, r8, r10, rdx, rsi, rdi;
-                        uint64_t rax; uint64_t r11; uint64_t rcx;
-                    } sf_t;
-                    sf_t *frame = (sf_t *)cpu->syscall_frame;
-                    uint64_t orig_nr = frame->rax;
-                    save_user_state_for_block(t, 0);
-                    t->rip -= 2; /* back to syscall instruction */
-                    t->rax = orig_nr;
-                    t->state = THREAD_STOPPED;
-                    arch_set_cr3(virt_to_phys(pml4));
-                    thread_return_to_kernel(t);
-                }
+                /* Current thread stopped.
+                 * Set state and notify parent. Callers handle the actual yield:
+                 * - sched_preempt: longjmp to scheduler (state != RUNNING → not re-queued)
+                 * - check_signals_syscall_path: save state and thread_return_to_kernel
+                 * Both callers sync frame ↔ thread_t, so register state is preserved. */
+                t->state = THREAD_STOPPED;
                 return;
             }
             /* Continue (SIGCONT) — resume stopped threads */

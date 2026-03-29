@@ -379,7 +379,10 @@ void sched_preempt(void *frame_ptr) {
     {
         process_t *p = cur->proc;
         uint64_t deliverable = p ? ((p->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked) : 0;
-        if (deliverable) {
+        /* Also check alarm timer — check_pending_signals converts expired
+         * alarm to sig_pending, but we must enter it to trigger that. */
+        int alarm_due = p && p->alarm_deadline_ms > 0 && timer_ms() >= p->alarm_deadline_ms;
+        if (deliverable || alarm_due) {
             /* Save frame → thread_t */
             cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
             cur->r11 = f[4]; cur->r10 = f[5]; cur->r9 = f[6];  cur->r8 = f[7];
@@ -430,7 +433,10 @@ void sched_preempt(void *frame_ptr) {
      * ISR entry did swapgs (Ring 3 → kernel). We skip the ISR exit path
      * (which would swapgs back), so fix up KERNEL_GS_BASE manually:
      * set it back to percpu so the next ISR/SYSCALL entry swapgs works. */
-    cur->state = THREAD_RUNNABLE;
+    /* Only mark runnable if still running — check_pending_signals may have
+     * set THREAD_STOPPED (SIGSTOP) or THREAD_DEAD (fatal signal). */
+    if (cur->state == THREAD_RUNNING)
+        cur->state = THREAD_RUNNABLE;
     /* Send LAPIC EOI before longjmp — we're skipping the ISR exit path */
     extern void lapic_eoi(void);
     lapic_eoi();
