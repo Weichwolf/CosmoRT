@@ -118,6 +118,7 @@ void kernel_main(struct boot_info *info) {
     {
         uint64_t cr0 = arch_get_cr0();
         cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
+        cr0 &= ~(1ULL << 3);  /* clear CR0.TS (allow FPU/SSE without #NM) */
         cr0 |=  (1ULL << 1);  /* set CR0.MP (monitor coprocessor) */
         arch_set_cr0(cr0);
         uint64_t cr4 = arch_get_cr4();

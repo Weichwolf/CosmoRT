@@ -350,10 +350,11 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->timeslice = RR_TIMESLICE;
     t->proc = p;
 
-    /* Initialize FPU/SSE state: clean FXSAVE image with default MXCSR.
-     * fxsave_area is zeroed by slab_alloc. Set MXCSR (offset 24) to
-     * 0x1F80 (all exceptions masked) — the x86 reset default. */
-    *(uint32_t *)(t->fxsave_area + 24) = 0x1F80;
+    /* Initialize FPU/SSE state: clean FXSAVE image.
+     * FCW=0x037F: extended precision (64-bit mantissa), all x87 exceptions masked.
+     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest. */
+    *(uint16_t *)(t->fxsave_area + 0) = 0x037F;   /* FCW */
+    *(uint32_t *)(t->fxsave_area + 24) = 0x1F80;  /* MXCSR */
 
     /* Kernel stack for this thread */
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);

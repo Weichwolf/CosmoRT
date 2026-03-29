@@ -57,6 +57,7 @@ static void ap_main(void) {
      * Without CR0.EM clear, any SSE instruction faults (#NM) on this core. */
     uint64_t cr0 = arch_get_cr0();
     cr0 &= ~(1ULL << 2);  /* clear EM */
+    cr0 &= ~(1ULL << 3);  /* clear TS (allow FPU/SSE without #NM) */
     cr0 |= (1ULL << 1);   /* set MP */
     arch_set_cr0(cr0);
     uint64_t cr4 = arch_get_cr4();
