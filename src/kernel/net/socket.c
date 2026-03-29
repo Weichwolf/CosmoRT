@@ -203,6 +203,9 @@ long do_connect(int fd, const void *addr, int addrlen) {
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -ENETUNREACH;
+
+    /* Loopback (127.x.x.x): not implemented — refuse immediately */
+    if (dst_ip[0] == 127) return -ECONNREFUSED;
     uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     for (;;) {
         int r = net_tcp_connect(&s->tcp, dst_ip, port);
@@ -231,7 +234,8 @@ long do_connect(int fd, const void *addr, int addrlen) {
             int remain = (int)(connect_deadline - timer_ms());
             if (remain <= 0) return -ETIMEDOUT;
             event_t ev;
-            event_wait(&t->eq, &ev, remain);
+            int wr = event_wait(&t->eq, &ev, remain);
+            if (wr == -4) return -EINTR; /* signal pending */
             /* If blocked, syscall restarts. If returned, loop re-checks. */
             continue;
         }
@@ -359,7 +363,8 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             int remain = (int)(udp_deadline - timer_ms());
             if (remain <= 0) return -EAGAIN;
             event_t ev;
-            event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain);
+            if (wr == -4) return -EINTR; }
         }
     }
 
@@ -397,7 +402,8 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             int remain = (int)(s->recv_deadline - timer_ms());
             if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
-            event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain);
+            if (wr == -4) return -EINTR; }
         }
     }
 }
@@ -444,7 +450,8 @@ long socket_read(int fd, void *buf, long count) {
             int remain = (int)(s->recv_deadline - timer_ms());
             if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
-            event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain);
+            if (wr == -4) return -EINTR; }
         }
     }
 }
@@ -678,7 +685,8 @@ long do_accept(int fd, void *addr, int *addrlen) {
         int remain = (int)(accept_deadline - timer_ms());
         if (remain <= 0) return -EAGAIN;
         event_t ev;
-        event_wait(&t->eq, &ev, remain);
+        int wr = event_wait(&t->eq, &ev, remain);
+        if (wr == -4) return -EINTR;
     }
 
     /* Handshake complete — allocate new socket */
@@ -1010,7 +1018,8 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
             if (timeout_ms <= 0 && !infinite) return 0;
             event_t ev;
-            event_wait(&t->eq, &ev, timeout_ms);
+            { int wr = event_wait(&t->eq, &ev, timeout_ms);
+            if (wr == -4) return -EINTR; }
             /* If blocked, syscall restarts. If returned, loop re-scans. */
         }
     }

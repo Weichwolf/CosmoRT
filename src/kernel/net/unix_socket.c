@@ -373,8 +373,8 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
 
         /* Block via event_wait — usock_write/usock_decref will event_post */
         event_t ev;
-        event_wait(&t->eq, &ev, -1);
-        /* If blocked, syscall restarts. If returned, loop retries. */
+        int _wr = event_wait(&t->eq, &ev, -1);
+        if (_wr == -4) return -EINTR;
     }
 }
 
@@ -445,7 +445,8 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
 
         /* Use event_wait with short timeout to avoid deadlock */
         event_t ev;
-        event_wait(&t->eq, &ev, 50);
+        int _wr = event_wait(&t->eq, &ev, 50);
+        if (_wr == -4) return -EINTR;
     }
 }
 

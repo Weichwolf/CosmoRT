@@ -328,8 +328,8 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
             int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
             if (timeout_ms <= 0 && !infinite) { t->wake_at = 0; return 0; }
             event_t ev;
-            event_wait(&t->eq, &ev, timeout_ms);
-            /* If blocked, syscall restarts. If returned, loop re-scans. */
+            int _wr = event_wait(&t->eq, &ev, timeout_ms);
+            if (_wr == -4) return -EINTR;
         }
     }
 }

@@ -115,11 +115,18 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     if (timeout_ms == 0)
         return -11; /* EAGAIN */
 
+    /* Check for pending signals before blocking — return -EINTR so the
+     * syscall path delivers the signal instead of looping forever. */
+    thread_t *cur = thread_current();
+    if (!cur) return -14; /* EFAULT */
+    if (cur->proc) {
+        uint64_t deliverable = cur->proc->sig_pending & ~cur->sig_blocked;
+        if (deliverable) return -4; /* EINTR */
+    }
+
     /* Block: save user state for syscall restart.
      * On wake, the syscall re-executes from userspace.
      * event_wait is called again and finds the event in the queue. */
-    thread_t *cur = thread_current();
-    if (!cur) return -14; /* EFAULT */
 
     /* Read original syscall number from frame before save overwrites rax */
     percpu_t *cpu = percpu_self();

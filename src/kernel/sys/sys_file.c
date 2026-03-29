@@ -319,8 +319,9 @@ long do_read(int fd, void *buf, size_t count) {
             }
 
             event_t ev;
-            event_wait(&t->eq, &ev, -1);
-            /* If blocked, syscall restarts. If returned, loop re-checks. */
+            int _wr = event_wait(&t->eq, &ev, -1);
+            if (_wr == -4) return -EINTR;
+            /* If returned, loop re-checks. */
         }
     }
     return -EBADF;

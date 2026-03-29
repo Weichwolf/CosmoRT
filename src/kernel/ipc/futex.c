@@ -205,7 +205,8 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
      * and returns -EAGAIN (value changed) or -ETIMEDOUT (timeout). */
     {
         event_t ev;
-        event_wait(&t->eq, &ev, timeout_ms);
+        int _wr = event_wait(&t->eq, &ev, timeout_ms);
+        if (_wr == -4) return -EINTR;
     }
     return 0; /* unreachable — event_wait does syscall restart when blocking */
 }
@@ -298,7 +299,8 @@ static long futex_lock_pi(uint32_t *uaddr) {
         spin_unlock_irq(&futex_hash[bucket].lock, flags);
 
         event_t ev;
-        event_wait(&self->eq, &ev, -1);
+        int _wr = event_wait(&self->eq, &ev, -1);
+        if (_wr == -4) return -EINTR;
     }
 
     return 0; /* unreachable — syscall restarts */

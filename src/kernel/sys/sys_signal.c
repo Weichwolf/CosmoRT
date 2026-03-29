@@ -551,7 +551,8 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
      * On wake, syscall restarts: sigsuspend re-checks pending signals. */
     {
         event_t ev;
-        event_wait(&t->eq, &ev, -1);
+        int _wr = event_wait(&t->eq, &ev, -1);
+        if (_wr == -4) return -EINTR;
     }
     return -EINTR; /* unreachable — syscall restarts */
 }
