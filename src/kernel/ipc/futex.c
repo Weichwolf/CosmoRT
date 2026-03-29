@@ -148,12 +148,22 @@ static uint32_t futex_drain_events(event_queue_t *eq) {
 
 extern uint64_t pml4[];
 
+/* Futex trace: always on for debugging condvar hang */
+static volatile int futex_trace = 0;
+
 static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     process_t *p = t->proc;
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
+    if (futex_trace) {
+        serial_puts("FW t"); serial_hex64(t->tid);
+        serial_puts(" a"); serial_hex64(addr);
+        serial_puts(" v"); serial_hex64(val);
+        serial_puts(" b"); serial_hex64(hash_uaddr(addr, pid));
+        serial_putchar('\n');
+    }
 
     /* On syscall restart: an event woke us. Drain it to determine why. */
     uint32_t wake_reason = futex_drain_events(&t->eq);
@@ -222,6 +232,13 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
     uint32_t pid = p ? p->pid : 0;
     int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
     long woken = 0;
+    if (futex_trace) {
+        serial_puts("FK t"); serial_hex64(thread_current()->tid);
+        serial_puts(" a"); serial_hex64((uint64_t)(uintptr_t)uaddr);
+        serial_puts(" n"); serial_hex64(max_wake);
+        serial_puts(" b"); serial_hex64(bucket);
+        serial_putchar('\n');
+    }
 
     uint64_t flags;
     spin_lock_irq(&futex_hash[bucket].lock, &flags);
@@ -242,6 +259,9 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
     }
 
     spin_unlock_irq(&futex_hash[bucket].lock, flags);
+    if (futex_trace) {
+        serial_puts("FK="); serial_hex64(woken); serial_putchar('\n');
+    }
     return woken;
 }
 
