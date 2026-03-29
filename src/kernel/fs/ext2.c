@@ -780,8 +780,9 @@ int ext2_dir_lookup(uint32_t dir_ino, const char *name, uint32_t *child_ino) {
     return -ENOENT;
 }
 
-int ext2_dir_iterate(uint32_t dir_ino, int offset,
-                     int (*cb)(const char *name, uint32_t ino, uint8_t type, void *ctx),
+int ext2_dir_iterate(uint32_t dir_ino, uint32_t byte_offset,
+                     int (*cb)(const char *name, uint32_t ino, uint8_t type,
+                               uint32_t next_pos, void *ctx),
                      void *ctx) {
     struct ext2_inode dip;
     int rc = ext2_inode_read(dir_ino, &dip);
@@ -789,19 +790,18 @@ int ext2_dir_iterate(uint32_t dir_ino, int offset,
     if ((dip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
     uint32_t dir_size = dip.i_size;
-    uint32_t pos = 0;
-    int idx = 0;  /* entry index for offset/skip */
+    uint32_t cur = byte_offset;           /* resume from caller's position */
 
-    while (pos < dir_size) {
-        uint32_t file_block = pos / block_size;
+    while (cur < dir_size) {
+        uint32_t file_block = cur / block_size;
         uint32_t disk_block = resolve_block(&dip, file_block, 0);
-        if (disk_block == 0) { pos += block_size; continue; }
+        if (disk_block == 0) { cur = (file_block + 1) * block_size; continue; }
 
         struct bcache_entry *be = ext2_get_block(disk_block);
         if (!be) return -EIO;
         uint8_t *data = be->data + ext2_block_offset(disk_block);
 
-        uint32_t off = 0;
+        uint32_t off = cur % block_size;
         while (off < block_size) {
             uint32_t abs_pos = file_block * block_size + off;
             if (abs_pos >= dir_size) break;
@@ -809,29 +809,28 @@ int ext2_dir_iterate(uint32_t dir_ino, int offset,
             struct ext2_dir_entry_2 *de = (struct ext2_dir_entry_2 *)(data + off);
             if (de->rec_len == 0) break;
 
-            if (de->inode != 0 && de->name_len > 0) {
-                if (idx >= offset) {
-                    /* Build null-terminated name */
-                    char nbuf[256];
-                    int nlen = de->name_len;
-                    if (nlen > 255) nlen = 255;
-                    kmemcpy(nbuf, de->name, (size_t)nlen);
-                    nbuf[nlen] = 0;
+            uint32_t next_pos = abs_pos + de->rec_len;
 
-                    if (cb(nbuf, de->inode, de->file_type, ctx)) {
-                        bcache_put(be);
-                        return idx;
-                    }
+            if (de->inode != 0 && de->name_len > 0) {
+                /* Build null-terminated name */
+                char nbuf[256];
+                int nlen = de->name_len;
+                if (nlen > 255) nlen = 255;
+                kmemcpy(nbuf, de->name, (size_t)nlen);
+                nbuf[nlen] = 0;
+
+                if (cb(nbuf, de->inode, de->file_type, next_pos, ctx)) {
+                    bcache_put(be);
+                    return (int)abs_pos;
                 }
-                idx++;
             }
             off += de->rec_len;
         }
         bcache_put(be);
-        pos = (file_block + 1) * block_size;
+        cur = (file_block + 1) * block_size;
     }
 
-    return idx;
+    return (int)dir_size;
 }
 
 /* Add a directory entry */

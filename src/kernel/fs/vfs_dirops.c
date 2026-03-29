@@ -5,8 +5,9 @@
 /* ── Helpers ─────────────────────────────────────── */
 
 /* Callback for rmdir empty-check: counts non-dot entries */
-static int rmdir_count_cb(const char *name, uint32_t ino, uint8_t type, void *arg) {
-    (void)ino; (void)type;
+static int rmdir_count_cb(const char *name, uint32_t ino, uint8_t type,
+                          uint32_t next_pos, void *arg) {
+    (void)ino; (void)type; (void)next_pos;
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
         return 0; /* skip . and .. */
     (*(int *)arg)++;

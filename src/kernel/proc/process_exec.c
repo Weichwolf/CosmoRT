@@ -157,10 +157,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *p = cur->proc;
 
-    /* Copy path to kernel buffer before using it */
-    char kpath[PATH_MAX_PROC];
-    int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
+    /* Copy path to kernel buffer and resolve relative paths via CWD */
+    char kpath_raw[PATH_MAX_PROC], kpath[PATH_MAX_PROC];
+    int plen = copy_path_from_user_proc(kpath_raw, path, PATH_MAX_PROC);
     if (plen < 0) return -EFAULT;
+    extern int resolve_path(const char *path, char *out, int outsize);
+    resolve_path(kpath_raw, kpath, PATH_MAX_PROC);
 
     /* Copy argv/envp from userspace into a flat page-allocated buffer.
      * Layout: string data packed contiguously, pointer arrays on stack. */

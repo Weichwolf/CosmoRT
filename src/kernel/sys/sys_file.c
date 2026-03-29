@@ -377,17 +377,19 @@ long do_close(int fd) {
 /* ── SYS_open (2) / SYS_openat (257) ────────────────── */
 
 long do_open(const char *path, int flags, int mode) {
-    char kpath[PATH_MAX];
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
-    return vfs_open(kpath, flags, mode);
+    resolve_path(kpath, rpath, PATH_MAX);
+    return vfs_open(rpath, flags, mode);
 }
 
 long do_openat(int dirfd, const char *path, int flags, int mode) {
-    char kpath[PATH_MAX];
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    return vfs_open(kpath, flags, mode);
+    resolve_path(kpath, rpath, PATH_MAX);
+    return vfs_open(rpath, flags, mode);
 }
 
 /* ── SYS_lseek (8) ──────────────────────────────── */
@@ -498,7 +500,8 @@ struct getdents_ctx {
     int      full;       /* set when buffer is exhausted */
 };
 
-static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type, void *arg) {
+static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type,
+                       uint32_t next_pos, void *arg) {
     struct getdents_ctx *ctx = (struct getdents_ctx *)arg;
     /* Map ext2 file_type to DT_* */
     uint8_t d_type = 0; /* DT_UNKNOWN */
@@ -507,11 +510,10 @@ static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type, void *
     else if (file_type == EXT2_FT_SYMLINK) d_type = 10; /* DT_LNK */
     else d_type = 8; /* default to DT_REG */
 
-    uint64_t new_off = ctx->next_off + 1;
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
-                           ino, new_off, d_type, name);
+                           ino, (uint64_t)next_pos, d_type, name);
     if (n == 0) { ctx->full = 1; return 1; /* stop — don't advance offset */ }
-    ctx->next_off = new_off;
+    ctx->next_off = (uint64_t)next_pos;
     ctx->written += n;
     return 0; /* continue */
 }
@@ -602,7 +604,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
             .next_off = f->offset,
             .full = 0
         };
-        ext2_dir_iterate((uint32_t)f->disk_ino, (int)f->offset, getdents_cb, &ctx);
+        ext2_dir_iterate((uint32_t)f->disk_ino, (uint32_t)f->offset, getdents_cb, &ctx);
         f->offset = ctx.next_off;
         return (long)ctx.written;
     }

@@ -154,8 +154,9 @@ int ext2_truncate(uint32_t ino, size_t new_size);
 int ext2_dir_lookup(uint32_t dir_ino, const char *name, uint32_t *child_ino);
 int ext2_dir_add(uint32_t dir_ino, const char *name, uint32_t child_ino, uint8_t file_type);
 int ext2_dir_remove(uint32_t dir_ino, const char *name);
-int ext2_dir_iterate(uint32_t dir_ino, int offset,
-                     int (*cb)(const char *name, uint32_t ino, uint8_t type, void *ctx),
+int ext2_dir_iterate(uint32_t dir_ino, uint32_t byte_offset,
+                     int (*cb)(const char *name, uint32_t ino, uint8_t type,
+                               uint32_t next_pos, void *ctx),
                      void *ctx);
 
 /* Allocation */

@@ -27,12 +27,14 @@ static void test_tty_nodes(void) {
     check("open /dev/tty4", fd >= 0);
     if (fd >= 0) sc1(SYS_CLOSE, fd);
 
-    /* tty5-tty12: beyond VT_MAX=4 → ENOENT */
+    /* tty5-tty12: valid with VT_MAX=12 */
     fd = sc3(SYS_OPEN, (long)"/dev/tty5", O_RDWR, 0);
-    check_val("open /dev/tty5 -> ENOENT", fd, -ENOENT);
+    check("open /dev/tty5", fd >= 0);
+    if (fd >= 0) sc1(SYS_CLOSE, fd);
 
     fd = sc3(SYS_OPEN, (long)"/dev/tty12", O_RDWR, 0);
-    check_val("open /dev/tty12 -> ENOENT", fd, -ENOENT);
+    check("open /dev/tty12", fd >= 0);
+    if (fd >= 0) sc1(SYS_CLOSE, fd);
 
     /* tty13+: out of range entirely */
     fd = sc3(SYS_OPEN, (long)"/dev/tty13", O_RDWR, 0);
@@ -59,7 +61,8 @@ static void test_tty_nodes(void) {
     if (fd >= 0) sc1(SYS_CLOSE, fd);
 
     fd = sc3(SYS_OPEN, (long)"/dev/pts/4", O_RDWR, 0);
-    check_val("open /dev/pts/4 -> ENOENT", fd, -ENOENT);
+    check("open /dev/pts/4", fd >= 0);
+    if (fd >= 0) sc1(SYS_CLOSE, fd);
 
     /* ── stat on tty nodes ── */
 
