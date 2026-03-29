@@ -164,9 +164,10 @@ make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 1. make alpine-test        → Boot, Tests laufen, stoppt beim ersten Fail
 2. Fehler analysieren       → Serial-Log zeigt Test-Name + Output
 3. Kernel-Fix implementieren
-4. make alpine-test        → Kernel neu gebaut (wenn Source geaendert),
+4. Committen                → jeder Fix ein eigener Commit
+5. make alpine-test        → Kernel neu gebaut (wenn Source geaendert),
                               Image neu gebaut (~30s), Boot, Tests laufen
-5. Wiederholen bis alle Tests passen
+6. Wiederholen bis alle Tests passen
 ```
 
 make alpine-test haengt von $(EFI_BIN) ab — Kernel wird nur bei Quellcode-
