@@ -38,128 +38,20 @@ LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
 EFI_BIN  = $(BUILD)/BOOTX64.EFI
 ESP_IMG  = $(BUILD)/cosmo-rt.img
 
-# Object files
+# ── Object files ──
 BOOT_OBJ = $(BUILD)/boot/boot.o
 
-# ── ASM objects (kernel root) ──
-KERN_ASM = $(BUILD)/kernel/entry.o \
-           $(BUILD)/kernel/irq_asm.o \
-           $(BUILD)/kernel/context.o \
-           $(BUILD)/kernel/syscall_entry.o \
-           $(BUILD)/kernel/memops.o
-
-# ── Kernel C objects by subdirectory ──
-KERN_CORE = $(BUILD)/kernel/core/main.o \
-            $(BUILD)/kernel/core/irq.o \
-            $(BUILD)/kernel/core/sched.o \
-            $(BUILD)/kernel/core/edf.o \
-            $(BUILD)/kernel/core/timer.o \
-            $(BUILD)/kernel/core/smp.o \
-            $(BUILD)/kernel/core/tss.o \
-            $(BUILD)/kernel/core/percpu.o \
-            $(BUILD)/kernel/core/rt.o \
-            $(BUILD)/kernel/core/timer_wheel.o \
-            $(BUILD)/kernel/core/rt_poll.o \
-            $(BUILD)/kernel/core/event_queue.o
-
-KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
-            $(BUILD)/kernel/mm/paging.o \
-            $(BUILD)/kernel/mm/vma.o \
-            $(BUILD)/kernel/mm/slab.o \
-            $(BUILD)/kernel/mm/random.o \
-            $(BUILD)/kernel/mm/page_cache.o
-
-KERN_PROC = $(BUILD)/kernel/proc/process.o \
-            $(BUILD)/kernel/proc/process_lazy.o \
-            $(BUILD)/kernel/proc/process_fork.o \
-            $(BUILD)/kernel/proc/process_exec.o \
-            $(BUILD)/kernel/proc/process_wait.o \
-            $(BUILD)/kernel/proc/elf.o
-
-KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
-             $(BUILD)/kernel/sys/sys_file.o \
-             $(BUILD)/kernel/sys/sys_fs.o \
-             $(BUILD)/kernel/sys/sys_mem.o \
-             $(BUILD)/kernel/sys/sys_proc.o \
-             $(BUILD)/kernel/sys/sys_sched.o \
-             $(BUILD)/kernel/sys/sys_signal.o \
-             $(BUILD)/kernel/sys/sys_signal_frame.o \
-             $(BUILD)/kernel/sys/sys_signal_handler.o \
-             $(BUILD)/kernel/sys/sys_time.o \
-             $(BUILD)/kernel/sys/sys_ipc.o \
-             $(BUILD)/kernel/sys/sys_net.o \
-             $(BUILD)/kernel/sys/sys_event.o \
-             $(BUILD)/kernel/sys/sys_id.o \
-             $(BUILD)/kernel/sys/stubs.o \
-             $(BUILD)/kernel/sys/sys_cosmo.o
-
-KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
-            $(BUILD)/kernel/ipc/futex.o \
-            $(BUILD)/kernel/ipc/net_port.o
-
-KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
-            $(BUILD)/kernel/fs/vfs_lookup.o \
-            $(BUILD)/kernel/fs/vfs_rw.o \
-            $(BUILD)/kernel/fs/vfs_dirops.o \
-            $(BUILD)/kernel/fs/vfs_ioctls.o \
-            $(BUILD)/kernel/fs/vfs_symlink.o \
-            $(BUILD)/kernel/fs/ext2.o \
-            $(BUILD)/kernel/fs/bcache.o \
-            $(BUILD)/kernel/fs/procfs.o
-
-KERN_NET  = $(BUILD)/kernel/net/net.o \
-            $(BUILD)/kernel/net/dispatch.o \
-            $(BUILD)/kernel/net/arp.o \
-            $(BUILD)/kernel/net/ip.o \
-            $(BUILD)/kernel/net/tcp.o \
-            $(BUILD)/kernel/net/udp.o \
-            $(BUILD)/kernel/net/dns.o \
-            $(BUILD)/kernel/net/dhcp.o \
-            $(BUILD)/kernel/net/socket.o \
-            $(BUILD)/kernel/net/unix_socket.o
-
-KERN_EVENT = $(BUILD)/kernel/event/epoll.o \
-             $(BUILD)/kernel/event/eventfd.o \
-             $(BUILD)/kernel/event/timerfd.o \
-             $(BUILD)/kernel/event/signalfd.o \
-             $(BUILD)/kernel/event/inotify.o
-
-KERN_VT   = $(BUILD)/kernel/vt/vt.o \
-            $(BUILD)/kernel/vt/pty.o \
-            $(BUILD)/kernel/vt/fb.o \
-            $(BUILD)/kernel/vt/input.o
-
-KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
-            $(BUILD)/kernel/hw/serial.o \
-            $(BUILD)/kernel/hw/serial_bridge.o \
-            $(BUILD)/kernel/hw/kexec.o \
-            $(BUILD)/arch/x86_64/hyperv.o \
-            $(BUILD)/arch/x86_64/qemu.o \
-            $(BUILD)/arch/x86_64/sha256.o
-
-KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
-            $(BUILD)/drivers/virtio/virtio_net.o \
-            $(BUILD)/drivers/virtio/virtio_blk.o \
-            $(BUILD)/drivers/virtio/virtio_gpu.o \
-            $(BUILD)/drivers/virtio/virtio_input.o \
-            $(BUILD)/drivers/pci/e1000.o \
-            $(BUILD)/drivers/hyperv/vmbus.o \
-            $(BUILD)/drivers/hyperv/storvsc.o \
-            $(BUILD)/drivers/hyperv/netvsc.o \
-            $(BUILD)/drivers/hyperv/hyperv_fb.o \
-            $(BUILD)/drivers/hyperv/hv_kbd.o \
-            $(BUILD)/drivers/hyperv/hv_mouse.o \
-            $(BUILD)/drivers/hyperv/hv_utils.o
-
-KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
-           $(KERN_SYS) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
-           $(KERN_EVENT) $(KERN_VT) $(KERN_HW) $(KERN_DRV)
+include kern_objects.mk
 
 ALL_OBJ  = $(BOOT_OBJ) $(KERN_OBJ)
 
-.PHONY: all clean qemu stop init-bin disk vhdx
+.PHONY: all clean qemu stop init-bin disk vhdx kernel-objs \
+        test test-hw test-crash test-fuzz test-all alpine-image
 
 all: $(ESP_IMG)
+
+# ── Kernel objects (for test/Makefile) ──
+kernel-objs: $(KERN_OBJ_NO_MAIN) $(BOOT_OBJ)
 
 # ── Directories ──────────────────────────────────
 KDIRS = $(BUILD)/kernel $(BUILD)/kernel/core $(BUILD)/kernel/mm \
@@ -257,116 +149,6 @@ disk: $(BUILD)/disk.img
 UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-plt -mno-red-zone -nostdlib -O2 \
           -Iinclude/public
-
-# ── Hardware test binaries ────────────────────────
-KTEST_UNIT_OBJ = $(BUILD)/test/main.o \
-            $(patsubst test/unit/mm/%.c,$(BUILD)/test/unit/mm/%.o,$(wildcard test/unit/mm/*.c)) \
-            $(patsubst test/unit/fs/%.c,$(BUILD)/test/unit/fs/%.o,$(wildcard test/unit/fs/*.c)) \
-            $(patsubst test/unit/ipc/%.c,$(BUILD)/test/unit/ipc/%.o,$(wildcard test/unit/ipc/*.c)) \
-            $(patsubst test/unit/sched/%.c,$(BUILD)/test/unit/sched/%.o,$(wildcard test/unit/sched/*.c)) \
-            $(patsubst test/unit/signal/%.c,$(BUILD)/test/unit/signal/%.o,$(wildcard test/unit/signal/*.c)) \
-            $(patsubst test/unit/sys/%.c,$(BUILD)/test/unit/sys/%.o,$(wildcard test/unit/sys/*.c)) \
-            $(patsubst test/unit/hw/%.c,$(BUILD)/test/unit/hw/%.o,$(wildcard test/unit/hw/*.c)) \
-            $(patsubst test/unit/net/%.c,$(BUILD)/test/unit/net/%.o,$(wildcard test/unit/net/*.c)) \
-            $(patsubst test/unit/proc/%.c,$(BUILD)/test/unit/proc/%.o,$(wildcard test/unit/proc/*.c)) \
-            $(patsubst test/unit/perf/%.c,$(BUILD)/test/unit/perf/%.o,$(wildcard test/unit/perf/*.c))
-
-KTEST_CRASH_OBJ = $(BUILD)/test/main.o \
-            $(patsubst test/crash/%.c,$(BUILD)/test/crash/%.o,$(wildcard test/crash/*.c))
-
-KTEST_FUZZ_OBJ = $(BUILD)/test/main.o \
-            $(patsubst test/fuzz/%.c,$(BUILD)/test/fuzz/%.o,$(wildcard test/fuzz/*.c))
-
-$(BUILD)/test $(BUILD)/test/unit $(BUILD)/test/crash $(BUILD)/test/fuzz \
-$(BUILD)/test/unit/mm $(BUILD)/test/unit/fs $(BUILD)/test/unit/ipc \
-$(BUILD)/test/unit/sched $(BUILD)/test/unit/signal $(BUILD)/test/unit/sys \
-$(BUILD)/test/unit/hw $(BUILD)/test/unit/net $(BUILD)/test/unit/proc \
-$(BUILD)/test/unit/perf:
-	@mkdir -p $@
-
-$(BUILD)/test/main.o: test/main.c test/ktest.h | $(BUILD)/test
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/mm/%.o: test/unit/mm/%.c test/ktest.h | $(BUILD)/test/unit/mm
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/fs/%.o: test/unit/fs/%.c test/ktest.h | $(BUILD)/test/unit/fs
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/ipc/%.o: test/unit/ipc/%.c test/ktest.h | $(BUILD)/test/unit/ipc
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/sched/%.o: test/unit/sched/%.c test/ktest.h | $(BUILD)/test/unit/sched
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/signal/%.o: test/unit/signal/%.c test/ktest.h | $(BUILD)/test/unit/signal
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/sys/%.o: test/unit/sys/%.c test/ktest.h | $(BUILD)/test/unit/sys
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/hw/%.o: test/unit/hw/%.c test/ktest.h | $(BUILD)/test/unit/hw
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/proc/%.o: test/unit/proc/%.c test/ktest.h | $(BUILD)/test/unit/proc
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/perf/%.o: test/unit/perf/%.c test/ktest.h | $(BUILD)/test/unit/perf
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/unit/net/%.o: test/unit/net/%.c test/ktest.h | $(BUILD)/test/unit/net
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/crash/%.o: test/crash/%.c test/ktest.h | $(BUILD)/test/crash
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest -c -o $@ $<
-
-$(BUILD)/test/fuzz/%.o: test/fuzz/%.c test/ktest.h | $(BUILD)/test/fuzz
-	$(CC) $(UCFLAGS) -Iinclude/kernel -Iinclude -Itest $(if $(FUZZ_SEED),-DFUZZ_SEED=$(FUZZ_SEED)) -c -o $@ $<
-
-$(BUILD)/user/ktest: $(CRT0) $(KTEST_UNIT_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_UNIT_OBJ)
-
-$(BUILD)/user/ktest-crash: $(CRT0) $(KTEST_CRASH_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_CRASH_OBJ)
-
-$(BUILD)/user/ktest-fuzz: $(CRT0) $(KTEST_FUZZ_OBJ) $(SRC)/user/init.ld | $(BUILD)/user
-	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(KTEST_FUZZ_OBJ)
-
-# Generic: embed ELF as init_bin.h, rebuild kernel, boot in QEMU
-define run_test_binary
-	@python3 -c "data=open('$(1)','rb').read(); print('/* Auto-generated test binary (%d bytes) */' % len(data)); print('static const unsigned char ktest_bin[] = {'); lines=[', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; print(',\n'.join('    '+l for l in lines)); print('};'); print('static const unsigned long ktest_bin_size = %d;' % len(data))" > $(BUILD)/gen/ktest_bin.h
-	@echo "test binary: $$(wc -c < $(1)) bytes"
-	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
-	@sed 's/ktest_bin/init_bin/g; s/ktest_bin_size/init_bin_size/g' \
-	  $(BUILD)/gen/ktest_bin.h > $(BUILD)/gen/init_bin.h
-	@rm -f $(BUILD)/kernel/core/main.o
-	$(MAKE) all
-	@rm -f /tmp/cosmo-serial.log
-	timeout 120 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
-	  -bios /usr/share/ovmf/OVMF.fd \
-	  -drive file=$(ESP_IMG),format=raw \
-	  -serial file:/tmp/cosmo-serial.log \
-	  -display none -no-reboot \
-	  -device e1000,netdev=net0 \
-	  -netdev user,id=net0 || true
-	@echo "=== Test Results ==="
-	@grep -E "=== |FAIL" /tmp/cosmo-serial.log || true
-	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
-endef
-
-test-hw: $(BUILD)/user/ktest
-	$(MAKE) all
-	$(call run_test_binary,$(BUILD)/user/ktest)
-
-test-crash: $(BUILD)/user/ktest-crash
-	$(MAKE) all
-	$(call run_test_binary,$(BUILD)/user/ktest-crash)
-
-test-fuzz: $(BUILD)/user/ktest-fuzz
-	$(MAKE) all
-	$(call run_test_binary,$(BUILD)/user/ktest-fuzz)
-
-test-all: test-hw test-crash test-fuzz
 
 # ── Bootloader (EFI) ────────────────────────────
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
@@ -478,12 +260,7 @@ qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
 # Boot Alpine Linux from CosmoFS disk image (serial console)
-qemu-alpine:
-	@cp $(BUILD)/gen/init_bin.h $(BUILD)/gen/init_bin.h.bak 2>/dev/null; true
-	$(MAKE) init-bin
-	@rm -f $(BUILD)/kernel/core/main.o
-	$(MAKE) all
-	$(MAKE) alpine-image
+qemu-alpine: alpine-image
 	@rm -f /tmp/cosmo-serial.log
 	timeout 30 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
@@ -495,7 +272,6 @@ qemu-alpine:
 	  -netdev user,id=net0 || true
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
-	@mv $(BUILD)/gen/init_bin.h.bak $(BUILD)/gen/init_bin.h 2>/dev/null; true
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
@@ -527,7 +303,22 @@ run: $(ESP_IMG)
 stop:
 	@pkill -f "qemu-system.*cosmo-rt" 2>/dev/null; true
 
-# ── Test ────────────────────────────────────────
+# ── Test (delegated to test/Makefile) ───────────
+test test-hw:
+	$(MAKE) -C test hw
+
+test-crash:
+	$(MAKE) -C test crash
+
+test-fuzz:
+	$(MAKE) -C test fuzz
+
+test-all:
+	$(MAKE) -C test hw
+	$(MAKE) -C test crash
+	$(MAKE) -C test fuzz
+
+# ── Boot test ───────────────────────────────────
 test-boot: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
 	timeout 10 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
@@ -558,4 +349,3 @@ test-boot-disk: $(BUILD)/disk.img
 
 clean:
 	rm -rf $(BUILD)
-	rm -f $(BUILD)/gen/init_bin.h $(BUILD)/gen/ap_trampoline_bin.h $(BUILD)/gen/kexec_tramp_bin.h
