@@ -82,27 +82,28 @@ Welcome to CosmoRT 0.1.0 / Alpine Linux 3.21
 
 ISSUE
 
-        # ── /etc/inittab: autologin on tty1 ──
-        cat > /etc/inittab << "INITTAB"
-::sysinit:/sbin/openrc sysinit
-::sysinit:/sbin/openrc boot
-::wait:/sbin/openrc default
-tty1::respawn:/sbin/getty -n -l /bin/sh 38400 tty1
-tty2::respawn:/sbin/getty 38400 tty2
-tty3::respawn:/sbin/getty 38400 tty3
-tty4::respawn:/sbin/getty 38400 tty4
-tty5::respawn:/sbin/getty 38400 tty5
-tty6::respawn:/sbin/getty 38400 tty6
-::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/openrc shutdown
-INITTAB
+        # ── OpenRC autostart service: runs tests then poweroff ──
+        mkdir -p /etc/init.d
+        cat > /etc/init.d/cosmort-test << "INITD"
+#!/sbin/openrc-run
+description="CosmoRT test suite"
+command="/tmp/test_suites.sh"
+command_background="no"
+depend() { after localmount; }
+start() {
+    ebegin "Running CosmoRT tests"
+    /tmp/test_suites.sh 2>&1 | tee /tmp/test_results.txt
+    eend $?
+    poweroff
+}
+INITD
+        chmod +x /etc/init.d/cosmort-test
+        rc-update add cosmort-test default 2>/dev/null || true
 
-        # ── /root/.profile: auto-poweroff after login ──
+        # ── /root/.profile ──
         cat > /root/.profile << "ROOTPROFILE"
 echo "CosmoRT 0.1.0 — logged in as root"
 uname -a
-echo ""
-poweroff
 ROOTPROFILE
 
         # ── /root/.bash_profile ──
