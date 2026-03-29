@@ -55,7 +55,8 @@ KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
 
 KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
             $(BUILD)/kernel/ipc/futex.o \
-            $(BUILD)/kernel/ipc/net_port.o
+            $(BUILD)/kernel/ipc/net_port.o \
+            $(BUILD)/kernel/ipc/sysv_ipc.o
 
 KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/vfs_lookup.o \

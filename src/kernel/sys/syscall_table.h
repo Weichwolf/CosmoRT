@@ -257,19 +257,19 @@
     X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (void *)a2, (int)a3, (void *)a4)) \
     X(SYS_MKNOD, mknod, do_mknod((const char *)a1, (uint32_t)a2, (uint64_t)a3)) \
     X(SYS_FCHMODAT2, fchmodat2, do_fchmodat2((int)a1, (const char *)a2, (uint32_t)a3, (int)a4)) \
-    /* Return -ENOSYS: SysV IPC */ \
-    X(SYS_SHMGET, shmget, -ENOSYS) \
-    X(SYS_SHMAT, shmat, -ENOSYS) \
-    X(SYS_SHMCTL, shmctl, -ENOSYS) \
-    X(SYS_SHMDT, shmdt, -ENOSYS) \
-    X(SYS_SEMGET, semget, -ENOSYS) \
-    X(SYS_SEMOP, semop, -ENOSYS) \
-    X(SYS_SEMCTL, semctl, -ENOSYS) \
-    X(SYS_MSGGET, msgget, -ENOSYS) \
-    X(SYS_MSGSND, msgsnd, -ENOSYS) \
-    X(SYS_MSGRCV, msgrcv, -ENOSYS) \
-    X(SYS_MSGCTL, msgctl, -ENOSYS) \
-    X(SYS_SEMTIMEDOP, semtimedop, -ENOSYS) \
+    /* SysV IPC */ \
+    X(SYS_SHMGET, shmget, do_shmget((int32_t)a1, (size_t)a2, (int)a3)) \
+    X(SYS_SHMAT, shmat, do_shmat((int)a1, (const void *)a2, (int)a3)) \
+    X(SYS_SHMCTL, shmctl, do_shmctl((int)a1, (int)a2, (void *)a3)) \
+    X(SYS_SHMDT, shmdt, do_shmdt((const void *)a1)) \
+    X(SYS_SEMGET, semget, do_semget((int32_t)a1, (int)a2, (int)a3)) \
+    X(SYS_SEMOP, semop, do_semop((int)a1, (const void *)a2, (size_t)a3)) \
+    X(SYS_SEMCTL, semctl, do_semctl((int)a1, (int)a2, (int)a3, (long)a4)) \
+    X(SYS_MSGGET, msgget, do_msgget((int32_t)a1, (int)a2)) \
+    X(SYS_MSGSND, msgsnd, do_msgsnd((int)a1, (const void *)a2, (size_t)a3, (int)a4)) \
+    X(SYS_MSGRCV, msgrcv, do_msgrcv((int)a1, (void *)a2, (size_t)a3, (long)a4, (int)a5)) \
+    X(SYS_MSGCTL, msgctl, do_msgctl((int)a1, (int)a2, (void *)a3)) \
+    X(SYS_SEMTIMEDOP, semtimedop, do_semop((int)a1, (const void *)a2, (size_t)a3)) \
     /* Return -ENOSYS: kernel modules */ \
     X(SYS_CREATE_MODULE, create_module, -ENOSYS) \
     X(SYS_INIT_MODULE, init_module, -ENOSYS) \

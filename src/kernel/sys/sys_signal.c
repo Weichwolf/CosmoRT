@@ -472,6 +472,13 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
 
     if (timeout_ms == 0) return -EAGAIN;
 
+    /* Drain stale events before blocking — event_wait returns immediately
+     * if the queue has events from prior children (e.g., timeout's child).
+     * Without draining, sigtimedwait returns -EAGAIN on stale wakeups. */
+    { event_t ev;
+      while (event_wait(&t->eq, &ev, 0) == 0) { /* drain */ }
+    }
+
     /* Block, waiting for signal */
     {
         event_t ev;
@@ -479,7 +486,8 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         if (r == -ETIMEDOUT) return -EAGAIN;
     }
 
-    /* Re-check after wake */
+    /* Re-check after wake (dead code — event_wait uses syscall restart,
+     * so the function re-enters from the top on wake. Kept for clarity.) */
     match = p->sig_pending & wait_mask;
     if (match) {
         int sig;

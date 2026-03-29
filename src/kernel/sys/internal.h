@@ -303,6 +303,19 @@ long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout);
 long do_mknod(const char *path, uint32_t mode, uint64_t dev);
 long do_fchmodat2(int dirfd, const char *path, uint32_t mode, int flags);
 
+/* ── Forward declarations: sysv_ipc.c (SysV IPC) ── */
+long do_msgget(int32_t key, int flags);
+long do_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);
+long do_msgctl(int msqid, int cmd, void *buf);
+long do_semget(int32_t key, int nsems, int flags);
+long do_semop(int semid, const void *usops, size_t nsops);
+long do_semctl(int semid, int semnum, int cmd, long arg4);
+long do_shmget(int32_t key, size_t size, int flags);
+long do_shmat(int shmid, const void *shmaddr, int shmflg);
+long do_shmdt(const void *shmaddr);
+long do_shmctl(int shmid, int cmd, void *buf);
+
 /* Save user register state from syscall frame into thread_t */
 void save_user_state_for_block(thread_t *t, long return_value);
 

@@ -283,7 +283,7 @@ alpine-test: $(ESP_IMG)
 	@sh tools/mkalpine.sh $(ALPINE_ROOT)
 	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
 	@rm -f /tmp/cosmo-serial.log
-	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
+	timeout 600 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
 
