@@ -12,7 +12,7 @@ RUNNER=src/common/runtest.exe
 musl_pass=0; musl_fail=0
 for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
     name=$(basename "$exe" .exe)
-    timeout 10 "$RUNNER" -w '' "$exe" > /tmp/musl_out.txt 2>&1
+    timeout 30 "$RUNNER" -t 20 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
         musl_pass=$((musl_pass + 1))

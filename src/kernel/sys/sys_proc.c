@@ -79,6 +79,29 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         scan = scan->proc_next;
     }
 
+    /* Reparent children to init (pid 1) — POSIX orphan semantics.
+     * Without reparenting, orphaned children can never be waited on. */
+    extern process_t *pid_table[];
+    for (int i = 1; i < PID_TABLE_MAX; i++) {
+        process_t *child = pid_table[i];
+        if (child && child->parent_pid == p->pid) {
+            child->parent_pid = 1;
+            /* If child is already a zombie, notify init so it can reap */
+            if (child->state == PROC_ZOMBIE) {
+                process_t *init = proc_find(1);
+                if (init) {
+                    __sync_fetch_and_or(&init->sig_pending, SIG_BIT(SIGCHLD));
+                    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                    thread_t *it = init->threads;
+                    while (it) {
+                        event_post(it, 1 /* EQ_CHILD_EXITED */, (uint64_t)child->pid);
+                        it = it->proc_next;
+                    }
+                }
+            }
+        }
+    }
+
     /* Free address space and VMAs — zombie doesn't need them */
     free_address_space(p->pml4);
     p->pml4 = 0;
