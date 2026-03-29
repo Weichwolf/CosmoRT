@@ -249,7 +249,7 @@ alpine-image: $(EFI_BIN)
 	sh tools/mkalpine.sh $(ALPINE_ROOT)
 
 $(BUILD)/disk.img: $(EFI_BIN) | $(BUILD)
-	sh tools/mkimage.sh
+	sh tools/mkalpine.sh
 
 disk: $(BUILD)/disk.img
 
@@ -502,9 +502,8 @@ qemu-disk: $(BUILD)/disk.img
 	        -drive file=build/root.ext2,format=raw,if=virtio
 
 # Interactive bash on VT with ext2 disk
-# COSMO_INTERACTIVE=1 tells mkimage.sh to skip .boot → init starts bash -i
 qemu-shell: $(ESP_IMG)
-	COSMO_INTERACTIVE=1 sh tools/mkimage.sh
+	COSMO_INTERACTIVE=1 sh tools/mkalpine.sh
 	$(QEMU) $(subst -display none,-display gtk,$(subst -no-reboot,,$(QEMU_FLAGS))) \
 	        -drive file=build/root.ext2,format=raw,if=virtio \
 	        -device virtio-keyboard-pci
