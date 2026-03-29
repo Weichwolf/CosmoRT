@@ -176,11 +176,28 @@ stress-ng linux-headers autoconf automake libtool m4 pkgconf
 ```
 
 ### Kompilierte Testsuites
-```
-/opt/ltp/          Linux Test Project (Syscall-Tests, gebaut)
-/opt/libc-test/    musl libc Conformance Tests (gebaut, ~479 Binaries)
-stress-ng          via apk installiert, sofort lauffaehig
-```
+
+#### LTP (Linux Test Project)
+- Source: https://github.com/linux-test-project/ltp
+- Installiert: /opt/ltp/
+- Build: `cd /opt/ltp && make autotools && ./configure && make -j4`
+- Run: `cd /opt/ltp && ./runltp -f syscalls` (oder `-f mm`, `-f ipc`, `-f fs`)
+- ~378 kompilierte Syscall-Test-Binaries
+- Deckt ab: mmap, clone, futex, pipe, socket, signal, epoll, inotify, ...
+
+#### musl libc-test
+- Source: https://repo.or.cz/libc-test.git
+- Installiert: /opt/libc-test/
+- Build: `cd /opt/libc-test && make`
+- Run: `cd /opt/libc-test && make`  (baut und testet in einem Schritt)
+- ~479 Test-Binaries (functional, math, regression)
+- Deckt ab: POSIX libc Conformance, pthreads, math, string, regex, ...
+
+#### stress-ng
+- Installiert via: `apk add stress-ng`
+- Run: `stress-ng --cpu 2 --vm 1 --fork 4 --timeout 60s`
+- ~300 Stressoren fuer CPU, Memory, I/O, Scheduler, Syscalls
+- Findet Crashes und Deadlocks unter Last
 
 ### Test-Scripts
 ```
