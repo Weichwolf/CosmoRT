@@ -156,7 +156,7 @@ sudo umount "$ALPINE_ROOT/dev" 2>/dev/null || true
 # ── Step 2: Create ext2 image ────────────────────────
 echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
 dd if=/dev/zero of="$EXT2_TMP" bs=1M count="$FS_MB" 2>/dev/null
-mkfs.ext2 -q -d "$ALPINE_ROOT" "$EXT2_TMP"
+mkfs.ext2 -q -N 65536 -d "$ALPINE_ROOT" "$EXT2_TMP"
 
 # Inject resolv.conf for QEMU SLIRP
 if command -v debugfs >/dev/null 2>&1; then
