@@ -228,7 +228,7 @@ void epoll_wake_all(void) {
  * checks its own list, no shared lock across partitions.
  * timerfd expiry check runs only on BSP (core 0) since timerfd state is global. */
 void epoll_check_timeouts(void) {
-    uint64_t now = timer_ms();
+    uint64_t now_tsc = timer_tsc_now();
     int cpu = percpu_self()->core_id;
 
     /* timerfd wakeup: only BSP checks (global timerfd slab, avoids cross-core) */
@@ -248,7 +248,12 @@ void epoll_check_timeouts(void) {
             core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
             continue;
         }
-        if (t->wake_at && now >= t->wake_at) {
+        /* TSC-based deadline comparison (sub-µs precision).
+         * wake_at_tsc is authoritative; wake_at (ms) is legacy fallback. */
+        uint64_t deadline = t->wake_at_tsc;
+        if (!deadline && t->wake_at)
+            deadline = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
+        if (deadline && now_tsc >= deadline) {
             core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
             spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
             event_post(t, 10 /* EQ_TIMEOUT */, 0);
@@ -258,6 +263,25 @@ void epoll_check_timeouts(void) {
         }
     }
     spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+}
+
+/* Return nearest TSC deadline among sleepers on the given core. 0 = none. */
+uint64_t epoll_nearest_deadline_tsc(int core_id) {
+    if (core_id < 0 || core_id >= SMP_MAX_CORES) return 0;
+    uint64_t nearest = 0;
+    uint64_t irqf;
+    spin_lock_irq(&core_sleepers[core_id].lock, &irqf);
+    for (int i = 0; i < core_sleepers[core_id].count; i++) {
+        thread_t *t = core_sleepers[core_id].threads[i];
+        if (!t) continue;
+        uint64_t dl = t->wake_at_tsc;
+        if (!dl && t->wake_at)
+            dl = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
+        if (dl && (!nearest || dl < nearest))
+            nearest = dl;
+    }
+    spin_unlock_irq(&core_sleepers[core_id].lock, irqf);
+    return nearest;
 }
 
 /* ── SYS_EPOLL_WAIT (232) ───────────────────────── */

@@ -17,6 +17,7 @@
 #include "config.h"
 #include "core/smp.h"
 #include "core/rt.h"
+#include "core/timer.h"
 #include "arch/arch.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
@@ -522,6 +523,13 @@ void sched_loop(void) {
                 (idle_stacks[core] + sizeof(idle_stacks[core]));
             tss_set_rsp0(idle_top);
             cpu->kernel_rsp = idle_top;
+
+            /* Check timeouts before idle to catch imminent deadlines.
+             * Then halt — next timer tick (1ms) or IPI wakes us. */
+            {
+                extern void epoll_check_timeouts(void);
+                epoll_check_timeouts();
+            }
             arch_halt();
         }
     }

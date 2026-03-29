@@ -118,6 +118,9 @@ typedef struct thread {
 
     /* ── FPU/SSE state (FXSAVE/FXRSTOR) ── */
     uint8_t fxsave_area[512] __attribute__((aligned(16)));
+
+    /* ── TSC-based wakeup deadline (after fxsave to avoid offset shifts) ── */
+    uint64_t wake_at_tsc;  /* TSC deadline for sub-ms precision; 0 = use wake_at */
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */

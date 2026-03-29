@@ -92,6 +92,7 @@ void thread_block_ms(int timeout_ms) {
     cur->rax = orig_syscall_nr;
 
     cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
+    cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
     epoll_sleeper_add_ext(cur);
     cur->state = THREAD_BLOCKED;
 
@@ -138,11 +139,14 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
     cur->rax = orig_syscall_nr;
 
-    /* Timeout */
-    if (timeout_ms > 0)
+    /* Timeout — TSC-based for sub-ms precision */
+    if (timeout_ms > 0) {
         cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
-    else
-        cur->wake_at = 0; /* infinite */
+        cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
+    } else {
+        cur->wake_at = 0;
+        cur->wake_at_tsc = 0;
+    }
 
     /* Register for timeout checking */
     epoll_sleeper_add_ext(cur);

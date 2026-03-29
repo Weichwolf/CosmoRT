@@ -8,7 +8,8 @@
 static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
 
 uint64_t timer_tsc_per_ms = 0;
-static uint64_t boot_tsc = 0;
+uint64_t timer_boot_tsc = 0;
+#define boot_tsc timer_boot_tsc
 
 /* Calibrate TSC by measuring how many TSC ticks pass during a known
  * APIC timer interval. The APIC timer counts down from INIT value.
