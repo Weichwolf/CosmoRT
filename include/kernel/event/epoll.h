@@ -66,6 +66,7 @@ void epoll_incref(void *obj);
 void epoll_destroy(void *obj);
 void eventfd_destroy(void *obj);
 void timerfd_destroy(void *obj);
+void inotify_incref(void *obj);
 void inotify_destroy(void *obj);
 
 /* Read/write hooks for do_read/do_write */

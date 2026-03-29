@@ -489,6 +489,11 @@ int vfs_close(int fd) {
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (f) {
+        /* Generate inotify close event based on open mode */
+        if (f->path[0]) {
+            int writable = (f->flags & (O_WRONLY | O_RDWR));
+            inotify_event(f->path, writable ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
+        }
         if (__sync_sub_and_fetch(&f->refcount, 1) <= 0)
             file_free(f);
     }

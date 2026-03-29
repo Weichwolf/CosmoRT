@@ -353,6 +353,9 @@ void fd_obj_incref(int fde_type, void *fde_obj) {
         timerfd_t *tfd = (timerfd_t *)fde_obj;
         __sync_add_and_fetch(&tfd->refcount, 1);
     }
+    if (fde_type == FD_INOTIFY) {
+        inotify_incref(fde_obj);
+    }
 }
 
 /* ── fd_poll_readiness — check what events are ready on an FD ── */

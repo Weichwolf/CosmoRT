@@ -132,6 +132,8 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
             total += (size_t)rc;
             if ((size_t)rc < chunk) break;
         }
+        if (total > 0 && f->path[0])
+            inotify_event(f->path, IN_MODIFY);
         return (long)total;
     }
 
@@ -197,6 +199,8 @@ long vfs_write(int fd, const void *buf, size_t count) {
         /* Invalidate page cache — demand-paged readers must see new data */
         extern void page_cache_invalidate_ino(uint64_t ino);
         page_cache_invalidate_ino(f->disk_ino);
+        if (total > 0 && f->path[0])
+            inotify_event(f->path, IN_MODIFY);
         return (long)total;
     }
 

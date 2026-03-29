@@ -201,11 +201,13 @@ int vfs_chmod(const char *path, uint32_t mode) {
         if (ext2_inode_read(ino, &ip) < 0) return -EIO;
         ip.i_mode = (ip.i_mode & EXT2_S_IFMT) | (uint16_t)(mode & 07777);
         ext2_inode_write(ino, &ip);
+        inotify_event(path, IN_ATTRIB);
         return 0;
     }
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     node->mode = mode & 07777;
+    inotify_event(path, IN_ATTRIB);
     return 0;
 }
 
