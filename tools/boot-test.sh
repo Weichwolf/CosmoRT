@@ -5,22 +5,10 @@ echo "  $(uname -a)"
 echo "========================================"
 
 echo ""
-
-echo ""
-echo "=== COND DEBUG ==="
-if [ -x /opt/cond_trace ]; then
-    timeout 30 /opt/cond_trace 2>&1
-    echo "rc=$?"
-fi
-
-echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 rm -f src/*/*.err
 RUNNER=src/common/runtest.exe
-# musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
-# mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
-# strptime: %F/%s/%z parsing broken in musl 1.2.5
 # musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
 # mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
 # strptime: %F/%s/%z parsing broken in musl 1.2.5
@@ -75,7 +63,7 @@ done < /opt/ltp_required.txt
 
 echo ""
 echo "========================================"
-echo "  ALL PASSED"
+echo "  ALL DONE"
 echo "  musl: $musl_pass PASS, $musl_fail FAIL"
 echo "  LTP:  $ltp_passed PASS, $ltp_failed FAIL, $ltp_skipped SKIP"
 echo "========================================"
