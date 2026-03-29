@@ -206,7 +206,11 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
     {
         event_t ev;
         int _wr = event_wait(&t->eq, &ev, timeout_ms);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) {
+            /* Signal pending — remove waiter before returning */
+            futex_remove_waiter(addr, pid, t);
+            return -EINTR;
+        }
     }
     return 0; /* unreachable — event_wait does syscall restart when blocking */
 }
@@ -304,7 +308,22 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
         event_t ev;
         int _wr = event_wait(&self->eq, &ev, -1);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) {
+            /* Remove waiter before returning EINTR */
+            spin_lock_irq(&futex_hash[bucket].lock, &flags);
+            futex_waiter_t **rpp = &futex_hash[bucket].head;
+            while (*rpp) {
+                if ((*rpp)->thread == self) {
+                    futex_waiter_t *rm = *rpp;
+                    *rpp = rm->next;
+                    slab_free(&waiter_slab, rm);
+                    break;
+                }
+                rpp = &(*rpp)->next;
+            }
+            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            return -EINTR;
+        }
     }
 
     return 0; /* unreachable — syscall restarts */
