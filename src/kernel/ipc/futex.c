@@ -353,6 +353,104 @@ static int timespec_to_ms(const void *ts) {
     return (int)ms;
 }
 
+/* ── FUTEX_REQUEUE / FUTEX_CMP_REQUEUE ─────────── */
+
+/* Requeue: wake up to wake_max waiters on uaddr1, then move up to
+ * requeue_max remaining waiters from uaddr1's queue to uaddr2's queue
+ * WITHOUT waking them. They'll wake when someone does FUTEX_WAKE on uaddr2.
+ *
+ * CMP variant: atomically checks *uaddr1 == val3 first (prevents ABA race
+ * between userspace check and kernel requeue). Returns -EAGAIN on mismatch.
+ *
+ * Linux: timeout parameter is reused as val2 (requeue_max), not a pointer. */
+
+static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
+                          uint32_t requeue_max, uint32_t *uaddr2,
+                          int cmp, uint32_t cmpval) {
+    process_t *p = proc_current();
+    uint32_t pid = p ? p->pid : 0;
+    uint64_t addr1 = (uint64_t)(uintptr_t)uaddr1;
+    uint64_t addr2 = (uint64_t)(uintptr_t)uaddr2;
+
+    int b1 = hash_uaddr(addr1, pid);
+    int b2 = hash_uaddr(addr2, pid);
+
+    /* Lock both buckets — ordered by index to prevent deadlock */
+    uint64_t flags;
+    if (b1 == b2) {
+        spin_lock_irq(&futex_hash[b1].lock, &flags);
+    } else if (b1 < b2) {
+        spin_lock_irq(&futex_hash[b1].lock, &flags);
+        spin_lock(&futex_hash[b2].lock);
+    } else {
+        spin_lock_irq(&futex_hash[b2].lock, &flags);
+        spin_lock(&futex_hash[b1].lock);
+    }
+
+    /* CMP_REQUEUE: check *uaddr1 == cmpval under lock */
+    if (cmp) {
+        if (__atomic_load_n(uaddr1, __ATOMIC_ACQUIRE) != cmpval) {
+            if (b1 == b2) {
+                spin_unlock_irq(&futex_hash[b1].lock, flags);
+            } else if (b1 < b2) {
+                spin_unlock(&futex_hash[b2].lock);
+                spin_unlock_irq(&futex_hash[b1].lock, flags);
+            } else {
+                spin_unlock(&futex_hash[b1].lock);
+                spin_unlock_irq(&futex_hash[b2].lock, flags);
+            }
+            return -EAGAIN;
+        }
+    }
+
+    long woken = 0, requeued = 0;
+
+    /* Phase 1: wake up to wake_max waiters on uaddr1 */
+    futex_waiter_t **pp = &futex_hash[b1].head;
+    while (*pp && (uint32_t)woken < wake_max) {
+        futex_waiter_t *w = *pp;
+        if (w->uaddr == addr1 && w->pid == pid) {
+            thread_t *target = w->thread;
+            *pp = w->next;
+            slab_free(&waiter_slab, w);
+            event_post(target, EQ_FUTEX_WAKE, 0);
+            woken++;
+        } else {
+            pp = &(*pp)->next;
+        }
+    }
+
+    /* Phase 2: move up to requeue_max remaining waiters to uaddr2 */
+    pp = &futex_hash[b1].head;
+    while (*pp && (uint32_t)requeued < requeue_max) {
+        futex_waiter_t *w = *pp;
+        if (w->uaddr == addr1 && w->pid == pid) {
+            /* Remove from b1 */
+            *pp = w->next;
+            /* Update address and insert into b2 */
+            w->uaddr = addr2;
+            w->next = futex_hash[b2].head;
+            futex_hash[b2].head = w;
+            requeued++;
+        } else {
+            pp = &(*pp)->next;
+        }
+    }
+
+    /* Unlock in reverse order */
+    if (b1 == b2) {
+        spin_unlock_irq(&futex_hash[b1].lock, flags);
+    } else if (b1 < b2) {
+        spin_unlock(&futex_hash[b2].lock);
+        spin_unlock_irq(&futex_hash[b1].lock, flags);
+    } else {
+        spin_unlock(&futex_hash[b1].lock);
+        spin_unlock_irq(&futex_hash[b2].lock, flags);
+    }
+
+    return woken + requeued;
+}
+
 /* ── Dispatcher ─────────────────────────────────── */
 
 long do_futex(uint32_t *uaddr, int op, uint32_t val,
@@ -364,6 +462,12 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         return futex_wait(uaddr, val, timespec_to_ms(timeout));
     case FUTEX_WAKE:
         return futex_wake(uaddr, val);
+    case FUTEX_REQUEUE:
+        return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
+                             uaddr2, 0, 0);
+    case FUTEX_CMP_REQUEUE:
+        return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
+                             uaddr2, 1, val3);
     case FUTEX_LOCK_PI:
         return futex_lock_pi(uaddr);
     case FUTEX_UNLOCK_PI:
@@ -380,9 +484,6 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         }
         return r1;
     }
-    case FUTEX_CMP_REQUEUE:
-        /* Simplified: wake val waiters on uaddr, ignore requeue */
-        return futex_wake(uaddr, val);
     case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
         return futex_wait(uaddr, val, timespec_to_ms(timeout));
     case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
