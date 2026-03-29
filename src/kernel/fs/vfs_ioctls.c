@@ -401,3 +401,23 @@ try_ramfs:;
     }
     return 0;
 }
+
+/* futimens on ext2 file by inode number */
+int vfs_futimensat_ext2(uint64_t ino, const int64_t times[4]) {
+    struct ext2_inode ip;
+    if (ext2_inode_read((uint32_t)ino, &ip) < 0) return -EIO;
+    if (times) {
+        uint32_t now = timer_epoch_sec();
+        int64_t a_ns = times[1], m_ns = times[3];
+        if (a_ns != UTIME_OMIT_)
+            ip.i_atime = (a_ns == UTIME_NOW_) ? now : (uint32_t)times[0];
+        if (m_ns != UTIME_OMIT_)
+            ip.i_mtime = (m_ns == UTIME_NOW_) ? now : (uint32_t)times[2];
+    } else {
+        uint32_t now = timer_epoch_sec();
+        ip.i_atime = now;
+        ip.i_mtime = now;
+    }
+    ext2_inode_write((uint32_t)ino, &ip);
+    return 0;
+}

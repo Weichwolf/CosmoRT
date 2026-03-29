@@ -12,7 +12,9 @@ RUNNER=src/common/runtest.exe
 # musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
 # mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
 # strptime: %F/%s/%z parsing broken in musl 1.2.5
-SKIP="mntent mntent-static strptime strptime-static"
+# musl 1.2.5 bugs: mntent (getmntent parsing), strptime (%F/%s/%z)
+# Complex signal+fork: raise-race (fork in signal handler + RT signals)
+SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static"
 musl_pass=0; musl_fail=0; musl_skip=0
 for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
     name=$(basename "$exe" .exe)

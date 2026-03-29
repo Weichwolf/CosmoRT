@@ -145,17 +145,53 @@ long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
 /* ── SYS_utimensat (280) ────────────────────────── */
 
 long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
-    if (!path) return 0; /* futimens with NULL path = no-op for now */
-
-    char kpath[PATH_MAX];
-    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
-    if (r < 0) return r;
-
     int64_t ktimes[4];
     if (utimes) {
         int r2 = copy_from_user(ktimes, utimes, 2 * sizeof(struct k_timespec));
         if (r2) return r2;
     }
+
+    /* futimens(fd, times): path==NULL, dirfd is the target fd */
+    if (!path) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        /* Get VFS file from fd */
+        #define UTIME_NOW_FD  ((1L << 30) - 1L)
+        #define UTIME_OMIT_FD ((1L << 30) - 2L)
+        extern uint32_t timer_epoch_sec(void);
+        if (fde->type == FD_FILE && fde->obj) {
+            struct vfs_file *vf = (struct vfs_file *)fde->obj;
+            if (vf->node) {
+                /* ramfs file */
+                struct vfs_node *node = vf->node;
+                if (utimes) {
+                    uint32_t now = timer_epoch_sec();
+                    int64_t a_ns = ktimes[1], m_ns = ktimes[3];
+                    if (a_ns != UTIME_OMIT_FD)
+                        node->atime = (a_ns == UTIME_NOW_FD) ? now : (uint32_t)ktimes[0];
+                    if (m_ns != UTIME_OMIT_FD)
+                        node->mtime = (m_ns == UTIME_NOW_FD) ? now : (uint32_t)ktimes[2];
+                } else {
+                    uint32_t now = timer_epoch_sec();
+                    node->atime = now;
+                    node->mtime = now;
+                }
+                return 0;
+            }
+            if (vf->disk_ino) {
+                /* ext2 file */
+                extern int vfs_futimensat_ext2(uint64_t ino, const int64_t times[4]);
+                return vfs_futimensat_ext2(vf->disk_ino, utimes ? ktimes : 0);
+            }
+        }
+        return 0; /* no-op for special fds (pipes, sockets) */
+    }
+
+    char kpath[PATH_MAX];
+    int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
+    if (r < 0) return r;
 
     return vfs_utimensat(kpath, utimes ? ktimes : 0, flags);
 }
