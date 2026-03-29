@@ -550,6 +550,6 @@ Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 | Netfilter | iptables/nftables | Keiner | Single-User, kein Firewall im Kernel |
 | Namespaces | cgroups + namespaces | Keine | Single-User |
 | Security Modules | SELinux/AppArmor | Keiner | Single-User |
-| SysV IPC | shmget/semget/msgget | Nicht implementiert | Pipes/Unix-Sockets/Futex reichen |
+| SysV IPC | shmget/semget/msgget | Implementieren | Alpine-Pakete (PostgreSQL, etc.) brauchen es |
 | Filesystem Journaling | ext4 Journal | ext2 (kein Journal) | Einfachheit, fsck bei Bedarf |
 | Dynamic Linker | ld-linux.so | ld-musl-x86_64.so.1 | musl libc (statisch + dynamisch) |

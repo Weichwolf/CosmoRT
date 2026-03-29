@@ -13,6 +13,7 @@ Stand: 2026-03-29. 1094 ktest PASS. Node.js + gcc + npm auf CosmoRT.
 - [ ] Abstract Unix Sockets (@ Namespace, D-Bus)
 - [ ] /dev/shm: POSIX Shared Memory (shm_open/shm_unlink → tmpfs auf /dev/shm)
 - [ ] flock echtes Advisory Locking (nicht nur return 0)
+- [ ] SysV IPC: shmget/shmat/shmctl, semget/semop/semctl, msgget/msgsnd/msgrcv/msgctl
 
 ### Prozesse/Threads
 
