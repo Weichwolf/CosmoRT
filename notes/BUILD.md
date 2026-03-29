@@ -118,6 +118,26 @@ $(BUILD)/arch/syscall_entry.o: src/arch/x86_64/syscall_entry.asm
     ...
 ```
 
+## Konfiguration
+
+`.config` im Root (nicht getrackt, in .gitignore):
+```makefile
+ARCH=x86_64
+```
+
+Root Makefile liest `.config` mit Fallback:
+```makefile
+-include .config
+ARCH ?= x86_64
+```
+
+Einmal setzen: `echo "ARCH=x86_64" > .config`
+Cross-Compile: `echo "ARCH=aarch64" > .config` oder temporaer `make ARCH=aarch64`
+CLI ueberschreibt .config (Make-Konvention: CLI > File > Default).
+
+.config ist fuer ALLE Makefiles relevant (Root, test/, alpine/).
+Jedes Sub-Makefile liest `../.config` oder bekommt ARCH vom Root via export.
+
 ## Kommandos
 
 ```
