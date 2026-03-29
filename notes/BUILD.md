@@ -118,13 +118,27 @@ $(BUILD)/arch/syscall_entry.o: src/arch/x86_64/syscall_entry.asm
     ...
 ```
 
+## Kommandos
+
+```
+make                    Kernel bauen (alle Architekturen)
+make ARCH=x86_64        Kernel bauen (eine Architektur)
+make -C test            Alle Tests (hw, crash, fuzz)
+make -C test hw         Unit Tests in QEMU
+make -C test crash      Crash Tests in QEMU
+make -C test fuzz       Fuzz Tests in QEMU
+make -C alpine run      Alpine mit GUI starten (bash interaktiv)
+make -C alpine test     Alpine mit test.sh ohne GUI (headless, Serial-Log)
+make -C alpine image    Nur ext2 Image bauen
+```
+
 ## Prinzipien
 
-1. `make` in Root baut NUR den Kernel (BOOTX64.EFI mit init.c)
-2. `make -C test hw` baut Tests und booted in QEMU — ueberschreibt nie den Kernel-Init
-3. `make -C alpine image` baut das ext2 Image — unabhaengig vom Kernel Build
+1. `make` baut NUR den Kernel — alle Architekturen (x86_64, spaeter aarch64, riscv64)
+2. `make -C test` baut und testet — eigenes ESP, eigenes init (ktest), ueberschreibt nie den Kernel
+3. `make -C alpine run` startet Alpine mit GUI (bash), `test` startet headless mit Script
 4. Keine Seiteneffekte: kein Target veraendert Output eines anderen Targets
-5. init_bin.h existiert zweimal: Root (init.c) und test/ (ktest)
+5. Separate Build-Verzeichnisse: build/kernel/, build/test/, build/alpine/
 
 ## Migration
 
