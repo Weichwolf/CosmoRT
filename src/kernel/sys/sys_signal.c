@@ -484,13 +484,60 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
     uint64_t wait_mask;
     { int r = copy_from_user(&wait_mask, uset, 8); if (r) return r; }
 
+    /* Compute deadline once, use remaining time on syscall restart */
     int timeout_ms = -1;
     if (uts) {
-        struct k_timespec kts;
-        int r = copy_from_user(&kts, uts, sizeof(kts));
-        if (r) return r;
-        timeout_ms = (int)(kts.tv_sec * 1000 + kts.tv_nsec / 1000000);
-        if (timeout_ms < 0) timeout_ms = 0;
+        if (t->nanosleep_deadline) {
+            /* Restarted after blocking — use remaining time */
+            uint64_t now = timer_ms();
+            if (now >= t->nanosleep_deadline) {
+                t->nanosleep_deadline = 0;
+                /* Drain stale events from previous block */
+                { event_t ev; while (event_wait(&t->eq, &ev, 0) == 0) { } }
+                /* Check one more time before returning */
+                uint64_t match2 = p->sig_pending & wait_mask;
+                if (match2) {
+                    int sig;
+                    for (sig = 1; sig < 64; sig++)
+                        if (match2 & SIG_BIT(sig)) break;
+                    p->sig_pending &= ~SIG_BIT(sig);
+                    if (uinfo) {
+                        int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
+                        ksi[0] = sig;
+                        copy_to_user(uinfo, ksi, 128);
+                    }
+                    return sig;
+                }
+                return -EAGAIN; /* timeout expired */
+            }
+            timeout_ms = (int)(t->nanosleep_deadline - now);
+            if (timeout_ms <= 0) timeout_ms = 1;
+        } else {
+            struct k_timespec kts;
+            int r = copy_from_user(&kts, uts, sizeof(kts));
+            if (r) return r;
+            timeout_ms = (int)(kts.tv_sec * 1000 + kts.tv_nsec / 1000000);
+            if (timeout_ms < 0) timeout_ms = 0;
+            if (timeout_ms == 0) {
+                /* Check pending and return immediately */
+                uint64_t match = p->sig_pending & wait_mask;
+                if (match) {
+                    int sig;
+                    for (sig = 1; sig < 64; sig++)
+                        if (match & SIG_BIT(sig)) break;
+                    p->sig_pending &= ~SIG_BIT(sig);
+                    if (uinfo) {
+                        int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
+                        ksi[0] = sig;
+                        copy_to_user(uinfo, ksi, 128);
+                    }
+                    return sig;
+                }
+                return -EAGAIN;
+            }
+            /* Set deadline for future restarts */
+            t->nanosleep_deadline = timer_ms() + (uint64_t)timeout_ms;
+        }
     }
 
     /* Check if any waited signal is already pending */
@@ -500,21 +547,17 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         for (sig = 1; sig < 64; sig++)
             if (match & SIG_BIT(sig)) break;
         p->sig_pending &= ~SIG_BIT(sig);
-        /* Write siginfo (simplified: just si_signo at offset 0) */
         if (uinfo) {
             int ksi[32];
             kmemset(ksi, 0, sizeof(ksi));
-            ksi[0] = sig; /* si_signo */
+            ksi[0] = sig;
             copy_to_user(uinfo, ksi, 128);
         }
+        t->nanosleep_deadline = 0;
         return sig;
     }
 
-    if (timeout_ms == 0) return -EAGAIN;
-
-    /* Drain stale events before blocking — event_wait returns immediately
-     * if the queue has events from prior children (e.g., timeout's child).
-     * Without draining, sigtimedwait returns -EAGAIN on stale wakeups. */
+    /* Drain stale events before blocking */
     { event_t ev;
       while (event_wait(&t->eq, &ev, 0) == 0) { /* drain */ }
     }
@@ -523,7 +566,7 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
     {
         event_t ev;
         int r = event_wait(&t->eq, &ev, timeout_ms);
-        if (r == -ETIMEDOUT) return -EAGAIN;
+        if (r == -ETIMEDOUT) { t->nanosleep_deadline = 0; return -EAGAIN; }
     }
 
     /* Re-check after wake (dead code — event_wait uses syscall restart,

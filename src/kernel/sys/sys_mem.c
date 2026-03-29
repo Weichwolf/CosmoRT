@@ -460,13 +460,12 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     if (__builtin_expect(!p, 0)) return -EFAULT;
 
     /* OOM guard: reject new mappings when physical memory is critically low.
-     * Reserves 256 pages (1MB) for kernel operations and process cleanup.
-     * Without this, a single process can exhaust all pages, making the
-     * entire system unresponsive (no OOM killer implemented yet). */
-    {
+     * Only for mappings that will demand-page physical memory (not PROT_NONE).
+     * Reserves 256 pages (1MB) for kernel operations and process cleanup. */
+    if (prot != PROT_NONE && !(flags & MAP_FIXED)) {
         extern uint64_t page_free_count(void);
         size_t pages_needed = (length + 4095) / 4096;
-        if (!(flags & MAP_FIXED) && page_free_count() < pages_needed + 256)
+        if (page_free_count() < pages_needed + 256)
             return -ENOMEM;
     }
 
