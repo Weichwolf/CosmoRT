@@ -149,7 +149,7 @@ make -C test crash      Crash Tests in QEMU
 make -C test fuzz       Fuzz Tests in QEMU
 make -C alpine run      Alpine mit GUI starten (bash interaktiv)
 make -C alpine test     Alpine mit test.sh ohne GUI (headless, Serial-Log)
-make -C alpine image    Nur ext2 Image bauen
+make -C alpine image    ext2 Image bauen (bash default, Testsuites kompiliert)
 ```
 
 ## Prinzipien
@@ -159,6 +159,42 @@ make -C alpine image    Nur ext2 Image bauen
 3. `make -C alpine run` startet Alpine mit GUI (bash), `test` startet headless mit Script
 4. Keine Seiteneffekte: kein Target veraendert Output eines anderen Targets
 5. Separate Build-Verzeichnisse: build/kernel/, build/test/, build/alpine/
+
+## Alpine Image Inhalt
+
+`make -C alpine image` baut ein ext2 Image aus Alpine minirootfs mit:
+
+### Default Shell: bash
+- init.c: `execve("/bin/bash")` statt `/bin/sh`
+- bash vorinstalliert (apk add bash)
+- /bin/sh → busybox bleibt (fuer Scripts mit #!/bin/sh)
+
+### Vorinstallierte Pakete
+```
+bash gcc musl-dev make git nodejs npm
+stress-ng linux-headers autoconf automake libtool m4 pkgconf
+```
+
+### Kompilierte Testsuites
+```
+/opt/ltp/          Linux Test Project (Syscall-Tests, gebaut)
+/opt/libc-test/    musl libc Conformance Tests (gebaut, ~479 Binaries)
+stress-ng          via apk installiert, sofort lauffaehig
+```
+
+### Test-Scripts
+```
+/tmp/test_gcc.sh       gcc Kompilierung testen
+/tmp/test_npm.sh       npm Version + install testen
+/tmp/test_node.sh      Node.js hello world
+```
+
+### Build-Prozess (auf Host, im chroot)
+1. Alpine minirootfs herunterladen + extrahieren
+2. apk add: alle Pakete installieren
+3. LTP clonen + bauen (make autotools, configure, make)
+4. musl libc-test clonen + bauen (make)
+5. mkfs.ext2 -d → build/alpine.img
 
 ## Migration
 
