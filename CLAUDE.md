@@ -1,7 +1,6 @@
 # CosmoRT
 
-Linux-ABI-kompatibler Realtime-Microkernel. Kein Linux-Kernel.
-C11, x86_64 (ARM64 geplant). UEFI Boot, Single-User.
+Linux-ABI-kompatibler Realtime-Microkernel mit ARINC 653 Partitionierung.
 
 ## Headers
 
@@ -224,3 +223,7 @@ TODO.md:
 - Erledigte Tasks sofort abhaken oder komprimieren
 - Testcount im Header aktualisieren
 - Alte erledigte Phasen in Zusammenfassung verschieben
+
+## Ralph-Loop
+
+make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. CosmoRT ist ein greenfield Projekt mit dem Anspruch mindestens Linux-Niveau und ARINC 653 Partitionierung.
