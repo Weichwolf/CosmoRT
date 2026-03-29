@@ -135,7 +135,7 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 init-bin: $(BUILD)/gen/init_bin.h
 
 # ── Alpine disk image (ext2) ─────────────────────
-ALPINE_ROOT ?= /tmp/alpine-root
+ALPINE_ROOT ?= build/alpine-root
 
 alpine-image: $(EFI_BIN)
 	sh tools/mkalpine.sh $(ALPINE_ROOT)
