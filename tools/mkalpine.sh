@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 ALPINE_ROOT="${1:-/tmp/alpine-root}"
 IMG=build/disk.img
 ESP_MB=64
-FS_MB=512
+FS_MB=2048
 EXT2_TMP=build/alpine.img
 EFI_BIN=build/BOOTX64.EFI
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
@@ -88,6 +88,10 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
 else
     echo "mkalpine: reusing existing $ALPINE_ROOT"
 fi
+
+# Unmount any leftover bind mounts
+sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
+sudo umount "$ALPINE_ROOT/dev" 2>/dev/null || true
 
 # ── Step 2: Create ext2 image ────────────────────────
 echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
