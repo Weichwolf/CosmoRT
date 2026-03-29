@@ -7,6 +7,10 @@
 void proc_cleanup(process_t *p) {
     if (!p) return;
 
+    /* Release all advisory file locks held by this process */
+    extern void flock_release_pid(uint32_t pid);
+    flock_release_pid(p->pid);
+
     /* Close all FDs — decrement refcount, free when last ref.
      * exit_kill_process already does this, so entries may be FD_NONE. */
     for (int i = 0; i < FD_MAX; i++) {
