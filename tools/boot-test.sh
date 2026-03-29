@@ -72,12 +72,9 @@ while read t; do
     else
         echo "FAIL (rc=$rc)"
         ltp_failed=$((ltp_failed + 1))
-        echo "--- OUTPUT ---"
-        cat /tmp/ltp_out.txt
-        echo "--- END ---"
-        echo "STOPPING at: $t"
-        echo "LTP so far: $ltp_passed PASS, $ltp_failed FAIL, $ltp_skipped SKIP"
-        poweroff -f; exit 1
+        if [ $ltp_failed -le 5 ]; then
+            cat /tmp/ltp_out.txt
+        fi
     fi
 done < /opt/ltp_required.txt
 
