@@ -48,10 +48,10 @@ if [ ! -f "$ALPINE_ROOT/.mkalpine-done" ]; then
             bash gcc musl-dev make git nodejs npm \
             stress-ng linux-headers autoconf automake libtool m4 pkgconf
 
-        # ── Default shell: bash ──
+        # ── Default shell: bash (via /etc/passwd) ──
         if [ -f /bin/bash ]; then
-            ln -sf bash /bin/sh
-            echo ">>> /bin/sh → bash"
+            sed -i "s|root:x:0:0:root:/root:/bin/sh|root:x:0:0:root:/root:/bin/bash|" /etc/passwd
+            echo ">>> root shell: /bin/bash (in /etc/passwd)"
         fi
 
         # ── LTP (Linux Test Project) ──
