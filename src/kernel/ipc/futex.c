@@ -253,6 +253,10 @@ static long futex_lock_pi(uint32_t *uaddr) {
     if (old == 0)
         return 0; /* acquired */
 
+    /* Deadlock: we already own it (PTHREAD_MUTEX_ERRORCHECK) */
+    if ((old & FUTEX_TID_MASK) == tid)
+        return -EDEADLK;
+
     /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 

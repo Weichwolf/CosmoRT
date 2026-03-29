@@ -34,12 +34,16 @@ void check_pending_signals(void) {
         t->in_sigsuspend = 0;
     }
 
-    uint64_t deliverable = p->sig_pending & ~t->sig_blocked;
+    uint64_t deliverable = (p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
     if (!deliverable) return;
 
     for (int sig = 1; sig < 64; sig++) {
         if (!(deliverable & SIG_BIT(sig))) continue;
-        p->sig_pending &= ~SIG_BIT(sig);
+        /* Clear from whichever pending set has it (thread-level takes priority) */
+        if (t->sig_thread_pending & SIG_BIT(sig))
+            t->sig_thread_pending &= ~SIG_BIT(sig);
+        else
+            p->sig_pending &= ~SIG_BIT(sig);
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -391,19 +395,23 @@ long do_tgkill(int tgid, int tid, int sig) {
 
         /* Everything else (fatal): check if signal is blocked on target thread */
         if (SIG_BIT(sig) & target->sig_blocked) {
-            p->sig_pending |= SIG_BIT(sig);
+            target->sig_thread_pending |= SIG_BIT(sig);
             return 0;
         }
         /* Signal is deliverable — terminate via kill_one (process-level) */
         return kill_one(p, sig);
     }
 
-    /* User handler — set pending and wake target thread */
-    p->sig_pending |= SIG_BIT(sig);
+    /* User handler — set per-thread pending and wake target thread.
+     * tgkill targets a specific thread, so use thread-level pending
+     * (not process-level) to ensure the correct thread handles it. */
+    target->sig_thread_pending |= SIG_BIT(sig);
     if (!(SIG_BIT(sig) & target->sig_blocked)) {
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
         if (target->state == THREAD_BLOCKED)
             event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+        extern void sched_wake(thread_t *t);
+        sched_wake(target);
     }
     return 0;
 }

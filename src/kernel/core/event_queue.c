@@ -120,7 +120,7 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
     if (cur->proc) {
-        uint64_t deliverable = cur->proc->sig_pending & ~cur->sig_blocked;
+        uint64_t deliverable = (cur->proc->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked;
         if (deliverable) return -4; /* EINTR */
     }
 

@@ -100,8 +100,9 @@ typedef struct thread {
     /* ── nanosleep: absolute deadline for syscall-restart detection ── */
     uint64_t nanosleep_deadline;  /* timer_ms() deadline; 0 = not in nanosleep */
 
-    /* ── Signal mask (per-thread, like Linux task_struct.blocked) ── */
+    /* ── Signal mask + per-thread pending (like Linux task_struct) ── */
     uint64_t sig_blocked;     /* bitmask of blocked signals (sigprocmask) */
+    uint64_t sig_thread_pending; /* per-thread pending (from tgkill/tkill) */
 
     /* ── rt_sigsuspend saved mask (restored before signal delivery) ── */
     uint64_t sig_saved_mask;  /* old sig_blocked during sigsuspend; 0 = not in sigsuspend */

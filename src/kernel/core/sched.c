@@ -373,7 +373,7 @@ void sched_preempt(void *frame_ptr) {
     extern void check_pending_signals(void);
     {
         process_t *p = cur->proc;
-        uint64_t deliverable = p ? (p->sig_pending & ~cur->sig_blocked) : 0;
+        uint64_t deliverable = p ? ((p->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked) : 0;
         if (deliverable) {
             /* Save frame → thread_t */
             cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];

@@ -161,7 +161,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
         }
     }
 
-    uint64_t deliverable = p->sig_pending & ~t->sig_blocked;
+    uint64_t deliverable = (p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
     if (!deliverable) return;
 
     percpu_t *cpu = percpu_self();
