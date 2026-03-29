@@ -1,8 +1,5 @@
 /* CosmoRT init — open console, exec INIT_PATH (default /sbin/init) */
 
-#ifndef INIT_PATH
-#define INIT_PATH "/sbin/init"
-#endif
 
 #define SYS_OPEN   2
 #define SYS_DUP2   33
@@ -37,8 +34,8 @@ void _start_c(void) {
     }
     char *envp[] = { "HOME=/", "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
                      "TERM=linux", (char *)0 };
-    char *argv[] = { INIT_PATH, (char *)0 };
-    sc3(SYS_EXECVE, (long)INIT_PATH, (long)argv, (long)envp);
+    char *argv[] = { "/sbin/init", (char *)0 };
+    sc3(SYS_EXECVE, (long)"/sbin/init", (long)argv, (long)envp);
     sc3(SYS_WRITE, 2, (long)"exec init failed\n", 17);
     sc1(SYS_EXIT, 1);
     __builtin_unreachable();

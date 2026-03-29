@@ -114,12 +114,9 @@ $(BUILD)/user/crt0.o: $(SRC)/user/crt0.S | $(BUILD)/user
 CRT0 = $(BUILD)/user/crt0.o
 
 # ── Init binary (embedded in kernel) ─────────────
-# INIT= sets the init path: make INIT=/tmp/test.sh → init execs /tmp/test.sh
-INIT ?= /sbin/init
-
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
-	      -fno-plt -mno-red-zone -nostdlib -O2 -DINIT_PATH='"$(INIT)"' -c -o $@ $<
+	      -fno-plt -mno-red-zone -nostdlib -O2 -c -o $@ $<
 
 $(BUILD)/user/init: $(CRT0) $(BUILD)/user/init.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/init.o
@@ -279,15 +276,13 @@ qemu-alpine-gui: alpine-image
 	$(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display gtk -device virtio-keyboard-pci
 
 # make alpine-test — headless boot test (musl + LTP, fail-fast + poweroff)
-alpine-test:
-	rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
-	INIT=/opt/boot-test.sh $(MAKE) alpine-image
+# Patches /etc/inittab to run boot-test.sh as sysinit, then poweroff
+alpine-test: alpine-image
+	@echo "::sysinit:/opt/boot-test.sh" | debugfs -w -R "write /dev/stdin /etc/inittab" $(BUILD)/alpine.img 2>/dev/null
 	@rm -f /tmp/cosmo-serial.log
 	timeout 300 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
-	@rm -f $(BUILD)/user/init.o $(BUILD)/gen/init_bin.h $(BUILD)/BOOTX64.EFI
-	$(MAKE) all
 
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
