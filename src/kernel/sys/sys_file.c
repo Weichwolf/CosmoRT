@@ -46,7 +46,14 @@ int resolve_path(const char *path, char *out, int outsize) {
 int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     int len = copy_path_from_user(kpath, upath, (size_t)max);
     if (len < 0) return len;
-    if (kpath[0] == '/' || dirfd == AT_FDCWD) return len;
+    if (kpath[0] == '/') return len;
+
+    /* Relative path with AT_FDCWD: resolve against process CWD */
+    if (dirfd == AT_FDCWD) {
+        char tmp[PATH_MAX];
+        for (int i = 0; i <= len && i < PATH_MAX; i++) tmp[i] = kpath[i];
+        return resolve_path(tmp, kpath, max);
+    }
 
     /* Real dirfd: look up the directory's path from the open vfs_file */
     process_t *p = proc_current();
@@ -451,10 +458,11 @@ long do_getcwd(char *buf, size_t size) {
 }
 
 long do_chdir(const char *path) {
-    char kpath[PATH_MAX];
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
-    return vfs_chdir(kpath);
+    resolve_path(kpath, rpath, PATH_MAX);
+    return vfs_chdir(rpath);
 }
 
 /* ── SYS_getdents64 (217) ───────────────────────── */

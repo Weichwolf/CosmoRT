@@ -121,10 +121,11 @@ long do_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
 /* ── SYS_truncate (76) / SYS_ftruncate (77) ─────── */
 
 long do_truncate(const char *path, int64_t length) {
-    char kpath[PATH_MAX];
+    char kpath[PATH_MAX], rpath[PATH_MAX];
     int r = copy_path_from_user(kpath, path, PATH_MAX);
     if (r < 0) return r;
-    return vfs_truncate(kpath, length);
+    resolve_path(kpath, rpath, PATH_MAX);
+    return vfs_truncate(rpath, length);
 }
 
 long do_ftruncate(int fd, int64_t length) {
@@ -310,11 +311,12 @@ static long fill_statfs(struct k_statfs *kbuf, const char *path) {
 }
 
 long do_statfs(const char *path, void *buf) {
-    char kpath[256];
+    char kpath[256], rpath[256];
     int r = copy_path_from_user(kpath, path, 256);
     if (r < 0) return r;
+    resolve_path(kpath, rpath, 256);
     struct k_statfs kbuf;
-    fill_statfs(&kbuf, kpath);
+    fill_statfs(&kbuf, rpath);
     return copy_to_user(buf, &kbuf, sizeof(kbuf)) ? -EFAULT : 0;
 }
 
