@@ -43,7 +43,7 @@
     X(SYS_CLONE3, clone3, do_clone3((void *)a1, (size_t)a2)) \
     /* Thread/TLS */ \
     X(SYS_ARCH_PRCTL, arch_prctl, do_arch_prctl((int)a1, (unsigned long)a2)) \
-    X(SYS_SET_ROBUST_LIST, set_robust_list, do_set_robust_list()) \
+    X(SYS_SET_ROBUST_LIST, set_robust_list, do_set_robust_list((void *)a1, (size_t)a2)) \
     /* Signals */ \
     X(SYS_RT_SIGACTION, rt_sigaction, do_rt_sigaction((int)a1, (const void *)a2, (void *)a3, (size_t)a4)) \
     X(SYS_RT_SIGPROCMASK, rt_sigprocmask, do_rt_sigprocmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3, (size_t)a4)) \
@@ -394,7 +394,7 @@
     X(SYS_MQ_TIMEDRECEIVE, mq_timedreceive, -ENOSYS) \
     X(SYS_MQ_NOTIFY, mq_notify, -ENOSYS) \
     X(SYS_MQ_GETSETATTR, mq_getsetattr, -ENOSYS) \
-    X(SYS_GET_ROBUST_LIST, get_robust_list, -ENOSYS) \
+    X(SYS_GET_ROBUST_LIST, get_robust_list, do_get_robust_list((int)a1, (void **)a2, (size_t *)a3)) \
     X(SYS_SPLICE, splice, -ENOSYS) \
     X(SYS_TEE, tee, -ENOSYS) \
     X(SYS_SYNC_FILE_RANGE, sync_file_range, -ENOSYS) \

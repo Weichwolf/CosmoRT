@@ -968,7 +968,10 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->state = TCP_CLOSED;
     cc_init(c);
 
-    if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
+    /* Loopback: skip ARP (packets bypass NIC via loopback_inject) */
+    if (dst_ip[0] == 127)
+        mcpy(c->dst_mac, net_my_mac, 6);
+    else if (net_arp_resolve(net_gw_ip, c->dst_mac) < 0) return -1;
 
     c->state = TCP_SYN_SENT;
     tcp_register(c);

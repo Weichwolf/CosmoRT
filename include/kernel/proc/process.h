@@ -85,6 +85,9 @@ typedef struct process {
     int         thread_count;
 
     spinlock_t  lock;
+
+    /* Resource limits (at end to avoid offset shifts) */
+    unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
 } process_t;
 
 /* PID/TID lookup table sizes */

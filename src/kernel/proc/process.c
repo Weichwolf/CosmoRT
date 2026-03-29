@@ -228,6 +228,10 @@ void fd_table_init(fd_table_t *fdt) {
 int fd_alloc(fd_table_t *fdt, int type, void *obj, int flags) {
     int fd = fd_find_free(fdt, 0);
     if (fd < 0) return -EMFILE;
+    /* Enforce RLIMIT_NOFILE */
+    process_t *p = proc_current();
+    if (p && p->rlim_nofile && (unsigned long)fd >= p->rlim_nofile)
+        return -EMFILE;
     fdt->entries[fd] = (fd_entry_t){type, obj, flags};
     fd_mark_used(fdt, fd);
     if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;

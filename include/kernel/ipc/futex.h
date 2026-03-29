@@ -24,6 +24,7 @@ struct timespec;
 
 /* Futex userspace value: low 30 bits = owner TID, bit 31 = FUTEX_WAITERS */
 #define FUTEX_TID_MASK      0x3FFFFFFFU
+#define FUTEX_OWNER_DIED    0x40000000U
 #define FUTEX_WAITERS       0x80000000U
 
 void futex_init(void);

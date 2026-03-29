@@ -204,8 +204,8 @@ long do_connect(int fd, const void *addr, int addrlen) {
         net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
         return -ENETUNREACH;
 
-    /* Loopback (127.x.x.x): not implemented — refuse immediately */
-    if (dst_ip[0] == 127) return -ECONNREFUSED;
+    /* Loopback (127.x.x.x): ip_send_raw() intercepts and injects into q_tcp.
+     * TCP state machine handles loopback packets like any other. */
     uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
     for (;;) {
         int r = net_tcp_connect(&s->tcp, dst_ip, port);

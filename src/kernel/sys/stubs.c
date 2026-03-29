@@ -2,7 +2,23 @@
 
 #include "internal.h"
 
-long do_set_robust_list(void) { return 0; }
+long do_set_robust_list(void *head, size_t len) {
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+    if (len != 24) return -EINVAL; /* sizeof(struct robust_list_head) on x86_64 */
+    if (head && !user_ok((uint64_t)head, len)) return -EFAULT;
+    t->robust_list = head;
+    return 0;
+}
+
+long do_get_robust_list(int pid, void **head_ptr, size_t *len_ptr) {
+    if (pid != 0) return -ESRCH; /* only current thread for now */
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+    if (head_ptr) copy_to_user(head_ptr, &t->robust_list, sizeof(void *));
+    if (len_ptr) { size_t sz = 24; copy_to_user(len_ptr, &sz, sizeof(sz)); }
+    return 0;
+}
 long do_mount(void)           { return 0; }
 long do_sethostname(void)     { return 0; }
 long do_rseq(void)            { return -ENOSYS; }

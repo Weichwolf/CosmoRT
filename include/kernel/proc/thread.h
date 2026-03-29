@@ -91,6 +91,9 @@ typedef struct thread {
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
 
+    /* ── Robust Mutex List: kernel walks on thread exit ── */
+    void *robust_list;     /* userspace robust_list_head pointer */
+
     /* ── Fault info for signal delivery ── */
     uint64_t fault_addr;   /* CR2 for SIGSEGV/SIGBUS delivery */
 

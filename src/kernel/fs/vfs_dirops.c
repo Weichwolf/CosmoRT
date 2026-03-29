@@ -191,6 +191,54 @@ int vfs_rename(const char *oldpath, const char *newpath) {
 /* ── Hard link ───────────────────────────────────── */
 
 int vfs_link(const char *oldpath, const char *newpath) {
-    (void)oldpath; (void)newpath;
-    return -ENOSYS; /* ext2 hard links not yet implemented */
+    /* ramfs hard links: create new directory entry pointing to same node */
+    struct vfs_node *old_node = vfs_lookup(oldpath);
+    if (!old_node) return -ENOENT;
+    if (old_node->type == VFS_DIR) return -EPERM; /* no hardlinks to directories */
+
+    /* Check new path doesn't exist */
+    struct vfs_node *existing = vfs_lookup(newpath);
+    if (existing) return -EEXIST;
+
+    /* Find parent directory and new name */
+    char parent_path[256], new_name[256];
+    int plen = kstrlen(newpath);
+    /* Find last '/' */
+    int slash = plen - 1;
+    while (slash > 0 && newpath[slash] != '/') slash--;
+    if (slash <= 0) {
+        parent_path[0] = '/'; parent_path[1] = 0;
+    } else {
+        for (int i = 0; i < slash && i < 255; i++) parent_path[i] = newpath[i];
+        parent_path[slash] = 0;
+    }
+    int nstart = slash + 1;
+    int nlen = plen - nstart;
+    if (nlen <= 0 || nlen >= 256) return -EINVAL;
+    for (int i = 0; i < nlen; i++) new_name[i] = newpath[nstart + i];
+    new_name[nlen] = 0;
+
+    struct vfs_node *parent = vfs_lookup(parent_path);
+    if (!parent || parent->type != VFS_DIR) return -ENOENT;
+
+    /* Create a new node that shares data with the old node */
+    extern struct vfs_node *node_alloc(const char *name, int type);
+    struct vfs_node *link = node_alloc(new_name, old_node->type);
+    if (!link) return -ENOMEM;
+    link->data = old_node->data;
+    link->size = old_node->size;
+    link->capacity = old_node->capacity;
+    link->ino = old_node->ino; /* same inode = hard link */
+    link->mode = old_node->mode;
+    link->uid = old_node->uid;
+    link->gid = old_node->gid;
+    link->atime = old_node->atime;
+    link->mtime = old_node->mtime;
+    link->ctime = old_node->ctime;
+    link->parent = parent;
+    link->next = parent->children;
+    parent->children = link;
+
+    inotify_event(oldpath, IN_CREATE);
+    return 0;
 }

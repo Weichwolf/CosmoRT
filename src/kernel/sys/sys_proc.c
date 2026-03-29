@@ -134,6 +134,48 @@ void do_exit(int status) {
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
 
+    /* Robust Mutex Cleanup: walk userspace robust_list, mark dead-owner futexes */
+    if (t->robust_list && p) {
+        arch_set_cr3(virt_to_phys(p->pml4));
+        /* robust_list_head: { next_ptr, futex_offset, list_op_pending } */
+        struct { void *next; long futex_offset; void *pending; } khead;
+        if (!copy_from_user(&khead, t->robust_list, sizeof(khead))) {
+            void *head_addr = &((struct { void *next; }*)t->robust_list)->next;
+            void *entry = khead.next;
+            uint32_t tid = (uint32_t)t->tid;
+            int limit = 4096; /* prevent infinite loop on corrupt list */
+            while (entry && entry != head_addr && --limit > 0) {
+                void *next = 0;
+                if (copy_from_user(&next, entry, sizeof(next))) break;
+                uint32_t *futex_addr = (uint32_t *)((char *)entry + khead.futex_offset);
+                if (user_ok((uint64_t)futex_addr, 4)) {
+                    uint32_t fval = 0;
+                    if (!copy_from_user(&fval, futex_addr, 4) &&
+                        (fval & FUTEX_TID_MASK) == tid) {
+                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
+                        __sync_val_compare_and_swap(futex_addr, fval, nval);
+                        do_futex(futex_addr, 1 /* FUTEX_WAKE */, 0x7FFFFFFF, 0, 0, 0);
+                    }
+                }
+                entry = next;
+            }
+            /* Also handle list_op_pending (in-progress lock at time of death) */
+            if (khead.pending && user_ok((uint64_t)khead.pending, 8)) {
+                uint32_t *pf = (uint32_t *)((char *)khead.pending + khead.futex_offset);
+                if (user_ok((uint64_t)pf, 4)) {
+                    uint32_t fval = 0;
+                    if (!copy_from_user(&fval, pf, 4) &&
+                        (fval & FUTEX_TID_MASK) == tid) {
+                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
+                        __sync_val_compare_and_swap(pf, fval, nval);
+                        do_futex(pf, 1, 0x7FFFFFFF, 0, 0, 0);
+                    }
+                }
+            }
+        }
+        t->robust_list = 0;
+    }
+
     /* CLONE_CHILD_CLEARTID: clear tid + futex_wake for pthread_join */
     if (t->clear_child_tid && p) {
         /* Ensure user page tables for user memory access */
@@ -545,16 +587,32 @@ long do_prlimit64(int pid, int resource,
                          const void *new_rlim_,
                          void *old_rlim_) {
     struct k_rlimit *old_rlim = (struct k_rlimit *)old_rlim_;
-    (void)pid; (void)new_rlim_; /* ignore set for now */
+    const struct k_rlimit *new_rlim = (const struct k_rlimit *)new_rlim_;
+    (void)pid;
+    process_t *p = proc_current();
+    unsigned long nofile_cur = (p && p->rlim_nofile) ? p->rlim_nofile : FD_MAX;
+
+    /* Apply new limit */
+    if (new_rlim) {
+        struct k_rlimit knew;
+        int r = copy_from_user(&knew, new_rlim, sizeof(knew));
+        if (r) return r;
+        if (resource == RLIMIT_NOFILE && p) {
+            if (knew.rlim_cur > FD_MAX) knew.rlim_cur = FD_MAX;
+            p->rlim_nofile = knew.rlim_cur;
+            nofile_cur = knew.rlim_cur;
+        }
+    }
+
     if (old_rlim) {
         struct k_rlimit krl;
         switch (resource) {
         case RLIMIT_STACK:
-            krl.rlim_cur = 8 * 1024 * 1024;      /* 8 MB */
-            krl.rlim_max = 64 * 1024 * 1024;     /* 64 MB */
+            krl.rlim_cur = 8 * 1024 * 1024;
+            krl.rlim_max = 64 * 1024 * 1024;
             break;
         case RLIMIT_NOFILE:
-            krl.rlim_cur = FD_MAX;
+            krl.rlim_cur = nofile_cur;
             krl.rlim_max = FD_MAX;
             break;
         case RLIMIT_AS:
