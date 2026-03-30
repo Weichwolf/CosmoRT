@@ -56,6 +56,8 @@ thread_t *thread_alloc(void) {
         mutex_unlock(&pid_lock);
         t->kthread_fn = 0;
         t->kthread_arg = 0;
+        t->kstack_rsp = 0;
+        t->blocked_in_kernel = 0;
         event_queue_init(&t->eq);
     }
     return t;
@@ -366,6 +368,7 @@ int proc_create_from_vfs(const char *path) {
 extern int kernel_setjmp(uint64_t buf[8]);
 extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
 extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
+extern void context_resume(thread_t *t) __attribute__((noreturn));
 
 __attribute__((noinline, optimize("O0")))
 void thread_run(thread_t *t) {
@@ -385,6 +388,11 @@ void thread_run(thread_t *t) {
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(t->kstack_top);
     cpu->kernel_rsp = t->kstack_top;
+
+    if (t->blocked_in_kernel) {
+        t->blocked_in_kernel = 0;
+        context_resume(t);
+    }
 
     if (t->in_kernel_yield) {
         t->in_kernel_yield = 0;

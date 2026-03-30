@@ -49,6 +49,8 @@ typedef struct thread {
 
     uint8_t *kstack;
     uint64_t kstack_top;
+    uint64_t kstack_rsp;
+    int      blocked_in_kernel;
 
     int      sched_policy;
     int      priority;

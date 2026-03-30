@@ -1,13 +1,61 @@
-; context.asm — setjmp/longjmp + Ring 3 entry for CosmoRT
+; context.asm — setjmp/longjmp + context_switch + Ring 3 entry for CosmoRT
 ;
 ; GDT selectors: user CS = 0x2B (0x28|3), user SS = 0x23 (0x20|3)
+
+%define THREAD_KSTACK_RSP_OFF 168
 
 bits 64
 section .text
 
 global kernel_setjmp
 global kernel_longjmp
+global context_switch
+global context_save
+global context_resume
 global proc_enter_ring3
+
+; void context_switch(thread_t *prev, thread_t *next)
+context_switch:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi + THREAD_KSTACK_RSP_OFF], rsp
+    mov rsp, [rsi + THREAD_KSTACK_RSP_OFF]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+; int context_save(thread_t *t)
+context_save:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi + THREAD_KSTACK_RSP_OFF], rsp
+    add rsp, 48
+    xor eax, eax
+    ret
+
+; noreturn context_resume(thread_t *t)
+context_resume:
+    mov rsp, [rdi + THREAD_KSTACK_RSP_OFF]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    mov eax, 1
+    ret
 
 ; int kernel_setjmp(uint64_t buf[8])
 kernel_setjmp:

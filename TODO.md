@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1624/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1636/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -105,13 +105,16 @@ Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
   - dmesg_lock: serial_putchar aus Exception-Handlern und Panic-Pfaden
   - buddy_lock: page_alloc ueberall, zu riskant
 
-### RT-5: RCU (erledigt)
+### RT-5: RCU
 
 - [x] RCU Datenstruktur (grace period, callback queue)
 - [x] rcu_read_lock/rcu_read_unlock (preempt_disable/enable)
 - [x] synchronize_rcu / call_rcu
 - [x] rcu_check_quiescent in sched_preempt (Timer-Tick = QS)
 - [x] ktest: 12 Tests (17 Checks) — Scheduling, Preemption, IPC intakt
+- [ ] synchronize_rcu: aktiver Spin-Loop → sched_block (nach RT-9a)
+  Aktuell: pause-spin bis alle CPUs QS melden. Richtig: blockieren,
+  rcu_check_quiescent weckt den Caller wenn GP abgeschlossen.
 
 ### RT-6: NOHZ_FULL + Core-Isolation
 
@@ -161,12 +164,14 @@ teilen sich denselben Buffer. Aktuell Workaround: kthreads spinnen bei
 Mutex-Contention. Richtige Loesung: vollstaendiger Kernel-Stack-Context-Save
 wie Linux/BeOS.
 
-### RT-9a: Kernel-Stack Context-Save (Agent)
+### RT-9a: Kernel-Stack Context-Save (erledigt)
 
-- [ ] sched_block(): speichert kompletten Kernel-Stack-Kontext (RSP, RBP, callee-saved)
-- [ ] sched_resume(): stellt Kontext wieder her und springt zurueck
-- [ ] Kein shared jmpbuf — jeder Block-Punkt hat eigenen Save auf dem Stack
-- [ ] Funktioniert wie Linux __schedule(): switch_to() speichert/restored Kernel-RSP
+- [x] context_save/context_resume/context_switch in context.asm
+- [x] sched_block(): context_save + kernel_longjmp zurueck zum Scheduler
+- [x] kthread_run/thread_run: context_resume fuer blocked_in_kernel Threads
+- [x] thread_t: kstack_rsp + blocked_in_kernel Felder
+- [x] Static assert fuer Assembly-Offset
+- [x] ktest: 12 Checks (sb_*) — Scheduler-Regression
 
 ### RT-9b: rt_mutex auf sched_block umstellen (Agent)
 

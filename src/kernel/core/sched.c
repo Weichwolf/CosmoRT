@@ -13,6 +13,17 @@
 #include "core/rcu.h"
 #include "core/nohz.h"
 #include "arch/arch.h"
+#include <stddef.h>
+
+_Static_assert(offsetof(thread_t, kstack_rsp) == 168,
+               "THREAD_KSTACK_RSP_OFF mismatch");
+
+extern void context_switch(thread_t *prev, thread_t *next);
+extern int context_save(thread_t *t);
+extern void context_resume(thread_t *t) __attribute__((noreturn));
+extern int kernel_setjmp(uint64_t buf[8]);
+extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+extern uint64_t pml4[];
 
 static uint8_t core_isolated[SMP_MAX_CORES];
 
@@ -140,6 +151,20 @@ void sched_wake(thread_t *t) {
     int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
     if (old != THREAD_BLOCKED) return;
     sched_add(t);
+}
+
+void sched_block(void) {
+    thread_t *cur = thread_current();
+
+    cur->state = THREAD_BLOCKED;
+    cur->blocked_in_kernel = 1;
+
+    if (context_save(cur) != 0)
+        return;
+
+    if (cur->proc)
+        arch_set_cr3(virt_to_phys(pml4));
+    kernel_longjmp(cur->jmpbuf, 1);
 }
 
 __attribute__((hot))
@@ -385,8 +410,6 @@ void sched_preempt(void *frame_ptr) {
     extern void lapic_eoi(void);
     lapic_eoi();
     arch_set_kernel_gs_base((uint64_t)(uintptr_t)cpu);
-    extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-    extern uint64_t pml4[];
     arch_set_cr3(virt_to_phys(pml4));
     kernel_longjmp(cur->jmpbuf, 1);
 }
@@ -413,10 +436,6 @@ void sched_init(void) {
 
 static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 
-extern int kernel_setjmp(uint64_t buf[8]);
-extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-extern uint64_t pml4[];
-
 static void kthread_trampoline(thread_t *t) {
     arch_sti();
     t->kthread_fn(t->kthread_arg);
@@ -438,6 +457,11 @@ static void kthread_run(thread_t *t) {
     if (kernel_setjmp(t->jmpbuf) != 0) {
         cpu->current_thread = 0;
         return;
+    }
+
+    if (t->blocked_in_kernel) {
+        t->blocked_in_kernel = 0;
+        context_resume(t);
     }
 
     if (t->in_kernel_yield) {
