@@ -167,6 +167,19 @@ void sched_block(void) {
     kernel_longjmp(cur->jmpbuf, 1);
 }
 
+void sched_block_preblocked(void) {
+    thread_t *cur = thread_current();
+
+    cur->blocked_in_kernel = 1;
+
+    if (context_save(cur) != 0)
+        return;
+
+    if (cur->proc)
+        arch_set_cr3(virt_to_phys(pml4));
+    kernel_longjmp(cur->jmpbuf, 1);
+}
+
 __attribute__((hot))
 thread_t *sched_pick(void) {
     int cpu = percpu_self()->core_id;
