@@ -1,6 +1,7 @@
 /* CosmoRT Interrupt handling — APIC + IDT, thread-aware */
 
 #include "core/irq.h"
+#include "core/timer.h"
 #include "hw/serial.h"
 #include "proc/thread.h"
 #include "proc/process.h"
@@ -732,10 +733,11 @@ void tlb_shootdown(uint64_t pml4_phys) {
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
     *icr_lo = 0x000C0000 | 0xFE;
 
-    /* Wait for all other cores to ACK (with timeout to avoid deadlock) */
+    /* Wait for all other cores to ACK (timeout 10ms to avoid deadlock) */
     int expected = ncores - 1;
-    for (int i = 0; i < 10000000; i++) {
-        if (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) >= expected)
+    uint64_t sd_deadline = timer_ms() + 10;
+    while (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) < expected) {
+        if (timer_ms() >= sd_deadline)
             break;
         arch_pause();
     }

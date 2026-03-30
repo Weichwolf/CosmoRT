@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1254/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1293/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -15,9 +15,9 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 ### SMP + TLB
 
-- [ ] SMP AP boot: LAPIC timer statt pure spin-wait (smp.c:176)
-- [ ] TLB shootdown: LAPIC timer + Timeout statt 10M-Iteration spin-wait (irq.c:733)
-- [ ] Kexec AP shutdown: LAPIC timer statt 2M-Iteration spin-wait (kexec.c:137)
+- [x] SMP AP boot: arch_halt statt arch_pause in wait-loop (smp.c)
+- [x] TLB shootdown: timer_ms deadline statt 10M-Iteration spin-wait (irq.c)
+- [x] Kexec AP shutdown: lapic_delay_ms statt 2M-Iteration spin-wait (kexec.c)
 
 ### IPC
 

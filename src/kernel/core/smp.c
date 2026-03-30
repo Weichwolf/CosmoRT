@@ -171,14 +171,14 @@ int smp_start_all(void (*entry_fn)(void)) {
     lapic_ipi_broadcast(ICR_SIPI | (uint32_t)TRAMP_VECTOR);
     serial_puts("sent\n");
 
-    /* 4. Wait for APs to come alive */
+    /* 4. Wait for APs to come alive (HLT instead of spin-wait) */
     uint64_t deadline = timer_ms() + 500;
     while (timer_ms() < deadline) {
-        arch_pause();
         int alive = 0;
         for (int i = 0; i < SMP_MAX_CORES; i++)
             if (core_alive[i]) alive++;
         if (alive > total_cores) total_cores = alive;
+        arch_halt();  /* sleep until next IRQ (LAPIC timer fires every 1ms) */
     }
 
     serial_puts("SMP: ");

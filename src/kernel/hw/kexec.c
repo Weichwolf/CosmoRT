@@ -27,6 +27,7 @@
 #include "fs/ext2.h"
 #include "sys/syscall.h"
 #include "proc/thread.h"
+#include "core/irq.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
@@ -133,9 +134,8 @@ static void stop_aps(void) {
     volatile uint32_t *icr_lo = (volatile uint32_t *)LAPIC_ICR_LO;
     *icr_lo = 0x000C4500; /* shorthand=all-excl-self(0xC0000), INIT(0x4500) */
 
-    /* Wait for APs to enter INIT state */
-    for (volatile int i = 0; i < 2000000; i++)
-        arch_pause();
+    /* Wait for APs to enter INIT state (10ms, HLT-based) */
+    lapic_delay_ms(10);
 
     serial_puts("kexec: APs stopped\n");
 }
