@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1456/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1480/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -55,11 +55,14 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 ### RT-3: Spinlock→mutex Konvertierung (abhaengig von RT-2 V2)
 
 - [x] RT-3a: spinlock_t + mutex_t Infrastruktur
-- [ ] RT-3c: IPC (pipe, eventfd, timerfd, inotify, futex hash → mutex_t)
-- [ ] RT-3d: VFS/ext2 (inode, dentry, mount, bcache → mutex_t)
-- [ ] RT-3e: Socket/Netzwerk (socket, unix_socket → mutex_t)
-- [ ] RT-3f: Prozesse/MM (VMA, process table, slab, PTY → mutex_t)
-- NICHT: eq_locks, packet queues, core_rq (IRQ-Kontext → bleibt spinlock_t)
+- [x] RT-3c: IPC (pipe, eventfd, timerfd, inotify, futex hash, sysv_ipc → mutex_t)
+- [x] RT-3d: VFS/ext2 (ext2 fs_lock, bcache cache_lock → mutex_t)
+- [x] RT-3e: Socket/Netzwerk (sock_lock, usock_lock, udp_table_lock → mutex_t)
+- [x] RT-3f: Prozesse/MM (pid_lock, epoll_t::lock → mutex_t)
+- NICHT konvertiert (IRQ-Kontext): eq_locks, core_rq, core_sleepers, pkt_queues,
+  rt_mutex::lock, process_t::lock (page fault), pty_t::lock (serial bridge IRQ,
+  keyboard IRQ), slab_t::lock (arp_slab aus net dispatch), tcp rxring/hash_lock,
+  page_alloc buddy_lock, page_cache pc_lock, rng_lock, dmesg_lock
 
 ### RT-4: Threaded IRQs (abhaengig von RT-3)
 

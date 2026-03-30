@@ -15,7 +15,7 @@ struct pipe {
     int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
     thread_t *blocked_reader;   /* thread blocked in pipe read */
     thread_t *blocked_writer;   /* thread blocked in pipe write */
-    spinlock_t lock;
+    mutex_t lock;
 };
 
 static struct pipe pipe_pool[PIPE_MAX];
@@ -30,11 +30,10 @@ static void pipe_slab_ensure(void) {
 }
 
 long pipe_read(struct pipe *pp, void *buf, size_t count) {
-    uint64_t flags;
-    spin_lock_irq(&pp->lock, &flags);
+    mutex_lock(&pp->lock);
     if (pp->count == 0) {
         int wr_open = pp->write_open;
-        spin_unlock_irq(&pp->lock, flags);
+        mutex_unlock(&pp->lock);
         return wr_open ? (long)-EAGAIN : 0; /* EOF if write end closed */
     }
     size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
@@ -47,7 +46,7 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     /* Wake blocked writer if space freed */
     thread_t *writer = pp->blocked_writer;
     pp->blocked_writer = 0;
-    spin_unlock_irq(&pp->lock, flags);
+    mutex_unlock(&pp->lock);
     if (writer)
         event_post(writer, EQ_PIPE_DATA, (uint64_t)n);
     /* Wake epoll/poll sleepers — pipe now writable */
@@ -56,16 +55,15 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
 }
 
 long pipe_write(struct pipe *pp, const void *buf, size_t count) {
-    uint64_t flags;
-    spin_lock_irq(&pp->lock, &flags);
+    mutex_lock(&pp->lock);
     if (!pp->read_open) {
-        spin_unlock_irq(&pp->lock, flags);
+        mutex_unlock(&pp->lock);
         return send_sigpipe();
     }
     size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
     size_t n = count > space ? space : count;
     if (n == 0) {
-        spin_unlock_irq(&pp->lock, flags);
+        mutex_unlock(&pp->lock);
         return (long)-EAGAIN;
     }
     const uint8_t *src = (const uint8_t *)buf;
@@ -77,7 +75,7 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     /* Wake blocked reader */
     thread_t *reader = pp->blocked_reader;
     pp->blocked_reader = 0;
-    spin_unlock_irq(&pp->lock, flags);
+    mutex_unlock(&pp->lock);
     if (reader)
         event_post(reader, EQ_PIPE_DATA, (uint64_t)n);
     /* Wake epoll/poll sleepers — pipe now readable */
@@ -92,8 +90,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
     if (!t) return -EAGAIN;
 
     for (;;) {
-        uint64_t irqf;
-        spin_lock_irq(&pp->lock, &irqf);
+        mutex_lock(&pp->lock);
         /* Re-check under lock — data may have arrived */
         if (pp->count > 0) {
             size_t n = count > (size_t)pp->count ? (size_t)pp->count : count;
@@ -106,17 +103,17 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
             /* Wake blocked writer */
             thread_t *writer = pp->blocked_writer;
             pp->blocked_writer = 0;
-            spin_unlock_irq(&pp->lock, irqf);
+            mutex_unlock(&pp->lock);
             if (writer)
                 event_post(writer, EQ_PIPE_DATA, (uint64_t)n);
             return (long)n;
         }
         if (!pp->write_open) {
-            spin_unlock_irq(&pp->lock, irqf);
+            mutex_unlock(&pp->lock);
             return 0; /* EOF */
         }
         pp->blocked_reader = t;
-        spin_unlock_irq(&pp->lock, irqf);
+        mutex_unlock(&pp->lock);
         /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
@@ -137,8 +134,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
     if (!t) return -EAGAIN;
 
     for (;;) {
-        uint64_t irqf;
-        spin_lock_irq(&pp->lock, &irqf);
+        mutex_lock(&pp->lock);
         /* Re-check under lock */
         if (pp->count < PIPE_BUF_SIZE) {
             size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
@@ -152,17 +148,17 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
             /* Wake blocked reader */
             thread_t *reader = pp->blocked_reader;
             pp->blocked_reader = 0;
-            spin_unlock_irq(&pp->lock, irqf);
+            mutex_unlock(&pp->lock);
             if (reader)
                 event_post(reader, EQ_PIPE_DATA, (uint64_t)n);
             return (long)n;
         }
         if (!pp->read_open) {
-            spin_unlock_irq(&pp->lock, irqf);
+            mutex_unlock(&pp->lock);
             return send_sigpipe();
         }
         pp->blocked_writer = t;
-        spin_unlock_irq(&pp->lock, irqf);
+        mutex_unlock(&pp->lock);
         /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
@@ -186,7 +182,7 @@ long do_pipe2(int *fds, int flags) {
     pp->read_open = pp->write_open = 1;
     pp->blocked_reader = 0;
     pp->blocked_writer = 0;
-    pp->lock = (spinlock_t)SPINLOCK_INIT;
+    pp->lock = (mutex_t)MUTEX_INIT;
 
     process_t *p = proc_current();
     if (!p) { slab_free(&pipe_slab, pp); return -EFAULT; }
@@ -241,8 +237,7 @@ long pipe_close(fd_entry_t *fde) {
     struct pipe *pp = pipe_from_fd(fde, &is_write);
     if (!pp) return -EBADF;
 
-    uint64_t flags;
-    spin_lock_irq(&pp->lock, &flags);
+    mutex_lock(&pp->lock);
     if (is_write) { if (pp->write_open > 0) pp->write_open--; }
     else          {
         if (pp->read_open > 0) pp->read_open--;
@@ -260,7 +255,7 @@ long pipe_close(fd_entry_t *fde) {
         writer = pp->blocked_writer;
         pp->blocked_writer = 0;
     }
-    spin_unlock_irq(&pp->lock, flags);
+    mutex_unlock(&pp->lock);
 
     if (reader)
         event_post(reader, EQ_PIPE_CLOSED, 0);
@@ -313,11 +308,10 @@ void fd_obj_incref(int fde_type, void *fde_obj) {
         fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
         struct pipe *pp = pipe_from_fd(&tmp, &is_write);
         if (pp) {
-            uint64_t flags;
-            spin_lock_irq(&pp->lock, &flags);
+            mutex_lock(&pp->lock);
             if (is_write) pp->write_open++;
             else          pp->read_open++;
-            spin_unlock_irq(&pp->lock, flags);
+            mutex_unlock(&pp->lock);
         }
     }
     if (fde_type == FD_SOCKET) {
@@ -447,8 +441,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
         if (tfd->armed && tfd->expire_tsc) {
             uint64_t now_tsc = timer_tsc_now();
             if (now_tsc >= tfd->expire_tsc) {
-                uint64_t irqf;
-                spin_lock_irq(&tfd->lock, &irqf);
+                mutex_lock(&tfd->lock);
                 while (tfd->armed && tfd->expire_tsc && now_tsc >= tfd->expire_tsc) {
                     tfd->expirations++;
                     if (tfd->interval_tsc > 0) {
@@ -459,7 +452,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
                         tfd->expire_tsc = 0;
                     }
                 }
-                spin_unlock_irq(&tfd->lock, irqf);
+                mutex_unlock(&tfd->lock);
             }
         }
         if ((interest & EPOLLIN) && tfd->expirations > 0) ready |= EPOLLIN;

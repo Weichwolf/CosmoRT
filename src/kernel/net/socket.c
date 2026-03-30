@@ -8,7 +8,7 @@
 #include "hw/serial.h"
 #include "core/timer.h"
 #include "sys/syscall.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 #include "memops.h"
 #include "config.h"
 #include "core/percpu.h"
@@ -37,7 +37,7 @@ struct k_sockaddr_in {
 static socket_t sock_pool[SOCK_SLAB_CAP];
 slab_t sock_slab;
 socket_t *sock_active_head;
-static spinlock_t sock_lock = SPINLOCK_INIT;
+static mutex_t sock_lock = MUTEX_INIT;
 static int sock_slab_inited;
 
 static void sock_slab_ensure_init(void) {
@@ -65,25 +65,23 @@ static void sock_list_del(socket_t *s) {
 }
 
 socket_t *sock_alloc(void) {
-    uint64_t flags;
-    spin_lock_irq(&sock_lock, &flags);
+    mutex_lock(&sock_lock);
     sock_slab_ensure_init();
     socket_t *s = (socket_t *)slab_alloc(&sock_slab);
     if (s) {
         s->state = SOCK_CREATED;
         sock_list_add(s);
     }
-    spin_unlock_irq(&sock_lock, flags);
+    mutex_unlock(&sock_lock);
     return s;
 }
 
 void sock_free(socket_t *s) {
     if (!s) return;
-    uint64_t flags;
-    spin_lock_irq(&sock_lock, &flags);
+    mutex_lock(&sock_lock);
     sock_list_del(s);
     slab_free(&sock_slab, s);
-    spin_unlock_irq(&sock_lock, flags);
+    mutex_unlock(&sock_lock);
 }
 
 static socket_t *sock_from_fd(int fd) {
@@ -529,8 +527,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
         if (random_get(&rnd, sizeof(rnd)) < 0)
             rnd = (uint16_t)(timer_ms() & 0xFFFF);
         /* Try up to 128 random ephemeral ports (49152-65535) */
-        uint64_t lflags;
-        spin_lock_irq(&sock_lock, &lflags);
+        mutex_lock(&sock_lock);
         for (int attempt = 0; attempt < 128; attempt++) {
             uint16_t port_host = (uint16_t)(49152 + ((rnd + attempt) & 0x3FFF));
             uint16_t port_be = bswap16(port_host);
@@ -544,32 +541,31 @@ long do_bind(int fd, const void *addr, int addrlen) {
                 s->local_port = port_be;
                 if (s->is_dgram) {
                     s->udp_local_port = port_host;
-                    spin_unlock_irq(&sock_lock, lflags);
+                    mutex_unlock(&sock_lock);
                     udp_bind(port_host);
                     return 0;
                 }
-                spin_unlock_irq(&sock_lock, lflags);
+                mutex_unlock(&sock_lock);
                 return 0;
             }
         }
-        spin_unlock_irq(&sock_lock, lflags);
+        mutex_unlock(&sock_lock);
         return -EADDRINUSE;
     }
 
     /* Check for port conflict (unless SO_REUSEADDR) */
-    uint64_t lflags;
-    spin_lock_irq(&sock_lock, &lflags);
+    mutex_lock(&sock_lock);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
         if (o == s) continue;
         if (o->local_port == k_addr.sin_port &&
             (o->local_ip == k_addr.sin_addr || k_addr.sin_addr == 0 || o->local_ip == 0)) {
             if (!(s->sockflags & SOCKF_REUSEADDR)) {
-                spin_unlock_irq(&sock_lock, lflags);
+                mutex_unlock(&sock_lock);
                 return -EADDRINUSE;
             }
         }
     }
-    spin_unlock_irq(&sock_lock, lflags);
+    mutex_unlock(&sock_lock);
 
     s->local_ip = k_addr.sin_addr;
     s->local_port = k_addr.sin_port;
@@ -627,8 +623,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
     if (ls->state != SOCK_LISTENING) return -EINVAL;
 
     /* Check accept queue first (pre-queued connections) */
-    uint64_t flags;
-    spin_lock_irq(&sock_lock, &flags);
+    mutex_lock(&sock_lock);
     if (ls->accept_count > 0) {
         accept_conn_t ac;
         kmemcpy(&ac, &ls->accept_q[ls->accept_head], sizeof(accept_conn_t));
@@ -636,7 +631,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
         ls->accept_count--;
         uint32_t ls_local_ip = ls->local_ip;
         uint16_t ls_local_port = ls->local_port;
-        spin_unlock_irq(&sock_lock, flags);
+        mutex_unlock(&sock_lock);
 
         socket_t *ns = sock_alloc();
         if (!ns) return -EMFILE;
@@ -666,7 +661,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
         }
         return newfd;
     }
-    spin_unlock_irq(&sock_lock, flags);
+    mutex_unlock(&sock_lock);
 
     /* Non-blocking: return EAGAIN immediately if no pending connection */
     int nonblock = 0;

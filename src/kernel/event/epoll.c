@@ -9,7 +9,6 @@
 #include "core/percpu.h"
 #include "hw/serial.h"
 #include "mm/slab.h"
-#include "spinlock.h"
 #include "core/timer.h"
 #include "event/fd.h"
 #include "config.h"
@@ -38,7 +37,7 @@ typedef struct {
     epoll_entry_t entries[EPOLL_MAX_FDS];
     int           count;
     int           refcount;
-    spinlock_t    lock;
+    mutex_t       lock;
 } epoll_t;
 
 static epoll_t epoll_pool[EPOLL_POOL_MAX];
@@ -66,7 +65,7 @@ long do_epoll_create1(int flags) {
 
     ep->count = 0;
     ep->refcount = 1;
-    ep->lock = (spinlock_t)SPINLOCK_INIT;
+    ep->lock = (mutex_t)MUTEX_INIT;
 
     int fd = fd_alloc(&p->fds, FD_EPOLL, ep, O_RDWR);
     if (fd < 0) {
@@ -93,26 +92,25 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         if (!tgt || tgt->type == FD_NONE) return -EBADF;
     }
 
-    uint64_t irqf;
-    spin_lock_irq(&ep->lock, &irqf);
+    mutex_lock(&ep->lock);
 
     switch (op) {
     case EPOLL_CTL_ADD: {
         if (!event) {
-            spin_unlock_irq(&ep->lock, irqf);
+            mutex_unlock(&ep->lock);
             return -EFAULT;
         }
         struct epoll_event kev;
         { int r = copy_from_user(&kev, event, sizeof(kev));
-          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
+          if (r) { mutex_unlock(&ep->lock); return r; } }
         for (int i = 0; i < ep->count; i++) {
             if (ep->entries[i].fd == fd) {
-                spin_unlock_irq(&ep->lock, irqf);
+                mutex_unlock(&ep->lock);
                 return -EEXIST;
             }
         }
         if (ep->count >= EPOLL_MAX_FDS) {
-            spin_unlock_irq(&ep->lock, irqf);
+            mutex_unlock(&ep->lock);
             return -ENOMEM;
         }
         ep->entries[ep->count].fd     = fd;
@@ -125,12 +123,12 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     }
     case EPOLL_CTL_MOD: {
         if (!event) {
-            spin_unlock_irq(&ep->lock, irqf);
+            mutex_unlock(&ep->lock);
             return -EFAULT;
         }
         struct epoll_event kev;
         { int r = copy_from_user(&kev, event, sizeof(kev));
-          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
+          if (r) { mutex_unlock(&ep->lock); return r; } }
         int found = 0;
         for (int i = 0; i < ep->count; i++) {
             if (ep->entries[i].fd == fd) {
@@ -143,7 +141,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
             }
         }
         if (!found) {
-            spin_unlock_irq(&ep->lock, irqf);
+            mutex_unlock(&ep->lock);
             return -ENOENT;
         }
         break;
@@ -154,7 +152,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
             if (ep->entries[i].fd == fd) { found = i; break; }
         }
         if (found < 0) {
-            spin_unlock_irq(&ep->lock, irqf);
+            mutex_unlock(&ep->lock);
             return -ENOENT;
         }
         ep->entries[found] = ep->entries[ep->count - 1];
@@ -162,11 +160,11 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         break;
     }
     default:
-        spin_unlock_irq(&ep->lock, irqf);
+        mutex_unlock(&ep->lock);
         return -EINVAL;
     }
 
-    spin_unlock_irq(&ep->lock, irqf);
+    mutex_unlock(&ep->lock);
     return 0;
 }
 
@@ -203,8 +201,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
     for (;;) {
         /* Scan entries under lock. EPOLLET state must be updated atomically. */
-        uint64_t irqf;
-        spin_lock_irq(&ep->lock, &irqf);
+        mutex_lock(&ep->lock);
 
         int nready = 0;
         for (int i = 0; i < ep->count && nready < maxevents; i++) {
@@ -232,7 +229,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
             }
         }
 
-        spin_unlock_irq(&ep->lock, irqf);
+        mutex_unlock(&ep->lock);
 
         if (nready > 0) { ct->wake_at_tsc = 0; ct->wake_at = 0; return nready; }
         if (timeout == 0) return 0;

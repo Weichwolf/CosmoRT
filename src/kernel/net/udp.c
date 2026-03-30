@@ -6,6 +6,7 @@
 
 #include "net/net.h"
 #include "net/net_util.h"
+#include "core/mutex.h"
 #include "hw/serial.h"
 #include "core/timer.h"
 #include "core/event_queue.h"
@@ -27,7 +28,7 @@ static void udp_slab_ensure_init(void) {
 /* ── Hash Table (port → chain) ───────────────────────── */
 
 static udp_sock_t *udp_hash[UDP_HASH_SIZE];
-static spinlock_t  udp_table_lock = SPINLOCK_INIT;
+static mutex_t     udp_table_lock = MUTEX_INIT;
 
 /* ── Lookup (lock-free, called from RT-Core hot path) ── */
 
@@ -44,27 +45,25 @@ udp_sock_t *udp_find(uint16_t port) {
 /* ── Bind / Unbind ───────────────────────────────────── */
 
 udp_sock_t *udp_bind(uint16_t port) {
-    uint64_t flags;
-
     udp_slab_ensure_init();
 
-    /* Pre-alloc outside table lock to avoid nested spinlocks */
+    /* Pre-alloc outside table lock to avoid nested locks */
     udp_sock_t *fresh = (udp_sock_t *)slab_alloc(&udp_slab);
 
-    spin_lock_irq(&udp_table_lock, &flags);
+    mutex_lock(&udp_table_lock);
 
     /* Duplicate check in hash chain */
     uint32_t idx = port & (UDP_HASH_SIZE - 1);
     for (udp_sock_t *s = udp_hash[idx]; s; s = s->hash_next) {
         if (s->port == port) {
-            spin_unlock_irq(&udp_table_lock, flags);
+            mutex_unlock(&udp_table_lock);
             if (fresh) slab_free(&udp_slab, fresh);
             return s; /* already bound — reuse */
         }
     }
 
     if (!fresh) {
-        spin_unlock_irq(&udp_table_lock, flags);
+        mutex_unlock(&udp_table_lock);
         return 0; /* pool exhausted */
     }
 
@@ -76,14 +75,13 @@ udp_sock_t *udp_bind(uint16_t port) {
     fresh->hash_next = udp_hash[idx];
     __atomic_store_n(&udp_hash[idx], fresh, __ATOMIC_RELEASE);
 
-    spin_unlock_irq(&udp_table_lock, flags);
+    mutex_unlock(&udp_table_lock);
     return fresh;
 }
 
 void udp_unbind(udp_sock_t *s) {
     if (!s) return;
-    uint64_t flags;
-    spin_lock_irq(&udp_table_lock, &flags);
+    mutex_lock(&udp_table_lock);
 
     uint32_t idx = s->port & (UDP_HASH_SIZE - 1);
     udp_sock_t **pp = &udp_hash[idx];
@@ -101,7 +99,7 @@ void udp_unbind(udp_sock_t *s) {
     s->q.count = 0;
     s->wait_thread = 0;
 
-    spin_unlock_irq(&udp_table_lock, flags);
+    mutex_unlock(&udp_table_lock);
 
     slab_free(&udp_slab, s);
 }

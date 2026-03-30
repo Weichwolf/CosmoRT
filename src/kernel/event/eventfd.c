@@ -3,7 +3,6 @@
 #include "event/epoll.h"
 #include "proc/process.h"
 #include "mm/slab.h"
-#include "spinlock.h"
 #include "event/fd.h"
 
 /* User-pointer validation + copy helpers */
@@ -32,7 +31,7 @@ long do_eventfd2(unsigned int initval, int flags) {
     efd->counter = initval;
     efd->flags = flags;
     efd->refcount = 1;
-    efd->lock = (spinlock_t)SPINLOCK_INIT;
+    efd->lock = (mutex_t)MUTEX_INIT;
 
     /* EFD_CLOEXEC/EFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
     int fd_flags = O_RDWR;
@@ -52,15 +51,14 @@ long eventfd_read(void *obj, void *buf, long count) {
     eventfd_t *efd = (eventfd_t *)obj;
     if (!efd) return -EBADF;
 
-    uint64_t irqf;
-    spin_lock_irq(&efd->lock, &irqf);
+    mutex_lock(&efd->lock);
     if (efd->counter == 0) {
-        spin_unlock_irq(&efd->lock, irqf);
+        mutex_unlock(&efd->lock);
         return -EAGAIN;
     }
     uint64_t val = efd->counter;
     efd->counter = 0;
-    spin_unlock_irq(&efd->lock, irqf);
+    mutex_unlock(&efd->lock);
 
     copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);
@@ -74,14 +72,13 @@ long eventfd_write(void *obj, const void *buf, long count) {
     uint64_t val;
     copy_from_user(&val, buf, sizeof(val)); /* buf validated by do_write caller */
 
-    uint64_t irqf;
-    spin_lock_irq(&efd->lock, &irqf);
+    mutex_lock(&efd->lock);
     if (efd->counter > 0xFFFFFFFFFFFFFFFEULL - val) {
-        spin_unlock_irq(&efd->lock, irqf);
+        mutex_unlock(&efd->lock);
         return -EAGAIN;
     }
     efd->counter += val;
-    spin_unlock_irq(&efd->lock, irqf);
+    mutex_unlock(&efd->lock);
 
     epoll_wake_all();
     return (long)sizeof(val);

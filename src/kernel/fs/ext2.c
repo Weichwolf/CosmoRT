@@ -9,7 +9,7 @@
 #include "fs/bcache.h"
 #include "memops.h"
 #include "hw/serial.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 #include "sys/syscall.h"  /* error codes */
 #include "core/timer.h"
 
@@ -24,7 +24,7 @@ static uint32_t inode_size;            /* on-disk inode size (128 or 256) */
 static uint32_t desc_per_block;        /* group descriptors per block */
 static uint32_t sb_block;              /* block containing superblock */
 static int mounted;
-static spinlock_t fs_lock = SPINLOCK_INIT;
+static mutex_t fs_lock = MUTEX_INIT;
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -532,11 +532,10 @@ int ext2_truncate(uint32_t ino, size_t new_size) {
 uint32_t ext2_block_alloc(void) {
     if (!mounted) return 0;
 
-    uint64_t flags;
-    spin_lock_irq(&fs_lock, &flags);
+    mutex_lock(&fs_lock);
 
     if (sb.s_free_blocks_count == 0) {
-        spin_unlock_irq(&fs_lock, flags);
+        mutex_unlock(&fs_lock);
         return 0;
     }
 
@@ -576,7 +575,7 @@ uint32_t ext2_block_alloc(void) {
                         /* Update superblock */
                         sb.s_free_blocks_count--;
 
-                        spin_unlock_irq(&fs_lock, flags);
+                        mutex_unlock(&fs_lock);
 
                         /* Zero the allocated block */
                         struct bcache_entry *zbe = ext2_get_block(block_nr);
@@ -594,7 +593,7 @@ uint32_t ext2_block_alloc(void) {
         }
     }
 
-    spin_unlock_irq(&fs_lock, flags);
+    mutex_unlock(&fs_lock);
     return 0;
 }
 
@@ -607,12 +606,11 @@ void ext2_block_free(uint32_t block) {
 
     if (group >= group_count) return;
 
-    uint64_t flags;
-    spin_lock_irq(&fs_lock, &flags);
+    mutex_lock(&fs_lock);
 
     struct ext2_group_desc gd;
     if (read_group_desc(group, &gd) < 0) {
-        spin_unlock_irq(&fs_lock, flags);
+        mutex_unlock(&fs_lock);
         return;
     }
 
@@ -632,7 +630,7 @@ void ext2_block_free(uint32_t block) {
         sb.s_free_blocks_count++;
     }
 
-    spin_unlock_irq(&fs_lock, flags);
+    mutex_unlock(&fs_lock);
 }
 
 /* ── Inode allocation ─────────────────────────────── */
@@ -640,8 +638,7 @@ void ext2_block_free(uint32_t block) {
 uint32_t ext2_inode_alloc(int is_dir) {
     if (!mounted) return 0;
 
-    uint64_t flags;
-    spin_lock_irq(&fs_lock, &flags);
+    mutex_lock(&fs_lock);
 
     for (uint32_t g = 0; g < group_count; g++) {
         struct ext2_group_desc gd;
@@ -672,7 +669,7 @@ uint32_t ext2_inode_alloc(int is_dir) {
 
                     sb.s_free_inodes_count--;
 
-                    spin_unlock_irq(&fs_lock, flags);
+                    mutex_unlock(&fs_lock);
 
                     /* Zero the inode */
                     struct ext2_inode zi;
@@ -686,7 +683,7 @@ uint32_t ext2_inode_alloc(int is_dir) {
         bcache_put(be);
     }
 
-    spin_unlock_irq(&fs_lock, flags);
+    mutex_unlock(&fs_lock);
     return 0;
 }
 
@@ -702,12 +699,11 @@ void ext2_inode_free(uint32_t ino) {
     uint32_t group = (ino - 1) / sb.s_inodes_per_group;
     uint32_t index = (ino - 1) % sb.s_inodes_per_group;
 
-    uint64_t flags;
-    spin_lock_irq(&fs_lock, &flags);
+    mutex_lock(&fs_lock);
 
     struct ext2_group_desc gd;
     if (read_group_desc(group, &gd) < 0) {
-        spin_unlock_irq(&fs_lock, flags);
+        mutex_unlock(&fs_lock);
         return;
     }
 
@@ -733,7 +729,7 @@ void ext2_inode_free(uint32_t ino) {
     zi.i_dtime = now_sec();
     ext2_inode_write(ino, &zi);
 
-    spin_unlock_irq(&fs_lock, flags);
+    mutex_unlock(&fs_lock);
 }
 
 /* ── Directory operations ─────────────────────────── */

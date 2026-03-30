@@ -4,7 +4,7 @@
 #include "mm/page_alloc.h"
 #include "memops.h"
 #include "hw/serial.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 
 /* Forward declarations for block driver */
 extern int blk_read(uint64_t block, void *buf);
@@ -20,7 +20,7 @@ static struct bcache_entry *hash_table[HASH_BUCKETS];
 
 /* LRU list: head = most recently used, tail = least recently used */
 static struct bcache_entry lru_head;  /* sentinel */
-static spinlock_t cache_lock = SPINLOCK_INIT;
+static mutex_t cache_lock = MUTEX_INIT;
 
 /* ── LRU helpers ──────────────────────────────────── */
 
@@ -133,8 +133,7 @@ static struct bcache_entry *evict_one(void) {
 /* ── Get (read + pin) ─────────────────────────────── */
 
 struct bcache_entry *bcache_get(uint64_t block) {
-    uint64_t flags;
-    spin_lock_irq(&cache_lock, &flags);
+    mutex_lock(&cache_lock);
 
     /* Check cache */
     struct bcache_entry *e = hash_find(block);
@@ -143,14 +142,14 @@ struct bcache_entry *bcache_get(uint64_t block) {
         /* Move to front of LRU */
         lru_remove(e);
         lru_push_front(e);
-        spin_unlock_irq(&cache_lock, flags);
+        mutex_unlock(&cache_lock);
         return e;
     }
 
     /* Cache miss — evict and read */
     e = evict_one();
     if (!e) {
-        spin_unlock_irq(&cache_lock, flags);
+        mutex_unlock(&cache_lock);
         return 0;
     }
 
@@ -161,17 +160,17 @@ struct bcache_entry *bcache_get(uint64_t block) {
     lru_push_front(e);
 
     /* Read from disk (drop lock during I/O) */
-    spin_unlock_irq(&cache_lock, flags);
+    mutex_unlock(&cache_lock);
 
     if (blk_read(block, e->data) < 0) {
         /* Read failed — remove from cache */
-        spin_lock_irq(&cache_lock, &flags);
+        mutex_lock(&cache_lock);
         hash_remove(e);
         lru_remove(e);
         e->block_nr = BCACHE_INVALID;
         e->refcount = 0;
         lru_push_front(e);
-        spin_unlock_irq(&cache_lock, flags);
+        mutex_unlock(&cache_lock);
         return 0;
     }
 
@@ -182,10 +181,9 @@ struct bcache_entry *bcache_get(uint64_t block) {
 
 void bcache_put(struct bcache_entry *e) {
     if (!e) return;
-    uint64_t flags;
-    spin_lock_irq(&cache_lock, &flags);
+    mutex_lock(&cache_lock);
     if (e->refcount > 0) e->refcount--;
-    spin_unlock_irq(&cache_lock, flags);
+    mutex_unlock(&cache_lock);
 }
 
 /* ── Mark dirty ───────────────────────────────────── */
@@ -197,8 +195,7 @@ void bcache_mark_dirty(struct bcache_entry *e) {
 /* ── Sync all dirty ───────────────────────────────── */
 
 void bcache_sync(void) {
-    uint64_t flags;
-    spin_lock_irq(&cache_lock, &flags);
+    mutex_lock(&cache_lock);
 
     for (int i = 0; i < BCACHE_SIZE; i++) {
         if (entries[i].dirty && entries[i].block_nr != BCACHE_INVALID) {
@@ -207,7 +204,7 @@ void bcache_sync(void) {
         }
     }
 
-    spin_unlock_irq(&cache_lock, flags);
+    mutex_unlock(&cache_lock);
 }
 
 /* ── Convenience: write through cache ─────────────── */

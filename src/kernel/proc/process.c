@@ -12,7 +12,7 @@ slab_t proc_slab;
 slab_t thread_slab;
 static int next_pid = 1;
 static int next_tid = 1;
-spinlock_t pid_lock = SPINLOCK_INIT;
+mutex_t pid_lock = MUTEX_INIT;
 
 /* O(1) lookup tables — indexed by PID/TID, entries set at alloc, cleared at free */
 process_t *pid_table[PID_TABLE_MAX];
@@ -48,8 +48,7 @@ int proc_count_alive(void) {
 thread_t *thread_alloc(void) {
     thread_t *t = (thread_t *)slab_alloc(&thread_slab);
     if (t) {
-        uint64_t flags;
-        spin_lock_irq(&pid_lock, &flags);
+        mutex_lock(&pid_lock);
         /* Find free TID slot (skip collisions from wrapping) */
         int tid = -1;
         for (int try = 0; try < TID_TABLE_MAX - 2; try++) {
@@ -58,13 +57,13 @@ thread_t *thread_alloc(void) {
             if (!tid_table[candidate]) { tid = candidate; break; }
         }
         if (tid < 0) {
-            spin_unlock_irq(&pid_lock, flags);
+            mutex_unlock(&pid_lock);
             slab_free(&thread_slab, t);
             return 0; /* TID table full */
         }
         t->tid = tid;
         tid_table[tid] = t;
-        spin_unlock_irq(&pid_lock, flags);
+        mutex_unlock(&pid_lock);
         event_queue_init(&t->eq);
     }
     return t;
@@ -82,8 +81,7 @@ void thread_free(thread_t *t) {
 process_t *proc_alloc(void) {
     process_t *p = (process_t *)slab_alloc(&proc_slab);
     if (p) {
-        uint64_t flags;
-        spin_lock_irq(&pid_lock, &flags);
+        mutex_lock(&pid_lock);
         /* Find free PID slot (skip collisions from wrapping) */
         int pid = -1;
         for (int try = 0; try < PID_TABLE_MAX - 2; try++) {
@@ -92,13 +90,13 @@ process_t *proc_alloc(void) {
             if (!pid_table[candidate]) { pid = candidate; break; }
         }
         if (pid < 0) {
-            spin_unlock_irq(&pid_lock, flags);
+            mutex_unlock(&pid_lock);
             slab_free(&proc_slab, p);
             return 0; /* PID table full */
         }
         p->pid = (uint32_t)pid;
         pid_table[pid] = p;
-        spin_unlock_irq(&pid_lock, flags);
+        mutex_unlock(&pid_lock);
         p->state = PROC_ALIVE;
     }
     return p;

@@ -3,7 +3,6 @@
 #include "event/epoll.h"
 #include "proc/process.h"
 #include "mm/slab.h"
-#include "spinlock.h"
 #include "core/timer.h"
 #include "event/fd.h"
 
@@ -39,7 +38,7 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->armed = 0;
     tfd->flags = flags;
     tfd->refcount = 1;
-    tfd->lock = (spinlock_t)SPINLOCK_INIT;
+    tfd->lock = (mutex_t)MUTEX_INIT;
 
     /* TFD_CLOEXEC/TFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
     int fd_flags = O_RDWR;
@@ -78,8 +77,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
     struct k_itimerspec knew;
     { int r = copy_from_user(&knew, new_value, sizeof(knew)); if (r) return r; }
 
-    uint64_t irqf;
-    spin_lock_irq(&tfd->lock, &irqf);
+    mutex_lock(&tfd->lock);
 
     if (old_value) {
         struct k_itimerspec kold;
@@ -121,7 +119,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
         tfd->armed = 1;
     }
 
-    spin_unlock_irq(&tfd->lock, irqf);
+    mutex_unlock(&tfd->lock);
     return 0;
 }
 
@@ -141,8 +139,7 @@ long timerfd_read(void *obj, void *buf, long count) {
     timerfd_t *tfd = (timerfd_t *)obj;
     if (!tfd) return -EBADF;
 
-    uint64_t irqf;
-    spin_lock_irq(&tfd->lock, &irqf);
+    mutex_lock(&tfd->lock);
 
     if (tfd->armed) {
         uint64_t now_tsc = timer_tsc_now();
@@ -159,13 +156,13 @@ long timerfd_read(void *obj, void *buf, long count) {
     }
 
     if (tfd->expirations == 0) {
-        spin_unlock_irq(&tfd->lock, irqf);
+        mutex_unlock(&tfd->lock);
         return -EAGAIN;
     }
 
     uint64_t val = tfd->expirations;
     tfd->expirations = 0;
-    spin_unlock_irq(&tfd->lock, irqf);
+    mutex_unlock(&tfd->lock);
 
     copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);

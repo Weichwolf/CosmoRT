@@ -4,6 +4,7 @@
 #define PROC_INTERNAL_H
 
 #include "proc/process.h"
+#include "core/mutex.h"
 #include "mm/paging.h"
 #include "hw/serial.h"
 #include "mm/page_alloc.h"
@@ -36,7 +37,7 @@
 /* Shared state — defined in process.c */
 extern slab_t proc_slab;
 extern slab_t thread_slab;
-extern spinlock_t pid_lock;
+extern mutex_t pid_lock;
 extern process_t *pid_table[PID_TABLE_MAX];
 extern thread_t  *tid_table[TID_TABLE_MAX];
 extern uint64_t pml4[];

@@ -17,7 +17,7 @@
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 #include "mm/slab.h"
 #include "hw/serial.h"
 #include "config.h"
@@ -44,7 +44,7 @@ static slab_t waiter_slab;
 
 static struct {
     futex_waiter_t *head;
-    spinlock_t      lock;
+    mutex_t         lock;
 } futex_hash[FUTEX_HASH_SIZE];
 
 void futex_init(void) {
@@ -52,7 +52,7 @@ void futex_init(void) {
               (int)sizeof(futex_waiter_t), FUTEX_WAITER_MAX);
     for (int i = 0; i < FUTEX_HASH_SIZE; i++) {
         futex_hash[i].head = 0;
-        futex_hash[i].lock = (spinlock_t)SPINLOCK_INIT;
+        futex_hash[i].lock = (mutex_t)MUTEX_INIT;
     }
     serial_puts("futex: init (");
     char buf[4]; int bi = 0, v = FUTEX_HASH_SIZE;
@@ -74,8 +74,7 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
  * Returns 1 if found and removed, 0 if not found. */
 static int futex_remove_waiter(uint64_t addr, uint32_t pid, thread_t *t) {
     int bucket = hash_uaddr(addr, pid);
-    uint64_t flags;
-    spin_lock_irq(&futex_hash[bucket].lock, &flags);
+    mutex_lock(&futex_hash[bucket].lock);
 
     futex_waiter_t **pp = &futex_hash[bucket].head;
     while (*pp) {
@@ -83,13 +82,13 @@ static int futex_remove_waiter(uint64_t addr, uint32_t pid, thread_t *t) {
         if (w->uaddr == addr && w->pid == pid && w->thread == t) {
             *pp = w->next;
             slab_free(&waiter_slab, w);
-            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            mutex_unlock(&futex_hash[bucket].lock);
             return 1;
         }
         pp = &w->next;
     }
 
-    spin_unlock_irq(&futex_hash[bucket].lock, flags);
+    mutex_unlock(&futex_hash[bucket].lock);
     return 0;
 }
 
@@ -185,19 +184,18 @@ static long futex_wait_pid(uint32_t *uaddr, uint32_t val, int timeout_ms, uint32
 
     /* Add to wait queue under lock */
     int bucket = hash_uaddr(addr, pid);
-    uint64_t flags;
-    spin_lock_irq(&futex_hash[bucket].lock, &flags);
+    mutex_lock(&futex_hash[bucket].lock);
 
     /* Re-check under lock — value may have changed */
     if (__atomic_load_n(uaddr, __ATOMIC_ACQUIRE) != val) {
-        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+        mutex_unlock(&futex_hash[bucket].lock);
         return -EAGAIN;
     }
 
     /* Allocate waiter entry */
     futex_waiter_t *w = (futex_waiter_t *)slab_alloc(&waiter_slab);
     if (!w) {
-        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+        mutex_unlock(&futex_hash[bucket].lock);
         return -ENOMEM;
     }
     w->thread = t;
@@ -206,7 +204,7 @@ static long futex_wait_pid(uint32_t *uaddr, uint32_t val, int timeout_ms, uint32
     w->next = futex_hash[bucket].head;
     futex_hash[bucket].head = w;
 
-    spin_unlock_irq(&futex_hash[bucket].lock, flags);
+    mutex_unlock(&futex_hash[bucket].lock);
 
     /* Block via event_wait — futex_wake will event_post us.
      * On wake, syscall restarts: futex_wait re-enters, drains the event,
@@ -236,8 +234,7 @@ static long futex_wake_pid(uint32_t *uaddr, uint32_t max_wake, uint32_t pid) {
         serial_putchar('\n');
     }
 
-    uint64_t flags;
-    spin_lock_irq(&futex_hash[bucket].lock, &flags);
+    mutex_lock(&futex_hash[bucket].lock);
 
     futex_waiter_t **pp = &futex_hash[bucket].head;
     while (*pp && (uint32_t)woken < max_wake) {
@@ -254,7 +251,7 @@ static long futex_wake_pid(uint32_t *uaddr, uint32_t max_wake, uint32_t pid) {
         }
     }
 
-    spin_unlock_irq(&futex_hash[bucket].lock, flags);
+    mutex_unlock(&futex_hash[bucket].lock);
     if (futex_trace) {
         serial_puts("FK="); serial_hex64(woken); serial_putchar('\n');
     }
@@ -296,8 +293,7 @@ static long futex_lock_pi_pid(uint32_t *uaddr, uint32_t pid) {
     /* Block via wait queue */
     {
         int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
-        uint64_t flags;
-        spin_lock_irq(&futex_hash[bucket].lock, &flags);
+        mutex_lock(&futex_hash[bucket].lock);
 
         /* Boost owner under lock so it can't be freed between find and boost */
         uint32_t owner_tid = old & FUTEX_TID_MASK;
@@ -308,18 +304,18 @@ static long futex_lock_pi_pid(uint32_t *uaddr, uint32_t pid) {
         /* Re-check before blocking — lock may have been released */
         old = __sync_val_compare_and_swap(uaddr, 0, tid);
         if (old == 0) {
-            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            mutex_unlock(&futex_hash[bucket].lock);
             return 0;
         }
         old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
         if (old == FUTEX_WAITERS) {
-            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            mutex_unlock(&futex_hash[bucket].lock);
             return 0;
         }
 
         futex_waiter_t *w = (futex_waiter_t *)slab_alloc(&waiter_slab);
         if (!w) {
-            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            mutex_unlock(&futex_hash[bucket].lock);
             return -ENOMEM;
         }
         w->thread = self;
@@ -328,13 +324,13 @@ static long futex_lock_pi_pid(uint32_t *uaddr, uint32_t pid) {
         w->next = futex_hash[bucket].head;
         futex_hash[bucket].head = w;
 
-        spin_unlock_irq(&futex_hash[bucket].lock, flags);
+        mutex_unlock(&futex_hash[bucket].lock);
 
         event_t ev;
         int _wr = event_wait(&self->eq, &ev, -1);
         if (_wr == -4) {
             /* Remove waiter before returning EINTR */
-            spin_lock_irq(&futex_hash[bucket].lock, &flags);
+            mutex_lock(&futex_hash[bucket].lock);
             futex_waiter_t **rpp = &futex_hash[bucket].head;
             while (*rpp) {
                 if ((*rpp)->thread == self) {
@@ -345,7 +341,7 @@ static long futex_lock_pi_pid(uint32_t *uaddr, uint32_t pid) {
                 }
                 rpp = &(*rpp)->next;
             }
-            spin_unlock_irq(&futex_hash[bucket].lock, flags);
+            mutex_unlock(&futex_hash[bucket].lock);
             return -EINTR;
         }
     }
@@ -425,28 +421,27 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
     int b2 = hash_uaddr(addr2, pid);
 
     /* Lock both buckets — ordered by index to prevent deadlock */
-    uint64_t flags;
     if (b1 == b2) {
-        spin_lock_irq(&futex_hash[b1].lock, &flags);
+        mutex_lock(&futex_hash[b1].lock);
     } else if (b1 < b2) {
-        spin_lock_irq(&futex_hash[b1].lock, &flags);
-        spin_lock(&futex_hash[b2].lock);
+        mutex_lock(&futex_hash[b1].lock);
+        mutex_lock(&futex_hash[b2].lock);
     } else {
-        spin_lock_irq(&futex_hash[b2].lock, &flags);
-        spin_lock(&futex_hash[b1].lock);
+        mutex_lock(&futex_hash[b2].lock);
+        mutex_lock(&futex_hash[b1].lock);
     }
 
     /* CMP_REQUEUE: check *uaddr1 == cmpval under lock */
     if (cmp) {
         if (__atomic_load_n(uaddr1, __ATOMIC_ACQUIRE) != cmpval) {
             if (b1 == b2) {
-                spin_unlock_irq(&futex_hash[b1].lock, flags);
+                mutex_unlock(&futex_hash[b1].lock);
             } else if (b1 < b2) {
-                spin_unlock(&futex_hash[b2].lock);
-                spin_unlock_irq(&futex_hash[b1].lock, flags);
+                mutex_unlock(&futex_hash[b2].lock);
+                mutex_unlock(&futex_hash[b1].lock);
             } else {
-                spin_unlock(&futex_hash[b1].lock);
-                spin_unlock_irq(&futex_hash[b2].lock, flags);
+                mutex_unlock(&futex_hash[b1].lock);
+                mutex_unlock(&futex_hash[b2].lock);
             }
             return -EAGAIN;
         }
@@ -488,13 +483,13 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
 
     /* Unlock in reverse order */
     if (b1 == b2) {
-        spin_unlock_irq(&futex_hash[b1].lock, flags);
+        mutex_unlock(&futex_hash[b1].lock);
     } else if (b1 < b2) {
-        spin_unlock(&futex_hash[b2].lock);
-        spin_unlock_irq(&futex_hash[b1].lock, flags);
+        mutex_unlock(&futex_hash[b2].lock);
+        mutex_unlock(&futex_hash[b1].lock);
     } else {
-        spin_unlock(&futex_hash[b1].lock);
-        spin_unlock_irq(&futex_hash[b2].lock, flags);
+        mutex_unlock(&futex_hash[b1].lock);
+        mutex_unlock(&futex_hash[b2].lock);
     }
 
     return woken + requeued;

@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "spinlock.h"
+#include "core/mutex.h"
 
 /* k_timespec, k_itimerspec, epoll_event, EPOLL_*, EFD_*, TFD_*, IN_*
  * — all from linux.h */
@@ -17,7 +17,7 @@ typedef struct {
     uint64_t   counter;
     int        flags;
     int        refcount;
-    spinlock_t lock;
+    mutex_t lock;
 } eventfd_t;
 
 /* ── timerfd_t — exposed so syscall.c can check expiration for readiness ── */
@@ -31,7 +31,7 @@ typedef struct {
     int        armed;
     int        flags;
     int        refcount;
-    spinlock_t lock;
+    mutex_t lock;
 } timerfd_t;
 
 /* Initialise epoll/eventfd/timerfd slab pools */

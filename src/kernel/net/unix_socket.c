@@ -8,7 +8,7 @@
 #include "proc/process.h"
 #include "event/fd.h"
 #include "hw/serial.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 #include "memops.h"
 #include "sys/syscall.h"
 #include "cosmort.h"
@@ -20,14 +20,13 @@ extern long send_sigpipe(void);
 /* ── Pool ─────────────────────────────────────── */
 
 static unix_socket_t usock_pool[USOCK_MAX];
-static spinlock_t usock_lock = SPINLOCK_INIT;
+static mutex_t usock_lock = MUTEX_INIT;
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
 
 static unix_socket_t *usock_alloc(void) {
-    uint64_t flags;
-    spin_lock_irq(&usock_lock, &flags);
+    mutex_lock(&usock_lock);
     for (int i = 0; i < USOCK_MAX; i++) {
         if (usock_pool[i].state == USOCK_UNUSED) {
             /* Zero the struct */
@@ -35,11 +34,11 @@ static unix_socket_t *usock_alloc(void) {
                 ((uint8_t *)&usock_pool[i])[j] = 0;
             usock_pool[i].state = USOCK_CREATED;
             usock_pool[i].refcount = 1;
-            spin_unlock_irq(&usock_lock, flags);
+            mutex_unlock(&usock_lock);
             return &usock_pool[i];
         }
     }
-    spin_unlock_irq(&usock_lock, flags);
+    mutex_unlock(&usock_lock);
     return 0;
 }
 
@@ -65,14 +64,13 @@ void usock_decref(void *obj) {
         /* Wake blocked reader on peer — they'll see EOF (no peer) */
         thread_t *reader = 0;
         if (s->peer) {
-            uint64_t irqf;
-            spin_lock_irq(&usock_lock, &irqf);
+            mutex_lock(&usock_lock);
             if (s->peer->blocked_reader) {
                 reader = (thread_t *)s->peer->blocked_reader;
                 s->peer->blocked_reader = 0;
             }
             s->peer->peer = 0;
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             s->peer = 0;
         }
         s->state = USOCK_UNUSED;
@@ -194,8 +192,7 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     s->path[path_len] = '\0';
 
     /* Check for name collision */
-    uint64_t flags;
-    spin_lock_irq(&usock_lock, &flags);
+    mutex_lock(&usock_lock);
     for (int i = 0; i < USOCK_MAX; i++) {
         if (&usock_pool[i] == s) continue;
         if (usock_pool[i].state != USOCK_UNUSED && usock_pool[i].path[0]) {
@@ -206,12 +203,12 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
                 if (s->path[j] == '\0') break;
             }
             if (match) {
-                spin_unlock_irq(&usock_lock, flags);
+                mutex_unlock(&usock_lock);
                 return -EADDRINUSE;
             }
         }
     }
-    spin_unlock_irq(&usock_lock, flags);
+    mutex_unlock(&usock_lock);
     return 0;
 }
 
@@ -288,8 +285,7 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     target[path_len] = '\0';
 
     /* Find listening socket with matching path */
-    uint64_t flags;
-    spin_lock_irq(&usock_lock, &flags);
+    mutex_lock(&usock_lock);
     unix_socket_t *listener = 0;
     for (int i = 0; i < USOCK_MAX; i++) {
         if (usock_pool[i].state != USOCK_LISTENING) continue;
@@ -301,16 +297,16 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
         if (match) { listener = &usock_pool[i]; break; }
     }
     if (!listener) {
-        spin_unlock_irq(&usock_lock, flags);
+        mutex_unlock(&usock_lock);
         return -ECONNREFUSED;
     }
     if (listener->backlog_count >= USOCK_BACKLOG_MAX) {
-        spin_unlock_irq(&usock_lock, flags);
+        mutex_unlock(&usock_lock);
         return -EAGAIN;
     }
     /* Enqueue in listener's backlog */
     listener->backlog[listener->backlog_count++] = s;
-    spin_unlock_irq(&usock_lock, flags);
+    mutex_unlock(&usock_lock);
 
     /* Connection completes when accept() dequeues us.
      * For simplicity (no blocking connect), return 0 — client
@@ -325,16 +321,15 @@ long usock_read(int fd, void *buf, long count) {
     if (!s) return -EBADF;
     if (s->state != USOCK_CONNECTED) return -ENOTCONN;
 
-    uint64_t irqf;
-    spin_lock_irq(&usock_lock, &irqf);
+    mutex_lock(&usock_lock);
     if (s->count == 0) {
         int eof = !s->peer;
-        spin_unlock_irq(&usock_lock, irqf);
+        mutex_unlock(&usock_lock);
         return eof ? 0 : -EAGAIN;
     }
 
     int n = ring_read(s, (uint8_t *)buf, (int)count);
-    spin_unlock_irq(&usock_lock, irqf);
+    mutex_unlock(&usock_lock);
 
     /* Wake epoll/poll */
     epoll_wake_all();
@@ -350,23 +345,22 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
     if (!t) return -EAGAIN;
 
     for (;;) {
-        /* Re-check under spinlock — data may have arrived */
-        uint64_t irqf;
-        spin_lock_irq(&usock_lock, &irqf);
+        /* Re-check under lock — data may have arrived */
+        mutex_lock(&usock_lock);
 
         if (s->count > 0) {
             int n = ring_read(s, (uint8_t *)buf, (int)count);
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             return (long)n;
         }
         if (!s->peer) {
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             return 0; /* EOF: peer closed */
         }
 
         /* Register as blocked reader — peer's write will event_post us */
         s->blocked_reader = t;
-        spin_unlock_irq(&usock_lock, irqf);
+        mutex_unlock(&usock_lock);
 
         /* Block via event_wait — usock_write/usock_decref will event_post */
         event_t ev;
@@ -381,14 +375,13 @@ long usock_write(int fd, const void *buf, long count) {
     if (s->state != USOCK_CONNECTED) return send_sigpipe();
 
     /* Snapshot peer under lock — peer can be NULLed by concurrent close */
-    uint64_t irqf;
-    spin_lock_irq(&usock_lock, &irqf);
+    mutex_lock(&usock_lock);
     unix_socket_t *peer = s->peer;
-    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
+    if (!peer) { mutex_unlock(&usock_lock); return send_sigpipe(); }
 
     /* Write into peer's receive buffer (under lock — protects ring) */
     int n = ring_write(peer, (const uint8_t *)buf, (int)count);
-    if (n == 0) { spin_unlock_irq(&usock_lock, irqf); return -EAGAIN; }
+    if (n == 0) { mutex_unlock(&usock_lock); return -EAGAIN; }
 
     /* Wake blocked reader on peer */
     thread_t *reader = 0;
@@ -396,7 +389,7 @@ long usock_write(int fd, const void *buf, long count) {
         reader = (thread_t *)peer->blocked_reader;
         peer->blocked_reader = 0;
     }
-    spin_unlock_irq(&usock_lock, irqf);
+    mutex_unlock(&usock_lock);
     if (reader)
         event_post(reader, EQ_SOCKET_DATA, 0);
 
@@ -412,10 +405,9 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
     if (!t) return -EAGAIN;
 
     for (;;) {
-        uint64_t irqf;
-        spin_lock_irq(&usock_lock, &irqf);
+        mutex_lock(&usock_lock);
         unix_socket_t *peer = s->peer;
-        if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
+        if (!peer) { mutex_unlock(&usock_lock); return send_sigpipe(); }
 
         int n = ring_write(peer, (const uint8_t *)buf, (int)count);
         if (n > 0) {
@@ -424,7 +416,7 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
                 reader = (thread_t *)peer->blocked_reader;
                 peer->blocked_reader = 0;
             }
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             if (reader)
                 event_post(reader, EQ_SOCKET_DATA, 0);
             epoll_wake_all();
@@ -432,7 +424,7 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
         }
 
         /* Buffer full — register as blocked writer on peer, wait for drain */
-        spin_unlock_irq(&usock_lock, irqf);
+        mutex_unlock(&usock_lock);
 
         /* Use event_wait with short timeout to avoid deadlock */
         event_t ev;
@@ -494,11 +486,10 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
     /* Snapshot peer under lock */
-    uint64_t irqf;
-    spin_lock_irq(&usock_lock, &irqf);
+    mutex_lock(&usock_lock);
     unix_socket_t *peer = s->peer;
-    if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
-    spin_unlock_irq(&usock_lock, irqf);
+    if (!peer) { mutex_unlock(&usock_lock); return send_sigpipe(); }
+    mutex_unlock(&usock_lock);
 
     long total = 0;
     for (uint64_t i = 0; i < kmsg.msg_iovlen; i++) {
@@ -512,9 +503,9 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
         while (remaining > 0) {
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
             copy_from_user(kbuf, src, (size_t)chunk); /* user_ok checked per-iov above */
-            spin_lock_irq(&usock_lock, &irqf);
+            mutex_lock(&usock_lock);
             int w = ring_write(peer, kbuf, (int)chunk);
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             if (w <= 0) {
                 if (total > 0) goto done;
                 return -EAGAIN;
@@ -528,14 +519,13 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
 done:
     if (total > 0) {
         /* Wake blocked reader on peer */
-        uint64_t irqf2;
-        spin_lock_irq(&usock_lock, &irqf2);
+        mutex_lock(&usock_lock);
         thread_t *reader = 0;
         if (peer->blocked_reader) {
             reader = (thread_t *)peer->blocked_reader;
             peer->blocked_reader = 0;
         }
-        spin_unlock_irq(&usock_lock, irqf2);
+        mutex_unlock(&usock_lock);
         if (reader)
             event_post(reader, EQ_SOCKET_DATA, 0);
         epoll_wake_all();
@@ -562,14 +552,13 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
     { int r = copy_from_user(k_iov, kmsg.msg_iov, kmsg.msg_iovlen * sizeof(struct iovec)); if (r) return r; }
 
     {
-        uint64_t irqf;
-        spin_lock_irq(&usock_lock, &irqf);
+        mutex_lock(&usock_lock);
         if (s->count == 0) {
             int eof = !s->peer;
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             return eof ? 0 : -EAGAIN;
         }
-        spin_unlock_irq(&usock_lock, irqf);
+        mutex_unlock(&usock_lock);
     }
 
     long total = 0;
@@ -581,13 +570,12 @@ long usock_recvmsg(int fd, void *msg_ptr, int flags) {
         uint64_t remaining = k_iov[i].iov_len;
         uint8_t *dst = (uint8_t *)k_iov[i].iov_base;
         while (remaining > 0) {
-            uint64_t irqf;
-            spin_lock_irq(&usock_lock, &irqf);
-            if (s->count == 0) { spin_unlock_irq(&usock_lock, irqf); goto recvdone; }
+            mutex_lock(&usock_lock);
+            if (s->count == 0) { mutex_unlock(&usock_lock); goto recvdone; }
             uint64_t chunk = remaining > sizeof(kbuf) ? sizeof(kbuf) : remaining;
             int r = ring_read(s, kbuf, (int)chunk);
             int cnt = s->count;
-            spin_unlock_irq(&usock_lock, irqf);
+            mutex_unlock(&usock_lock);
             if (r <= 0) break;
             copy_to_user(dst, kbuf, (size_t)r); /* user_ok checked per-iov above */
             total += r;

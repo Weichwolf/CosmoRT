@@ -7,7 +7,6 @@
 #include "event/epoll.h"
 #include "proc/process.h"
 #include "mm/slab.h"
-#include "spinlock.h"
 #include "event/fd.h"
 #include "uaccess.h"
 #include "memops.h"
@@ -38,7 +37,7 @@ typedef struct {
     int             ring_used;     /* bytes used */
     int             overflow;      /* 1 if overflow occurred */
 
-    spinlock_t      lock;
+    mutex_t         lock;
 } inotify_t;
 
 /* ── Slab pool ────────────────────────────────────── */
@@ -201,7 +200,7 @@ long do_inotify_init1(int flags) {
     ino->ring_tail = 0;
     ino->ring_used = 0;
     ino->overflow = 0;
-    ino->lock = (spinlock_t)SPINLOCK_INIT;
+    ino->lock = (mutex_t)MUTEX_INIT;
 
     for (int i = 0; i < INOTIFY_MAX_WATCHES; i++)
         ino->watches[i].wd = 0;
@@ -237,8 +236,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     int plen = ino_strlen(kpath);
     while (plen > 1 && kpath[plen - 1] == '/') kpath[--plen] = 0;
 
-    uint64_t irqf;
-    spin_lock_irq(&ino->lock, &irqf);
+    mutex_lock(&ino->lock);
 
     /* Check if already watching this path — update mask (IN_MASK_ADD merges) */
     for (int i = 0; i < INOTIFY_MAX_WATCHES; i++) {
@@ -249,7 +247,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
             else
                 ino->watches[i].mask = mask;
             int wd = ino->watches[i].wd;
-            spin_unlock_irq(&ino->lock, irqf);
+            mutex_unlock(&ino->lock);
             return wd;
         }
     }
@@ -260,7 +258,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
         if (ino->watches[i].wd == 0) { slot = i; break; }
     }
     if (slot < 0) {
-        spin_unlock_irq(&ino->lock, irqf);
+        mutex_unlock(&ino->lock);
         return -ENOSPC;
     }
 
@@ -270,7 +268,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     ino->watches[slot].active = 1;
     ino_strcpy(ino->watches[slot].path, kpath, 256);
 
-    spin_unlock_irq(&ino->lock, irqf);
+    mutex_unlock(&ino->lock);
     return wd;
 }
 
@@ -284,8 +282,7 @@ long do_inotify_rm_watch(int fd, int wd) {
     inotify_t *ino = (inotify_t *)fde->obj;
     if (!ino) return -EBADF;
 
-    uint64_t irqf;
-    spin_lock_irq(&ino->lock, &irqf);
+    mutex_lock(&ino->lock);
 
     int found = 0;
     for (int i = 0; i < INOTIFY_MAX_WATCHES; i++) {
@@ -299,7 +296,7 @@ long do_inotify_rm_watch(int fd, int wd) {
         }
     }
 
-    spin_unlock_irq(&ino->lock, irqf);
+    mutex_unlock(&ino->lock);
 
     if (found) epoll_wake_all();
     return found ? 0 : -EINVAL;
@@ -312,8 +309,7 @@ long inotify_read(void *obj, void *buf, long count) {
     if (!ino) return -EBADF;
     if (count < 16) return -EINVAL; /* must fit at least one header */
 
-    uint64_t irqf;
-    spin_lock_irq(&ino->lock, &irqf);
+    mutex_lock(&ino->lock);
 
     /* If overflow, inject a synthetic IN_Q_OVERFLOW event */
     if (ino->overflow && ino->ring_used == 0) {
@@ -330,7 +326,7 @@ long inotify_read(void *obj, void *buf, long count) {
     }
 
     if (ino->ring_used == 0) {
-        spin_unlock_irq(&ino->lock, irqf);
+        mutex_unlock(&ino->lock);
         return -EAGAIN;
     }
 
@@ -357,7 +353,7 @@ long inotify_read(void *obj, void *buf, long count) {
         total += ev_size;
     }
 
-    spin_unlock_irq(&ino->lock, irqf);
+    mutex_unlock(&ino->lock);
     return total > 0 ? total : -EAGAIN;
 }
 
@@ -393,8 +389,7 @@ void inotify_event(const char *path, uint32_t mask) {
         inotify_t *ino = &inotify_pool[p];
         if (ino->refcount <= 0) continue;
 
-        uint64_t irqf;
-        spin_lock_irq(&ino->lock, &irqf);
+        mutex_lock(&ino->lock);
 
         for (int w = 0; w < INOTIFY_MAX_WATCHES; w++) {
             inotify_watch_t *watch = &ino->watches[w];
@@ -425,7 +420,7 @@ void inotify_event(const char *path, uint32_t mask) {
             }
         }
 
-        spin_unlock_irq(&ino->lock, irqf);
+        mutex_unlock(&ino->lock);
     }
 
     if (woke) epoll_wake_all();
