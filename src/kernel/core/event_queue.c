@@ -1,7 +1,8 @@
-/* CosmoRT Event Queue — kernel-side event_post + event_wait
+/* CosmoRT Event Queue — kernel-side event_post + event_wait + sleeper lists
  *
  * event_post: write event into target thread's queue, then sched_wake.
  * event_wait: consume next event; if empty, block thread (syscall restart).
+ * sleeper lists: per-core timeout tracking, called from timer IRQ.
  *
  * Race-free: event is in the queue BEFORE sched_wake. If the target
  * thread isn't blocked yet, it finds the event on next event_wait.
@@ -14,6 +15,7 @@
 #include "proc/process.h"
 #include "core/percpu.h"
 #include "core/timer.h"
+#include "core/smp.h"
 #include "core/rt.h"
 #include "arch/arch.h"
 #include "spinlock.h"
@@ -171,4 +173,103 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(cur);
     return 0; /* unreachable */
+}
+
+/* ── Per-core sleeper lists ────────────────────────
+ * Tracks threads blocked with a timeout (epoll_wait, poll, nanosleep, etc.).
+ * Each core has its own list — no cross-core contention.
+ * Timer IRQ calls epoll_check_timeouts() per core.
+ * I/O completion calls epoll_wake_all() to broadcast. */
+
+#define SLEEPER_MAX 32
+
+static struct {
+    thread_t  *threads[SLEEPER_MAX];
+    int        count;
+    spinlock_t lock;
+} core_sleepers[SMP_MAX_CORES] = {
+    [0 ... SMP_MAX_CORES-1] = { .lock = SPINLOCK_INIT }
+};
+
+static void sleeper_add(thread_t *t) {
+    int cpu = percpu_self()->core_id;
+    uint64_t irqf;
+    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+    if (core_sleepers[cpu].count < SLEEPER_MAX)
+        core_sleepers[cpu].threads[core_sleepers[cpu].count++] = t;
+    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+}
+
+void epoll_sleeper_add_ext(thread_t *t) { sleeper_add(t); }
+
+void epoll_wake_all(void) {
+    int ncores = smp_num_cores();
+    for (int c = 0; c < ncores; c++) {
+        uint64_t irqf;
+        spin_lock_irq(&core_sleepers[c].lock, &irqf);
+        int n = core_sleepers[c].count;
+        thread_t *wake[SLEEPER_MAX];
+        for (int i = 0; i < n; i++) {
+            wake[i] = core_sleepers[c].threads[i];
+            core_sleepers[c].threads[i] = 0;
+        }
+        core_sleepers[c].count = 0;
+        spin_unlock_irq(&core_sleepers[c].lock, irqf);
+
+        for (int i = 0; i < n; i++)
+            event_post(wake[i], EQ_EPOLL_READY, 0);
+    }
+}
+
+/* Called from timer IRQ (sched_preempt) on each core.
+ * timerfd expiry check on BSP only (global timerfd slab). */
+void epoll_check_timeouts(void) {
+    uint64_t now_tsc = timer_tsc_now();
+    int cpu = percpu_self()->core_id;
+
+    if (cpu == 0) {
+        extern int timerfd_any_expired(void);
+        if (timerfd_any_expired()) epoll_wake_all();
+    }
+
+    uint64_t irqf;
+    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+
+    for (int i = 0; i < core_sleepers[cpu].count; ) {
+        thread_t *t = core_sleepers[cpu].threads[i];
+        if (!t) {
+            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
+            continue;
+        }
+        uint64_t deadline = t->wake_at_tsc;
+        if (!deadline && t->wake_at)
+            deadline = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
+        if (deadline && now_tsc >= deadline) {
+            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
+            spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+            event_post(t, EQ_TIMEOUT, 0);
+            spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+        } else {
+            i++;
+        }
+    }
+    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+}
+
+uint64_t epoll_nearest_deadline_tsc(int core_id) {
+    if (core_id < 0 || core_id >= SMP_MAX_CORES) return 0;
+    uint64_t nearest = 0;
+    uint64_t irqf;
+    spin_lock_irq(&core_sleepers[core_id].lock, &irqf);
+    for (int i = 0; i < core_sleepers[core_id].count; i++) {
+        thread_t *t = core_sleepers[core_id].threads[i];
+        if (!t) continue;
+        uint64_t dl = t->wake_at_tsc;
+        if (!dl && t->wake_at)
+            dl = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
+        if (dl && (!nearest || dl < nearest))
+            nearest = dl;
+    }
+    spin_unlock_irq(&core_sleepers[core_id].lock, irqf);
+    return nearest;
 }

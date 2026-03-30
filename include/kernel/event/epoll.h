@@ -84,13 +84,8 @@ void inotify_event(const char *path, uint32_t mask);
 /* FD readiness check — implemented in syscall.c (has access to all FD types) */
 uint32_t fd_poll_readiness(int fd, uint32_t interest);
 
-/* Wake all threads blocked in epoll_wait/poll across ALL cores.
- * Called from eventfd_write, pipe_write, timerfd expire, socket recv.
- * Rare path. IRQ-safe (iterates per-core lists with spin_lock_irq). */
-void epoll_wake_all(void);
-
-/* Check timed-out sleepers on CURRENT core's per-core list.
- * Called from timer IRQ (sched_preempt) on every core. */
-void epoll_check_timeouts(void);
+/* Sleeper lists and timeout checking moved to event_queue.h:
+ * epoll_sleeper_add_ext, epoll_wake_all, epoll_check_timeouts,
+ * epoll_nearest_deadline_tsc */
 
 #endif

@@ -134,4 +134,18 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms);
  * On timeout, syscall restarts. For userspace nanosleep/clock_nanosleep. */
 void thread_block_ms(int timeout_ms);
 
+/* ── Sleeper lists (per-core timeout tracking) ── */
+
+/* Register thread for timeout checking on current core's sleeper list. */
+void epoll_sleeper_add_ext(struct thread *t);
+
+/* Wake all blocked sleepers across ALL cores (I/O completion broadcast). */
+void epoll_wake_all(void);
+
+/* Check timed-out sleepers on CURRENT core. Called from timer IRQ. */
+void epoll_check_timeouts(void);
+
+/* Nearest TSC deadline among sleepers on given core. 0 = none. */
+uint64_t epoll_nearest_deadline_tsc(int core_id);
+
 #endif /* EVENT_QUEUE_H */
