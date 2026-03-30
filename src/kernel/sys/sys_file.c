@@ -124,6 +124,17 @@ long do_write(int fd, const void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_write(fd, buf, count);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (!pf) return -EBADF;
+        extern int procfs_write(int handle, const char *buf, int len);
+        char kbuf[256];
+        int want = (int)count;
+        if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
+        copy_from_user(kbuf, buf, (size_t)want);
+        int r = procfs_write(pf->handle, kbuf, want);
+        return (long)r;
+    }
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
     if (fde->type == FD_UNIX_SOCK) {

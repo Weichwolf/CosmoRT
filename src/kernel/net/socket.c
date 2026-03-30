@@ -615,6 +615,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
 
     socket_t *ls = sock_from_fd(fd);
     if (!ls) return -EBADF;
+    if (ls->is_dgram) return -EOPNOTSUPP; /* UDP: accept not supported */
     if (ls->state != SOCK_LISTENING) return -EINVAL;
 
     /* Check accept queue first (pre-queued connections) */
@@ -664,11 +665,6 @@ long do_accept(int fd, void *addr, int *addrlen) {
     { fd_entry_t *fde = fd_get(&p->fds, fd);
       if (fde && (fde->flags & O_NONBLOCK)) nonblock = 1; }
     if (nonblock) return -EAGAIN;
-
-    /* No gateway → can only accept on loopback (not wired yet) → EAGAIN */
-    if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
-        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
-        return -EAGAIN;
 
     /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state. */
     uint16_t host_port = bswap16(ls->local_port);

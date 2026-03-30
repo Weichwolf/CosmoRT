@@ -145,8 +145,14 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
 
                 if (wstatus) {
                     int kstatus;
-                    if (child->exit_signal)
-                        kstatus = child->exit_signal & 0x7F; /* killed by signal */
+                    if (child->exit_signal) {
+                        int sig = child->exit_signal & 0x7F;
+                        kstatus = sig;
+                        /* Core-dump signals: set bit 7 (WCOREDUMP) */
+                        if (sig == 3 || sig == 4 || sig == 5 || sig == 6 ||
+                            sig == 7 || sig == 8 || sig == 11 || sig == 31)
+                            kstatus |= 0x80;
+                    }
                     else
                         kstatus = (exit_status & 0xFF) << 8;  /* normal exit */
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));

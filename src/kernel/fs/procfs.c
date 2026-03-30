@@ -14,14 +14,28 @@
 
 #define PROCFS_MAX 48
 
+typedef int (*procfs_write_fn)(const char *buf, int len, void *ctx);
+
 typedef struct {
     char name[64];
     procfs_read_fn fn;
+    procfs_write_fn write_fn;
     void *ctx;
 } procfs_entry_t;
 
 static procfs_entry_t entries[PROCFS_MAX];
 static int num_entries;
+
+static void procfs_register_rw(const char *name, procfs_read_fn fn, procfs_write_fn wfn, void *ctx) {
+    if (num_entries >= PROCFS_MAX) return;
+    procfs_entry_t *e = &entries[num_entries++];
+    int i = 0;
+    while (name[i] && i < 63) { e->name[i] = name[i]; i++; }
+    e->name[i] = 0;
+    e->fn = fn;
+    e->write_fn = wfn;
+    e->ctx = ctx;
+}
 
 void procfs_register(const char *name, procfs_read_fn fn, void *ctx) {
     if (num_entries >= PROCFS_MAX) return;
@@ -55,6 +69,13 @@ int procfs_read(int handle, char *buf, int size, int offset) {
     if (handle < 1 || handle > num_entries) return 0;
     procfs_entry_t *e = &entries[handle - 1];
     return e->fn(buf, size, offset, e->ctx);
+}
+
+int procfs_write(int handle, const char *buf, int len) {
+    if (handle < 1 || handle > num_entries) return -22; /* EINVAL */
+    procfs_entry_t *e = &entries[handle - 1];
+    if (!e->write_fn) return -13; /* EACCES */
+    return e->write_fn(buf, len, e->ctx);
 }
 
 void procfs_close(int handle) {
@@ -375,6 +396,42 @@ static int procfs_self_statm(char *buf, int size, int offset, void *ctx) {
     for (int i = offset; i < len && out < size; i++)
         buf[out++] = s[i];
     return out;
+}
+
+/* ── /proc/self/oom_score_adj ─────────────────────── */
+
+static int oom_score_adj_value = 0;
+
+static int procfs_oom_score_adj(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char s[16];
+    int len = 0;
+    int v = oom_score_adj_value;
+    if (v < 0) { s[len++] = '-'; v = -v; }
+    if (v >= 1000) { s[len++] = '0' + (v / 1000); v %= 1000; }
+    if (v >= 100 || len > (oom_score_adj_value < 0 ? 1 : 0)) { s[len++] = '0' + (v / 100); v %= 100; }
+    if (v >= 10 || len > (oom_score_adj_value < 0 ? 1 : 0)) { s[len++] = '0' + (v / 10); v %= 10; }
+    s[len++] = '0' + v;
+    s[len++] = '\n';
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+static int procfs_oom_score_adj_write(const char *buf, int len, void *ctx) {
+    (void)ctx;
+    /* Parse integer from buf: optional '-', then digits */
+    int neg = 0, val = 0, i = 0;
+    while (i < len && (buf[i] == ' ' || buf[i] == '\n')) i++;
+    if (i < len && buf[i] == '-') { neg = 1; i++; }
+    while (i < len && buf[i] >= '0' && buf[i] <= '9')
+        val = val * 10 + (buf[i++] - '0');
+    if (neg) val = -val;
+    if (val < -1000) val = -1000;
+    if (val > 1000) val = 1000;
+    oom_score_adj_value = val;
+    return len;
 }
 
 /* ── /proc/self/cgroup ─────────────────────────────── */
@@ -724,5 +781,6 @@ void procfs_init(void) {
     procfs_register("sys/kernel/hostname", procfs_sys_hostname, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
-    serial_puts("procfs: init (21 entries)\n");
+    procfs_register_rw("self/oom_score_adj", procfs_oom_score_adj, procfs_oom_score_adj_write, 0);
+    serial_puts("procfs: init (22 entries)\n");
 }
