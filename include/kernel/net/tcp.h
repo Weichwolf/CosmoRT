@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include "config.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 
 struct thread;
 
@@ -28,7 +28,7 @@ enum tcp_state {
 typedef struct {
     uint8_t  *buf;
     uint32_t head, tail;
-    spinlock_t lock;
+    mutex_t lock;
 } tcp_rxring_t;
 
 int      rxring_init(tcp_rxring_t *r);

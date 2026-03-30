@@ -17,7 +17,7 @@
 int rxring_init(tcp_rxring_t *r) {
     r->head = 0;
     r->tail = 0;
-    r->lock = (spinlock_t)SPINLOCK_INIT;
+    r->lock = (mutex_t)MUTEX_INIT;
     int npages = (NET_TCP_RXBUF + 4095) / 4096;
     r->buf = (uint8_t *)pages_alloc(npages);
     if (!r->buf) return -12;
@@ -45,42 +45,40 @@ int rxring_free(const tcp_rxring_t *r) {
 
 int rxring_push(tcp_rxring_t *r, const void *data, int len) {
     if (!r->buf) return 0;
-    uint64_t flags;
-    spin_lock_irq(&r->lock, &flags);
+    mutex_lock(&r->lock);
     int avail = NET_TCP_RXBUF - 1 - (int)((r->tail - r->head) & (NET_TCP_RXBUF - 1));
     if (len > avail) len = avail;
-    if (len <= 0) { spin_unlock_irq(&r->lock, flags); return 0; }
+    if (len <= 0) { mutex_unlock(&r->lock); return 0; }
 
     const uint8_t *src = data;
     uint32_t mask = NET_TCP_RXBUF - 1;
     for (int i = 0; i < len; i++)
         r->buf[(r->tail + (uint32_t)i) & mask] = src[i];
     r->tail = (r->tail + (uint32_t)len) & mask;
-    spin_unlock_irq(&r->lock, flags);
+    mutex_unlock(&r->lock);
     return len;
 }
 
 int rxring_pop(tcp_rxring_t *r, void *buf, int len) {
     if (!r->buf) return 0;
-    uint64_t flags;
-    spin_lock_irq(&r->lock, &flags);
+    mutex_lock(&r->lock);
     int used = (int)((r->tail - r->head) & (NET_TCP_RXBUF - 1));
     if (len > used) len = used;
-    if (len <= 0) { spin_unlock_irq(&r->lock, flags); return 0; }
+    if (len <= 0) { mutex_unlock(&r->lock); return 0; }
 
     uint8_t *dst = buf;
     uint32_t mask = NET_TCP_RXBUF - 1;
     for (int i = 0; i < len; i++)
         dst[i] = r->buf[(r->head + (uint32_t)i) & mask];
     r->head = (r->head + (uint32_t)len) & mask;
-    spin_unlock_irq(&r->lock, flags);
+    mutex_unlock(&r->lock);
     return len;
 }
 
 #define TCP_HASH_SIZE 256
 
 static net_tcp_t *tcp_hash[TCP_HASH_SIZE];
-static spinlock_t tcp_hash_lock = SPINLOCK_INIT;
+static mutex_t tcp_hash_lock = MUTEX_INIT;
 
 static uint32_t tcp_hash_fn(uint16_t lport, uint16_t rport, const uint8_t *sip) {
     uint32_t h = (uint32_t)lport ^ ((uint32_t)rport << 7);
@@ -92,17 +90,15 @@ static uint32_t tcp_hash_fn(uint16_t lport, uint16_t rport, const uint8_t *sip) 
 
 void tcp_register(net_tcp_t *c) {
     uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
-    uint64_t flags;
-    spin_lock_irq(&tcp_hash_lock, &flags);
+    mutex_lock(&tcp_hash_lock);
     c->hash_next = tcp_hash[idx];
     tcp_hash[idx] = c;
-    spin_unlock_irq(&tcp_hash_lock, flags);
+    mutex_unlock(&tcp_hash_lock);
 }
 
 void tcp_unregister(net_tcp_t *c) {
     uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
-    uint64_t flags;
-    spin_lock_irq(&tcp_hash_lock, &flags);
+    mutex_lock(&tcp_hash_lock);
     net_tcp_t **pp = &tcp_hash[idx];
     while (*pp) {
         if (*pp == c) {
@@ -112,7 +108,7 @@ void tcp_unregister(net_tcp_t *c) {
         }
         pp = &(*pp)->hash_next;
     }
-    spin_unlock_irq(&tcp_hash_lock, flags);
+    mutex_unlock(&tcp_hash_lock);
 }
 
 net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *src_ip) {

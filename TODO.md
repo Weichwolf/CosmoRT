@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1524/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1545/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -59,9 +59,8 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 - [x] RT-3d: VFS/ext2 (ext2 fs_lock, bcache cache_lock → mutex_t)
 - [x] RT-3e: Socket/Netzwerk (sock_lock, usock_lock, udp_table_lock → mutex_t)
 - [x] RT-3f: Prozesse/MM (pid_lock, epoll_t::lock → mutex_t)
-- NICHT konvertiert (IRQ-Kontext): eq_locks, core_rq, core_sleepers, pkt_queues,
-  rt_mutex::lock, process_t::lock (page fault), pty_t::lock (serial bridge IRQ,
-  keyboard IRQ), slab_t::lock (arp_slab aus net dispatch), tcp rxring/hash_lock,
+- NICHT konvertiert (IRQ-Kontext): eq_locks, core_rq, core_sleepers,
+  rt_mutex::lock, process_t::lock (page fault), slab_t::lock,
   page_alloc buddy_lock, page_cache pc_lock, rng_lock, dmesg_lock
 
 ### RT-4: Threaded IRQs
@@ -89,12 +88,22 @@ Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
 - [x] TX-Wake: ip_send_raw weckt net_thread nach TX-Ring push
 - [x] 11 ktest (tirq_*): Threaded-IRQ Validierung
 
-#### RT-4c: Lock-Konvertierung Welle 2 (Agent, nach RT-4b)
+#### RT-4c: Lock-Konvertierung Welle 2 (erledigt)
 
-- [ ] Locks die vorher IRQ-Kontext waren → mutex_t:
-  process_t::lock, pty_t::lock, slab arp_slab, tcp rxring/hash,
-  packet queue locks
-- [ ] Alle verbleibenden Spinlocks pruefen
+- [x] pty_t::lock → mutex_t (serial_bridge_poll weckt nur Thread, kein PTY-Zugriff aus Hard-IRQ)
+- [x] tcp_hash_lock → mutex_t (tcp_input via net_thread, nicht Hard-IRQ)
+- [x] tcp_rxring_t::lock → mutex_t (rxring_push/pop via net_thread)
+- [x] pkt_queue_t::lock → mutex_t (q_push/q_pop via net_rx_one → net_thread)
+- [x] 10 ktest (w2_*): PTY, TCP, pipe contention, mmap shared, file stress,
+  socket, epoll multi-fd, unix socket, slab stress
+- NICHT konvertiert (Analyse):
+  - slab_t::lock: slab_grow_locked ruft pages_alloc (buddy_lock spinlock),
+    mutex waehrend Boot ohne thread_current() verursacht GP fault
+  - page_cache pc_lock: slab_free unter pc_lock → selbes Problem
+  - process_t::lock: Page-Fault-Handler ist Thread-Kontext, aber zu breit gestreut
+  - rng_lock: random_add_interrupt_entropy direkt aus timer_handler (Hard-IRQ)
+  - dmesg_lock: serial_putchar aus Exception-Handlern und Panic-Pfaden
+  - buddy_lock: page_alloc ueberall, zu riskant
 
 ### RT-5: RCU (Agent, parallel zu RT-2..4)
 

@@ -3,7 +3,7 @@
 #define PTY_H
 
 #include <stdint.h>
-#include "spinlock.h"
+#include "core/mutex.h"
 
 #define PTY_MAX       12
 #define PTY_BUF_SIZE  4096
@@ -87,7 +87,7 @@ typedef struct {
 
     struct thread *blocked_reader;
 
-    spinlock_t lock;
+    mutex_t lock;
 } pty_t;
 
 void pty_init(void);

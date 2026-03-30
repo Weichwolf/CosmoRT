@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include "config.h"
-#include "spinlock.h"
+#include "core/mutex.h"
 
 #include "cosmort.h"
 
@@ -38,10 +38,10 @@ typedef struct {
     uint8_t    data[Q_SIZE][Q_PKT];
     int        len[Q_SIZE];
     int        head, count;
-    spinlock_t lock;
+    mutex_t lock;
 } pkt_queue_t;
 
-#define PKT_QUEUE_INIT { .head = 0, .count = 0, .lock = SPINLOCK_INIT }
+#define PKT_QUEUE_INIT { .head = 0, .count = 0, .lock = MUTEX_INIT }
 
 static inline int q_count(const pkt_queue_t *q) {
     return __atomic_load_n(&q->count, __ATOMIC_ACQUIRE);

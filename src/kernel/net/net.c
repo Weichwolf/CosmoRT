@@ -36,8 +36,7 @@ struct thread *q_arp_wait_thread;
 struct thread *q_dns_wait_thread;
 
 void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
-    uint64_t flags;
-    spin_lock_irq(&q->lock, &flags);
+    mutex_lock(&q->lock);
     if (q->count < Q_SIZE) {
         int idx = (q->head + q->count) % Q_SIZE;
         int l = len > Q_PKT ? Q_PKT : len;
@@ -45,14 +44,13 @@ void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
         q->len[idx] = l;
         q->count++;
     }
-    spin_unlock_irq(&q->lock, flags);
+    mutex_unlock(&q->lock);
 }
 
 int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
-    uint64_t flags;
-    spin_lock_irq(&q->lock, &flags);
+    mutex_lock(&q->lock);
     if (q->count == 0) {
-        spin_unlock_irq(&q->lock, flags);
+        mutex_unlock(&q->lock);
         return 0;
     }
     int l = q->len[q->head];
@@ -60,7 +58,7 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     mcpy(buf, q->data[q->head], l);
     q->head = (q->head + 1) % Q_SIZE;
     q->count--;
-    spin_unlock_irq(&q->lock, flags);
+    mutex_unlock(&q->lock);
     return l;
 }
 

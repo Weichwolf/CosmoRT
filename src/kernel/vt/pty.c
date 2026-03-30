@@ -82,7 +82,7 @@ void pty_init(void) {
     kmemset(pty_pool, 0, sizeof(pty_pool));
     for (int i = 0; i < PTY_MAX; i++) {
         termios_init(&pty_pool[i].termios);
-        pty_pool[i].lock = (spinlock_t)SPINLOCK_INIT;
+        pty_pool[i].lock = (mutex_t)MUTEX_INIT;
     }
     serial_puts("pty: ");
     serial_putchar('0' + PTY_MAX);
@@ -91,8 +91,7 @@ void pty_init(void) {
 
 int pty_alloc(void) {
     for (int i = 0; i < PTY_MAX; i++) {
-        uint64_t flags;
-        spin_lock_irq(&pty_pool[i].lock, &flags);
+        mutex_lock(&pty_pool[i].lock);
         if (!pty_pool[i].in_use) {
             pty_pool[i].in_use = 1;
             pty_pool[i].input_head = pty_pool[i].input_tail = 0;
@@ -105,10 +104,10 @@ int pty_alloc(void) {
             pty_pool[i].ws.ws_row = (uint16_t)vt_rows();
             pty_pool[i].ws.ws_xpixel = 0;
             pty_pool[i].ws.ws_ypixel = 0;
-            spin_unlock_irq(&pty_pool[i].lock, flags);
+            mutex_unlock(&pty_pool[i].lock);
             return i;
         }
-        spin_unlock_irq(&pty_pool[i].lock, flags);
+        mutex_unlock(&pty_pool[i].lock);
     }
     return -1;
 }
@@ -156,8 +155,7 @@ static void line_flush(pty_t *p) {
 int pty_master_write(int id, const char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return -1;
     pty_t *p = &pty_pool[id];
-    uint64_t flags;
-    spin_lock_irq(&p->lock, &flags);
+    mutex_lock(&p->lock);
 
     for (int i = 0; i < len; i++) {
         char c = buf[i];
@@ -251,7 +249,7 @@ int pty_master_write(int id, const char *buf, int len) {
         event_post(reader, EQ_PIPE_DATA, 0);
     }
 
-    spin_unlock_irq(&p->lock, flags);
+    mutex_unlock(&p->lock);
 
     if (ring_count(p->input_head, p->input_tail) > 0)
         epoll_wake_all();
@@ -262,23 +260,21 @@ int pty_master_write(int id, const char *buf, int len) {
 int pty_master_read(int id, char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return 0;
     pty_t *p = &pty_pool[id];
-    uint64_t flags;
-    spin_lock_irq(&p->lock, &flags);
+    mutex_lock(&p->lock);
 
     int n = ring_count(p->output_head, p->output_tail);
     if (n > len) n = len;
     for (int i = 0; i < n; i++)
         buf[i] = ring_get(p->output_buf, &p->output_head);
 
-    spin_unlock_irq(&p->lock, flags);
+    mutex_unlock(&p->lock);
     return n;
 }
 
 int pty_slave_write(int id, const char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return -1;
     pty_t *p = &pty_pool[id];
-    uint64_t flags;
-    spin_lock_irq(&p->lock, &flags);
+    mutex_lock(&p->lock);
 
     int wrote = 0;
     for (int i = 0; i < len; i++) {
@@ -293,15 +289,14 @@ int pty_slave_write(int id, const char *buf, int len) {
         wrote++;
     }
 
-    spin_unlock_irq(&p->lock, flags);
+    mutex_unlock(&p->lock);
     return wrote;
 }
 
 int pty_input_direct(int id, const char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return 0;
     pty_t *p = &pty_pool[id];
-    uint64_t flags;
-    spin_lock_irq(&p->lock, &flags);
+    mutex_lock(&p->lock);
     int written = 0;
     for (int i = 0; i < len; i++) {
         if (((p->input_tail + 1) % PTY_BUF_SIZE) == p->input_head) break;
@@ -314,7 +309,7 @@ int pty_input_direct(int id, const char *buf, int len) {
         p->blocked_reader = 0;
         event_post(reader, EQ_PIPE_DATA, 0);
     }
-    spin_unlock_irq(&p->lock, flags);
+    mutex_unlock(&p->lock);
     if (written > 0)
         epoll_wake_all();
     return written;
@@ -323,14 +318,13 @@ int pty_input_direct(int id, const char *buf, int len) {
 int pty_slave_read(int id, char *buf, int len) {
     if (id < 0 || id >= PTY_MAX) return 0;
     pty_t *p = &pty_pool[id];
-    uint64_t flags;
-    spin_lock_irq(&p->lock, &flags);
+    mutex_lock(&p->lock);
 
     int n = ring_count(p->input_head, p->input_tail);
     if (n > len) n = len;
     for (int i = 0; i < n; i++)
         buf[i] = ring_get(p->input_buf, &p->input_head);
 
-    spin_unlock_irq(&p->lock, flags);
+    mutex_unlock(&p->lock);
     return n;
 }

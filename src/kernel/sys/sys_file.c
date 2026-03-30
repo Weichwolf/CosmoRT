@@ -274,8 +274,7 @@ long do_read(int fd, void *buf, size_t count) {
             pty_t *pty = pty_get(pty_id);
             if (!t || !pty) return -EAGAIN;
 
-            uint64_t irqf;
-            spin_lock_irq(&pty->lock, &irqf);
+            mutex_lock(&pty->lock);
             int avail = (pty->input_tail - pty->input_head
                          + PTY_BUF_SIZE) % PTY_BUF_SIZE;
             if (avail > 0) {
@@ -284,14 +283,14 @@ long do_read(int fd, void *buf, size_t count) {
                     kbuf[i] = (uint8_t)pty->input_buf[pty->input_head];
                     pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
                 }
-                spin_unlock_irq(&pty->lock, irqf);
+                mutex_unlock(&pty->lock);
                 copy_to_user(buf, kbuf, (size_t)n);
                 extern void vt_flush(int vt_id);
                 vt_flush(pty_id);
                 return (long)n;
             }
             pty->blocked_reader = t;
-            spin_unlock_irq(&pty->lock, irqf);
+            mutex_unlock(&pty->lock);
 
             extern void vt_flush(int vt_id);
             vt_flush(pty_id);
@@ -710,8 +709,7 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
             if (copy_from_user(&kterm, (const void *)arg, 36) == 0) {
                 pty_t *pt = pty_get((int)(long)fde->obj);
                 if (pt) {
-                    uint64_t irqf;
-                    spin_lock_irq(&pt->lock, &irqf);
+                    mutex_lock(&pt->lock);
                     int was_canon = (pt->termios.c_lflag & ICANON) != 0;
                     int new_canon = (kterm.c_lflag & ICANON) != 0;
                     kmemcpy(&pt->termios, &kterm, sizeof(struct kernel_termios));
@@ -723,7 +721,7 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
                         }
                         pt->line_pos = 0;
                     }
-                    spin_unlock_irq(&pt->lock, irqf);
+                    mutex_unlock(&pt->lock);
                 }
             }
         }
