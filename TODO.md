@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1293/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1361/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -21,8 +21,8 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 ### IPC
 
-- [ ] IPC receive: event_wait auf Endpoint statt 100-Iteration spin (ipc.c:133)
-- [ ] IPC wait_any: event_wait auf ANY Endpoint statt Doppel-Scan (ipc.c:195)
+- [x] IPC receive: event_wait auf Endpoint statt 100-Iteration spin (ipc.c:133)
+- [x] IPC wait_any: event_wait auf ANY Endpoint statt Doppel-Scan (ipc.c:195)
 
 ### Timerfd + Poll
 

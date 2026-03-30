@@ -26,6 +26,7 @@
 #define EQ_SOCKET_DATA     8
 #define EQ_SOCKET_CONNECT  9
 #define EQ_TIMEOUT         10
+#define EQ_IPC_MSG         11
 
 /* ── Event struct ────────────────────────────── */
 

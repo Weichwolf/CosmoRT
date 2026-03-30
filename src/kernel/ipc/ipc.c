@@ -7,6 +7,7 @@
 #include "ipc/ipc.h"
 #include "proc/process.h"
 #include "core/percpu.h"
+#include "core/event_queue.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "proc/thread.h"
@@ -16,12 +17,14 @@ extern void sched_add(thread_t *t);
 
 /* Thread lookup — delegated to process.c O(1) tid_table */
 
-/* Wake a thread blocked on IPC receive */
+/* Wake a thread blocked on IPC receive via event_post.
+ * event_post writes EQ_IPC_MSG into the thread's event queue,
+ * then calls sched_wake (CAS BLOCKED→RUNNABLE). Race-free. */
 static void ipc_wake_receiver(ipc_endpoint_t *ep) {
     if (ep->blocked_tid > 0) {
         thread_t *t = thread_find_by_tid(ep->blocked_tid);
-        if (t && t->state == THREAD_BLOCKED)
-            sched_add(t);
+        if (t)
+            event_post(t, EQ_IPC_MSG, (uint64_t)0);
         ep->blocked_tid = -1;
     }
     ep->blocked_pid = -1;
@@ -126,23 +129,18 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
     ep->state = EP_RECV_WAIT;
     process_t *cur = proc_current();
     if (cur) ep->blocked_pid = (int)cur->pid;
-    thread_t *ct = percpu_self()->current_thread;
+    thread_t *ct = thread_current();
     if (ct) ep->blocked_tid = ct->tid;
     spin_unlock_irq(ep_lock(ep), flags);
 
-    /* Spin briefly then return EAGAIN — caller retries */
-    for (int i = 0; i < 100; i++) {
-        arch_pause();
-        spin_lock_irq(ep_lock(ep), &flags);
-        if (ep->notify_word || ep->state == EP_SEND_WAIT) {
-            spin_unlock_irq(ep_lock(ep), flags);
-            return ipc_try_recv(ep_id, msg);
-        }
-        if (ep->state != EP_RECV_WAIT) {
-            spin_unlock_irq(ep_lock(ep), flags);
-            return ipc_try_recv(ep_id, msg);
-        }
-        spin_unlock_irq(ep_lock(ep), flags);
+    /* Block via event_wait — ipc_send/ipc_notify will event_post us.
+     * Thread context: event_wait blocks (never returns, syscall restarts).
+     * On restart, ipc_recv re-executes and finds the message.
+     * No thread context (boot): fall back to spin + EAGAIN. */
+    if (ct) {
+        event_t ev;
+        event_wait(&ct->eq, &ev, -1);
+        /* unreachable — syscall restarts, re-enters ipc_recv */
     }
     return -EAGAIN;
 }
@@ -193,12 +191,36 @@ int ipc_notify(int ep_id, uint64_t bits) {
 }
 
 int ipc_wait_any(const ipc_wait_set_t *set, ipc_msg_t *msg) {
-    for (int round = 0; round < 2; round++) {
-        for (int i = 0; i < set->count; i++) {
-            if (ipc_try_recv(set->ep_ids[i], msg) == 0)
-                return i;
-        }
-        if (round == 0) arch_pause();
+    /* Fast path: scan all endpoints for a ready message */
+    for (int i = 0; i < set->count; i++) {
+        if (ipc_try_recv(set->ep_ids[i], msg) == 0)
+            return i;
     }
+
+    /* No message available — register this thread on all endpoints
+     * and block via event_wait. On wake (from any endpoint's sender),
+     * the syscall restarts and the fast-path scan finds the message. */
+    thread_t *ct = thread_current();
+    if (!ct) return -1;
+
+    for (int i = 0; i < set->count; i++) {
+        int id = set->ep_ids[i];
+        if (id < 0 || id >= IPC_MAX_ENDPOINTS) continue;
+        ipc_endpoint_t *ep = &endpoints[id];
+        uint64_t flags;
+        spin_lock_irq(ep_lock(ep), &flags);
+        if (ep->state != EP_FREE && ep->blocked_tid <= 0) {
+            ep->state = EP_RECV_WAIT;
+            ep->blocked_tid = ct->tid;
+            process_t *cur = proc_current();
+            if (cur) ep->blocked_pid = (int)cur->pid;
+        }
+        spin_unlock_irq(ep_lock(ep), flags);
+    }
+
+    event_t ev;
+    event_wait(&ct->eq, &ev, -1);
+    /* unreachable — syscall restarts, re-enters ipc_wait_any */
+
     return -1;
 }
