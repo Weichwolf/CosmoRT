@@ -1,8 +1,4 @@
-/* CosmoRT TSS + SYSCALL/SYSRET MSR setup
- *
- * Per-core TSS: Core N uses GDT selector 0x30 + N*0x10.
- * SYSCALL via STAR/LSTAR/SFMASK MSRs (per-core init).
- */
+/* CosmoRT TSS + SYSCALL/SYSRET MSR setup */
 
 #include <stdint.h>
 #include "hw/serial.h"
@@ -10,7 +6,6 @@
 #include "core/smp.h"
 #include "arch/arch.h"
 
-/* TSS with I/O Permission Bitmap */
 #define IOPB_SIZE 8193
 #define TSS_MAX_CORES 8
 
@@ -30,7 +25,6 @@ struct tss {
 static struct tss per_core_tss[TSS_MAX_CORES];
 
 void tss_allow_port(uint16_t port) {
-    /* Apply to all per-core TSS structs */
     int byte = port / 8;
     int bit = port % 8;
     if (byte < IOPB_SIZE - 1)
@@ -51,21 +45,17 @@ void tss_set_rsp0(uint64_t rsp0) {
 static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
 static inline uint64_t rdmsr(uint32_t msr) { return arch_rdmsr(msr); }
 
-/* Write TSS descriptor into GDT and load TR for a specific core */
 static void tss_load_for_core(int core) {
     if (core < 0 || core >= TSS_MAX_CORES) return;
 
     struct tss *t = &per_core_tss[core];
 
-    /* Clear TSS */
     uint8_t *p = (uint8_t *)t;
     for (int i = 0; i < (int)sizeof(struct tss); i++) p[i] = 0;
 
-    /* IOPB: all ports blocked by default */
     t->iomap_base = __builtin_offsetof(struct tss, iopb);
     for (int i = 0; i < IOPB_SIZE; i++) t->iopb[i] = 0xFF;
 
-    /* Write TSS descriptor into GDT at offset 0x30 + core*0x10 */
     extern uint64_t tss_desc[];
     uint64_t base = ensure_high((uint64_t)(uintptr_t)t);
     uint16_t limit = sizeof(struct tss) - 1;
@@ -74,7 +64,7 @@ static void tss_load_for_core(int core) {
     low |= (uint64_t)(limit & 0xFFFF);
     low |= (uint64_t)(base & 0xFFFF) << 16;
     low |= (uint64_t)((base >> 16) & 0xFF) << 32;
-    low |= (uint64_t)0x89 << 40;                   /* type=9 (avail TSS), P=1 */
+    low |= (uint64_t)0x89 << 40;
     low |= (uint64_t)((limit >> 16) & 0xF) << 48;
     low |= (uint64_t)((base >> 24) & 0xFF) << 56;
 
@@ -83,7 +73,6 @@ static void tss_load_for_core(int core) {
     tss_desc[core * 2]     = low;
     tss_desc[core * 2 + 1] = high;
 
-    /* Load TR with selector 0x30 + core*0x10 */
     uint16_t sel = (uint16_t)(0x30 + core * 0x10);
     arch_ltr(sel);
 }
@@ -93,7 +82,6 @@ void tss_init(void) {
     serial_puts("TSS: loaded (core 0)\n");
 }
 
-/* Called from AP after percpu_init_ap */
 void tss_init_ap(void) {
     int core = smp_core_id();
     if (core > 0 && core < TSS_MAX_CORES) {
@@ -106,27 +94,17 @@ void tss_init_ap(void) {
 }
 
 void syscall_init(void) {
-    /* IA32_STAR (0xC0000081):
-     *   [47:32] = SYSCALL CS/SS base = 0x08 (kernel code)
-     *   [63:48] = SYSRET CS/SS base  = 0x18
-     *   SYSRET 64-bit: CS = (0x18+16)|3 = 0x2B, SS = (0x18+8)|3 = 0x23 */
     uint64_t star = ((uint64_t)0x0018 << 48) | ((uint64_t)0x0008 << 32);
     wrmsr(0xC0000081, star);
 
-    /* IA32_LSTAR (0xC0000082): SYSCALL target RIP
-     * Function pointer is identity-mapped (EFI relocation).
-     * Add PHYS_OFFSET for direct-map address (valid in user PML4). */
     extern void syscall_entry_asm(void);
     wrmsr(0xC0000082, ensure_high((uint64_t)(uintptr_t)syscall_entry_asm));
 
-    /* IA32_SFMASK (0xC0000084): RFLAGS bits to clear on SYSCALL
-     * Clear IF (0x200), TF (0x100), DF (0x400) */
     wrmsr(0xC0000084, 0x700);
 
-    /* Enable SYSCALL/SYSRET (IA32_EFER bit 0 = SCE) + NX bit (bit 11 = NXE) */
     uint64_t efer = rdmsr(0xC0000080);
-    efer |= 1;          /* SCE */
-    efer |= (1 << 11);  /* NXE — required for PTE_NX enforcement */
+    efer |= 1;
+    efer |= (1 << 11);
     wrmsr(0xC0000080, efer);
 
     serial_puts("syscall: LSTAR mode\n");

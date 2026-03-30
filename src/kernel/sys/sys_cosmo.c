@@ -1,5 +1,4 @@
-/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers.
- * Separate dispatch from Linux syscalls for clean jump-table generation. */
+/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers. */
 
 #include "internal.h"
 #include "core/rt.h"
@@ -71,12 +70,8 @@ long do_cosmo_kexec(long a1, long a2) {
     return do_kexec((const void *)a1, (size_t)a2);
 }
 
-
-/* ── CosmoRT Syscall Dispatcher (0x10000+) ────────── */
-
 long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     (void)a6;
-    /* All 0x10000+ syscalls are HW primitives — drivers only */
     process_t *p = proc_current();
     if (!p || !p->is_driver) return -EPERM;
     switch (num) {

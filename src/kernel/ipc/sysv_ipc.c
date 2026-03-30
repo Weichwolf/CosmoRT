@@ -1,7 +1,4 @@
-/* CosmoRT — SysV IPC: message queues, semaphores, shared memory
- *
- * Static tables, no dynamic alloc. Enough to pass libc-test ipc_msg/sem/shm.
- */
+/* CosmoRT — SysV IPC: message queues, semaphores, shared memory */
 
 #include "ipc/ipc.h"
 #include "proc/process.h"
@@ -14,12 +11,9 @@
 #include "arch/arch.h"
 #include "linux/abi.h"
 
-/* PTE flags (from sys/internal.h) */
 #define PTE_PRESENT (1ULL << 0)
 #define PTE_PS      (1ULL << 7)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
-
-/* ── Linux ABI constants ── */
 
 #define IPC_CREAT    01000
 #define IPC_EXCL     02000
@@ -28,14 +22,13 @@
 #define IPC_SET      1
 #define IPC_STAT     2
 #define IPC_PRIVATE  0
-#define IPC_64       0x0100  /* musl always ORs this into cmd */
+#define IPC_64       0x0100
 
 #define MSG_NOERROR  010000
 #define MSG_EXCEPT   020000
 
 #define SHM_RDONLY   010000
 
-/* semctl commands */
 #define GETPID   11
 #define GETVAL   12
 #define GETALL   13
@@ -44,7 +37,6 @@
 #define SETVAL   16
 #define SETALL   17
 
-/* ── Time helper ── */
 extern uint64_t timer_ms(void);
 extern uint64_t rtc_epoch_sec;
 
@@ -57,7 +49,6 @@ static int32_t current_pid(void) {
     return p ? (int32_t)p->pid : 0;
 }
 
-/* ── ipc_perm layout (matches musl x86_64 bits/ipc.h) ── */
 struct k_ipc_perm {
     int32_t  key;
     uint32_t uid;
@@ -70,23 +61,17 @@ struct k_ipc_perm {
     int64_t  __pad2;
 };
 
-/* ═══════════════════════════════════════════════════════════════
- * MESSAGE QUEUES
- * ═══════════════════════════════════════════════════════════════ */
-
 #define SYSV_MSG_MAX  32
-#define MSG_QBYTES    16384   /* default max bytes on queue */
+#define MSG_QBYTES    16384
 #define MSG_MAX_SIZE  8192
 
-/* Single queued message */
 typedef struct sysv_msg {
     struct sysv_msg *next;
     long   type;
     size_t size;
-    char   data[];   /* flexible array */
+    char   data[];
 } sysv_msg_t;
 
-/* msqid_ds kernel layout (matches musl x86_64 bits/msg.h) */
 struct k_msqid_ds {
     struct k_ipc_perm msg_perm;
     int64_t  msg_stime;
@@ -105,9 +90,9 @@ typedef struct {
     int32_t    key;
     sysv_msg_t *head;
     sysv_msg_t *tail;
-    uint64_t   cbytes;  /* total bytes of data on queue */
-    uint64_t   qnum;    /* number of messages */
-    uint64_t   qbytes;  /* max bytes */
+    uint64_t   cbytes;
+    uint64_t   qnum;
+    uint64_t   qbytes;
     int32_t    lspid;
     int32_t    lrpid;
     int64_t    stime;
@@ -123,7 +108,6 @@ static mutex_t msg_lock = MUTEX_INIT;
 long do_msgget(int32_t key, int flags) {
     mutex_lock(&msg_lock);
 
-    /* lookup existing */
     if (key != IPC_PRIVATE) {
         for (int i = 0; i < SYSV_MSG_MAX; i++) {
             if (msg_table[i].used && msg_table[i].key == key) {
@@ -142,7 +126,6 @@ long do_msgget(int32_t key, int flags) {
         return -ENOENT;
     }
 
-    /* allocate new */
     for (int i = 0; i < SYSV_MSG_MAX; i++) {
         if (!msg_table[i].used) {
             msgq_t *q = &msg_table[i];
@@ -156,7 +139,7 @@ long do_msgget(int32_t key, int flags) {
             q->stime = q->rtime = 0;
             q->ctime = current_time_sec();
             q->mode = flags & 0x1FF;
-            q->uid = q->cuid = 0; /* root */
+            q->uid = q->cuid = 0;
             q->gid = q->cgid = 0;
             mutex_unlock(&msg_lock);
             return i;
@@ -171,7 +154,6 @@ long do_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
     if (msqid < 0 || msqid >= SYSV_MSG_MAX) return -EINVAL;
     if (msgsz > MSG_MAX_SIZE) return -EINVAL;
 
-    /* Read mtype from user */
     long mtype;
     int r = copy_from_user(&mtype, msgp, sizeof(long));
     if (r) return r;
@@ -188,10 +170,9 @@ long do_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
     if (q->cbytes + msgsz > q->qbytes) {
         mutex_unlock(&msg_lock);
         if (msgflg & IPC_NOWAIT) return -EAGAIN;
-        return -EAGAIN; /* blocking not implemented */
+        return -EAGAIN;
     }
 
-    /* Allocate message node from pages */
     size_t alloc_sz = sizeof(sysv_msg_t) + msgsz;
     int npages = (int)((alloc_sz + 4095) / 4096);
     sysv_msg_t *m = (sysv_msg_t *)pages_alloc(npages);
@@ -204,7 +185,6 @@ long do_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
     m->size = msgsz;
     m->next = (void *)0;
 
-    /* Copy data from user (skip the mtype field) */
     if (msgsz > 0) {
         r = copy_from_user(m->data, (const char *)msgp + sizeof(long), msgsz);
         if (r) {
@@ -214,7 +194,6 @@ long do_msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
         }
     }
 
-    /* Enqueue */
     if (q->tail)
         q->tail->next = m;
     else
@@ -240,7 +219,6 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
         return -EINVAL;
     }
 
-    /* Find matching message */
     sysv_msg_t *prev = (void *)0;
     sysv_msg_t *m = q->head;
     while (m) {
@@ -256,10 +234,9 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
     if (!m) {
         mutex_unlock(&msg_lock);
         if (msgflg & IPC_NOWAIT) return -ENOMSG;
-        return -ENOMSG; /* blocking not implemented */
+        return -ENOMSG;
     }
 
-    /* Check size */
     if (m->size > msgsz) {
         if (!(msgflg & MSG_NOERROR)) {
             mutex_unlock(&msg_lock);
@@ -267,7 +244,6 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
         }
     }
 
-    /* Dequeue */
     if (prev)
         prev->next = m->next;
     else
@@ -281,7 +257,6 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
 
     mutex_unlock(&msg_lock);
 
-    /* Copy to user: type + data */
     size_t copy_sz = m->size < msgsz ? m->size : msgsz;
     int r = copy_to_user(msgp, &m->type, sizeof(long));
     if (!r && copy_sz > 0)
@@ -289,7 +264,6 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
 
     long ret = r ? r : (long)copy_sz;
 
-    /* Free message */
     size_t alloc_sz = sizeof(sysv_msg_t) + m->size;
     int npages = (int)((alloc_sz + 4095) / 4096);
     pages_free(m, npages);
@@ -298,7 +272,7 @@ long do_msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
 }
 
 long do_msgctl(int msqid, int cmd, void *buf) {
-    cmd &= ~IPC_64; /* musl always sets IPC_64 */
+    cmd &= ~IPC_64;
     if (msqid < 0 || msqid >= SYSV_MSG_MAX) return -EINVAL;
 
     mutex_lock(&msg_lock);
@@ -311,7 +285,6 @@ long do_msgctl(int msqid, int cmd, void *buf) {
 
     switch (cmd) {
     case IPC_RMID: {
-        /* Free all messages */
         sysv_msg_t *m = q->head;
         while (m) {
             sysv_msg_t *next = m->next;
@@ -373,14 +346,9 @@ long do_msgctl(int msqid, int cmd, void *buf) {
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * SEMAPHORES
- * ═══════════════════════════════════════════════════════════════ */
-
 #define SYSV_SEM_MAX     32
 #define SYSV_NSEMS_MAX   64
 
-/* semid_ds kernel layout (matches musl x86_64 bits/sem.h) */
 struct k_semid_ds {
     struct k_ipc_perm sem_perm;
     int64_t  sem_otime;
@@ -393,7 +361,6 @@ struct k_semid_ds {
     int64_t  __unused4;
 };
 
-/* sembuf (from musl) */
 struct k_sembuf {
     uint16_t sem_num;
     int16_t  sem_op;
@@ -405,7 +372,7 @@ typedef struct {
     int32_t  key;
     uint16_t nsems;
     int16_t  vals[SYSV_NSEMS_MAX];
-    int32_t  pids[SYSV_NSEMS_MAX]; /* last pid that did semop on each sem */
+    int32_t  pids[SYSV_NSEMS_MAX];
     int64_t  otime;
     int64_t  ctime;
     uint32_t mode;
@@ -438,7 +405,7 @@ long do_semget(int32_t key, int nsems, int flags) {
         return -ENOENT;
     }
 
-    if (nsems == 0) nsems = 1; /* default */
+    if (nsems == 0) nsems = 1;
 
     for (int i = 0; i < SYSV_SEM_MAX; i++) {
         if (!sem_table[i].used) {
@@ -480,7 +447,6 @@ long do_semop(int semid, const void *usops, size_t nsops) {
         return -EINVAL;
     }
 
-    /* Validate all operations first */
     for (size_t i = 0; i < nsops; i++) {
         if (sops[i].sem_num >= s->nsems) {
             mutex_unlock(&sem_lock);
@@ -488,7 +454,6 @@ long do_semop(int semid, const void *usops, size_t nsops) {
         }
     }
 
-    /* Check if all operations can proceed atomically */
     int16_t tmp[SYSV_NSEMS_MAX];
     for (int j = 0; j < s->nsems; j++)
         tmp[j] = s->vals[j];
@@ -502,11 +467,10 @@ long do_semop(int semid, const void *usops, size_t nsops) {
             if (tmp[idx] + op < 0) {
                 mutex_unlock(&sem_lock);
                 if (sops[i].sem_flg & IPC_NOWAIT) return -EAGAIN;
-                return -EAGAIN; /* blocking not implemented */
+                return -EAGAIN;
             }
             tmp[idx] += op;
         } else {
-            /* sem_op == 0: wait for zero */
             if (tmp[idx] != 0) {
                 mutex_unlock(&sem_lock);
                 if (sops[i].sem_flg & IPC_NOWAIT) return -EAGAIN;
@@ -515,7 +479,6 @@ long do_semop(int semid, const void *usops, size_t nsops) {
         }
     }
 
-    /* Apply atomically */
     int32_t pid = current_pid();
     for (size_t i = 0; i < nsops; i++) {
         int idx = sops[i].sem_num;
@@ -528,7 +491,6 @@ long do_semop(int semid, const void *usops, size_t nsops) {
     return 0;
 }
 
-/* semctl(semid, semnum, cmd, ...) — 4th arg is union semun passed as long */
 long do_semctl(int semid, int semnum, int cmd, long arg4) {
     cmd &= ~IPC_64;
     if (semid < 0 || semid >= SYSV_SEM_MAX) return -EINVAL;
@@ -577,7 +539,7 @@ long do_semctl(int semid, int semnum, int cmd, long arg4) {
             return -EINVAL;
         }
         mutex_unlock(&sem_lock);
-        return 0; /* no waiters implemented */
+        return 0;
 
     case GETZCNT:
         if (semnum < 0 || semnum >= s->nsems) {
@@ -588,7 +550,6 @@ long do_semctl(int semid, int semnum, int cmd, long arg4) {
         return 0;
 
     case IPC_STAT: {
-        /* arg4 is union semun { .buf = ptr }, i.e. arg4 is the pointer */
         struct k_semid_ds *ubuf = (struct k_semid_ds *)(uintptr_t)arg4;
         if (!ubuf) {
             mutex_unlock(&sem_lock);
@@ -635,14 +596,9 @@ long do_semctl(int semid, int semnum, int cmd, long arg4) {
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * SHARED MEMORY
- * ═══════════════════════════════════════════════════════════════ */
-
 #define SYSV_SHM_MAX     32
-#define SHM_MAX_SIZE     (16 * 1024 * 1024) /* 16MB max per segment */
+#define SHM_MAX_SIZE     (16 * 1024 * 1024)
 
-/* shmid_ds kernel layout (matches musl x86_64 bits/shm.h) */
 struct k_shmid_ds {
     struct k_ipc_perm shm_perm;
     uint64_t shm_segsz;
@@ -659,9 +615,9 @@ struct k_shmid_ds {
 typedef struct {
     int      used;
     int32_t  key;
-    uint64_t size;       /* requested size */
-    int      npages;     /* allocated pages */
-    void    *pages;      /* kernel-virtual base of page block */
+    uint64_t size;
+    int      npages;
+    void    *pages;
     uint64_t nattch;
     int32_t  cpid;
     int32_t  lpid;
@@ -757,7 +713,6 @@ long do_shmat(int shmid, const void *shmaddr, int shmflg) {
 
     uint64_t map_size = (uint64_t)seg->npages * 4096;
 
-    /* Find free VMA space */
     uint64_t base;
     if (shmaddr) {
         base = (uint64_t)shmaddr & ~0xFFFULL;
@@ -769,14 +724,12 @@ long do_shmat(int shmid, const void *shmaddr, int shmflg) {
         }
     }
 
-    /* Insert VMA */
     vma_t *v = vma_insert(&proc->vma_root, base, base + map_size, prot, map_flags);
     if (!v) {
         mutex_unlock(&shm_lock);
         return -ENOMEM;
     }
 
-    /* Map physical pages from the shm segment into the process page table */
     uint64_t phys_base = virt_to_phys(seg->pages);
     for (int i = 0; i < seg->npages; i++) {
         uint64_t phys = phys_base + (uint64_t)i * 4096;
@@ -799,13 +752,11 @@ long do_shmdt(const void *shmaddr) {
     process_t *proc = proc_current();
     if (!proc) return -ESRCH;
 
-    /* Find VMA at this address */
     vma_t *v = vma_find(proc->vma_root, addr);
     if (!v || v->start != addr) return -EINVAL;
 
     uint64_t size = v->end - v->start;
 
-    /* Find which shm segment this belongs to (by matching phys address) */
     mutex_lock(&shm_lock);
 
     for (int i = 0; i < SYSV_SHM_MAX; i++) {
@@ -813,8 +764,6 @@ long do_shmdt(const void *shmaddr) {
         if (!seg->used) continue;
         uint64_t map_size = (uint64_t)seg->npages * 4096;
         if (map_size == size) {
-            /* Check if this mapping points to our pages */
-            /* (Simplified: just match size and decrement) */
             if (seg->nattch > 0) seg->nattch--;
             seg->lpid = current_pid();
             seg->dtime = current_time_sec();
@@ -824,7 +773,6 @@ long do_shmdt(const void *shmaddr) {
 
     mutex_unlock(&shm_lock);
 
-    /* Unmap pages (decref, clear PTEs) */
     const uint64_t PHYS_MASK = 0x000FFFFFFFFFF000ULL;
     uint64_t *pml4 = proc->pml4;
     for (uint64_t va = addr; va < addr + size; va += 4096) {
@@ -836,7 +784,7 @@ long do_shmdt(const void *shmaddr) {
         uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PHYS_MASK);
         int pdi = (va >> 21) & 0x1FF;
         if (!(pd[pdi] & PTE_PRESENT)) continue;
-        if (pd[pdi] & PTE_PS) continue; /* huge page — shouldn't happen */
+        if (pd[pdi] & PTE_PS) continue;
         uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PHYS_MASK);
         int pti = (va >> 12) & 0x1FF;
         if (pt[pti] & PTE_PRESENT) {
@@ -847,7 +795,6 @@ long do_shmdt(const void *shmaddr) {
         }
     }
 
-    /* Remove VMA */
     vma_remove(&proc->vma_root, v);
 
     return 0;
@@ -870,8 +817,6 @@ long do_shmctl(int shmid, int cmd, void *buf) {
         if (seg->nattch == 0) {
             pages_free(seg->pages, seg->npages);
         }
-        /* Mark for deletion; if nattch > 0, pages freed on last detach.
-         * For simplicity, free immediately regardless. */
         seg->used = 0;
         mutex_unlock(&shm_lock);
         return 0;

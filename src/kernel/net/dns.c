@@ -1,6 +1,4 @@
-/* CosmoRT DNS Resolver — kernel-level DNS for boot
- * Extracted from net.c (Phase D1).
- */
+/* CosmoRT DNS Resolver — kernel-level DNS for boot */
 
 #include "net/dns.h"
 #include "net/net.h"

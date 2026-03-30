@@ -2,9 +2,6 @@
 
 #include "proc/proc_internal.h"
 
-/* ── COW helpers ─────────────────────────────────── */
-
-/* Walk VMA tree, calling fn(vma, ctx) for each node */
 static void vma_walk(vma_t *node, void (*fn)(vma_t *, void *), void *ctx) {
     if (!node) return;
     vma_walk(node->left, fn, ctx);
@@ -12,8 +9,6 @@ static void vma_walk(vma_t *node, void (*fn)(vma_t *, void *), void *ctx) {
     vma_walk(node->right, fn, ctx);
 }
 
-/* Write a raw PTE value into the page table at a given virtual address.
- * Allocates intermediate levels as needed. Returns 0 on success. */
 static int write_pte_raw(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) {
     if (vaddr >= 0x800000000000ULL) return -1;
     uint64_t *pdpt = get_or_alloc_level(user_pml4, (vaddr >> 39) & 0x1FF);
@@ -26,19 +21,14 @@ static int write_pte_raw(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) 
     return 0;
 }
 
-/* Set PTE for a virtual address in-place (must already be mapped at 4KB level).
- * Caller must ensure huge pages are split beforehand. */
 static void set_pte_inplace(uint64_t *user_pml4, uint64_t vaddr, uint64_t pte_val) {
     uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[(vaddr >> 39) & 0x1FF] & PTE_ADDR_MASK);
     uint64_t *pd   = (uint64_t *)phys_to_virt(pdpt[(vaddr >> 30) & 0x1FF] & PTE_ADDR_MASK);
-    /* Huge page sanity check: caller must split before calling */
     if (pd[(vaddr >> 21) & 0x1FF] & PTE_PS) return;
     uint64_t *pt   = (uint64_t *)phys_to_virt(pd[(vaddr >> 21) & 0x1FF] & PTE_ADDR_MASK);
     pt[(vaddr >> 12) & 0x1FF] = pte_val;
 }
 
-/* Split a 2MB huge page PMD entry into 512 4KB PTEs in parent's page tables.
- * Called during COW fork so each sub-page gets individual COW tracking. */
 static int fork_split_huge_pmd(uint64_t *user_pml4, uint64_t va_base) {
     int pml4i = (va_base >> 39) & 0x1FF;
     if (!(user_pml4[pml4i] & PTE_PRESENT)) return -1;
@@ -63,25 +53,20 @@ static int fork_split_huge_pmd(uint64_t *user_pml4, uint64_t va_base) {
     return 0;
 }
 
-/* Copy a single VMA's pages from parent to child (COW for private, share for shared) */
 struct copy_ctx { uint64_t *src_pml4; uint64_t *dst_pml4; vma_t **dst_root; int err; };
 
 static void copy_one_vma(vma_t *v, void *arg) {
     struct copy_ctx *ctx = (struct copy_ctx *)arg;
     if (ctx->err) return;
 
-    /* Insert VMA into child's tree */
     vma_t *cv = vma_insert(ctx->dst_root, v->start, v->end, v->prot, v->flags);
     if (!cv) { ctx->err = 1; return; }
     cv->file_ino = v->file_ino;
     cv->file_offset = v->file_offset;
     cv->file_backend = v->file_backend;
 
-    /* MAP_SHARED anonymous: share same physical pages (no copy) */
     int shared = (v->flags & VMA_SHARED);
 
-    /* Split any huge pages in the parent before COW iteration.
-     * This ensures 4KB-granularity COW tracking. */
     if (!shared) {
         for (uint64_t va = v->start; va < v->end; va += 0x200000) {
             uint64_t aligned = va & 0xFFFFFFFFFFE00000ULL;
@@ -104,7 +89,6 @@ static void copy_one_vma(vma_t *v, void *arg) {
         uint64_t src_phys = pte & PTE_ADDR_MASK;
 
         if (shared) {
-            /* Map same physical page into child — writes visible in both */
             page_incref(src_phys);
             if (map_user_page(ctx->dst_pml4, va, src_phys, v->prot) < 0) {
                 page_decref(src_phys);
@@ -112,18 +96,14 @@ static void copy_one_vma(vma_t *v, void *arg) {
                 return;
             }
         } else {
-            /* Private: COW — share page read-only in both processes.
-             * Strip LAZYFREE: COW semantics take precedence. */
             uint64_t cow_pte = (pte & ~(PTE_WRITE | PTE_LAZYFREE)) | PTE_COW;
-            /* If page was writable, mark both parent and child as COW read-only */
             if (pte & PTE_WRITE) {
                 set_pte_inplace(ctx->src_pml4, va, cow_pte);
             } else {
-                /* Already read-only: just copy PTE, set COW if VMA is writable */
                 if (v->prot & PROT_WRITE)
                     cow_pte = (pte & ~(PTE_WRITE | PTE_LAZYFREE)) | PTE_COW;
                 else
-                    cow_pte = pte & ~PTE_LAZYFREE; /* truly read-only, no COW needed */
+                    cow_pte = pte & ~PTE_LAZYFREE;
             }
             page_incref(src_phys);
             if (write_pte_raw(ctx->dst_pml4, va, cow_pte) < 0) {
@@ -147,14 +127,11 @@ int copy_address_space(process_t *child, process_t *parent) {
     };
     vma_walk(parent->vma_root, copy_one_vma, &ctx);
 
-    /* Parent PTEs were modified (WRITE removed, COW set) — flush TLB */
     arch_flush_tlb();
     tlb_shootdown(virt_to_phys(parent->pml4));
 
     return ctx.err ? -1 : 0;
 }
-
-/* ── fork (2.2) ──────────────────────────────────── */
 
 extern void sched_add(thread_t *t);
 
@@ -164,46 +141,36 @@ long do_fork(void) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
 
-    /* Allocate child process */
     process_t *child = proc_alloc();
     if (!child) return -ENOMEM;
     child->parent_pid = parent->pid;
-    child->pgid = parent->pgid;  /* inherit process group */
-    child->sid  = parent->sid;   /* inherit session */
+    child->pgid = parent->pgid;
+    child->sid  = parent->sid;
     child->vma_root = 0;
 
-    /* Stop other parent threads during page copy to prevent stale data.
-     * Use saved_priority as a marker: set to -2 for threads we suspend.
-     * Suspend RUNNABLE threads directly. For RUNNING threads on other cores,
-     * mark them and send IPI to force them off-CPU before copying. */
     int need_ipi = 0;
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
         if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
             t->state = THREAD_BLOCKED;
-            t->saved_priority = -2; /* mark: we stopped this one */
+            t->saved_priority = -2;
             if (t->cpu_affinity >= 0) need_ipi = 1;
-            else need_ipi = 1; /* any RUNNING thread may be on another core */
+            else need_ipi = 1;
         }
     }
     if (need_ipi) {
-        /* Send IPI to all other cores and wait for them to deschedule.
-         * The TLB shootdown vector (0xFE) forces CR3 reload.
-         * After IPI + pause loop, suspended threads are no longer executing. */
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(parent->pml4));
     }
 
-    /* Deep-copy address space (hold parent VMA lock to prevent concurrent modification) */
     uint64_t fork_irqf;
     spin_lock_irq(&parent->lock, &fork_irqf);
     int copy_err = copy_address_space(child, parent);
     spin_unlock_irq(&parent->lock, fork_irqf);
 
-    /* Resume only threads we stopped (saved_priority == -2) */
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
         if (t != cur && t->saved_priority == -2) {
             t->saved_priority = -1;
-            sched_add(t); /* sets THREAD_RUNNABLE and enqueues */
+            sched_add(t);
         }
     }
 
@@ -224,23 +191,20 @@ long do_fork(void) {
     child->brk_current = parent->brk_current;
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
-    child->is_driver = 0; /* HW access not inherited — only via proc_create_from_vfs */
+    child->is_driver = 0;
     for (int ci = 0; ci < 256; ci++) {
         child->cwd[ci] = parent->cwd[ci];
         if (!parent->cwd[ci]) break;
     }
 
-    /* Inherit cmdline (for /proc/pid/cmdline) */
     child->cmdline_len = parent->cmdline_len;
     for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
         child->cmdline[ci] = parent->cmdline[ci];
 
-    /* Inherit signal state */
-    child->sig_pending = 0; /* child starts with no pending signals */
+    child->sig_pending = 0;
     for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
-    /* Duplicate fd_table — increment refcount on all shared FD objects */
     for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];
         if (parent->fds.entries[i].obj) {
@@ -259,7 +223,6 @@ long do_fork(void) {
     for (int w = 0; w < FD_BITMAP_WORDS; w++)
         child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
 
-    /* Create child thread with parent's saved registers */
     thread_t *ct = thread_alloc();
     if (!ct) {
         free_address_space(child->pml4);
@@ -270,10 +233,8 @@ long do_fork(void) {
         return -ENOMEM;
     }
 
-    /* Save parent's user state */
     save_user_state_for_block(cur, 0);
 
-    /* Copy register state — child gets RAX=0 (fork returns 0 in child) */
     ct->rip = cur->rip;
     ct->rsp = cur->rsp;
     ct->rflags = cur->rflags;
@@ -303,9 +264,8 @@ long do_fork(void) {
     ct->timeslice = RR_TIMESLICE;
     ct->proc = child;
     ct->state = THREAD_RUNNABLE;
-    ct->sig_blocked = cur->sig_blocked; /* inherit parent thread's signal mask */
+    ct->sig_blocked = cur->sig_blocked;
 
-    /* Kernel stack */
     ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!ct->kstack) {
         thread_free(ct);
@@ -322,17 +282,11 @@ long do_fork(void) {
     child->threads = ct;
     child->thread_count = 1;
 
-    /* Add child thread to scheduler */
     sched_add(ct);
 
     return (long)child->pid;
 }
 
-/* ── vfork (CLONE_VM|CLONE_VFORK) ────────────────── */
-
-/* Used by musl's posix_spawn: clone(CLONE_VM|CLONE_VFORK|SIGCHLD, child_stack).
- * Creates a real child process (COW fork) with the specified child stack.
- * Parent blocks until child calls exec or exit. */
 long do_vfork(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls) {
     percpu_t *cpu = percpu_self();
@@ -340,7 +294,6 @@ long do_vfork(unsigned long flags, void *child_stack,
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
 
-    /* Reuse do_fork logic: allocate child process + COW address space */
     process_t *child = proc_alloc();
     if (!child) return -ENOMEM;
     child->parent_pid = parent->pid;
@@ -348,7 +301,6 @@ long do_vfork(unsigned long flags, void *child_stack,
     child->sid  = parent->sid;
     child->vma_root = 0;
 
-    /* Stop other parent threads during page copy */
     int need_ipi = 0;
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
         if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
@@ -362,13 +314,11 @@ long do_vfork(unsigned long flags, void *child_stack,
         tlb_shootdown(virt_to_phys(parent->pml4));
     }
 
-    /* COW address space copy */
     uint64_t fork_irqf;
     spin_lock_irq(&parent->lock, &fork_irqf);
     int copy_err = copy_address_space(child, parent);
     spin_unlock_irq(&parent->lock, fork_irqf);
 
-    /* Resume suspended threads */
     for (thread_t *t = parent->threads; t; t = t->proc_next) {
         if (t != cur && t->saved_priority == -2) {
             t->saved_priority = -1;
@@ -385,7 +335,6 @@ long do_vfork(unsigned long flags, void *child_stack,
         return -ENOMEM;
     }
 
-    /* Copy process metadata (same as do_fork) */
     child->brk_base = parent->brk_base;
     child->brk_current = parent->brk_current;
     child->mmap_next = parent->mmap_next;
@@ -402,7 +351,6 @@ long do_vfork(unsigned long flags, void *child_stack,
     for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
-    /* Duplicate fd_table */
     for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];
         if (parent->fds.entries[i].obj) {
@@ -421,7 +369,6 @@ long do_vfork(unsigned long flags, void *child_stack,
     for (int w = 0; w < FD_BITMAP_WORDS; w++)
         child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
 
-    /* Create child thread */
     thread_t *ct = thread_alloc();
     if (!ct) {
         free_address_space(child->pml4); child->pml4 = 0;
@@ -431,10 +378,8 @@ long do_vfork(unsigned long flags, void *child_stack,
         return -ENOMEM;
     }
 
-    /* Save parent user state (populates cur->rip, rsp, etc. from syscall frame) */
     save_user_state_for_block(cur, 0);
 
-    /* Copy register state from parent — child gets RAX=0 */
     ct->rip = cur->rip;
     ct->rflags = cur->rflags;
     ct->rax = 0;
@@ -453,10 +398,8 @@ long do_vfork(unsigned long flags, void *child_stack,
     ct->r14 = cur->r14;
     ct->r15 = cur->r15;
 
-    /* Child uses the provided stack (clone semantics, not fork) */
     ct->rsp = child_stack ? (uint64_t)child_stack : cur->rsp;
 
-    /* TLS */
     if (flags & CLONE_SETTLS)
         ct->fs_base = tls;
     else
@@ -474,24 +417,20 @@ long do_vfork(unsigned long flags, void *child_stack,
     ct->state = THREAD_RUNNABLE;
     ct->sig_blocked = cur->sig_blocked;
 
-    /* CLONE_PARENT_SETTID */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
         if (user_ok((uint64_t)parent_tid, 4))
             *parent_tid = ct->tid;
     }
 
-    /* CLONE_CHILD_SETTID */
     if ((flags & CLONE_CHILD_SETTID) && child_tid) {
         if (user_ok((uint64_t)child_tid, 4))
             *child_tid = ct->tid;
     }
 
-    /* CLONE_CHILD_CLEARTID */
     ct->clear_child_tid = 0;
     if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
         ct->clear_child_tid = child_tid;
 
-    /* Kernel stack */
     ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!ct->kstack) {
         thread_free(ct);
@@ -507,22 +446,15 @@ long do_vfork(unsigned long flags, void *child_stack,
     child->threads = ct;
     child->thread_count = 1;
 
-    /* Record parent thread TID so exec/exit can wake us */
     child->vfork_parent_tid = cur->tid;
 
-    /* CLONE_VFORK: block parent until child execs or exits.
-     * Cannot use event_wait — it rewinds the syscall on wake (would re-clone).
-     * Instead: save state with return value = child PID, block, let wake re-add
-     * us to the run queue. Scheduler resumes us in userspace with RAX = child PID. */
-    cur->rax = (uint64_t)(long)child->pid; /* clone returns child PID in parent */
+    cur->rax = (uint64_t)(long)child->pid;
     cur->state = THREAD_BLOCKED;
 
-    /* Schedule child first (it will exec/exit and then wake us) */
     sched_add(ct);
 
     extern uint64_t pml4[];
     arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(cur);
-    /* unreachable — scheduler resumes us after child wakes us */
     return (long)child->pid;
 }

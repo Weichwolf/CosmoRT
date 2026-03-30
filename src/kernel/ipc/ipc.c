@@ -1,8 +1,4 @@
-/* CosmoRT IPC — Synchronous message passing + Notifications
- *
- * Per-endpoint locks for scalability (no global contention).
- * Global lock only for endpoint allocation (rare path).
- */
+/* CosmoRT IPC — Synchronous message passing + Notifications */
 
 #include "ipc/ipc.h"
 #include "proc/process.h"
@@ -15,11 +11,6 @@
 
 extern void sched_add(thread_t *t);
 
-/* Thread lookup — delegated to process.c O(1) tid_table */
-
-/* Wake a thread blocked on IPC receive via event_post.
- * event_post writes EQ_IPC_MSG into the thread's event queue,
- * then calls sched_wake (CAS BLOCKED→RUNNABLE). Race-free. */
 static void ipc_wake_receiver(ipc_endpoint_t *ep) {
     if (ep->blocked_tid > 0) {
         thread_t *t = thread_find_by_tid(ep->blocked_tid);
@@ -31,9 +22,8 @@ static void ipc_wake_receiver(ipc_endpoint_t *ep) {
 }
 
 static ipc_endpoint_t endpoints[IPC_MAX_ENDPOINTS];
-static spinlock_t ipc_alloc_lock = SPINLOCK_INIT; /* only for create */
+static spinlock_t ipc_alloc_lock = SPINLOCK_INIT;
 
-/* Per-endpoint lock helpers (cast _lock field to spinlock_t*) */
 static inline spinlock_t *ep_lock(ipc_endpoint_t *ep) {
     return (spinlock_t *)&ep->_lock;
 }
@@ -125,7 +115,6 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
         return 0;
     }
 
-    /* Record blocked info and set state */
     ep->state = EP_RECV_WAIT;
     process_t *cur = proc_current();
     if (cur) ep->blocked_pid = (int)cur->pid;
@@ -133,14 +122,9 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
     if (ct) ep->blocked_tid = ct->tid;
     spin_unlock_irq(ep_lock(ep), flags);
 
-    /* Block via event_wait — ipc_send/ipc_notify will event_post us.
-     * Thread context: event_wait blocks (never returns, syscall restarts).
-     * On restart, ipc_recv re-executes and finds the message.
-     * No thread context (boot): fall back to spin + EAGAIN. */
     if (ct) {
         event_t ev;
         event_wait(&ct->eq, &ev, -1);
-        /* unreachable — syscall restarts, re-enters ipc_recv */
     }
     return -EAGAIN;
 }
@@ -191,15 +175,11 @@ int ipc_notify(int ep_id, uint64_t bits) {
 }
 
 int ipc_wait_any(const ipc_wait_set_t *set, ipc_msg_t *msg) {
-    /* Fast path: scan all endpoints for a ready message */
     for (int i = 0; i < set->count; i++) {
         if (ipc_try_recv(set->ep_ids[i], msg) == 0)
             return i;
     }
 
-    /* No message available — register this thread on all endpoints
-     * and block via event_wait. On wake (from any endpoint's sender),
-     * the syscall restarts and the fast-path scan finds the message. */
     thread_t *ct = thread_current();
     if (!ct) return -1;
 
@@ -220,7 +200,6 @@ int ipc_wait_any(const ipc_wait_set_t *set, ipc_msg_t *msg) {
 
     event_t ev;
     event_wait(&ct->eq, &ev, -1);
-    /* unreachable — syscall restarts, re-enters ipc_wait_any */
 
     return -1;
 }

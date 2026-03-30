@@ -1,10 +1,4 @@
-/* CosmoRT Spinlock — ticket lock for SMP safety
- *
- * Always used with IRQ disable: spin_lock_irq / spin_unlock_irq.
- * Bare spin_lock/spin_unlock for contexts where IRQs are already disabled.
- *
- * This is the hardware spinlock. For sleeping locks with PI, use mutex_t.
- */
+/* CosmoRT Spinlock — ticket lock for SMP safety */
 #ifndef SPINLOCK_H
 #define SPINLOCK_H
 
@@ -24,7 +18,7 @@ static inline void spin_lock(spinlock_t *l) {
 }
 
 static inline void spin_unlock(spinlock_t *l) {
-    __asm__ volatile("" ::: "memory"); /* compiler barrier */
+    __asm__ volatile("" ::: "memory");
     __sync_fetch_and_add(&l->owner, 1);
 }
 
@@ -33,7 +27,6 @@ static inline int spin_trylock(spinlock_t *l) {
     return __sync_bool_compare_and_swap(&l->next, cur, cur + 1);
 }
 
-/* Lock with IRQ save/disable */
 static inline uint64_t irq_save(void) {
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");

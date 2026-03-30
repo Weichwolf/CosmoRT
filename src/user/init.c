@@ -1,6 +1,5 @@
 /* CosmoRT init — open console, exec INIT_PATH (default /sbin/init) */
 
-
 #define SYS_OPEN   2
 #define SYS_DUP2   33
 #define SYS_CLOSE  3

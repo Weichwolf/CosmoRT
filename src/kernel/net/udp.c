@@ -1,8 +1,4 @@
-/* CosmoRT UDP — Hash-Table Demux, Slab Pool, Send/Recv
- * Extracted from net.c (Phase B).
- * E0: Sleep/Wake statt Busy-Wait.
- * Skal-C: Hash-table (64 buckets) + slab pool (128 slots).
- */
+/* CosmoRT UDP — Hash-Table Demux, Slab Pool, Send/Recv */
 
 #include "net/net.h"
 #include "net/net_util.h"
@@ -12,8 +8,6 @@
 #include "core/event_queue.h"
 #include "core/rt.h"
 #include "mm/slab.h"
-
-/* ── Slab Pool ───────────────────────────────────────── */
 
 static udp_sock_t udp_pool[UDP_POOL_SIZE];
 static slab_t     udp_slab;
@@ -25,12 +19,8 @@ static void udp_slab_ensure_init(void) {
     udp_slab_inited = 1;
 }
 
-/* ── Hash Table (port → chain) ───────────────────────── */
-
 static udp_sock_t *udp_hash[UDP_HASH_SIZE];
 static mutex_t     udp_table_lock = MUTEX_INIT;
-
-/* ── Lookup (lock-free, called from RT-Core hot path) ── */
 
 udp_sock_t *udp_find(uint16_t port) {
     uint32_t idx = port & (UDP_HASH_SIZE - 1);
@@ -42,36 +32,31 @@ udp_sock_t *udp_find(uint16_t port) {
     return 0;
 }
 
-/* ── Bind / Unbind ───────────────────────────────────── */
-
 udp_sock_t *udp_bind(uint16_t port) {
     udp_slab_ensure_init();
 
-    /* Pre-alloc outside table lock to avoid nested locks */
     udp_sock_t *fresh = (udp_sock_t *)slab_alloc(&udp_slab);
 
     mutex_lock(&udp_table_lock);
 
-    /* Duplicate check in hash chain */
     uint32_t idx = port & (UDP_HASH_SIZE - 1);
     for (udp_sock_t *s = udp_hash[idx]; s; s = s->hash_next) {
         if (s->port == port) {
             mutex_unlock(&udp_table_lock);
             if (fresh) slab_free(&udp_slab, fresh);
-            return s; /* already bound — reuse */
+            return s;
         }
     }
 
     if (!fresh) {
         mutex_unlock(&udp_table_lock);
-        return 0; /* pool exhausted */
+        return 0;
     }
 
     fresh->port = port;
     fresh->q = (pkt_queue_t)PKT_QUEUE_INIT;
     fresh->wait_thread = 0;
 
-    /* Insert at head of hash chain */
     fresh->hash_next = udp_hash[idx];
     __atomic_store_n(&udp_hash[idx], fresh, __ATOMIC_RELEASE);
 
@@ -104,15 +89,12 @@ void udp_unbind(udp_sock_t *s) {
     slab_free(&udp_slab, s);
 }
 
-/* ── UDP Input (from dispatcher) ───────────────────── */
-
 int udp_input(const uint8_t *pkt, int len) {
     if (len < 42) return 0;
     uint16_t dport = get16(pkt + 36);
     udp_sock_t *s = udp_find(dport);
     if (!s) return 0;
     q_push(&s->q, pkt, len);
-    /* Wake thread blocked on recv */
     struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
     if (wt) event_post(wt, EQ_SOCKET_DATA, 0);
     return 1;
@@ -123,8 +105,6 @@ int udp_poll_ready(uint16_t port) {
     if (!s) return 0;
     return q_count(&s->q) > 0;
 }
-
-/* ── UDP Send ──────────────────────────────────────── */
 
 int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
                  uint16_t src_port, const void *data, int len) {
@@ -141,27 +121,21 @@ int net_udp_send(const uint8_t *dst_ip, uint16_t dst_port,
 
     net_build_ip_hdr(pkt, gw_mac, dst_ip, 17, (uint16_t)udp_len);
 
-    /* UDP header */
     put16(pkt + 34, src_port);
     put16(pkt + 36, dst_port);
     put16(pkt + 38, (uint16_t)udp_len);
-    /* UDP checksum = 0 (optional for IPv4) */
 
-    /* Payload */
     mcpy(pkt + 42, data, len);
 
     net_send_raw(pkt, (uint16_t)(14 + ip_len));
     return len;
 }
 
-/* ── UDP Recv ──────────────────────────────────────── */
-
 int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
                  uint8_t *src_ip_out, uint16_t *src_port_out,
                  int timeout_ms) {
-    (void)timeout_ms; /* timeout handled by caller via thread blocking */
+    (void)timeout_ms;
 
-    /* Auto-bind if not already registered */
     udp_sock_t *s = udp_find(local_port);
     if (!s) {
         s = udp_bind(local_port);
@@ -170,9 +144,8 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
 
     uint8_t pkt[Q_PKT];
     int len = q_pop(&s->q, pkt, sizeof(pkt));
-    if (len < 42) return -1; /* no data — caller blocks */
+    if (len < 42) return -1;
 
-    /* Extract payload */
     int ihl = (pkt[14] & 0x0F) * 4;
     int udp_off = 14 + ihl;
     int udp_len = get16(pkt + udp_off + 4);
@@ -182,7 +155,6 @@ int net_udp_recv(uint16_t local_port, void *buf, int bufsize,
     if (data_len > bufsize) data_len = bufsize;
     mcpy(buf, pkt + data_off, data_len);
 
-    /* Source address */
     if (src_ip_out) mcpy(src_ip_out, pkt + 26, 4);
     if (src_port_out) *src_port_out = get16(pkt + udp_off);
 

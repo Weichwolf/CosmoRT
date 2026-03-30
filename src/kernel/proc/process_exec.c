@@ -2,10 +2,6 @@
 
 #include "proc/proc_internal.h"
 
-/* ── execve helpers ──────────────────────────────── */
-
-/* Copy user path string to kernel buffer.
- * Duplicated here because process_exec.c is a separate compilation unit. */
 #define PATH_MAX_PROC 4096
 static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     if ((uint64_t)upath >= 0x800000000000ULL) return -EFAULT;
@@ -17,16 +13,12 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     return -ENAMETOOLONG;
 }
 
-/* Build user stack with argv, envp, auxv. Allocates stack pages.
- * Returns RSP value on success, 0 on error. */
 uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
                                  const char *const *argv, int argc,
                                  const char *const *envp, int envc,
                                  const elf_info_t *elf_info) {
-    /* Map stack pages — enough for strings + metadata.
-     * 8 pages (32KB) covers typical gcc/ld invocations. */
     #define STK_PAGES 8
-    uint8_t *stk_kern[STK_PAGES]; /* kernel-mapped page pointers */
+    uint8_t *stk_kern[STK_PAGES];
     uint64_t stk_base_va = stack_top - (uint64_t)STK_PAGES * 4096;
     for (int i = 0; i < STK_PAGES; i++) {
         uint64_t *pg = alloc_page();
@@ -37,21 +29,17 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
         stk_kern[i] = (uint8_t *)pg;
     }
 
-    /* Helper: write byte at offset within multi-page stack area.
-     * off is relative to stk_base_va. */
     #define STK_SIZE ((uint64_t)STK_PAGES * 4096)
     #define STK_BYTE(off) (stk_kern[(off) >> 12][(off) & 0xFFF])
 
-    uint64_t str_off = STK_SIZE; /* write top-down */
+    uint64_t str_off = STK_SIZE;
     uint64_t argv_addrs[EXECVE_MAX_ARGS];
     uint64_t envp_addrs[EXECVE_MAX_ENVS];
 
-    /* 16 random bytes for AT_RANDOM */
     str_off -= 16;
     str_off &= ~7ULL;
     uint64_t at_random_addr = stk_base_va + str_off;
     extern int random_get(void *buf, size_t len);
-    /* Write AT_RANDOM bytes page-aware */
     {
         uint8_t rnd[16];
         if (random_get(rnd, 16) != 0)
@@ -60,7 +48,6 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
             STK_BYTE(str_off + (uint64_t)i) = rnd[i];
     }
 
-    /* Environment strings */
     for (int i = envc - 1; i >= 0; i--) {
         int sl = 0; while (envp[i][sl]) sl++;
         if (str_off < (uint64_t)(sl + 1) + 256) return 0;
@@ -69,7 +56,6 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
             STK_BYTE(str_off + (uint64_t)j) = (uint8_t)envp[i][j];
         envp_addrs[i] = stk_base_va + str_off;
     }
-    /* Argument strings */
     for (int i = argc - 1; i >= 0; i--) {
         int sl = 0; while (argv[i][sl]) sl++;
         if (str_off < (uint64_t)(sl + 1) + 256) return 0;
@@ -81,13 +67,11 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
 
     str_off &= ~7ULL;
 
-    /* Count qwords: argc(1) + argv(argc+1) + envp(envc+1) + auxv(8*2+2) */
-    int naux = 8; /* PHDR, PHENT, PHNUM, BASE, ENTRY, PAGESZ, RANDOM, NULL */
+    int naux = 8;
     int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
     str_off -= (uint64_t)nqwords * 8;
-    str_off &= ~0xFULL; /* 16-byte align RSP at process entry */
+    str_off &= ~0xFULL;
 
-    /* Write metadata (argc, argv, envp, auxv) as qwords */
     uint64_t wp = str_off;
     #define STK_QWORD(off, val) do { \
         uint64_t _v = (val); \
@@ -95,15 +79,11 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
             STK_BYTE((off) + (uint64_t)_b) = (uint8_t)(_v >> (_b * 8)); \
     } while(0)
 
-    /* argc */
     STK_QWORD(wp, (uint64_t)argc); wp += 8;
-    /* argv pointers */
     for (int i = 0; i < argc; i++) { STK_QWORD(wp, argv_addrs[i]); wp += 8; }
-    STK_QWORD(wp, 0); wp += 8; /* argv terminator */
-    /* envp pointers */
+    STK_QWORD(wp, 0); wp += 8;
     for (int i = 0; i < envc; i++) { STK_QWORD(wp, envp_addrs[i]); wp += 8; }
-    STK_QWORD(wp, 0); wp += 8; /* envp terminator */
-    /* auxv */
+    STK_QWORD(wp, 0); wp += 8;
     STK_QWORD(wp, AT_PHDR);   wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
     STK_QWORD(wp, AT_PHENT);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
     STK_QWORD(wp, AT_PHNUM);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
@@ -121,8 +101,6 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     return stk_base_va + str_off;
 }
 
-/* Create VMAs for mapped ELF segments (using elf_info_t metadata).
- * base is the load base used (0 for ET_EXEC). */
 static void create_elf_vmas(vma_t **vma_root, const void *elf_data,
                             size_t elf_len, uint64_t base) {
     if (elf_len < 64) return;
@@ -133,7 +111,7 @@ static void create_elf_vmas(vma_t **vma_root, const void *elf_data,
     for (int i = 0; i < phnum; i++) {
         const uint8_t *ph = data + phoff + (uint64_t)i * phentsize;
         uint32_t p_type = *(const uint32_t *)ph;
-        if (p_type != 1) continue; /* PT_LOAD */
+        if (p_type != 1) continue;
         uint64_t p_vaddr = *(const uint64_t *)(ph + 16) + base;
         uint64_t p_memsz = *(const uint64_t *)(ph + 40);
         uint32_t p_flags = *(const uint32_t *)(ph + 4);
@@ -148,8 +126,6 @@ static void create_elf_vmas(vma_t **vma_root, const void *elf_data,
     }
 }
 
-/* ── execve (2.2) ────────────────────────────────── */
-
 extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
 
 long do_execve(const char *path, char *const argv[], char *const envp[]) {
@@ -157,15 +133,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *p = cur->proc;
 
-    /* Copy path to kernel buffer and resolve relative paths via CWD */
     char kpath_raw[PATH_MAX_PROC], kpath[PATH_MAX_PROC];
     int plen = copy_path_from_user_proc(kpath_raw, path, PATH_MAX_PROC);
     if (plen < 0) return -EFAULT;
     extern int resolve_path(const char *path, char *out, int outsize);
     resolve_path(kpath_raw, kpath, PATH_MAX_PROC);
 
-    /* Copy argv/envp from userspace into a flat page-allocated buffer.
-     * Layout: string data packed contiguously, pointer arrays on stack. */
     #define EXECVE_BUF_PAGES (EXECVE_BUF_SIZE / 4096)
     char *strbuf = (char *)pages_alloc(EXECVE_BUF_PAGES);
     if (!strbuf) return -ENOMEM;
@@ -221,13 +194,11 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Identify file source: ext2 inode or ramfs node */
     extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
     uint64_t ext2_ino;
     struct vfs_node *ramfs_node;
     size_t elf_len;
 
-    /* Macro to free string buffer on early exit */
     #define EXECVE_FAIL(err) do { pages_free(strbuf, EXECVE_BUF_PAGES); return (err); } while(0)
 
     int shebang_depth = 0;
@@ -251,7 +222,6 @@ shebang_retry:
         elf_len = ramfs_node->size;
     }
 
-    /* ── Shebang (#!) detection ─────────────────── */
     {
         uint8_t shebang_buf[256];
         size_t peek_len = elf_len < 256 ? elf_len : 256;
@@ -267,34 +237,28 @@ shebang_retry:
             if (++shebang_depth > SHEBANG_MAX_DEPTH)
                 EXECVE_FAIL(-ELOOP);
 
-            /* Find end of first line */
             int eol = 2;
             while (eol < (int)peek_len && shebang_buf[eol] != '\n') eol++;
 
-            /* Strip trailing \r (Windows line endings) */
             int line_end = eol;
             if (line_end > 2 && shebang_buf[line_end - 1] == '\r') line_end--;
 
-            /* Skip whitespace after #! */
             int pos = 2;
             while (pos < line_end && (shebang_buf[pos] == ' ' || shebang_buf[pos] == '\t')) pos++;
 
-            /* Extract interpreter path */
             int interp_start = pos;
             while (pos < line_end && shebang_buf[pos] != ' ' && shebang_buf[pos] != '\t') pos++;
             int interp_end = pos;
 
             if (interp_start == interp_end)
-                EXECVE_FAIL(-ENOEXEC); /* empty interpreter */
+                EXECVE_FAIL(-ENOEXEC);
 
-            /* Extract optional single argument */
             while (pos < line_end && (shebang_buf[pos] == ' ' || shebang_buf[pos] == '\t')) pos++;
             int arg_start = pos;
             while (pos < line_end && shebang_buf[pos] != ' ' && shebang_buf[pos] != '\t') pos++;
             int arg_end = pos;
             int has_arg = (arg_start < arg_end);
 
-            /* Save original script path (current kpath) into strbuf */
             char *script_path = strbuf + buf_off;
             int si = 0;
             while (si < PATH_MAX_PROC - 1 && kpath[si]) {
@@ -303,13 +267,11 @@ shebang_retry:
             strbuf[buf_off + (size_t)si] = '\0';
             buf_off += (size_t)si + 1;
 
-            /* Copy interpreter path to kpath */
             int ilen = interp_end - interp_start;
             if (ilen >= PATH_MAX_PROC) EXECVE_FAIL(-ENAMETOOLONG);
             for (int i = 0; i < ilen; i++) kpath[i] = (char)shebang_buf[interp_start + i];
             kpath[ilen] = '\0';
 
-            /* Copy optional arg to strbuf */
             char *shebang_arg = 0;
             if (has_arg) {
                 int alen = arg_end - arg_start;
@@ -320,22 +282,18 @@ shebang_retry:
                 buf_off += (size_t)alen + 1;
             }
 
-            /* Build new argv: [interp, opt_arg, script_path, orig_argv[1:]] */
             const char *new_argv[EXECVE_MAX_ARGS];
             int new_argc = 0;
 
-            /* Copy interpreter basename as argv[0] — actually use full path */
             new_argv[new_argc++] = kpath;
             if (has_arg && new_argc < EXECVE_MAX_ARGS)
                 new_argv[new_argc++] = shebang_arg;
             if (new_argc < EXECVE_MAX_ARGS)
                 new_argv[new_argc++] = script_path;
 
-            /* Append original argv[1:] */
             for (int i = 1; i < argc && new_argc < EXECVE_MAX_ARGS; i++)
                 new_argv[new_argc++] = kargv_ptrs[i];
 
-            /* Replace argv */
             argc = new_argc;
             for (int i = 0; i < argc; i++) kargv_ptrs[i] = new_argv[i];
 
@@ -345,9 +303,6 @@ shebang_retry:
 
     if (elf_len < sizeof(Elf64_Ehdr)) EXECVE_FAIL(-ENOEXEC);
 
-    /* Read only the ELF header to determine type and check for PT_INTERP.
-     * elf_load_ext2/elf_load_ramfs will read the full header internally,
-     * but we need e_type + interp path before destroying the address space. */
     uint8_t hdr_buf[sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr)];
     size_t hdr_read = sizeof(Elf64_Ehdr);
     if (ext2_ino) {
@@ -359,7 +314,6 @@ shebang_retry:
     }
     const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)hdr_buf;
 
-    /* Read program headers too */
     if (peek_eh->e_phnum > 64) EXECVE_FAIL(-ENOEXEC);
     size_t phdrs_end = (size_t)(peek_eh->e_phoff + (uint64_t)peek_eh->e_phnum * peek_eh->e_phentsize);
     if (phdrs_end > sizeof(hdr_buf) || phdrs_end > elf_len) EXECVE_FAIL(-ENOEXEC);
@@ -374,11 +328,9 @@ shebang_retry:
         }
     }
 
-    /* Scan for PT_INTERP */
     int has_interp = 0;
     char interp_path[256];
     interp_path[0] = '\0';
-    /* Track interpreter source for streaming load */
     uint64_t interp_ext2_ino = 0;
     struct vfs_node *interp_ramfs = 0;
     size_t interp_len = 0;
@@ -403,7 +355,6 @@ shebang_retry:
                 interp_path[iplen] = '\0';
                 while (iplen > 0 && interp_path[iplen - 1] == '\0') iplen--;
 
-                /* Locate interpreter: try ramfs first, then ext2 */
                 struct vfs_node *inode = vfs_lookup(interp_path);
                 if (inode && inode->type == VFS_FILE && inode->data && inode->size > 0) {
                     interp_ramfs = inode;
@@ -421,11 +372,8 @@ shebang_retry:
         }
     }
 
-    /* Switch to kernel PML4 before freeing current address space
-     * (we're currently running with p->pml4 in CR3) */
     arch_set_cr3(virt_to_phys(pml4));
 
-    /* Free current address space */
     uint64_t exec_irqf;
     spin_lock_irq(&p->lock, &exec_irqf);
     free_address_space(p->pml4);
@@ -433,7 +381,6 @@ shebang_retry:
     p->vma_root = 0;
     spin_unlock_irq(&p->lock, exec_irqf);
 
-    /* Create new PML4 */
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
         pages_free(strbuf, EXECVE_BUF_PAGES);
@@ -444,13 +391,11 @@ shebang_retry:
         return -ENOMEM;
     }
 
-    /* ASLR */
     uint64_t stack_rand = aslr_rand() & 0xFFF000ULL;
     uint64_t mmap_rand  = aslr_rand() & 0xFFFFFFF000ULL;
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
 
-    /* Load ELF via streaming (page-by-page, no large contiguous buffer) */
     uint64_t entry, stack_ptr;
     elf_info_t info;
     int load_rc;
@@ -469,11 +414,9 @@ shebang_retry:
         return -ENOEXEC;
     }
 
-    /* Create VMAs from header buffer (phdrs already in hdr_buf) */
     spin_lock_irq(&p->lock, &exec_irqf);
     create_elf_vmas(&p->vma_root, hdr_buf, phdrs_end, info.load_base);
 
-    /* Load interpreter if present */
     if (has_interp && (interp_ramfs || interp_ext2_ino) && interp_len > 0) {
         uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
         elf_info_t interp_info;
@@ -489,9 +432,6 @@ shebang_retry:
         } else {
             info.interp_base = interp_info.load_base;
             info.entry = interp_info.prog_entry;
-            /* Create interp VMAs: read interp header for phdr info */
-            /* interp_info already has the metadata; use load_base for VMA offset.
-             * We need the interp phdrs — re-read into a small buffer. */
             uint8_t ihdr[sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr)];
             size_t ihr = sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr);
             if (ihr > interp_len) ihr = interp_len;
@@ -512,7 +452,7 @@ shebang_retry:
     uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
     uint64_t guard_bottom = stack_bottom - 4096;
     vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
+               0 , MAP_PRIVATE | MAP_ANONYMOUS);
     vma_insert(&p->vma_root, stack_bottom, stack_top,
                PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
     spin_unlock_irq(&p->lock, exec_irqf);
@@ -528,14 +468,12 @@ shebang_retry:
         return -ENOMEM;
     }
 
-    /* Store executable path for /proc/self/exe */
     {
         int ei = 0;
         while (ei < 255 && kpath[ei]) { p->exe_path[ei] = kpath[ei]; ei++; }
         p->exe_path[ei] = '\0';
     }
 
-    /* Store cmdline (null-separated argv) for /proc/pid/cmdline */
     {
         int pos = 0;
         for (int i = 0; i < argc && pos < 1023; i++) {
@@ -546,7 +484,6 @@ shebang_retry:
         p->cmdline_len = pos;
     }
 
-    /* Set comm from argv[0] basename */
     {
         const char *s = kargv_ptrs[0];
         const char *base = s;
@@ -556,10 +493,8 @@ shebang_retry:
         p->comm[ci] = '\0';
     }
 
-    /* Free execve string buffer — no longer needed */
     pages_free(strbuf, EXECVE_BUF_PAGES);
 
-    /* vfork: wake blocked parent now that child has its own address space */
     if (p->vfork_parent_tid) {
         thread_t *pt = thread_find_by_tid(p->vfork_parent_tid);
         if (pt) {
@@ -569,30 +504,22 @@ shebang_retry:
         p->vfork_parent_tid = 0;
     }
 
-    /* Reset signal dispositions: POSIX requires that after exec, all signals
-     * with user handlers are reset to SIG_DFL. SIG_IGN is preserved.
-     * Pending signals survive exec — delivered under new disposition. */
     for (int si = 1; si < 64; si++) {
         if ((uint64_t)p->sig_actions[si].sa_handler > 1)
             kmemset(&p->sig_actions[si], 0, sizeof(struct k_sigaction));
     }
 
-    /* Flush event queue — stale events from pre-exec children must not
-     * confuse event_wait (e.g., sigtimedwait) after exec replaces the binary. */
     { thread_t *et = cur;
       et->eq.head = 0;
       et->eq.tail = 0;
     }
 
-    /* Close O_CLOEXEC fds — must use full close (pipe_close, fd_cleanup_entry)
-     * not just fd_close, so pipe write_open/read_open decrements happen and
-     * blocked readers/writers get woken (e.g., posix_spawn error-check pipe). */
     {
         extern void vfs_file_free_obj(void *obj);
         extern void fd_cleanup_entry(int fde_type, void *fde_obj);
         for (int i = 0; i < FD_MAX; i++) {
             if (p->fds.entries[i].type != FD_NONE &&
-                (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
+                (p->fds.entries[i].flags & 0x80000)) {
                 int ftype = p->fds.entries[i].type;
                 if (ftype == FD_FILE) {
                     vfs_file_free_obj(p->fds.entries[i].obj);
@@ -604,7 +531,6 @@ shebang_retry:
         }
     }
 
-    /* Set up thread for new execution */
     cur->rip = entry;
     cur->rsp = stack_ptr;
     cur->rflags = 0x202;
@@ -616,27 +542,20 @@ shebang_retry:
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
 
-    /* Reset FPU/SSE state for new executable.
-     * FCW=0x037F: extended precision (64-bit mantissa), all exceptions masked.
-     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest. */
     kmemset(cur->fxsave_area, 0, 512);
-    *(uint16_t *)(cur->fxsave_area + 0) = 0x037F;  /* FCW */
-    *(uint32_t *)(cur->fxsave_area + 24) = 0x1F80;  /* MXCSR */
+    *(uint16_t *)(cur->fxsave_area + 0) = 0x037F;
+    *(uint32_t *)(cur->fxsave_area + 24) = 0x1F80;
 
-    /* Load new page tables and jump to userspace */
     arch_set_cr3(virt_to_phys(p->pml4));
 
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(cur->kstack_top);
     percpu_self()->kernel_rsp = cur->kstack_top;
 
-    /* Clear FS_BASE — new process has no TLS yet (libc sets it via arch_prctl) */
     arch_set_fs_base(0);
 
-    /* Restore clean FPU state */
     arch_fxrstor(cur->fxsave_area);
 
     proc_enter_ring3(cur);
-    /* unreachable */
     return 0;
 }

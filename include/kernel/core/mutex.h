@@ -1,8 +1,4 @@
-/* CosmoRT Mutex — sleeping lock with Priority Inheritance
- *
- * Thin wrapper around rt_mutex_t. Provides a generic mutex API
- * for kernel subsystems that don't need direct rt_mutex access.
- */
+/* CosmoRT Mutex — sleeping lock with Priority Inheritance */
 #ifndef MUTEX_H
 #define MUTEX_H
 

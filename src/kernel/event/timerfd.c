@@ -6,10 +6,7 @@
 #include "core/timer.h"
 #include "event/fd.h"
 
-/* User-pointer validation + copy helpers */
 #include "uaccess.h"
-
-/* ── Timerfd pool ────────────────────────────────── */
 
 #define TIMERFD_POOL_MAX 16
 
@@ -19,8 +16,6 @@ static slab_t    timerfd_slab;
 void timerfd_init(void) {
     slab_init(&timerfd_slab, timerfd_pool, (int)sizeof(timerfd_t), TIMERFD_POOL_MAX);
 }
-
-/* ── SYS_TIMERFD_CREATE (283) ────────────────────── */
 
 long do_timerfd_create(int clockid, int flags) {
     (void)clockid;
@@ -40,7 +35,6 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->refcount = 1;
     tfd->lock = (mutex_t)MUTEX_INIT;
 
-    /* TFD_CLOEXEC/TFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
     int fd_flags = O_RDWR;
     if (flags & TFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
     if (flags & TFD_NONBLOCK) fd_flags |= O_NONBLOCK;
@@ -104,13 +98,12 @@ long do_timerfd_settime(int fd, int tfd_flags,
         tfd->expire_tsc = 0;
         tfd->interval_tsc = 0;
     } else {
-        if (tfd_flags & 1) /* TFD_TIMER_ABSTIME */
+        if (tfd_flags & 1)
             tfd->expire_ms = val_ms;
         else
             tfd->expire_ms = timer_ms() + val_ms;
         tfd->interval_ms = int_ms;
-        /* TSC-based deadline (authoritative, sub-ms precision) */
-        if (tfd_flags & 1) /* TFD_TIMER_ABSTIME */
+        if (tfd_flags & 1)
             tfd->expire_tsc = timer_boot_tsc + val_ms * timer_tsc_per_ms;
         else
             tfd->expire_tsc = timer_tsc_now() + val_ms * timer_tsc_per_ms;
@@ -123,8 +116,6 @@ long do_timerfd_settime(int fd, int tfd_flags,
     return 0;
 }
 
-/* Check if any timerfd has expired — used by epoll_check_timeouts.
- * TSC-based: no timer_ms() call on hot path. */
 int timerfd_any_expired(void) {
     uint64_t now_tsc = timer_tsc_now();
     for (int i = 0; i < TIMERFD_POOL_MAX; i++) {
@@ -164,7 +155,7 @@ long timerfd_read(void *obj, void *buf, long count) {
     tfd->expirations = 0;
     mutex_unlock(&tfd->lock);
 
-    copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
+    copy_to_user(buf, &val, sizeof(val));
     return (long)sizeof(val);
 }
 

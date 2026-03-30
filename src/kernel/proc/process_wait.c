@@ -2,17 +2,12 @@
 
 #include "proc/proc_internal.h"
 
-/* ── Process cleanup (2.3) ───────────────────────── */
-
 void proc_cleanup(process_t *p) {
     if (!p) return;
 
-    /* Release all advisory file locks held by this process */
     extern void flock_release_pid(uint32_t pid);
     flock_release_pid(p->pid);
 
-    /* Close all FDs — decrement refcount, free when last ref.
-     * exit_kill_process already does this, so entries may be FD_NONE. */
     for (int i = 0; i < FD_MAX; i++) {
         int type = p->fds.entries[i].type;
         if (type == FD_FILE) {
@@ -25,49 +20,32 @@ void proc_cleanup(process_t *p) {
     }
     for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
-    /* Free threads.
-     * exit_kill_process sets sibling threads to DEAD with proc=NULL. Those
-     * threads may still be in the run queue — the scheduler drains and frees
-     * them lazily (see sched_loop). Only free threads still owned by this
-     * process (proc != NULL), which means exit_kill_process didn't orphan them.
-     * The main thread (which executed exit_group) is always safe: it did
-     * longjmp back to sched_loop and was not re-enqueued. */
     thread_t *t = p->threads;
     while (t) {
         thread_t *next = t->proc_next;
         if (t->proc == p) {
-            /* Still owned by this process — safe to free */
             t->state = THREAD_DEAD;
             thread_free(t);
         }
-        /* else: orphaned by exit_kill_process (proc=NULL), scheduler frees it */
         t = next;
     }
     p->threads = 0;
     p->main_thread = 0;
     p->thread_count = 0;
 
-    /* Shared VMA pages belong to the allocator — clear PTEs so
-     * free_address_space doesn't double-free them. */
     unmap_shared_vmas(p->vma_root, p->pml4);
 
-    /* Free address space (pages + page tables) */
     free_address_space(p->pml4);
     p->pml4 = 0;
 
-    /* Free VMAs */
     vma_free_tree(p->vma_root);
     p->vma_root = 0;
 
-    /* Clear lookup table entry */
     if (p->pid < PID_TABLE_MAX)
         pid_table[p->pid] = 0;
 
-    /* Free process struct */
     slab_free(&proc_slab, p);
 }
-
-/* ── wait4 (2.2) ─────────────────────────────────── */
 
 #define SA_NOCLDWAIT_VAL 0x00000002
 
@@ -78,13 +56,8 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
 
-    /* SA_NOCLDWAIT + SIG_DFL for SIGCHLD: children are auto-reaped,
-     * wait4 returns -ECHILD immediately.
-     * SA_NOCLDWAIT + handler: children are still reaped via wait4, but
-     * become zombies only briefly. We handle the SIG_DFL case here. */
-    if ((parent->sig_actions[17 /* SIGCHLD */].sa_flags & SA_NOCLDWAIT_VAL) &&
-        parent->sig_actions[17].sa_handler == (void *)0 /* SIG_DFL */) {
-        /* Auto-reap all zombie children matching pid filter */
+    if ((parent->sig_actions[17 ].sa_flags & SA_NOCLDWAIT_VAL) &&
+        parent->sig_actions[17].sa_handler == (void *)0) {
         for (int i = 1; i < PID_TABLE_MAX; i++) {
             process_t *child = pid_table[i];
             if (!child || child->parent_pid != parent->pid) continue;
@@ -98,11 +71,10 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                      (uint64_t)wstatus + sizeof(int) >= (uint64_t)wstatus))
         return -EFAULT;
 
-    int wnohang    = options & 1;  /* WNOHANG = 1 */
-    int wuntraced  = options & 2;  /* WUNTRACED = 2 */
-    int wcontinued = options & 8;  /* WCONTINUED = 8 */
+    int wnohang    = options & 1;
+    int wuntraced  = options & 2;
+    int wcontinued = options & 8;
 
-    /* Scan for matching child */
     for (;;) {
         int found_child = 0;
 
@@ -112,28 +84,26 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
             if (child->pid != (uint32_t)i) continue;
             if (child->parent_pid != parent->pid) continue;
             if (pid > 0 && child->pid != (uint32_t)pid) continue;
-            if (pid == 0 || pid == -1) { /* wait for any child */ }
+            if (pid == 0 || pid == -1) { }
 
             found_child = 1;
 
-            /* WUNTRACED: report stopped children */
             if (wuntraced && child->stop_signal) {
                 int child_pid = (int)child->pid;
                 int stop_sig = child->stop_signal;
-                child->stop_signal = 0; /* consume — one report per stop */
+                child->stop_signal = 0;
                 if (wstatus) {
-                    int kstatus = (stop_sig << 8) | 0x7F; /* WIFSTOPPED */
+                    int kstatus = (stop_sig << 8) | 0x7F;
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
                 return child_pid;
             }
 
-            /* WCONTINUED: report continued children */
             if (wcontinued && child->was_continued) {
                 int child_pid = (int)child->pid;
-                child->was_continued = 0; /* consume */
+                child->was_continued = 0;
                 if (wstatus) {
-                    int kstatus = 0xFFFF; /* WIFCONTINUED */
+                    int kstatus = 0xFFFF;
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
                 return child_pid;
@@ -148,13 +118,12 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                     if (child->exit_signal) {
                         int sig = child->exit_signal & 0x7F;
                         kstatus = sig;
-                        /* Core-dump signals: set bit 7 (WCOREDUMP) */
                         if (sig == 3 || sig == 4 || sig == 5 || sig == 6 ||
                             sig == 7 || sig == 8 || sig == 11 || sig == 31)
                             kstatus |= 0x80;
                     }
                     else
-                        kstatus = (exit_status & 0xFF) << 8;  /* normal exit */
+                        kstatus = (exit_status & 0xFF) << 8;
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
 
@@ -166,9 +135,6 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (!found_child) return -ECHILD;
         if (wnohang) return 0;
 
-        /* Block: child exists but hasn't exited/stopped/continued.
-         * event_post wakes us. event_wait either blocks (syscall restart)
-         * or returns immediately (event queued). Loop re-scans children. */
         {
             event_t ev;
             int _wr = event_wait(&cur->eq, &ev, -1);

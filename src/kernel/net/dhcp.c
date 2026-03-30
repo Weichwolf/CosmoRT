@@ -1,6 +1,4 @@
-/* CosmoRT DHCP Client — kernel-level DHCP for boot
- * Extracted from net.c (Phase D1).
- */
+/* CosmoRT DHCP Client — kernel-level DHCP for boot */
 
 #include "net/dhcp.h"
 #include "net/net.h"

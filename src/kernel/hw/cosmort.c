@@ -1,11 +1,4 @@
-/* CosmoRT Hardware Primitives — 5 kernel functions for all hardware access
- *
- * MMIO:  map device registers via page tables (direct map or dedicated VA)
- * DMA:   allocate contiguous physical pages, return both virt + phys
- * IRQ:   route I/O APIC IRQ to a handler function
- * PCI:   x86 port I/O config space access (bus/dev/fn/reg)
- * FW:    load firmware from embedded storage (ramfs/initrd)
- */
+/* CosmoRT Hardware Primitives — 5 kernel functions for all hardware access */
 
 #include "cosmort.h"
 #include "linux/abi.h"
@@ -19,8 +12,6 @@
 #include "spinlock.h"
 #include "memops.h"
 #include "arch/arch.h"
-
-/* ── MMIO Mapping ────────────────────────────────── */
 
 #define MAX_MMIO_RANGES 32
 
@@ -38,7 +29,6 @@ void hw_allow_mmio(uint64_t phys, size_t len) {
 int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
     if (!virt) return -1;
 
-    /* Always allow LAPIC and IOAPIC */
     if (phys != 0xFEE00000ULL && phys != 0xFEC00000ULL) {
         int found = 0;
         for (int i = 0; i < mmio_count; i++) {
@@ -51,20 +41,15 @@ int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
         if (!found) return -1;
     }
 
-    /* Map into user address space if called from a userspace driver */
     process_t *p = proc_current();
     if (p && p->is_driver) {
-        /* Map MMIO pages into process's user address space */
         uint64_t user_va = p->mmap_next;
         size_t aligned_len = (len + 4095) & ~4095ULL;
         for (uint64_t off = 0; off < aligned_len; off += 4096) {
-            /* Map device-memory page: RW, no-cache (PTE_PCD|PTE_PWT) */
             extern int map_user_page(uint64_t *pml4, uint64_t va, uint64_t pa, int prot);
             map_user_page(p->pml4, user_va + off, phys + off,
                           PROT_READ | PROT_WRITE);
         }
-        /* Mark pages as uncacheable by setting PCD in PTEs */
-        /* TODO: set PTE_PCD for MMIO pages */
         vma_insert(&p->vma_root, user_va, user_va + aligned_len,
                    PROT_READ | PROT_WRITE, MAP_PRIVATE);
         p->mmap_next = user_va + aligned_len;
@@ -72,7 +57,6 @@ int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
         return 0;
     }
 
-    /* Kernel-only path: ensure 2MB mapping in direct map */
     uint64_t start = phys & ~0x1FFFFFULL;
     uint64_t end = (phys + len + 0x1FFFFF) & ~0x1FFFFFULL;
     for (uint64_t addr = start; addr < end; addr += 0x200000)
@@ -80,8 +64,6 @@ int cosmo_mmio_map(uint64_t phys, size_t len, void **virt) {
     *virt = (void *)(phys + PHYS_OFFSET);
     return 0;
 }
-
-/* ── DMA Allocation ──────────────────────────────── */
 
 int cosmo_dma_alloc(size_t len, void **virt, uint64_t *phys) {
     if (!virt || !phys) return -1;
@@ -93,7 +75,6 @@ int cosmo_dma_alloc(size_t len, void **virt, uint64_t *phys) {
     uint64_t pa = virt_to_phys(v);
     *phys = pa;
 
-    /* Map into user address space if called from a userspace driver */
     process_t *p = proc_current();
     if (p && p->is_driver) {
         uint64_t user_va = p->mmap_next;
@@ -119,8 +100,6 @@ void cosmo_dma_free(void *virt, size_t len) {
     pages_free(virt, npages);
 }
 
-/* ── IRQ Registration (shared IRQ support) ───────── */
-
 #define HW_MAX_IRQ 24
 #define HW_MAX_HANDLERS_PER_IRQ 4
 
@@ -131,9 +110,8 @@ static struct {
 
 static spinlock_t irq_table_lock = SPINLOCK_INIT;
 
-/* Internal IRQ dispatcher — calls ALL registered handlers for this IRQ */
 static void hw_irq_dispatch(int vector) {
-    int irq = vector - 32;  /* APIC vectors start at 32 */
+    int irq = vector - 32;
     if (irq < 0 || irq >= HW_MAX_IRQ) return;
     for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
         if (irq_table[irq][i].handler)
@@ -147,7 +125,6 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
     uint64_t flags;
     spin_lock_irq(&irq_table_lock, &flags);
 
-    /* Find free slot for this IRQ */
     int slot = -1;
     for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
         if (!irq_table[irq][i].handler) { slot = i; break; }
@@ -161,14 +138,10 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
     irq_table[irq][slot].handler = handler;
     irq_table[irq][slot].ctx = ctx;
 
-    /* Route I/O APIC IRQ to vector 32+irq.
-     * PCI uses level-triggered, active-low interrupts.
-     * Set bit 13 (active-low) + bit 15 (level-triggered). */
     int vector = 32 + irq;
     extern void ioapic_route_irq_level(uint8_t irq, uint8_t vector);
     ioapic_route_irq_level((uint8_t)irq, (uint8_t)vector);
 
-    /* Register in kernel IRQ handler table */
     irq_register(vector, hw_irq_dispatch);
 
     spin_unlock_irq(&irq_table_lock, flags);
@@ -183,8 +156,6 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
 
     return 0;
 }
-
-/* ── PCI Configuration Space ─────────────────────── */
 
 static inline void outl(uint16_t port, uint32_t val) { arch_outl(port, val); }
 static inline uint32_t inl(uint16_t port) { return arch_inl(port); }
@@ -211,12 +182,10 @@ int cosmo_pci_config_read(int bus, int dev, int fn, int reg, uint32_t *val) {
     *val = inl(PCI_CONFIG_DATA);
     spin_unlock_irq(&pci_lock, flags);
 
-    /* Auto-register MMIO BARs (offset 0x10-0x24) as allowed MMIO ranges.
-     * BAR bit 0 = 0 means memory-mapped (not I/O port). */
     if (reg >= 0x10 && reg <= 0x24 && !(*val & 1)) {
         uint64_t bar_phys = *val & 0xFFFFFFF0ULL;
         if (bar_phys)
-            hw_allow_mmio(bar_phys, 0x200000);  /* conservative 2MB */
+            hw_allow_mmio(bar_phys, 0x200000);
     }
 
     return 0;
@@ -241,12 +210,9 @@ int cosmo_pci_config_write(int bus, int dev, int fn, int reg, uint32_t val) {
     return 0;
 }
 
-/* ── Firmware Loading ────────────────────────────── */
-
 int cosmo_fw_load(const char *name, void **data, size_t *len) {
     if (!name || !data || !len) return -EINVAL;
 
-    /* Build path: /lib/firmware/<name> */
     char path[320];
     const char *prefix = "/lib/firmware/";
     int pi = 0;
@@ -268,15 +234,11 @@ int cosmo_fw_load(const char *name, void **data, size_t *len) {
     return 0;
 }
 
-/* ── Monotonic Time ──────────────────────────────── */
-
 extern uint64_t timer_ms(void);
 
 uint64_t hw_ms(void) {
     return timer_ms();
 }
-
-/* ── Init ────────────────────────────────────────── */
 
 void hw_init(void) {
     for (int i = 0; i < HW_MAX_IRQ; i++)
@@ -286,8 +248,6 @@ void hw_init(void) {
         }
     serial_puts("hw: 5 primitives ready\n");
 }
-
-/* ── Driver-safe wrappers ─────────────────────────── */
 
 void hw_spin_lock(hw_spinlock_t *l)   { spin_lock((spinlock_t *)l); }
 void hw_spin_unlock(hw_spinlock_t *l) { spin_unlock((spinlock_t *)l); }

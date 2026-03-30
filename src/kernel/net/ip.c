@@ -1,20 +1,14 @@
-/* CosmoRT IP — Header build, checksum, send (incl. loopback)
- * Extracted from net.c (Phase C).
- */
+/* CosmoRT IP — Header build, checksum, send (incl. loopback) */
 
 #include "net/ip.h"
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/rt.h"
 
-/* NIC driver access (defined in net.c) */
 extern const nic_driver_t *net_nic_get(void);
 
-/* Forward declarations for loopback dispatch */
 extern void tcp_input(const uint8_t *pkt, int len);
 extern int  udp_input(const uint8_t *pkt, int len);
-
-/* ── Loopback ──────────────────────────────────────── */
 
 static void loopback_inject(const uint8_t *data, uint16_t len) {
     uint8_t lo[1600];
@@ -31,16 +25,12 @@ static void loopback_inject(const uint8_t *data, uint16_t len) {
     }
 }
 
-/* ── NIC Send (with Loopback) ──────────────────────── */
-
 void ip_send_raw(const uint8_t *data, uint16_t len) {
-    /* Loopback: dst IP 127.x.x.x → feed directly into RX path */
     if (len >= 34 && data[12] == 0x08 && data[13] == 0x00 && data[30] == 127) {
         loopback_inject(data, len);
         return;
     }
 
-    /* RT-Core: send directly. Compute-Core: push into TX ring. */
     if (rt_is_current_rt()) {
         const nic_driver_t *n = net_nic_get();
         if (n) n->send(data, len);
@@ -49,8 +39,6 @@ void ip_send_raw(const uint8_t *data, uint16_t len) {
         if (tx) rt_channel_push(tx, data, (uint32_t)len);
     }
 }
-
-/* ── IP Header Build ───────────────────────────────── */
 
 void ip_build_header_tos(uint8_t *pkt, const uint8_t *dst_mac,
                          const uint8_t *dst_ip, uint8_t proto,
@@ -68,8 +56,6 @@ void ip_build_header(uint8_t *pkt, const uint8_t *dst_mac,
                      const uint8_t *dst_ip, uint8_t proto, uint16_t plen) {
     ip_build_header_tos(pkt, dst_mac, dst_ip, proto, plen, 0);
 }
-
-/* ── Compat wrappers (old API used by tcp.c, udp.c, net.c) ── */
 
 void net_send_raw(const uint8_t *data, uint16_t len) { ip_send_raw(data, len); }
 

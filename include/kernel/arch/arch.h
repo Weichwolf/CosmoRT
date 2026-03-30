@@ -1,8 +1,4 @@
-/* CosmoRT Architecture Abstraction
- *
- * Kernel code includes this header — never a platform-specific one.
- * The correct arch header is pulled in via preprocessor detection.
- */
+/* CosmoRT Architecture Abstraction */
 #ifndef COSMO_ARCH_H
 #define COSMO_ARCH_H
 

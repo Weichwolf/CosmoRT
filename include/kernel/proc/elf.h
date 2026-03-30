@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* ELF64 types */
 typedef uint64_t Elf64_Addr;
 typedef uint64_t Elf64_Off;
 typedef uint16_t Elf64_Half;
@@ -43,7 +42,6 @@ typedef struct {
     Elf64_Xword p_align;
 } Elf64_Phdr;
 
-/* Segment types */
 #define PT_NULL    0
 #define PT_LOAD    1
 #define PT_DYNAMIC 2
@@ -52,25 +50,20 @@ typedef struct {
 #define PT_PHDR    6
 #define PT_TLS     7
 
-/* ELF magic */
 #define ELFMAG0 0x7f
 #define ELFMAG1 'E'
 #define ELFMAG2 'L'
 #define ELFMAG3 'F'
 
-/* e_type */
 #define ET_EXEC 2
 #define ET_DYN  3
 
-/* e_machine */
 #define EM_X86_64 62
 
-/* Segment permission flags */
 #define PF_X 1
 #define PF_W 2
 #define PF_R 4
 
-/* Auxiliary vector types */
 #define AT_NULL    0
 #define AT_PHDR    3
 #define AT_PHENT   4
@@ -80,23 +73,19 @@ typedef struct {
 #define AT_ENTRY   9
 #define AT_RANDOM  25
 
-/* Extended ELF load result — carries info needed for PT_INTERP / auxv */
 typedef struct {
-    uint64_t entry;        /* entry point to jump to (interpreter's if PT_INTERP) */
-    uint64_t prog_entry;   /* program's original e_entry (relocated for ET_DYN) */
-    uint64_t prog_phdr;    /* program headers mapped address */
-    uint16_t prog_phent;   /* sizeof(Elf64_Phdr) */
-    uint16_t prog_phnum;   /* number of program headers */
-    uint64_t interp_base;  /* interpreter load base (0 if no interpreter) */
-    uint64_t brk;          /* page-aligned end of loaded segments */
-    uint64_t stack_ptr;    /* initial RSP */
-    uint64_t load_base;    /* base address used for ET_DYN (0 for ET_EXEC) */
-    char     interp[256];  /* interpreter path from PT_INTERP ("" if none) */
+    uint64_t entry;
+    uint64_t prog_entry;
+    uint64_t prog_phdr;
+    uint16_t prog_phent;
+    uint16_t prog_phnum;
+    uint64_t interp_base;
+    uint64_t brk;
+    uint64_t stack_ptr;
+    uint64_t load_base;
+    char     interp[256];
 } elf_info_t;
 
-/* Load ELF64 binary + build user stack with argv/envp/auxv.
- * Thin wrapper: elf_load_ex + build_user_stack.
- * Returns 0 on success, -1 on error. */
 #define ELF_LOAD_MAX_STRLEN 256
 int elf_load(const void *data, size_t len, uint64_t *pml4,
              uint64_t stack_top,
@@ -104,19 +93,12 @@ int elf_load(const void *data, size_t len, uint64_t *pml4,
              const char *const *envp, int envc,
              uint64_t *entry, uint64_t *stack_ptr, uint64_t *brk_out);
 
-/* Extended ELF load: maps segments + returns metadata for dynamic linking.
- * Does NOT set up the stack (caller does that with auxv info).
- * Supports ET_EXEC and ET_DYN (PIE, with ASLR base).
- * Returns 0 on success, -1 on error. */
 int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
                 uint64_t base_hint, elf_info_t *info);
 
-/* Streaming ELF load: reads from ext2 inode page-by-page.
- * No large contiguous allocation needed. */
 int elf_load_ext2(uint32_t ino, size_t file_size, uint64_t *pml4,
                   uint64_t base_hint, elf_info_t *info);
 
-/* Streaming ELF load: reads from ramfs node page-by-page. */
 int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
                    uint64_t base_hint, elf_info_t *info);
 

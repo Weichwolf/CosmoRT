@@ -1,14 +1,10 @@
-/* CosmoRT Network Stack — NIC registration, global state, packet queues.
- * Protocol modules: tcp.c, udp.c, dispatch.c, arp.c, ip.c, dns.c, dhcp.c.
- */
+/* CosmoRT Network Stack — NIC registration, global state, packet queues. */
 
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/rt.h"
 #include "core/rt_poll.h"
 #include "hw/serial.h"
-
-/* ── NIC Registration ──────────────────────────────── */
 
 static const nic_driver_t *nic;
 
@@ -25,10 +21,7 @@ void net_nic_register(const nic_driver_t *driver) {
 
 const nic_driver_t *net_nic_get(void) { return nic; }
 
-/* Network state */
 net_state_t net_state = {{0}, {0}, {0}, {0}};
-
-/* ── Packet Queues ─────────────────────────────────── */
 
 pkt_queue_t q_tcp      = PKT_QUEUE_INIT;
 pkt_queue_t q_udp_dhcp = PKT_QUEUE_INIT;
@@ -36,13 +29,10 @@ pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
 pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 
-/* Thread blocked on q_tcp (accept/connect handshake), or NULL */
 struct thread *q_tcp_wait_thread;
 
-/* Thread blocked on ARP reply (resolve), or NULL */
 struct thread *q_arp_wait_thread;
 
-/* Thread blocked on DNS reply (resolve), or NULL */
 struct thread *q_dns_wait_thread;
 
 void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
@@ -74,8 +64,6 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     return l;
 }
 
-/* ── TX Ring (Compute→RT) ──────────────────────────── */
-
 static uint8_t tx_ring_buf[NET_TX_RING_SIZE]
     __attribute__((aligned(64)));
 static rt_channel_t tx_ring;
@@ -84,8 +72,6 @@ static int tx_ring_ready;
 rt_channel_t *net_tx_channel(void) {
     return tx_ring_ready ? &tx_ring : 0;
 }
-
-/* ── Init ──────────────────────────────────────────── */
 
 int net_init(void) {
     if (!nic) return -1;

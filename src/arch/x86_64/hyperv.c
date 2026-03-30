@@ -1,8 +1,4 @@
-/* CosmoRT Hyper-V Detection, Enlightenments, SynIC, Hypercall
- *
- * Kernel-side code: modifies MSRs, IDT vectors, allocates hypercall page.
- * On non-Hyper-V systems, hyperv_detect() returns 0 and nothing else runs.
- */
+/* CosmoRT Hyper-V Detection, Enlightenments, SynIC, Hypercall */
 
 #include "hw/hyperv.h"
 #include "cosmort.h"
@@ -15,39 +11,29 @@
 #include "memops.h"
 #include "arch/arch.h"
 
-/* ---- MSR helpers ---- */
-
 static inline uint64_t rdmsr(uint32_t msr) { return arch_rdmsr(msr); }
 static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
 
-/* ---- State ---- */
-
-static void *hc_page;                  /* hypercall page (kernel virtual) */
-static uint64_t hc_phys;              /* hypercall page physical */
-static struct hv_message *simp_virt;   /* SynIC Interrupt Message Page */
+static void *hc_page;
+static uint64_t hc_phys;
+static struct hv_message *simp_virt;
 static uint64_t simp_phys;
-static void *siefp_virt;              /* SynIC Event Flags Page */
+static void *siefp_virt;
 static uint64_t siefp_phys;
 static struct hv_tsc_page *tsc_page;
 static spinlock_t hc_lock = SPINLOCK_INIT;
 
-/* VMBus message/event handlers (set by vmbus_init) */
 static void (*vmbus_msg_handler)(void);
 static void (*vmbus_evt_handler)(void);
 
 void hyperv_set_vmbus_msg_handler(void (*fn)(void)) { vmbus_msg_handler = fn; }
 void hyperv_set_vmbus_evt_handler(void (*fn)(void)) { vmbus_evt_handler = fn; }
 
-/* ---- Detection ---- */
-
 int hyperv_detect(void) {
     uint32_t eax, ebx, ecx, edx;
     arch_cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
-    /* "Microsoft Hv" = ebx:ecx:edx = 7263694D:666F736F:76482074 */
     return (ebx == 0x7263694D && ecx == 0x666F736F && edx == 0x76482074);
 }
-
-/* ---- SynIC interrupt handlers ---- */
 
 static void synic_msg_isr(int vector) {
     (void)vector;
@@ -63,13 +49,9 @@ static void synic_evt_isr(int vector) {
     lapic_eoi();
 }
 
-/* ---- Init ---- */
-
 void hyperv_init(void) {
-    /* 1. Guest OS ID (CosmoRT vendor = 0x0001, version 0.1) */
     wrmsr(HV_X64_MSR_GUEST_OS_ID, 0x0001000000010000ULL);
 
-    /* 2. Hypercall page */
     if (cosmo_dma_alloc(4096, &hc_page, &hc_phys) < 0) {
         serial_puts("hyperv: hypercall page alloc failed\n");
         return;
@@ -79,7 +61,6 @@ void hyperv_init(void) {
     serial_hex64(hc_phys);
     serial_putchar('\n');
 
-    /* 3. Reference TSC page */
     void *tsc_virt;
     uint64_t tsc_phys_addr;
     if (cosmo_dma_alloc(4096, &tsc_virt, &tsc_phys_addr) == 0) {
@@ -90,7 +71,6 @@ void hyperv_init(void) {
         serial_putchar('\n');
     }
 
-    /* 4. Register SynIC ISR vectors in IDT */
     irq_register(HV_VMBUS_MSG_VECTOR, synic_msg_isr);
     irq_register(HV_VMBUS_EVT_VECTOR, synic_evt_isr);
 
@@ -98,47 +78,37 @@ void hyperv_init(void) {
 }
 
 void hyperv_synic_init(void) {
-    /* Allocate SIMP (SynIC Interrupt Message Page) */
     if (cosmo_dma_alloc(4096, (void **)&simp_virt, &simp_phys) < 0) {
         serial_puts("hyperv: SIMP alloc failed\n");
         return;
     }
     kmemset(simp_virt, 0, 4096);
 
-    /* Allocate SIEFP (SynIC Event Flags Page) */
     if (cosmo_dma_alloc(4096, &siefp_virt, &siefp_phys) < 0) {
         serial_puts("hyperv: SIEFP alloc failed\n");
         return;
     }
     kmemset(siefp_virt, 0, 4096);
 
-    /* Enable SynIC */
     wrmsr(HV_X64_MSR_SCONTROL, 1);
 
-    /* Set SIMP and SIEFP */
     wrmsr(HV_X64_MSR_SIMP, simp_phys | 1);
     wrmsr(HV_X64_MSR_SIEFP, siefp_phys | 1);
 
-    /* Configure SINTs:
-     * SINT2 → vector 0x31 (VMBus messages), AutoEOI
-     * SINT3 → vector 0x32 (VMBus events), AutoEOI
-     * All others masked. */
     for (int i = 0; i < 16; i++) {
         if (i == HV_VMBUS_MSG_SINT) {
             wrmsr(HV_X64_MSR_SINT0 + i,
-                  (uint64_t)HV_VMBUS_MSG_VECTOR | (1ULL << 17));  /* vector + AutoEOI */
+                  (uint64_t)HV_VMBUS_MSG_VECTOR | (1ULL << 17));
         } else if (i == HV_VMBUS_EVT_SINT) {
             wrmsr(HV_X64_MSR_SINT0 + i,
                   (uint64_t)HV_VMBUS_EVT_VECTOR | (1ULL << 17));
         } else {
-            wrmsr(HV_X64_MSR_SINT0 + i, (1ULL << 16));  /* masked */
+            wrmsr(HV_X64_MSR_SINT0 + i, (1ULL << 16));
         }
     }
 
     serial_puts("hyperv: SynIC enabled (SINT2→0x31, SINT3→0x32)\n");
 }
-
-/* ---- Hypercall ---- */
 
 static uint64_t do_hypercall(uint64_t control, uint64_t input_phys, uint64_t output_phys) {
     return arch_hyperv_call(control, input_phys, output_phys, hc_page);
@@ -148,7 +118,6 @@ uint64_t hyperv_post_message(uint32_t conn_id, uint32_t msg_type,
                               const void *payload, size_t len) {
     if (!hc_page || len > 240) return (uint64_t)-1;
 
-    /* Use a DMA-accessible buffer for the hypercall input */
     static struct hv_post_msg_input msg __attribute__((aligned(4096)));
     static uint64_t msg_phys_cached;
 
@@ -166,7 +135,7 @@ uint64_t hyperv_post_message(uint32_t conn_id, uint32_t msg_type,
     if (len > 0)
         kmemcpy(msg.payload, payload, len);
 
-    uint64_t control = HV_POST_MESSAGE;  /* simple call, no fast flag */
+    uint64_t control = HV_POST_MESSAGE;
     uint64_t result = do_hypercall(control, msg_phys_cached, 0);
 
     spin_unlock_irq(&hc_lock, flags);
@@ -175,11 +144,8 @@ uint64_t hyperv_post_message(uint32_t conn_id, uint32_t msg_type,
 
 uint64_t hyperv_signal_event(uint32_t conn_id) {
     if (!hc_page) return (uint64_t)-1;
-    /* HvSignalEvent takes connection_id in input param */
     return do_hypercall(HV_SIGNAL_EVENT, conn_id, 0);
 }
-
-/* ---- Message receive ---- */
 
 struct hv_message *hyperv_simp_slot(int sint) {
     if (!simp_virt || sint < 0 || sint > 15) return 0;
@@ -196,7 +162,6 @@ int hyperv_msg_recv(int sint, void *buf, size_t bufsize) {
     if (sz > 0 && buf)
         kmemcpy(buf, slot->payload, (size_t)sz);
 
-    /* Clear the slot and signal EOM if more messages pending */
     int pending = slot->flags & 1;
     slot->type = HV_MESSAGE_NONE;
     arch_mfence();
@@ -206,8 +171,6 @@ int hyperv_msg_recv(int sint, void *buf, size_t bufsize) {
 
     return sz;
 }
-
-/* ---- Reference TSC time ---- */
 
 uint64_t hyperv_tsc_time_ns(void) {
     if (!tsc_page) return 0;
@@ -219,15 +182,14 @@ uint64_t hyperv_tsc_time_ns(void) {
     do {
         seq = tsc_page->sequence;
         arch_mfence();
-        if (seq == 0) return 0;  /* TSC page not yet valid */
+        if (seq == 0) return 0;
         scale = tsc_page->tsc_scale;
         offset = tsc_page->tsc_offset;
         tsc = arch_rdtsc();
         arch_mfence();
     } while (tsc_page->sequence != seq);
 
-    /* result = (tsc * scale) >> 64 + offset, in 100ns units */
     __uint128_t wide = (__uint128_t)tsc * scale;
     uint64_t val = (uint64_t)(wide >> 64) + (uint64_t)offset;
-    return val * 100;  /* convert 100ns → ns */
+    return val * 100;
 }

@@ -2,23 +2,17 @@
 
 #include "fs/vfs_internal.h"
 
-/* ── Helpers ─────────────────────────────────────── */
-
-/* Callback for rmdir empty-check: counts non-dot entries */
 static int rmdir_count_cb(const char *name, uint32_t ino, uint8_t type,
                           uint32_t next_pos, void *arg) {
     (void)ino; (void)type; (void)next_pos;
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
-        return 0; /* skip . and .. */
+        return 0;
     (*(int *)arg)++;
-    return 1; /* stop on first real entry */
+    return 1;
 }
-
-/* ── Directory/file mutation ─────────────────────── */
 
 int vfs_mkdir(const char *path) {
     if (!is_ramfs_path(path)) {
-        /* Check if exists */
         uint64_t ino64 = ext2_walk(path);
         if (ino64 != 0) return -EEXIST;
 
@@ -38,7 +32,6 @@ int vfs_mkdir(const char *path) {
     return 0;
 }
 
-/* Remove child from parent's linked list */
 int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
     struct vfs_node **pp = &parent->children;
     while (*pp) {
@@ -64,7 +57,6 @@ int vfs_rmdir(const char *path) {
         struct ext2_inode ip;
         if (ext2_inode_read(child_ino, &ip) < 0) return -EIO;
         if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
-        /* Check empty — only . and .. should exist */
         int entry_count = 0;
         ext2_dir_iterate(child_ino, 0, rmdir_count_cb, &entry_count);
         if (entry_count > 0) return -ENOTEMPTY;
@@ -73,7 +65,6 @@ int vfs_rmdir(const char *path) {
         if (rc == 0) {
             ext2_truncate(child_ino, 0);
             ext2_inode_free(child_ino);
-            /* Decrement parent link count (child's .. is gone) */
             struct ext2_inode pip;
             if (ext2_inode_read(parent_ino, &pip) == 0 && pip.i_links_count > 0) {
                 pip.i_links_count--;
@@ -120,7 +111,6 @@ int vfs_unlink(const char *path) {
         return rc;
     }
 
-    /* Use nofollow: unlink removes the symlink itself, not the target */
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
@@ -156,7 +146,6 @@ int vfs_rename(const char *oldpath, const char *newpath) {
         return rc;
     }
 
-    /* ramfs path */
     struct vfs_node *node = vfs_lookup(oldpath);
     if (!node) return -ENOENT;
     if (node == vfs_root_node) return -EINVAL;
@@ -188,22 +177,16 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     return 0;
 }
 
-/* ── Hard link ───────────────────────────────────── */
-
 int vfs_link(const char *oldpath, const char *newpath) {
-    /* ramfs hard links: create new directory entry pointing to same node */
     struct vfs_node *old_node = vfs_lookup(oldpath);
     if (!old_node) return -ENOENT;
-    if (old_node->type == VFS_DIR) return -EPERM; /* no hardlinks to directories */
+    if (old_node->type == VFS_DIR) return -EPERM;
 
-    /* Check new path doesn't exist */
     struct vfs_node *existing = vfs_lookup(newpath);
     if (existing) return -EEXIST;
 
-    /* Find parent directory and new name */
     char parent_path[256], new_name[256];
     int plen = kstrlen(newpath);
-    /* Find last '/' */
     int slash = plen - 1;
     while (slash > 0 && newpath[slash] != '/') slash--;
     if (slash <= 0) {
@@ -221,14 +204,13 @@ int vfs_link(const char *oldpath, const char *newpath) {
     struct vfs_node *parent = vfs_lookup(parent_path);
     if (!parent || parent->type != VFS_DIR) return -ENOENT;
 
-    /* Create a new node that shares data with the old node */
     extern struct vfs_node *node_alloc(const char *name, int type);
     struct vfs_node *link = node_alloc(new_name, old_node->type);
     if (!link) return -ENOMEM;
     link->data = old_node->data;
     link->size = old_node->size;
     link->capacity = old_node->capacity;
-    link->ino = old_node->ino; /* same inode = hard link */
+    link->ino = old_node->ino;
     link->mode = old_node->mode;
     link->uid = old_node->uid;
     link->gid = old_node->gid;

@@ -1,14 +1,4 @@
-/* CosmoRT Syscall Table — single source of truth.
- *
- * X(nr, name, handler)
- *
- * Used by:
- * - dispatch.c: generates switch cases
- * - tracing: logs syscall names via syscall_name()
- *
- * Cases with multi-statement bodies (local variables, HW_CAP_CHECK,
- * inline logic) live directly in dispatch.c and are NOT in this table.
- */
+/* CosmoRT Syscall Table — single source of truth. */
 
 #ifndef SYSCALL_TABLE_H
 #define SYSCALL_TABLE_H
@@ -16,14 +6,12 @@
 #include "linux/syscall.h"
 
 #define SYSCALL_TABLE(X) \
-    /* I/O */ \
     X(SYS_READ, read, do_read((int)a1, (void *)a2, (size_t)a3)) \
     X(SYS_WRITE, write, do_write((int)a1, (const void *)a2, (size_t)a3)) \
     X(SYS_PREAD64, pread64, do_pread64((int)a1, (void *)a2, (size_t)a3, (int64_t)a4)) \
     X(SYS_PWRITE64, pwrite64, do_pwrite64((int)a1, (const void *)a2, (size_t)a3, (int64_t)a4)) \
     X(SYS_WRITEV, writev, do_writev((int)a1, (const struct iovec *)a2, (int)a3)) \
     X(SYS_CLOSE, close, do_close((int)a1)) \
-    /* Memory */ \
     X(SYS_BRK, brk, do_brk((unsigned long)a1)) \
     X(SYS_MMAP, mmap, do_mmap((unsigned long)a1, (size_t)a2, (int)a3, (int)a4, (int)a5, a6)) \
     X(SYS_MUNMAP, munmap, do_munmap((unsigned long)a1, (size_t)a2)) \
@@ -34,17 +22,14 @@
     X(SYS_MUNLOCKALL, munlockall, do_munlockall()) \
     X(SYS_MREMAP, mremap, do_mremap((unsigned long)a1, (size_t)a2, (size_t)a3, (int)a4, (unsigned long)a5)) \
     X(SYS_MADVISE, madvise, do_madvise((unsigned long)a1, (size_t)a2, (int)a3)) \
-    /* Process lifecycle */ \
     X(SYS_CLONE, clone, do_clone((unsigned long)a1, (void *)a2, (int *)a3, (int *)a4, (unsigned long)a5)) \
     X(SYS_FORK, fork, do_fork()) \
     X(SYS_VFORK, vfork, do_vfork(CLONE_VFORK, 0, 0, 0, 0)) \
     X(SYS_EXECVE, execve, do_execve((const char *)a1, (char *const *)a2, (char *const *)a3)) \
     X(SYS_WAIT4, wait4, do_wait4((int)a1, (int *)a2, (int)a3, (void *)a4)) \
     X(SYS_CLONE3, clone3, do_clone3((void *)a1, (size_t)a2)) \
-    /* Thread/TLS */ \
     X(SYS_ARCH_PRCTL, arch_prctl, do_arch_prctl((int)a1, (unsigned long)a2)) \
     X(SYS_SET_ROBUST_LIST, set_robust_list, do_set_robust_list((void *)a1, (size_t)a2)) \
-    /* Signals */ \
     X(SYS_RT_SIGACTION, rt_sigaction, do_rt_sigaction((int)a1, (const void *)a2, (void *)a3, (size_t)a4)) \
     X(SYS_RT_SIGPROCMASK, rt_sigprocmask, do_rt_sigprocmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3, (size_t)a4)) \
     X(SYS_RT_SIGRETURN, rt_sigreturn, do_rt_sigreturn()) \
@@ -56,7 +41,6 @@
     X(SYS_RT_SIGPENDING, rt_sigpending, do_rt_sigpending((uint64_t *)a1, (size_t)a2)) \
     X(SYS_RT_SIGTIMEDWAIT, rt_sigtimedwait, do_rt_sigtimedwait((const uint64_t *)a1, (void *)a2, (const struct k_timespec *)a3, (size_t)a4)) \
     X(SYS_RT_SIGQUEUEINFO, rt_sigqueueinfo, do_rt_sigqueueinfo((int)a1, (int)a2, (void *)a3)) \
-    /* Identity (single-user: uid/gid always 0) */ \
     X(SYS_GETUID, getuid, do_getuid()) \
     X(SYS_GETGID, getgid, do_getgid()) \
     X(SYS_GETEUID, geteuid, do_geteuid()) \
@@ -71,10 +55,8 @@
     X(SYS_GETRESGID, getresgid, do_getresgid((long *)a1, (long *)a2, (long *)a3)) \
     X(SYS_SETFSUID, setfsuid, do_setfsuid(a1)) \
     X(SYS_SETFSGID, setfsgid, do_setfsgid(a1)) \
-    /* Process info */ \
     X(SYS_PRCTL, prctl, do_prctl((int)a1, (unsigned long)a2, (unsigned long)a3, (unsigned long)a4, (unsigned long)a5)) \
     X(SYS_GETRLIMIT, getrlimit, do_prlimit64(0, (int)a1, 0, (void *)a2)) \
-    /* Process/timer */ \
     X(SYS_PAUSE, pause, do_pause()) \
     X(SYS_GETITIMER, getitimer, do_getitimer((int)a1, (void *)a2)) \
     X(SYS_SETITIMER, setitimer, do_setitimer((int)a1, (const void *)a2, (void *)a3)) \
@@ -82,7 +64,6 @@
     X(SYS_PERSONALITY, personality, do_personality((unsigned long)a1)) \
     X(SYS_GETPRIORITY, getpriority, do_getpriority((int)a1, (int)a2)) \
     X(SYS_SETPRIORITY, setpriority, do_setpriority((int)a1, (int)a2, (int)a3)) \
-    /* Stubs */ \
     X(SYS_FLOCK, flock, do_flock((int)a1, (int)a2)) \
     X(SYS_REBOOT, reboot, do_reboot((int)a1, (int)a2, (int)a3)) \
     X(SYS_MOUNT, mount, do_mount()) \
@@ -90,13 +71,11 @@
     X(SYS_RSEQ, rseq, do_rseq()) \
     X(SYS_CAPGET, capget, do_capget()) \
     X(SYS_CAPSET, capset, do_capset()) \
-    /* Filesystem (stat wrappers) */ \
     X(SYS_STATFS, statfs, do_statfs((const char *)a1, (void *)a2)) \
     X(SYS_FSTATFS, fstatfs, do_fstatfs((int)a1, (void *)a2)) \
     X(SYS_FACCESSAT, faccessat, do_faccessat((int)a1, (const char *)a2, (int)a3, (int)a4)) \
     X(SYS_STATX, statx, do_statx((int)a1, (const char *)a2, (int)a3, (unsigned int)a4, (void *)a5)) \
     X(SYS_READLINKAT, readlinkat, do_readlinkat((int)a1, (const char *)a2, (char *)a3, (size_t)a4)) \
-    /* System info */ \
     X(SYS_UNAME, uname, do_uname((void *)a1)) \
     X(SYS_GETRANDOM, getrandom, do_getrandom((void *)a1, (size_t)a2, (unsigned int)a3)) \
     X(SYS_PRLIMIT64, prlimit64, do_prlimit64((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
@@ -104,7 +83,6 @@
     X(SYS_SYSINFO, sysinfo, do_sysinfo((void *)a1)) \
     X(SYS_GETGROUPS, getgroups, do_getgroups()) \
     X(SYS_SETGROUPS, setgroups, do_setgroups()) \
-    /* Stubs for npm/node compatibility */ \
     X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \
     X(SYS_LCHOWN, lchown, do_lchown()) \
@@ -115,13 +93,11 @@
     X(SYS_GETCPU, getcpu, do_getcpu((unsigned *)a1, (unsigned *)a2)) \
     X(SYS_GETRUSAGE, getrusage, do_getrusage((int)a1, (void *)a2)) \
     X(SYS_TIMES, times, do_times((void *)a1)) \
-    /* Timers / clocks */ \
     X(SYS_CLOCK_GETTIME, clock_gettime, do_clock_gettime((int)a1, (void *)a2)) \
     X(SYS_CLOCK_GETRES, clock_getres, do_clock_getres((int)a1, (void *)a2)) \
     X(SYS_CLOCK_NANOSLEEP, clock_nanosleep, do_clock_nanosleep((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
     X(SYS_NANOSLEEP, nanosleep, do_nanosleep((const void *)a1, (void *)a2)) \
     X(SYS_GETTIMEOFDAY, gettimeofday, do_gettimeofday((void *)a1, (void *)a2)) \
-    /* Scheduling */ \
     X(SYS_SCHED_SETAFFINITY, sched_setaffinity, do_sched_setaffinity((int)a1, (size_t)a2, (const uint64_t *)a3)) \
     X(SYS_SCHED_GETAFFINITY, sched_getaffinity, do_sched_getaffinity((int)a1, (size_t)a2, (uint64_t *)a3)) \
     X(SYS_SCHED_YIELD, sched_yield, do_sched_yield()) \
@@ -129,7 +105,6 @@
     X(SYS_SCHED_GETSCHEDULER, sched_getscheduler, do_sched_getscheduler((int)a1)) \
     X(SYS_SCHED_SETPARAM, sched_setparam, do_sched_setparam((int)a1, (const void *)a2)) \
     X(SYS_SCHED_GETPARAM, sched_getparam, do_sched_getparam((int)a1, (void *)a2)) \
-    /* Filesystem */ \
     X(SYS_OPEN, open, do_open((const char *)a1, (int)a2, (int)a3)) \
     X(SYS_OPENAT, openat, do_openat((int)a1, (const char *)a2, (int)a3, (int)a4)) \
     X(SYS_LSEEK, lseek, do_lseek((int)a1, a2, (int)a3)) \
@@ -140,7 +115,6 @@
     X(SYS_DUP3, dup3, do_dup3((int)a1, (int)a2, (int)a3)) \
     X(SYS_GETCWD, getcwd, do_getcwd((char *)a1, (size_t)a2)) \
     X(SYS_CHDIR, chdir, do_chdir((const char *)a1)) \
-    /* Network / sockets */ \
     X(SYS_SOCKET, socket, do_socket((int)a1, (int)a2, (int)a3)) \
     X(SYS_CONNECT, connect, do_connect((int)a1, (const void *)a2, (int)a3)) \
     X(SYS_BIND, bind, do_bind((int)a1, (const void *)a2, (int)a3)) \
@@ -152,12 +126,10 @@
     X(SYS_GETSOCKOPT, getsockopt, do_getsockopt((int)a1, (int)a2, (int)a3, (void *)a4, (int *)a5)) \
     X(SYS_GETSOCKNAME, getsockname, do_getsockname((int)a1, (void *)a2, (int *)a3)) \
     X(SYS_GETPEERNAME, getpeername, do_getpeername((int)a1, (void *)a2, (int *)a3)) \
-    /* sendmsg(46)/recvmsg(47): in sys_net.c */ \
     X(SYS_SENDMSG, sendmsg, do_sendmsg((int)a1, (const void *)a2, (int)a3)) \
     X(SYS_RECVMSG, recvmsg, do_recvmsg((int)a1, (void *)a2, (int)a3)) \
     X(SYS_SHUTDOWN, shutdown, do_shutdown((int)a1, (int)a2)) \
     X(SYS_POLL, poll, do_poll((void *)a1, (int)a2, (int)a3)) \
-    /* Filesystem mutation */ \
     X(SYS_MKDIR, mkdir, do_mkdirat(AT_FDCWD, (const char *)a1, (int)a2)) \
     X(SYS_MKDIRAT, mkdirat, do_mkdirat((int)a1, (const char *)a2, (int)a3)) \
     X(SYS_RMDIR, rmdir, do_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR)) \
@@ -166,7 +138,6 @@
     X(SYS_RENAME, rename, do_renameat2(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0)) \
     X(SYS_RENAMEAT2, renameat2, do_renameat2((int)a1, (const char *)a2, (int)a3, (const char *)a4, (int)a5)) \
     X(SYS_GETDENTS64, getdents64, do_getdents64((int)a1, (void *)a2, (size_t)a3)) \
-    /* Filesystem metadata */ \
     X(SYS_FCHMOD, fchmod, do_fchmod((int)a1, (uint32_t)a2)) \
     X(SYS_FCHOWN, fchown, do_fchown((int)a1, (uint32_t)a2, (uint32_t)a3)) \
     X(SYS_LINK, link, do_linkat(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0)) \
@@ -197,14 +168,12 @@
     X(SYS_COPY_FILE_RANGE, copy_file_range, do_copy_file_range((int)a1, (long *)a2, (int)a3, (long *)a4, (size_t)a5, (unsigned int)a6)) \
     X(SYS_CLOSE_RANGE, close_range, do_close_range((unsigned int)a1, (unsigned int)a2, (unsigned int)a3)) \
     X(SYS_FACCESSAT2, faccessat2, do_faccessat2((int)a1, (const char *)a2, (int)a3, (int)a4)) \
-    /* Pipe / IO */ \
     X(SYS_PIPE, pipe, do_pipe2((int *)a1, 0)) \
     X(SYS_PIPE2, pipe2, do_pipe2((int *)a1, (int)a2)) \
     X(SYS_READV, readv, do_readv((int)a1, (const struct iovec *)a2, (int)a3)) \
     X(SYS_IOCTL, ioctl, do_ioctl((int)a1, (unsigned long)a2, (unsigned long)a3)) \
     X(SYS_FCNTL, fcntl, do_fcntl((int)a1, (int)a2, a3)) \
     X(SYS_ACCESS, access, do_faccessat(AT_FDCWD, (const char *)a1, (int)a2, 0)) \
-    /* epoll / eventfd / timerfd / signalfd / inotify */ \
     X(SYS_EPOLL_CREATE1, epoll_create1, do_epoll_create1((int)a1)) \
     X(SYS_EPOLL_CTL, epoll_ctl, do_epoll_ctl((int)a1, (int)a2, (int)a3, (struct epoll_event *)a4)) \
     X(SYS_EPOLL_WAIT, epoll_wait, do_epoll_wait((int)a1, (struct epoll_event *)a2, (int)a3, (int)a4)) \
@@ -216,18 +185,13 @@
     X(SYS_INOTIFY_ADD_WATCH, inotify_add_watch, do_inotify_add_watch((int)a1, (const char *)a2, (uint32_t)a3)) \
     X(SYS_INOTIFY_RM_WATCH, inotify_rm_watch, do_inotify_rm_watch((int)a1, (int)a2)) \
     X(SYS_EPOLL_PWAIT, epoll_pwait, do_epoll_wait((int)a1, (struct epoll_event *)a2, (int)a3, (int)a4)) \
-    /* select / pselect / ppoll */ \
     X(SYS_SELECT, select, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_SELECT)) \
     X(SYS_PSELECT6, pselect6, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_PSELECT6)) \
     X(SYS_PPOLL, ppoll, do_ppoll(a1, a2, a3)) \
-    /* vectored I/O with offset */ \
     X(SYS_PREADV, preadv, do_readv((int)a1, (const struct iovec *)a2, (int)a3)) \
     X(SYS_PWRITEV, pwritev, do_writev((int)a1, (const struct iovec *)a2, (int)a3)) \
-    /* multi-message send/recv */ \
     X(SYS_SENDMMSG, sendmmsg, do_sendmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
     X(SYS_RECVMMSG, recvmmsg, do_recvmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
-    /* ── Batch 2: remaining syscalls (no more "unhandled") ── */ \
-    /* Harmless no-ops / delegations */ \
     X(SYS_MINCORE, mincore, do_mincore()) \
     X(SYS_PTRACE, ptrace, do_ptrace()) \
     X(SYS_SYSLOG, syslog, do_syslog_stub()) \
@@ -257,7 +221,6 @@
     X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (void *)a2, (int)a3, (void *)a4)) \
     X(SYS_MKNOD, mknod, do_mknod((const char *)a1, (uint32_t)a2, (uint64_t)a3)) \
     X(SYS_FCHMODAT2, fchmodat2, do_fchmodat2((int)a1, (const char *)a2, (uint32_t)a3, (int)a4)) \
-    /* SysV IPC */ \
     X(SYS_SHMGET, shmget, do_shmget((int32_t)a1, (size_t)a2, (int)a3)) \
     X(SYS_SHMAT, shmat, do_shmat((int)a1, (const void *)a2, (int)a3)) \
     X(SYS_SHMCTL, shmctl, do_shmctl((int)a1, (int)a2, (void *)a3)) \
@@ -270,14 +233,12 @@
     X(SYS_MSGRCV, msgrcv, do_msgrcv((int)a1, (void *)a2, (size_t)a3, (long)a4, (int)a5)) \
     X(SYS_MSGCTL, msgctl, do_msgctl((int)a1, (int)a2, (void *)a3)) \
     X(SYS_SEMTIMEDOP, semtimedop, do_semop((int)a1, (const void *)a2, (size_t)a3)) \
-    /* Return -ENOSYS: kernel modules */ \
     X(SYS_CREATE_MODULE, create_module, -ENOSYS) \
     X(SYS_INIT_MODULE, init_module, -ENOSYS) \
     X(SYS_DELETE_MODULE, delete_module, -ENOSYS) \
     X(SYS_GET_KERNEL_SYMS, get_kernel_syms, -ENOSYS) \
     X(SYS_QUERY_MODULE, query_module, -ENOSYS) \
     X(SYS_FINIT_MODULE, finit_module, -ENOSYS) \
-    /* Return -ENOSYS: security/sandboxing */ \
     X(SYS_SECCOMP, seccomp, -ENOSYS) \
     X(SYS_LANDLOCK_CREATE_RULESET, landlock_create_ruleset, -ENOSYS) \
     X(SYS_LANDLOCK_ADD_RULE, landlock_add_rule, -ENOSYS) \
@@ -286,27 +247,22 @@
     X(SYS_LSM_SET_SELF_ATTR, lsm_set_self_attr, -ENOSYS) \
     X(SYS_LSM_LIST_MODULES, lsm_list_modules, -ENOSYS) \
     X(SYS_BPF, bpf, -ENOSYS) \
-    /* Return -ENOSYS: NUMA */ \
     X(SYS_MBIND, mbind, -ENOSYS) \
     X(SYS_SET_MEMPOLICY, set_mempolicy, -ENOSYS) \
     X(SYS_GET_MEMPOLICY, get_mempolicy, -ENOSYS) \
     X(SYS_MIGRATE_PAGES, migrate_pages, -ENOSYS) \
     X(SYS_MOVE_PAGES, move_pages, -ENOSYS) \
     X(SYS_SET_MEMPOLICY_HOME_NODE, set_mempolicy_home_node, -ENOSYS) \
-    /* Return -ENOSYS: namespaces */ \
     X(SYS_SETNS, setns, -ENOSYS) \
-    /* Return -ENOSYS: io_uring */ \
     X(SYS_IO_URING_SETUP, io_uring_setup, -ENOSYS) \
     X(SYS_IO_URING_ENTER, io_uring_enter, -ENOSYS) \
     X(SYS_IO_URING_REGISTER, io_uring_register, -ENOSYS) \
-    /* Return -ENOSYS: old AIO */ \
     X(SYS_IO_SETUP, io_setup, -ENOSYS) \
     X(SYS_IO_DESTROY, io_destroy, -ENOSYS) \
     X(SYS_IO_GETEVENTS, io_getevents, -ENOSYS) \
     X(SYS_IO_SUBMIT, io_submit, -ENOSYS) \
     X(SYS_IO_CANCEL, io_cancel, -ENOSYS) \
     X(SYS_IO_PGETEVENTS, io_pgetevents, -ENOSYS) \
-    /* Return -ENOSYS: obsolete/misc */ \
     X(SYS_USELIB, uselib, -ENOSYS) \
     X(SYS_NFSSERVCTL, nfsservctl, -ENOSYS) \
     X(SYS_GETPMSG, getpmsg, -ENOSYS) \
@@ -329,7 +285,6 @@
     X(SYS_PROCESS_VM_WRITEV, process_vm_writev, -ENOSYS) \
     X(SYS_PROCESS_MADVISE, process_madvise, -ENOSYS) \
     X(SYS_PROCESS_MRELEASE, process_mrelease, -ENOSYS) \
-    /* Return -ENOSYS: new mount API */ \
     X(SYS_OPEN_TREE, open_tree, -ENOSYS) \
     X(SYS_MOVE_MOUNT, move_mount, -ENOSYS) \
     X(SYS_FSOPEN, fsopen, -ENOSYS) \
@@ -338,11 +293,9 @@
     X(SYS_FSPICK, fspick, -ENOSYS) \
     X(SYS_MOUNT_SETATTR, mount_setattr, -ENOSYS) \
     X(SYS_OPEN_TREE_ATTR, open_tree_attr, -ENOSYS) \
-    /* Return -ENOSYS: pidfd */ \
     X(SYS_PIDFD_OPEN, pidfd_open, -ENOSYS) \
     X(SYS_PIDFD_SEND_SIGNAL, pidfd_send_signal, -ENOSYS) \
     X(SYS_PIDFD_GETFD, pidfd_getfd, -ENOSYS) \
-    /* Return -ENOSYS: misc modern */ \
     X(SYS_KCMP, kcmp, -ENOSYS) \
     X(SYS_USERFAULTFD, userfaultfd, -ENOSYS) \
     X(SYS_MEMBARRIER, membarrier, -ENOSYS) \
@@ -370,7 +323,6 @@
     X(SYS_MEMFD_SECRET, memfd_secret, -ENOSYS) \
     X(SYS_URETPROBE, uretprobe, -ENOSYS) \
     X(SYS_UPROBE, uprobe, -ENOSYS) \
-    /* Return -ENOSYS: remaining obsolete */ \
     X(SYS_MODIFY_LDT, modify_ldt, -ENOSYS) \
     X(SYS_PIVOT_ROOT, pivot_root, -ENOSYS) \
     X(SYS__SYSCTL, _sysctl, -ENOSYS) \
@@ -407,12 +359,10 @@
     X(SYS_SCHED_GETATTR, sched_getattr, -ENOSYS) \
     X(SYS_EXECVEAT, execveat, -ENOSYS) \
     X(SYS_QUOTACTL_FD, quotactl_fd, -ENOSYS) \
-    /* Return -EPERM: privileged ops */ \
     X(SYS_IOPL, iopl, -EPERM) \
     X(SYS_IOPERM, ioperm, -EPERM) \
     /* end */
 
-/* Syscall name lookup for tracing */
 static inline const char *syscall_name(long num) {
     switch (num) {
 #define X_NAME(nr, name, handler) case nr: return #name;
@@ -422,7 +372,6 @@ static inline const char *syscall_name(long num) {
     }
 }
 
-/* Total number of table entries (not max syscall number) */
 enum {
 #define X_COUNT(nr, name, handler) _sc_##name,
     SYSCALL_TABLE(X_COUNT)

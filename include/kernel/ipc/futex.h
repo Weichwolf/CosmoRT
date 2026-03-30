@@ -1,9 +1,4 @@
-/* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance
- *
- * Linux-compatible subset: FUTEX_WAIT, FUTEX_WAKE, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI.
- * True blocking via event_wait/event_post + syscall restart.
- * Timeout support: FUTEX_WAIT blocks for at most the specified duration.
- */
+/* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance */
 #ifndef FUTEX_H
 #define FUTEX_H
 
@@ -11,7 +6,6 @@
 
 struct timespec;
 
-/* Futex operations (Linux-compatible) */
 #define FUTEX_WAIT          0
 #define FUTEX_WAKE          1
 #define FUTEX_FD            2
@@ -22,7 +16,6 @@ struct timespec;
 #define FUTEX_UNLOCK_PI     7
 #define FUTEX_PRIVATE_FLAG  128
 
-/* Futex userspace value: low 30 bits = owner TID, bit 31 = FUTEX_WAITERS */
 #define FUTEX_TID_MASK      0x3FFFFFFFU
 #define FUTEX_OWNER_DIED    0x40000000U
 #define FUTEX_WAITERS       0x80000000U

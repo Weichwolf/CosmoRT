@@ -4,7 +4,7 @@
 #include "mm/slab.h"
 #include "hw/serial.h"
 
-#define VMA_MAX 8192  /* 384KB — mprotect splits multiply VMA count */
+#define VMA_MAX 8192
 static vma_t vma_pool[VMA_MAX];
 static slab_t vma_slab;
 
@@ -22,8 +22,6 @@ vma_t *vma_alloc_raw(void) {
 void vma_free(vma_t *v) {
     slab_free(&vma_slab, v);
 }
-
-/* ── AVL helpers ─────────────────────────────────── */
 
 static int height(vma_t *n) {
     return n ? n->height : 0;
@@ -75,8 +73,6 @@ static vma_t *rebalance(vma_t *n) {
     return n;
 }
 
-/* ── Find ────────────────────────────────────────── */
-
 vma_t *vma_find(vma_t *root, uint64_t addr) {
     vma_t *n = root;
     while (n) {
@@ -85,35 +81,25 @@ vma_t *vma_find(vma_t *root, uint64_t addr) {
         else if (addr >= n->end)
             n = n->right;
         else
-            return n; /* addr in [start, end) */
+            return n;
     }
     return 0;
 }
 
-/* ── Find overlap ────────────────────────────────── */
-
-/* Find any VMA overlapping [start, end). AVL tree is keyed by vma->start.
- * A VMA overlaps if vma->start < end && vma->end > start. */
 vma_t *vma_find_overlap(vma_t *root, uint64_t start, uint64_t end) {
     if (!root) return 0;
-    /* If this node overlaps, return it */
     if (root->start < end && root->end > start)
         return root;
-    /* If left subtree might contain an overlap (left nodes have start < root->start,
-     * but their end could extend into [start, end)) — check left if start < root->start */
     if (root->left && start < root->start) {
         vma_t *r = vma_find_overlap(root->left, start, end);
         if (r) return r;
     }
-    /* Check right subtree if range extends past this node */
     if (root->right && end > root->start) {
         vma_t *r = vma_find_overlap(root->right, start, end);
         if (r) return r;
     }
     return 0;
 }
-
-/* ── Insert ──────────────────────────────────────── */
 
 static vma_t *insert_node(vma_t *root, vma_t *node) {
     if (!root) return node;
@@ -141,8 +127,6 @@ vma_t *vma_insert(vma_t **root, uint64_t start, uint64_t end, int prot, int flag
     return v;
 }
 
-/* ── Remove ──────────────────────────────────────── */
-
 static vma_t *min_node(vma_t *n) {
     while (n->left) n = n->left;
     return n;
@@ -158,11 +142,7 @@ static vma_t *remove_node(vma_t *root, vma_t *target, vma_t **removed) {
         *removed = root;
         if (!root->left) return root->right;
         if (!root->right) return root->left;
-        /* Two children: replace with in-order successor.
-         * Detach successor from tree BEFORE marking it as removed,
-         * so rebalancing during detach never touches the freed node. */
         vma_t *succ = min_node(root->right);
-        /* Copy ALL data from successor into root */
         root->start = succ->start;
         root->end = succ->end;
         root->prot = succ->prot;
@@ -170,12 +150,9 @@ static vma_t *remove_node(vma_t *root, vma_t *target, vma_t **removed) {
         root->file_ino = succ->file_ino;
         root->file_offset = succ->file_offset;
         root->file_backend = succ->file_backend;
-        /* Detach successor from subtree (rebalancing happens here) */
         root->right = remove_node(root->right, succ, &(vma_t *){0});
-        /* Now mark successor as the node to free */
         *removed = succ;
     } else {
-        /* Same start but different node — search both subtrees */
         root->right = remove_node(root->right, target, removed);
     }
     return rebalance(root);
@@ -188,27 +165,17 @@ void vma_remove(vma_t **root, vma_t *node) {
         vma_free(removed);
 }
 
-/* ── Find free gap (grows down from base) ────────── */
-
-/* Reverse in-order traversal (right, node, left) visits VMAs from highest
- * to lowest address. Track gap_end starting at base. O(1) extra stack
- * beyond the traversal stack (pointer-sized entries, not 16KB arrays). */
-
 uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
     if (!root) {
-        /* No VMAs at all — place at base - size */
         return (base >= size) ? base - size : 0;
     }
 
-    /* Reverse in-order traversal: visit VMAs from highest to lowest.
-     * For each VMA, check if there's a gap between its end and gap_end. */
     vma_t *stack[64];
     int sp = 0;
     vma_t *cur = root;
     uint64_t gap_end = base;
     uint64_t result = 0;
 
-    /* Reverse in-order: right first, then node, then left */
     while (cur || sp > 0) {
         while (cur) {
             if (sp < 64) stack[sp++] = cur;
@@ -216,7 +183,6 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
         }
         if (sp > 0) {
             cur = stack[--sp];
-            /* Check gap between cur->end and gap_end */
             if (gap_end < size) { cur = cur->left; continue; }
             if (cur->end <= gap_end && gap_end - cur->end >= size) {
                 uint64_t addr = (gap_end - size) & ~0xFFFULL;
@@ -225,27 +191,23 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size) {
                     return result;
                 }
             }
-            /* Advance gap_end downward — never above base */
             if (cur->start < gap_end)
                 gap_end = cur->start;
             cur = cur->left;
         }
     }
 
-    /* Gap before the first (lowest) VMA */
     if (gap_end >= size) {
         uint64_t addr = (gap_end - size) & ~0xFFFULL;
-        if (addr >= 0x1000) /* don't map NULL page */
+        if (addr >= 0x1000)
             return addr;
     }
 
     return 0;
 }
 
-/* Find free gap at or above 'start', growing upward.
- * In-order traversal (lowest→highest), track gap_start. */
 uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size) {
-    uint64_t limit = 0x800000000000ULL; /* user space ceiling */
+    uint64_t limit = 0x800000000000ULL;
     if (!root) {
         uint64_t addr = (start + 0xFFF) & ~0xFFFULL;
         return (addr + size <= limit) ? addr : 0;
@@ -256,7 +218,6 @@ uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size) {
     vma_t *cur = root;
     uint64_t gap_start = (start + 0xFFF) & ~0xFFFULL;
 
-    /* In-order: left first, then node, then right */
     while (cur || sp > 0) {
         while (cur) {
             if (sp < 64) stack[sp++] = cur;
@@ -264,17 +225,14 @@ uint64_t vma_find_free_above(vma_t *root, uint64_t start, uint64_t size) {
         }
         if (sp > 0) {
             cur = stack[--sp];
-            /* Gap between gap_start and cur->start */
             if (cur->start > gap_start && cur->start - gap_start >= size)
                 return gap_start;
-            /* Advance gap_start past this VMA */
             if (cur->end > gap_start)
                 gap_start = (cur->end + 0xFFF) & ~0xFFFULL;
             cur = cur->right;
         }
     }
 
-    /* Gap after the last (highest) VMA */
     if (gap_start + size <= limit)
         return gap_start;
 

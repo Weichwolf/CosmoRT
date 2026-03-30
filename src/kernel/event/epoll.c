@@ -1,7 +1,4 @@
-/* CosmoRT epoll — event multiplexing (Linux-compatible)
- *
- * Blocking: hlt-loop with IRQ wakeup, same pattern as do_poll in socket.c.
- */
+/* CosmoRT epoll — Linux-compatible event multiplexing */
 
 #include "event/epoll.h"
 #include "sys/syscall.h"
@@ -16,21 +13,18 @@
 #include "net/net.h"
 #include "core/event_queue.h"
 
-/* User-pointer validation + copy helpers */
 #include "uaccess.h"
 #include "arch/arch.h"
-
-/* ── Epoll internals ─────────────────────────────── */
 
 #define EPOLL_MAX_FDS   64
 #define EPOLL_POOL_MAX  16
 
 typedef struct {
     int      fd;
-    uint32_t events;     /* requested events (including EPOLLET flag) */
+    uint32_t events;
     uint64_t data;
-    uint32_t et_armed;   /* edge-triggered: 1 = report next ready, 0 = already reported */
-    uint32_t et_last;    /* last reported readiness bits (for true edge detection) */
+    uint32_t et_armed;
+    uint32_t et_last;
 } epoll_entry_t;
 
 typedef struct {
@@ -43,8 +37,6 @@ typedef struct {
 static epoll_t epoll_pool[EPOLL_POOL_MAX];
 static slab_t  epoll_slab;
 
-/* ── Init ────────────────────────────────────────── */
-
 void epoll_init(void) {
     slab_init(&epoll_slab, epoll_pool, (int)sizeof(epoll_t), EPOLL_POOL_MAX);
     eventfd_init();
@@ -52,8 +44,6 @@ void epoll_init(void) {
     inotify_init_slab();
     serial_puts("epoll: init\n");
 }
-
-/* ── SYS_EPOLL_CREATE1 (291) ────────────────────── */
 
 long do_epoll_create1(int flags) {
     (void)flags;
@@ -75,8 +65,6 @@ long do_epoll_create1(int flags) {
     return fd;
 }
 
-/* ── SYS_EPOLL_CTL (233) ────────────────────────── */
-
 long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -86,7 +74,6 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
-    /* Validate target fd exists (except for DEL, target may already be closed) */
     if (op != EPOLL_CTL_DEL) {
         fd_entry_t *tgt = fd_get(&p->fds, fd);
         if (!tgt || tgt->type == FD_NONE) return -EBADF;
@@ -116,7 +103,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         ep->entries[ep->count].fd     = fd;
         ep->entries[ep->count].events = kev.events;
         ep->entries[ep->count].data   = kev.data;
-        ep->entries[ep->count].et_armed = 1; /* report on first ready */
+        ep->entries[ep->count].et_armed = 1;
         ep->entries[ep->count].et_last  = 0;
         ep->count++;
         break;
@@ -134,7 +121,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
             if (ep->entries[i].fd == fd) {
                 ep->entries[i].events = kev.events;
                 ep->entries[i].data   = kev.data;
-                ep->entries[i].et_armed = 1; /* re-arm on MOD */
+                ep->entries[i].et_armed = 1;
                 ep->entries[i].et_last  = 0;
                 found = 1;
                 break;
@@ -168,8 +155,6 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     return 0;
 }
 
-/* ── SYS_EPOLL_WAIT (232) ───────────────────────── */
-
 long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
     if (maxevents <= 0) return -EINVAL;
     if (!events || !user_ok((uint64_t)events, (size_t)maxevents * sizeof(*events)))
@@ -183,13 +168,10 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
-    /* Use absolute TSC deadline to avoid timeout reset on re-execute.
-     * TSC-based: sub-ms precision, no timer_ms() on hot path. */
     thread_t *ct = thread_current();
     uint64_t deadline_tsc;
     int infinite;
     if (ct && ct->wake_at_tsc && timeout > 0) {
-        /* Re-execute: use previously saved TSC deadline */
         deadline_tsc = ct->wake_at_tsc;
         infinite = 0;
     } else {
@@ -200,7 +182,6 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     }
 
     for (;;) {
-        /* Scan entries under lock. EPOLLET state must be updated atomically. */
         mutex_lock(&ep->lock);
 
         int nready = 0;
@@ -235,17 +216,12 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         if (timeout == 0) return 0;
         if (!infinite && timer_tsc_now() >= deadline_tsc) { ct->wake_at_tsc = 0; ct->wake_at = 0; return 0; }
 
-        /* No events ready — block via event_wait.
-         * epoll_wake_all / epoll_check_timeouts will event_post us.
-         * If event pre-queued (spurious), event_wait returns immediately
-         * and we loop back to re-scan. */
         {
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
             t->wake_at_tsc = infinite ? 0 : deadline_tsc;
-            t->wake_at = 0; /* TSC is authoritative */
+            t->wake_at = 0;
             epoll_sleeper_add_ext(t);
-            /* Compute remaining ms for event_wait timeout (coarse, just for fallback) */
             int timeout_ms;
             if (infinite) {
                 timeout_ms = -1;

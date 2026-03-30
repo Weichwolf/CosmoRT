@@ -2,7 +2,6 @@
 #ifndef COSMO_LINUX_SYSCALL_H
 #define COSMO_LINUX_SYSCALL_H
 
-/* Core */
 #define SYS_READ            0
 #define SYS_WRITE           1
 #define SYS_OPEN            2
@@ -37,7 +36,6 @@
 #define SYS_ALARM           37
 #define SYS_GETPID          39
 
-/* Sockets */
 #define SYS_SOCKET          41
 #define SYS_CONNECT         42
 #define SYS_ACCEPT          43
@@ -55,7 +53,6 @@
 #define SYS_SETSOCKOPT      54
 #define SYS_GETSOCKOPT      55
 
-/* Process */
 #define SYS_CLONE           56
 #define SYS_FORK            57
 #define SYS_VFORK           58
@@ -224,7 +221,6 @@
 #define SYS_CLOSE_RANGE     436
 #define SYS_FACCESSAT2      439
 
-/* Remaining syscalls (batch 2: stubs for dispatch coverage) */
 #define SYS_MINCORE          27
 #define SYS_SHMGET           29
 #define SYS_SHMAT            30
@@ -395,11 +391,9 @@
 #define SYS_LISTNS           470
 #define SYS_RSEQ_SLICE_YIELD 471
 
-/* reboot() cmd values */
 #define LINUX_REBOOT_CMD_POWER_OFF  0x4321FEDC
 #define LINUX_REBOOT_CMD_RESTART    0x01234567
 #define LINUX_REBOOT_CMD_HALT       0xCDEF0123
-/* reboot() magic numbers */
 #define LINUX_REBOOT_MAGIC1         0xFEE1DEAD
 #define LINUX_REBOOT_MAGIC2         0x28121969
 
