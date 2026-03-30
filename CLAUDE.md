@@ -177,6 +177,12 @@ Separate Build-Pfade (kein Konflikt):
 - build/test/hw/gen/init_bin.h → ktest (Unit Tests)
 - make test-hw aendert nie den Kernel-Init
 
+## Vorbilder
+
+Bei jedem Design-Problem: wie machen es BeOS/Haiku, Linux PREEMPT_RT, macOS/XNU?
+Beste Konzepte uebernehmen. Wenn etwas in CosmoRT nicht optimal ist, stoppen und
+Verbesserung vorschlagen statt weiterbauen.
+
 ## Regeln
 
 Build:

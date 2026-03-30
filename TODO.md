@@ -154,6 +154,42 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 
 ---
 
+## RT-9: Echtes schedule() (Kernel-Thread Blocking)
+
+kernel_yield_jmpbuf ist nicht nestbar — IRQ-Thread-Loop und rt_mutex_lock
+teilen sich denselben Buffer. Aktuell Workaround: kthreads spinnen bei
+Mutex-Contention. Richtige Loesung: vollstaendiger Kernel-Stack-Context-Save
+wie Linux/BeOS.
+
+### RT-9a: Kernel-Stack Context-Save (Agent)
+
+- [ ] sched_block(): speichert kompletten Kernel-Stack-Kontext (RSP, RBP, callee-saved)
+- [ ] sched_resume(): stellt Kontext wieder her und springt zurueck
+- [ ] Kein shared jmpbuf — jeder Block-Punkt hat eigenen Save auf dem Stack
+- [ ] Funktioniert wie Linux __schedule(): switch_to() speichert/restored Kernel-RSP
+
+### RT-9b: rt_mutex auf sched_block umstellen (Agent)
+
+- [ ] rt_mutex_lock: sched_block() statt kernel_setjmp/longjmp
+- [ ] rt_mutex_unlock: sched_wake restored den Blocked-Thread via sched_resume
+- [ ] kthread Spin-Workaround entfernen
+- [ ] Kernel-Threads koennen jetzt auf Mutexes schlafen
+
+### RT-9c: IRQ-Thread-Loop auf sched_block umstellen (Agent)
+
+- [ ] irq_thread_loop: sched_block() statt kernel_setjmp/longjmp
+- [ ] kernel_yield_jmpbuf entfaellt (wird durch sched_block ersetzt)
+- [ ] Nested Blocking funktioniert: IRQ-Thread blockiert in Loop, wacht auf,
+  ruft Handler auf, Handler blockiert in mutex_lock — beides auf eigenem Stack
+
+### RT-9d: event_wait auf sched_block umstellen (Agent)
+
+- [ ] thread_block_ms: sched_block() statt kernel_yield
+- [ ] event_wait Blocking-Pfad: sched_block()
+- [ ] Einheitlicher Blocking-Mechanismus fuer den gesamten Kernel
+
+---
+
 ## CPU-Features (Korrektheit + Performance)
 
 ### XSAVE / AVX2
