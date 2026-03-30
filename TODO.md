@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1562/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1574/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -113,15 +113,32 @@ Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
 - [x] rcu_check_quiescent in sched_preempt (Timer-Tick = QS)
 - [x] ktest: 12 Tests (17 Checks) — Scheduling, Preemption, IPC intakt
 
-### RT-6: NOHZ_FULL (abhaengig von RT-4)
+### RT-6: NOHZ_FULL + Core-Isolation
 
-- [ ] Timer-Ticks auf isolierten Cores eliminieren
-- [ ] Abhaengig von Threaded IRQs (kein periodischer Timer-IRQ noetig)
+Minimum 2 Cores. Kein Single-Core-Support.
+Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 
-### RT-7: Unabhaengige Tasks (Agent)
+#### RT-6a: NOHZ_FULL Infrastruktur (erledigt)
 
-- [ ] isolcpus: CPU-Isolation fuer Latenz-Cores
-- [ ] CPU-Frequency-Invarianz: WCET kompensiert Turbo-Boost/P-States
+- [x] LAPIC Timer Stop auf isolierten Cores (kein periodischer Tick)
+- [x] One-Shot Timer fuer naechstes Wakeup (statt periodisch)
+- [x] sched_preempt: auf tickless Cores nur via IPI/One-Shot (kein periodischer Tick)
+- [x] rcu_check_quiescent: Idle-Pfad QS fuer tickless Cores (sched_loop)
+- [x] epoll_check_timeouts: One-Shot-basiert bei sleeper_add auf tickless Cores
+- [x] 12 ktest (nohz_*): NOHZ_FULL Validierung
+
+#### RT-6b: Dynamische Core-Isolation (Agent)
+
+- [ ] Syscall: core_isolate(cpu_id) / core_release(cpu_id)
+- [ ] Dynamisch zur Laufzeit (nicht nur Boot-Parameter)
+- [ ] SCHED_OTHER Tasks werden von isolierten Cores migriert
+- [ ] Mehrere Cores gleichzeitig isolierbar
+- [ ] core_isolated[] Infrastruktur in sched.c erweitern
+
+### RT-7: CPU-Frequency-Invarianz (Agent)
+
+- [ ] WCET kompensiert Turbo-Boost/P-States
+- [ ] TSC-Rate Kalibrierung pro Core (invariant TSC Pruefung)
 
 ### RT-8: Validierung (letzter Schritt)
 

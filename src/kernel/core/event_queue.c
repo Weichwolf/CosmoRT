@@ -8,6 +8,7 @@
 #include "core/timer.h"
 #include "core/smp.h"
 #include "core/rt.h"
+#include "core/nohz.h"
 #include "arch/arch.h"
 #include "spinlock.h"
 
@@ -150,7 +151,13 @@ static void sleeper_add(thread_t *t) {
     spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
 }
 
-void epoll_sleeper_add_ext(thread_t *t) { sleeper_add(t); }
+void epoll_sleeper_add_ext(thread_t *t) {
+    sleeper_add(t);
+
+    int cpu = percpu_self()->core_id;
+    if (nohz_is_tickless(cpu) && t->wake_at_tsc)
+        nohz_arm_oneshot(cpu, t->wake_at_tsc);
+}
 
 void epoll_wake_all(void) {
     int ncores = smp_num_cores();

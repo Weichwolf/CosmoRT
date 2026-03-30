@@ -11,6 +11,7 @@
 #include "core/timer.h"
 #include "core/event_queue.h"
 #include "core/rcu.h"
+#include "core/nohz.h"
 #include "arch/arch.h"
 
 static uint8_t core_isolated[SMP_MAX_CORES];
@@ -518,7 +519,22 @@ void sched_loop(void) {
             tss_set_rsp0(idle_top);
             cpu->kernel_rsp = idle_top;
 
+            rcu_check_quiescent();
             epoll_check_timeouts();
+
+            if (core_isolated[core] && !nohz_is_tickless(core))
+                nohz_enter_tickless(core);
+            else if (!core_isolated[core] && nohz_is_tickless(core))
+                nohz_exit_tickless(core);
+
+            if (nohz_is_tickless(core)) {
+                uint64_t dl = epoll_nearest_deadline_tsc(core);
+                if (dl)
+                    nohz_arm_oneshot(core, dl);
+                else
+                    nohz_cancel_oneshot(core);
+            }
+
             arch_halt();
         }
     }
