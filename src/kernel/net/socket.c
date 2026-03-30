@@ -615,9 +615,12 @@ long do_accept(int fd, void *addr, int *addrlen) {
 
     socket_t *ls = sock_from_fd(fd);
     if (!ls) {
-        /* Distinguish EBADF (fd doesn't exist) from ENOTSOCK (fd is not a socket) */
+        /* O_PATH fds → EBADF (no I/O). Other non-sockets → ENOTSOCK. */
         process_t *ap = proc_current();
-        if (ap && fd_get(&ap->fds, fd)) return -ENOTSOCK;
+        if (ap) {
+            fd_entry_t *fde = fd_get(&ap->fds, fd);
+            if (fde && !(fde->flags & O_PATH)) return -ENOTSOCK;
+        }
         return -EBADF;
     }
     if (ls->is_dgram) return -EOPNOTSUPP;
