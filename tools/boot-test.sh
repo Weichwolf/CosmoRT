@@ -5,6 +5,13 @@ echo "  $(uname -a)"
 echo "========================================"
 
 echo ""
+echo "=== SLEEP TEST ==="
+if [ -x /opt/test_sleep ]; then
+    /opt/rtimeout 15 /opt/test_sleep 2>&1
+    echo "rc=$?"
+fi
+
+echo ""
 echo "=== LTP REQUIRED TESTS ==="
 export LTP_TIMEOUT_MUL=5
 LTP_BIN=/opt/ltp/install/testcases/bin

@@ -53,12 +53,15 @@ void check_pending_signals(void) {
         if (handler == 0) {
             /* SIG_DFL — POSIX default actions */
             switch (sig) {
-            /* Ignore: clear pending bit and skip */
-            case 17: /* SIGCHLD */
+            /* Ignore by default: SIGURG, SIGWINCH, SIGIO — clear immediately.
+             * SIGCHLD: do NOT clear here — sigtimedwait/waitpid may need it.
+             * SIGCHLD is consumed by sigtimedwait or cleared on next delivery cycle. */
             case 23: /* SIGURG */
             case 28: /* SIGWINCH */
             case 29: /* SIGIO */
                 p->sig_pending &= ~SIG_BIT(sig);
+                continue;
+            case 17: /* SIGCHLD — leave pending for sigtimedwait */
                 continue;
             /* Stop (SIGTSTP, SIGSTOP, SIGTTIN, SIGTTOU) — stop current thread */
             case 19: case 20: case 21: case 22: {
@@ -303,21 +306,22 @@ static long kill_one(process_t *target, int sig) {
             }
         }
 
-        /* Signal is unblocked — terminate immediately.
+        /* Signal is unblocked — terminate.
          * For proc_current(): direct exit (fast path).
-         * For remote: mark zombie + kill threads + notify parent. */
+         * For remote: set pending + wake blocked threads.
+         * They'll see the fatal signal on syscall restart and call do_exit. */
         target->exit_signal = sig;
+        target->sig_pending |= SIG_BIT(sig);
         if (target == proc_current()) {
             do_exit_group(128 + sig); /* doesn't return */
         }
-        target->state = PROC_ZOMBIE;
-        target->exit_code = 128 + sig;
+        /* Wake all blocked threads so they process the fatal signal */
         {
+            extern void sched_wake(thread_t *t);
             thread_t *t = target->threads;
             while (t) {
-                if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING ||
-                    t->state == THREAD_STOPPED)
-                    t->state = THREAD_DEAD;
+                if (t->state == THREAD_BLOCKED)
+                    sched_wake(t); /* BLOCKED→RUNNABLE, syscall restart → do_exit */
                 t = t->proc_next;
             }
         }
