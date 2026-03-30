@@ -83,10 +83,8 @@ static int net_rx_one(const nic_driver_t *n) {
     }
 
     /* Wake epoll sleepers when new packets arrive */
-    if (queued) {
-        extern void epoll_wake_all(void);
+    if (queued)
         epoll_wake_all();
-    }
     return 1;
 }
 

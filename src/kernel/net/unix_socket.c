@@ -76,10 +76,8 @@ void usock_decref(void *obj) {
             s->peer = 0;
         }
         s->state = USOCK_UNUSED;
-        if (reader) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-        }
+        if (reader)
+            event_post(reader, EQ_SOCKET_DATA, 0);
     }
 }
 
@@ -339,7 +337,6 @@ long usock_read(int fd, void *buf, long count) {
     spin_unlock_irq(&usock_lock, irqf);
 
     /* Wake epoll/poll */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
 
     return (long)n;
@@ -400,13 +397,10 @@ long usock_write(int fd, const void *buf, long count) {
         peer->blocked_reader = 0;
     }
     spin_unlock_irq(&usock_lock, irqf);
-    if (reader) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-    }
+    if (reader)
+        event_post(reader, EQ_SOCKET_DATA, 0);
 
     /* Wake epoll/poll */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
 
     return (long)n;
@@ -431,11 +425,8 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
                 peer->blocked_reader = 0;
             }
             spin_unlock_irq(&usock_lock, irqf);
-            if (reader) {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                event_post(reader, 8, 0);
-            }
-            extern void epoll_wake_all(void);
+            if (reader)
+                event_post(reader, EQ_SOCKET_DATA, 0);
             epoll_wake_all();
             return (long)n;
         }
@@ -462,7 +453,6 @@ long usock_close(int fd) {
     usock_decref(s);
 
     /* Wake epoll/poll — peer may need POLLHUP */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
 
     return 0;
@@ -546,11 +536,8 @@ done:
             peer->blocked_reader = 0;
         }
         spin_unlock_irq(&usock_lock, irqf2);
-        if (reader) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-        }
-        extern void epoll_wake_all(void);
+        if (reader)
+            event_post(reader, EQ_SOCKET_DATA, 0);
         epoll_wake_all();
     }
     return total;
@@ -616,9 +603,7 @@ recvdone:
     kmsg.msg_flags = 0;
     copy_to_user(msg_ptr, &kmsg, sizeof(kmsg));
 
-    if (total > 0) {
-        extern void epoll_wake_all(void);
+    if (total > 0)
         epoll_wake_all();
-    }
     return total;
 }

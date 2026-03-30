@@ -48,12 +48,9 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     thread_t *writer = pp->blocked_writer;
     pp->blocked_writer = 0;
     spin_unlock_irq(&pp->lock, flags);
-    if (writer) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
-    }
+    if (writer)
+        event_post(writer, EQ_PIPE_DATA, (uint64_t)n);
     /* Wake epoll/poll sleepers — pipe now writable */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
     return (long)n;
 }
@@ -81,12 +78,9 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     thread_t *reader = pp->blocked_reader;
     pp->blocked_reader = 0;
     spin_unlock_irq(&pp->lock, flags);
-    if (reader) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
-    }
+    if (reader)
+        event_post(reader, EQ_PIPE_DATA, (uint64_t)n);
     /* Wake epoll/poll sleepers — pipe now readable */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
     return (long)n;
 }
@@ -94,7 +88,6 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
 /* Blocking pipe read: called when pipe_read returned -EAGAIN.
  * Re-checks under lock, blocks if still empty, restarts syscall on wake. */
 long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
@@ -115,7 +108,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
             pp->blocked_writer = 0;
             spin_unlock_irq(&pp->lock, irqf);
             if (writer)
-                event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+                event_post(writer, EQ_PIPE_DATA, (uint64_t)n);
             return (long)n;
         }
         if (!pp->write_open) {
@@ -140,7 +133,6 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
 /* Blocking pipe write: called when pipe_write returned -EAGAIN (full).
  * Re-checks under lock, blocks if still full, restarts syscall on wake. */
 long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
@@ -162,7 +154,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
             pp->blocked_reader = 0;
             spin_unlock_irq(&pp->lock, irqf);
             if (reader)
-                event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+                event_post(reader, EQ_PIPE_DATA, (uint64_t)n);
             return (long)n;
         }
         if (!pp->read_open) {
@@ -270,18 +262,13 @@ long pipe_close(fd_entry_t *fde) {
     }
     spin_unlock_irq(&pp->lock, flags);
 
-    if (reader) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 5 /* EQ_PIPE_CLOSED */, 0);
-    }
-    if (writer) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(writer, 5 /* EQ_PIPE_CLOSED */, 0);
-    }
+    if (reader)
+        event_post(reader, EQ_PIPE_CLOSED, 0);
+    if (writer)
+        event_post(writer, EQ_PIPE_CLOSED, 0);
     if (both_closed)
         slab_free(&pipe_slab, pp);
     /* Wake epoll/poll sleepers — pipe state changed (HUP/ERR) */
-    extern void epoll_wake_all(void);
     epoll_wake_all();
     return 0;
 }

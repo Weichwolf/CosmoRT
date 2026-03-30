@@ -13,6 +13,7 @@
 #include "core/event_queue.h"
 #include "proc/thread.h"
 #include "proc/process.h"
+#include "linux/errno.h"
 #include "core/percpu.h"
 #include "core/timer.h"
 #include "core/smp.h"
@@ -66,7 +67,6 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
 extern uint64_t pml4[];
 extern void save_user_state_for_block(thread_t *t, long return_value);
 extern void thread_return_to_kernel(thread_t *t);
-extern void epoll_sleeper_add_ext(thread_t *t);
 
 /* Syscall saved frame layout — must match syscall_entry.asm push order */
 typedef struct {
@@ -116,18 +116,18 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
 
     /* Queue empty — non-blocking mode */
     if (timeout_ms == 0)
-        return -11; /* EAGAIN */
+        return -EAGAIN;
 
     /* Check for fatal signals before blocking.
      * Only SIGKILL and SIGTERM (SIG_DFL) are checked here.
      * Other signals (SIGALRM etc.) are delivered via check_alarm_timers
      * which posts events to wake the thread. */
     thread_t *cur = thread_current();
-    if (!cur) return -14; /* EFAULT */
+    if (!cur) return -EFAULT;
     if (cur->proc) {
         uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
         uint64_t fatal = all_pending & (SIG_BIT(9) | SIG_BIT(15)); /* SIGKILL, SIGTERM */
-        if (fatal & ~cur->sig_blocked) return -4; /* EINTR */
+        if (fatal & ~cur->sig_blocked) return -EINTR;
     }
 
     /* Block: save user state for syscall restart.

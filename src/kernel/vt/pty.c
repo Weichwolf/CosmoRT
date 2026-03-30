@@ -6,6 +6,7 @@
 #include "hw/serial.h"
 #include "proc/process.h"
 #include "proc/thread.h"
+#include "core/event_queue.h"
 
 _Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
                "PTY_LINE_MAX must match line_buf array size");
@@ -146,7 +147,6 @@ static void send_signal_to_fg(pty_t *p, int sig) {
     if (pgid <= 0) return;
 
     extern process_t *proc_find(uint32_t pid);
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     for (int i = 1; i < PID_TABLE_MAX; i++) {
         process_t *proc = proc_find((uint32_t)i);
         if (!proc) continue;
@@ -156,7 +156,7 @@ static void send_signal_to_fg(pty_t *p, int sig) {
         thread_t *t = proc->threads;
         while (t) {
             if (t->state == THREAD_BLOCKED)
-                event_post(t, 4 /* EQ_PIPE_DATA */, 0);
+                event_post(t, EQ_PIPE_DATA, 0);
             t = t->proc_next;
         }
     }
@@ -283,17 +283,14 @@ int pty_master_write(int id, const char *buf, int len) {
          ring_count(p->output_head, p->output_tail) > 0)) {
         thread_t *reader = p->blocked_reader;
         p->blocked_reader = 0;
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 4 /* EQ_PIPE_DATA */, 0);
+        event_post(reader, EQ_PIPE_DATA, 0);
     }
 
     spin_unlock_irq(&p->lock, flags);
 
     /* Wake poll/epoll sleepers — they check fd_poll_readiness on re-scan */
-    if (ring_count(p->input_head, p->input_tail) > 0) {
-        extern void epoll_wake_all(void);
+    if (ring_count(p->input_head, p->input_tail) > 0)
         epoll_wake_all();
-    }
 
     return len;
 }
@@ -362,14 +359,11 @@ int pty_input_direct(int id, const char *buf, int len) {
     if (written > 0 && p->blocked_reader) {
         thread_t *reader = p->blocked_reader;
         p->blocked_reader = 0;
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 4, 0);
+        event_post(reader, EQ_PIPE_DATA, 0);
     }
     spin_unlock_irq(&p->lock, flags);
-    if (written > 0) {
-        extern void epoll_wake_all(void);
+    if (written > 0)
         epoll_wake_all();
-    }
     return written;
 }
 

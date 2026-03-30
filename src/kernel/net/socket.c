@@ -1030,7 +1030,6 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
             if (!t) return -EFAULT;
             t->wake_at_tsc = infinite ? 0 : deadline_tsc;
             t->wake_at = 0; /* TSC is authoritative */
-            extern void epoll_sleeper_add_ext(thread_t *t);
             epoll_sleeper_add_ext(t);
             int timeout_ms;
             if (infinite) {

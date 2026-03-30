@@ -145,12 +145,11 @@ void check_pending_signals(void) {
                     }
                     /* Notify parent */
                     if (p->parent_pid) {
-                        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                         process_t *parent = proc_find(p->parent_pid);
                         if (parent) {
                             thread_t *pt = parent->threads;
                             while (pt) {
-                                event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
+                                event_post(pt, EQ_CHILD_EXITED, 0);
                                 pt = pt->proc_next;
                             }
                         }
@@ -226,7 +225,6 @@ static long kill_one(process_t *target, int sig) {
             /* Stop all threads immediately — don't defer to check_pending_signals.
              * Threads on other cores will be preempted and see THREAD_STOPPED. */
             {
-                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
                 thread_t *t = target->threads;
                 while (t) {
                     if (t->state == THREAD_RUNNING || t->state == THREAD_RUNNABLE)
@@ -240,7 +238,6 @@ static long kill_one(process_t *target, int sig) {
             target->was_continued = 0;
             /* Notify parent */
             if (target->parent_pid) {
-                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
                 process_t *parent = proc_find(target->parent_pid);
                 if (parent) {
                     thread_t *pt = parent->threads;
@@ -328,12 +325,11 @@ static long kill_one(process_t *target, int sig) {
         if (target->parent_pid) {
             process_t *parent = proc_find(target->parent_pid);
             if (parent) {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 uint64_t pflags;
                 spin_lock_irq(&parent->lock, &pflags);
                 thread_t *pt = parent->threads;
                 while (pt) {
-                    event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
+                    event_post(pt, EQ_CHILD_EXITED, 0);
                     pt = pt->proc_next;
                 }
                 spin_unlock_irq(&parent->lock, pflags);
@@ -349,11 +345,10 @@ static long kill_one(process_t *target, int sig) {
     /* Wake blocked threads that have this signal unblocked.
      * event_post wakes via sched_wake (BLOCKED→RUNNABLE CAS). */
     {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         thread_t *t = target->threads;
         while (t) {
             if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
-                event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                event_post(t, EQ_CHILD_EXITED, (uint64_t)sig);
             t = t->proc_next;
         }
     }
@@ -444,9 +439,8 @@ long do_tgkill(int tgid, int tid, int sig) {
      * (not process-level) to ensure the correct thread handles it. */
     target->sig_thread_pending |= SIG_BIT(sig);
     if (!(SIG_BIT(sig) & target->sig_blocked)) {
-        extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
         if (target->state == THREAD_BLOCKED)
-            event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+            event_post(target, EQ_CHILD_EXITED, (uint64_t)sig);
         extern void sched_wake(thread_t *t);
         sched_wake(target);
     }

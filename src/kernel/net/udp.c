@@ -116,7 +116,7 @@ int udp_input(const uint8_t *pkt, int len) {
     q_push(&s->q, pkt, len);
     /* Wake thread blocked on recv */
     struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
-    if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+    if (wt) event_post(wt, EQ_SOCKET_DATA, 0);
     return 1;
 }
 

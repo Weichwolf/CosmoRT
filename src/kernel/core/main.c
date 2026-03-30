@@ -25,6 +25,7 @@
 #include "vt/vt.h"
 #include "vt/fb.h"
 #include "vt/input.h"
+#include "event/epoll.h"
 
 #include "gen/init_bin.h"
 
@@ -219,7 +220,6 @@ void kernel_main(struct boot_info *info) {
     futex_init();
 
     /* Epoll/eventfd/timerfd subsystem */
-    extern void epoll_init(void);
     epoll_init();
 
     /* SMP — APs enter scheduler loop */

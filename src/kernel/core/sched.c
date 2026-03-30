@@ -18,6 +18,7 @@
 #include "core/smp.h"
 #include "core/rt.h"
 #include "core/timer.h"
+#include "core/event_queue.h"
 #include "arch/arch.h"
 
 /* Core isolation: 1 = RT-only, 0 = normal */
@@ -352,10 +353,7 @@ void sched_preempt(void *frame_ptr) {
 
     /* Check timed-out sleepers — each core checks its OWN per-core sleeper list.
      * No cross-core lock contention. epoll_check_timeouts reads percpu core_id. */
-    {
-        extern void epoll_check_timeouts(void);
-        epoll_check_timeouts();
-    }
+    epoll_check_timeouts();
 
     /* Check alarm timers for the CURRENT thread's process.
      * Each core checks its own running thread — no cross-core scan needed.
@@ -559,10 +557,7 @@ void sched_loop(void) {
 
             /* Check timeouts before idle to catch imminent deadlines.
              * Then halt — next timer tick (1ms) or IPI wakes us. */
-            {
-                extern void epoll_check_timeouts(void);
-                epoll_check_timeouts();
-            }
+            epoll_check_timeouts();
             arch_halt();
         }
     }

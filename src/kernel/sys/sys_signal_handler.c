@@ -148,11 +148,10 @@ void check_alarm_timers(void) {
         /* User handler: set pending + wake blocked threads */
         p->sig_pending |= SIG_BIT(SIGALRM);
         {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             thread_t *t = p->threads;
             while (t) {
                 if (t->state == THREAD_BLOCKED)
-                    event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)SIGALRM);
+                    event_post(t, EQ_CHILD_EXITED, (uint64_t)SIGALRM);
                 t = t->proc_next;
             }
         }
