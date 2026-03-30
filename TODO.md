@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1609/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1624/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -143,10 +143,14 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 - [x] Alle Zeitmessungen via timer_tsc_now() (kein direktes rdtsc ausserhalb timer)
 - [x] 15 ktest (fi_*): Timer-Precision, Monotonicity, Concurrent Timers
 
-### RT-8: Validierung (letzter Schritt)
+### RT-8: Validierung (erledigt)
 
-- [ ] Bounded WCET Audit auf allen Pfaden
-- [ ] Latenz-Messung + ktest Assertions (<10us WCET Ziel)
+- [x] Bounded WCET Audit auf allen Pfaden
+- [x] Latenz-Messung + ktest Assertions (<10us WCET Ziel)
+- [x] 15 ktest (rt_val_*): TSC-basierte Latenz-Messungen via clock_gettime
+  Wake-to-Run, RT-Preemption, Signal-Delivery, Context-Switch,
+  nanosleep Jitter/Overshoot, Timer-Fairness, Futex (un)contended,
+  Pipe/eventfd Roundtrip, Fork, Preemption-under-Load, Yield, WCET-Smoke
 
 ---
 
