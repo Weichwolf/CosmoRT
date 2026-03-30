@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1460/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1494/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -56,9 +56,9 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 #### RT-3a: Infrastruktur (Agent)
 
-- [ ] raw_spinlock_t Typ + raw_spin_lock/raw_spin_unlock API (= heutiges spinlock_t)
-- [ ] mutex_t Typ als Wrapper um rt_mutex_t (sleeping, PI-aware)
-- [ ] mutex_init/mutex_lock/mutex_unlock/mutex_trylock API
+- [x] raw_spinlock_t Typ + raw_spin_lock/raw_spin_unlock API (= heutiges spinlock_t)
+- [x] mutex_t Typ als Wrapper um rt_mutex_t (sleeping, PI-aware)
+- [x] mutex_init/mutex_lock/mutex_unlock/mutex_trylock API
 - [ ] Adaptive Spinning in mutex_lock: kurzer Spin wenn Owner laeuft
 
 #### RT-3b: Rename spinlock_t → raw_spinlock_t (Agent, mechanisch)
