@@ -722,8 +722,32 @@ int procfs_pid_read(const char *name, char *buf, int size, int offset) {
     if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
         file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0)
         return procfs_pid_environ(buf, size, offset, p);
+    /* oom_score_adj */
+    {
+        const char *oom = "oom_score_adj";
+        int match = 1;
+        for (int i = 0; oom[i]; i++) if (file[i] != oom[i]) { match = 0; break; }
+        if (match) return procfs_oom_score_adj(buf, size, offset, p);
+    }
 
     return -1; /* not a per-pid file we handle */
+}
+
+/* Write handler for /proc/<pid>/<file> */
+int procfs_pid_write(const char *name, const char *buf, int len) {
+    const char *file = 0;
+    if (name[0]=='s' && name[1]=='e' && name[2]=='l' && name[3]=='f' && name[4]=='/')
+        file = name + 5;
+    else {
+        int pid = parse_pid(name, &file);
+        if (pid < 0) return -1;
+    }
+    if (!file) return -1;
+    /* oom_score_adj */
+    { const char *oom = "oom_score_adj"; int m = 1;
+      for (int i = 0; oom[i]; i++) if (file[i] != oom[i]) { m = 0; break; }
+      if (m) return procfs_oom_score_adj_write(buf, len, 0); }
+    return -13; /* EACCES */
 }
 
 /* Check if a per-pid procfs path exists (for stat/open) */
@@ -752,6 +776,9 @@ int procfs_pid_exists(const char *name) {
     if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
         file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0) return 1;
     if (file[0]=='f' && file[1]=='d' && file[2]==0) return 3; /* directory */
+    { const char *oom = "oom_score_adj"; int m = 1;
+      for (int i = 0; oom[i]; i++) if (file[i] != oom[i]) { m = 0; break; }
+      if (m) return 1; }
 
     return 0;
 }

@@ -128,11 +128,16 @@ long do_write(int fd, const void *buf, size_t count) {
         procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
         if (!pf) return -EBADF;
         extern int procfs_write(int handle, const char *buf, int len);
+        extern int procfs_pid_write(const char *name, const char *buf, int len);
         char kbuf[256];
         int want = (int)count;
         if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
         copy_from_user(kbuf, buf, (size_t)want);
-        int r = procfs_write(pf->handle, kbuf, want);
+        int r;
+        if (pf->handle == -2)
+            r = procfs_pid_write(pf->name, kbuf, want);
+        else
+            r = procfs_write(pf->handle, kbuf, want);
         return (long)r;
     }
     if (fde->type == FD_SOCKET)
