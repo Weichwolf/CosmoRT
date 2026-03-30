@@ -988,7 +988,15 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
 
     int infinite = (timeout < 0);
-    uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
+    /* Preserve deadline across syscall restart (event_wait restarts syscall).
+     * On first call: compute deadline. On restart: reuse saved TSC deadline. */
+    thread_t *ct = thread_current();
+    uint64_t deadline_tsc;
+    if (ct && ct->wake_at_tsc && timeout > 0) {
+        deadline_tsc = ct->wake_at_tsc;
+    } else {
+        deadline_tsc = infinite ? 0 : timer_deadline_tsc((uint64_t)timeout);
+    }
 
     for (;;) {
         int ready = 0;
@@ -1006,25 +1014,36 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         }
         if (ready > 0) {
             copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+            if (ct) { ct->wake_at_tsc = 0; ct->wake_at = 0; }
             return ready;
         }
         if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) return 0;
+        if (!infinite && timer_tsc_now() >= deadline_tsc) {
+            if (ct) { ct->wake_at_tsc = 0; ct->wake_at = 0; }
+            return 0;
+        }
 
         /* Block via event_wait — epoll_wake_all will event_post us.
-         * If event pre-queued, returns immediately → loop re-scans. */
+         * TSC deadline for sub-ms precision timeout checking. */
         {
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
-            t->wake_at = infinite ? 0 : deadline;
+            t->wake_at_tsc = infinite ? 0 : deadline_tsc;
+            t->wake_at = 0; /* TSC is authoritative */
             extern void epoll_sleeper_add_ext(thread_t *t);
             epoll_sleeper_add_ext(t);
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) return 0;
+            int timeout_ms;
+            if (infinite) {
+                timeout_ms = -1;
+            } else {
+                uint64_t now_tsc = timer_tsc_now();
+                if (now_tsc >= deadline_tsc) { t->wake_at_tsc = 0; return 0; }
+                timeout_ms = (int)((deadline_tsc - now_tsc) / timer_tsc_per_ms);
+                if (timeout_ms <= 0) timeout_ms = 1;
+            }
             event_t ev;
             { int wr = event_wait(&t->eq, &ev, timeout_ms);
             if (wr == -4) return -EINTR; }
-            /* If blocked, syscall restarts. If returned, loop re-scans. */
         }
     }
 }

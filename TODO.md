@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1361/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1420/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -26,8 +26,8 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 ### Timerfd + Poll
 
-- [ ] Timerfd expiry: Interrupt-Callback statt tight poll-loop (sys_ipc.c:461)
-- [ ] Socket/epoll deadline checks: TSC-basiert statt timer_ms() vor event_wait
+- [x] Timerfd expiry: TSC-basiert statt timer_ms() poll-loop (timerfd.c, sys_ipc.c)
+- [x] Socket/epoll deadline checks: TSC-basiert statt timer_ms() (epoll.c, socket.c)
 
 ---
 

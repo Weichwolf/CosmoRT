@@ -299,20 +299,19 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
-    /* Use absolute deadline to avoid timeout reset on re-execute.
-     * On first call: compute deadline. On re-execute after wakeup:
-     * check if the saved wake_at has passed. */
+    /* Use absolute TSC deadline to avoid timeout reset on re-execute.
+     * TSC-based: sub-ms precision, no timer_ms() on hot path. */
     thread_t *ct = thread_current();
-    uint64_t deadline;
+    uint64_t deadline_tsc;
     int infinite;
-    if (ct && ct->wake_at && timeout > 0) {
-        /* Re-execute: use previously saved deadline */
-        deadline = ct->wake_at;
+    if (ct && ct->wake_at_tsc && timeout > 0) {
+        /* Re-execute: use previously saved TSC deadline */
+        deadline_tsc = ct->wake_at_tsc;
         infinite = 0;
     } else {
-        deadline = (timeout < 0)  ? 0
-                 : (timeout == 0) ? 0
-                 : (timer_ms() + (uint64_t)timeout);
+        deadline_tsc = (timeout < 0)  ? 0
+                     : (timeout == 0) ? 0
+                     : timer_deadline_tsc((uint64_t)timeout);
         infinite = (timeout < 0);
     }
 
@@ -349,9 +348,9 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
         spin_unlock_irq(&ep->lock, irqf);
 
-        if (nready > 0) { ct->wake_at = 0; return nready; }
+        if (nready > 0) { ct->wake_at_tsc = 0; ct->wake_at = 0; return nready; }
         if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) { ct->wake_at = 0; return 0; }
+        if (!infinite && timer_tsc_now() >= deadline_tsc) { ct->wake_at_tsc = 0; ct->wake_at = 0; return 0; }
 
         /* No events ready — block via event_wait.
          * epoll_wake_all / epoll_check_timeouts will event_post us.
@@ -360,10 +359,19 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         {
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
-            t->wake_at = infinite ? 0 : deadline;
+            t->wake_at_tsc = infinite ? 0 : deadline_tsc;
+            t->wake_at = 0; /* TSC is authoritative */
             epoll_sleeper_add(t);
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) { t->wake_at = 0; return 0; }
+            /* Compute remaining ms for event_wait timeout (coarse, just for fallback) */
+            int timeout_ms;
+            if (infinite) {
+                timeout_ms = -1;
+            } else {
+                uint64_t now_tsc = timer_tsc_now();
+                if (now_tsc >= deadline_tsc) { t->wake_at_tsc = 0; return 0; }
+                timeout_ms = (int)((deadline_tsc - now_tsc) / timer_tsc_per_ms);
+                if (timeout_ms <= 0) timeout_ms = 1;
+            }
             event_t ev;
             int _wr = event_wait(&t->eq, &ev, timeout_ms);
             if (_wr == -4) return -EINTR;

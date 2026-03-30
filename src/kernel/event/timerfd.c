@@ -34,6 +34,8 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->expire_ms = 0;
     tfd->interval_ms = 0;
     tfd->expirations = 0;
+    tfd->expire_tsc = 0;
+    tfd->interval_tsc = 0;
     tfd->armed = 0;
     tfd->flags = flags;
     tfd->refcount = 1;
@@ -101,12 +103,20 @@ long do_timerfd_settime(int fd, int tfd_flags,
     if (val_ms == 0 && int_ms == 0) {
         tfd->armed = 0;
         tfd->expirations = 0;
+        tfd->expire_tsc = 0;
+        tfd->interval_tsc = 0;
     } else {
         if (tfd_flags & 1) /* TFD_TIMER_ABSTIME */
             tfd->expire_ms = val_ms;
         else
             tfd->expire_ms = timer_ms() + val_ms;
         tfd->interval_ms = int_ms;
+        /* TSC-based deadline (authoritative, sub-ms precision) */
+        if (tfd_flags & 1) /* TFD_TIMER_ABSTIME */
+            tfd->expire_tsc = timer_boot_tsc + val_ms * timer_tsc_per_ms;
+        else
+            tfd->expire_tsc = timer_tsc_now() + val_ms * timer_tsc_per_ms;
+        tfd->interval_tsc = int_ms * timer_tsc_per_ms;
         tfd->expirations = 0;
         tfd->armed = 1;
     }
@@ -115,12 +125,13 @@ long do_timerfd_settime(int fd, int tfd_flags,
     return 0;
 }
 
-/* Check if any timerfd has expired — used by epoll_check_timeouts */
+/* Check if any timerfd has expired — used by epoll_check_timeouts.
+ * TSC-based: no timer_ms() call on hot path. */
 int timerfd_any_expired(void) {
-    uint64_t now = timer_ms();
+    uint64_t now_tsc = timer_tsc_now();
     for (int i = 0; i < TIMERFD_POOL_MAX; i++) {
         timerfd_t *t = &timerfd_pool[i];
-        if (t->armed && now >= t->expire_ms) return 1;
+        if (t->armed && t->expire_tsc && now_tsc >= t->expire_tsc) return 1;
     }
     return 0;
 }
@@ -134,13 +145,16 @@ long timerfd_read(void *obj, void *buf, long count) {
     spin_lock_irq(&tfd->lock, &irqf);
 
     if (tfd->armed) {
-        uint64_t now = timer_ms();
-        while (tfd->armed && now >= tfd->expire_ms) {
+        uint64_t now_tsc = timer_tsc_now();
+        while (tfd->armed && tfd->expire_tsc && now_tsc >= tfd->expire_tsc) {
             tfd->expirations++;
-            if (tfd->interval_ms > 0)
+            if (tfd->interval_tsc > 0) {
+                tfd->expire_tsc += tfd->interval_tsc;
                 tfd->expire_ms += tfd->interval_ms;
-            else
+            } else {
                 tfd->armed = 0;
+                tfd->expire_tsc = 0;
+            }
         }
     }
 

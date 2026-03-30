@@ -23,9 +23,11 @@ typedef struct {
 /* ── timerfd_t — exposed so syscall.c can check expiration for readiness ── */
 
 typedef struct {
-    uint64_t   expire_ms;     /* absolute expiration in timer_ms() */
+    uint64_t   expire_ms;     /* absolute expiration in timer_ms() (legacy) */
     uint64_t   interval_ms;   /* 0 = one-shot */
     uint64_t   expirations;   /* unread expiration count */
+    uint64_t   expire_tsc;    /* absolute expiration in TSC ticks (authoritative) */
+    uint64_t   interval_tsc;  /* interval in TSC ticks; 0 = one-shot */
     int        armed;
     int        flags;
     int        refcount;

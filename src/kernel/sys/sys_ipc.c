@@ -454,18 +454,26 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     case FD_TIMERFD: {
         timerfd_t *tfd = (timerfd_t *)fde->obj;
         if (!tfd) { ready |= EPOLLERR; break; }
-        /* Check for expired timer */
-        if (tfd->armed && timer_ms() >= tfd->expire_ms) {
-            uint64_t irqf;
-            spin_lock_irq(&tfd->lock, &irqf);
-            while (tfd->armed && timer_ms() >= tfd->expire_ms) {
-                tfd->expirations++;
-                if (tfd->interval_ms > 0)
-                    tfd->expire_ms += tfd->interval_ms;
-                else
-                    tfd->armed = 0;
+        /* TSC-based expiry check — no tight poll loop.
+         * Timer interrupt (epoll_check_timeouts) handles wakeup;
+         * here we just process any accumulated expirations. */
+        if (tfd->armed && tfd->expire_tsc) {
+            uint64_t now_tsc = timer_tsc_now();
+            if (now_tsc >= tfd->expire_tsc) {
+                uint64_t irqf;
+                spin_lock_irq(&tfd->lock, &irqf);
+                while (tfd->armed && tfd->expire_tsc && now_tsc >= tfd->expire_tsc) {
+                    tfd->expirations++;
+                    if (tfd->interval_tsc > 0) {
+                        tfd->expire_tsc += tfd->interval_tsc;
+                        tfd->expire_ms += tfd->interval_ms;
+                    } else {
+                        tfd->armed = 0;
+                        tfd->expire_tsc = 0;
+                    }
+                }
+                spin_unlock_irq(&tfd->lock, irqf);
             }
-            spin_unlock_irq(&tfd->lock, irqf);
         }
         if ((interest & EPOLLIN) && tfd->expirations > 0) ready |= EPOLLIN;
         break;
