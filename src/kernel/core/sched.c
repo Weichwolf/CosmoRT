@@ -411,16 +411,76 @@ void sched_init(void) {
 
 static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
 
+extern int kernel_setjmp(uint64_t buf[8]);
+extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+extern uint64_t pml4[];
+
+static void kthread_trampoline(thread_t *t) {
+    arch_sti();
+    t->kthread_fn(t->kthread_arg);
+    t->state = THREAD_DEAD;
+    kernel_longjmp(t->jmpbuf, 1);
+}
+
+__attribute__((noinline, optimize("O0")))
+static void kthread_run(thread_t *t) {
+    percpu_t *cpu = percpu_self();
+    extern void tss_set_rsp0(uint64_t rsp0);
+
+    t->state = THREAD_RUNNING;
+    cpu->current_thread = t;
+
+    tss_set_rsp0(t->kstack_top);
+    cpu->kernel_rsp = t->kstack_top;
+
+    if (kernel_setjmp(t->jmpbuf) != 0) {
+        cpu->current_thread = 0;
+        return;
+    }
+
+    if (t->in_kernel_yield) {
+        t->in_kernel_yield = 0;
+        arch_sti();
+        kernel_longjmp(t->kernel_yield_jmpbuf, 1);
+    }
+
+    {
+        uint64_t new_rsp = (t->kstack_top - 8) & ~0xFULL;
+        void (*tramp)(thread_t *) = kthread_trampoline;
+        __asm__ volatile(
+            "movq %0, %%rsp\n\t"
+            "movq %1, %%rdi\n\t"
+            "jmpq *%2\n\t"
+            :
+            : "r"(new_rsp), "r"(t), "r"(tramp)
+            : "memory"
+        );
+    }
+    __builtin_unreachable();
+}
+
+static int sched_thread_valid(thread_t *t) {
+    if (t->state == THREAD_DEAD || t->state == THREAD_FREE)
+        return 0;
+    if (t->kthread_fn)
+        return 1;
+    if (!t->proc || !t->proc->pml4)
+        return 0;
+    return 1;
+}
+
 void sched_loop_once(void) {
     thread_t *next = sched_pick();
     if (next) {
-        if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
-            !next->proc || !next->proc->pml4) {
+        if (!sched_thread_valid(next)) {
             if (next->state == THREAD_DEAD && !next->proc)
                 thread_free(next);
             return;
         }
-        thread_run(next);
+        if (next->kthread_fn)
+            kthread_run(next);
+        else
+            thread_run(next);
         if (next->state == THREAD_RUNNABLE)
             sched_add(next);
     } else {
@@ -439,13 +499,15 @@ void sched_loop(void) {
 
         thread_t *next = sched_pick();
         if (next) {
-            if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
-                !next->proc || !next->proc->pml4) {
+            if (!sched_thread_valid(next)) {
                 if (next->state == THREAD_DEAD && !next->proc)
                     thread_free(next);
                 continue;
             }
-            thread_run(next);
+            if (next->kthread_fn)
+                kthread_run(next);
+            else
+                thread_run(next);
             if (next->state == THREAD_RUNNABLE)
                 sched_add(next);
         } else {

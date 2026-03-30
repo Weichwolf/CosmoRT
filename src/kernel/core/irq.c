@@ -16,6 +16,18 @@
 #include "arch/arch.h"
 #include "memops.h"
 
+#define VECTOR_DE        0
+#define VECTOR_BP        3
+#define VECTOR_UD        6
+#define VECTOR_GP        13
+#define VECTOR_PF        14
+#define VECTOR_MF        16
+#define VECTOR_XF        19
+#define VECTOR_TIMER     32
+#define VECTOR_SYSCALL   0x80
+#define VECTOR_RESCHED   0xFD
+#define VECTOR_TLB_SHOOT 0xFE
+
 #define LAPIC_PHYS       0xFEE00000
 #define LAPIC_BASE       (LAPIC_PHYS + PHYS_OFFSET)
 #define LAPIC_EOI        0x0B0
@@ -25,6 +37,10 @@
 #define LAPIC_TIMER_INIT 0x380
 #define LAPIC_TIMER_CUR  0x390
 #define LAPIC_TIMER_DIV  0x3E0
+
+#define LAPIC_LVT_PERIODIC (1 << 17)
+#define LAPIC_LVT_TIMER_PERIODIC (LAPIC_LVT_PERIODIC | VECTOR_TIMER)
+#define LAPIC_LVT_TIMER_ONESHOT  (VECTOR_TIMER)
 
 static uint32_t lapic_ticks_per_ms = 100000;
 
@@ -147,13 +163,13 @@ void irq_register(int vector, irq_handler_t handler) {
 
 __attribute__((hot))
 void irq_dispatch(int vector, irq_frame_t *frame) {
-    if (vector == 0x80) {
+    if (vector == VECTOR_SYSCALL) {
         long sysnum = (long)frame->rax;
         frame->rax = (uint64_t)sys_handler(
             sysnum, (long)frame->rdi, (long)frame->rsi,
             (long)frame->rdx, (long)frame->r10, (long)frame->r8,
             (long)frame->r9);
-        if (sysnum != 15) {
+        if (sysnum != SYS_RT_SIGRETURN) {
             extern void check_pending_signals(void);
             thread_t *t = percpu_self()->current_thread;
             if (t && t->proc && (t->proc->sig_pending & ~t->sig_blocked)) {
@@ -435,8 +451,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
     kill_process:
         if (t && t->proc) {
             process_t *faultp = t->proc;
-            struct k_sigaction *sa = &faultp->sig_actions[11];
-            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(11))) {
+            struct k_sigaction *sa = &faultp->sig_actions[SIGSEGV];
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(SIGSEGV))) {
                 t->fault_addr = cr2;
                 t->rip = frame->rip;
                 t->rsp = frame->rsp;
@@ -451,7 +467,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 t->r14 = frame->r14; t->r15 = frame->r15;
 
                 extern void deliver_signal(thread_t *t, int signo);
-                deliver_signal(t, 11);
+                deliver_signal(t, SIGSEGV);
 
                 frame->rip = t->rip;
                 frame->rsp = t->rsp;
@@ -477,17 +493,12 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         pf_kernel_panic(cr2, error, frame->rip);
     }
 
-    if (vector < 32 && vector != 14) {
+    if (vector < VECTOR_TIMER && vector != VECTOR_PF) {
         default_exception_with_frame(vector, frame);
         return;
     }
 
-    if (vector == 32) {
-        extern void sched_preempt(void *frame);
-        sched_preempt(frame);
-    }
-
-    if (vector == 0xFD) {
+    if (vector == VECTOR_TIMER || vector == VECTOR_RESCHED) {
         extern void sched_preempt(void *frame);
         sched_preempt(frame);
     }
@@ -517,15 +528,15 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
 
     if (t && t->proc && (frame->cs & 3)) {
         int signo = 0;
-        if (vector == 13 || vector == 14) signo = SIGSEGV;
-        else if (vector == 3) signo = SIGTRAP;
-        else if (vector == 0 || vector == 16 || vector == 19) signo = SIGFPE;
-        else if (vector == 6) signo = SIGILL;
+        if (vector == VECTOR_GP || vector == VECTOR_PF) signo = SIGSEGV;
+        else if (vector == VECTOR_BP) signo = SIGTRAP;
+        else if (vector == VECTOR_DE || vector == VECTOR_MF || vector == VECTOR_XF) signo = SIGFPE;
+        else if (vector == VECTOR_UD) signo = SIGILL;
 
         if (signo) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(signo))) {
-                if (vector == 14) {
+                if (vector == VECTOR_PF) {
                     t->fault_addr = arch_get_cr2();
                 } else {
                     t->fault_addr = frame->rip;
@@ -569,7 +580,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_puts(" rsp=");
     serial_hex64(frame->rsp);
 
-    if (vector == 14) {
+    if (vector == VECTOR_PF) {
         uint64_t cr2 = arch_get_cr2();
         serial_puts(" CR2="); serial_hex64(cr2);
     }
@@ -645,7 +656,7 @@ void tlb_shootdown(uint64_t pml4_phys) {
     arch_mfence();
 
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
-    *icr_lo = 0x000C0000 | 0xFE;
+    *icr_lo = 0x000C0000 | VECTOR_TLB_SHOOT;
 
     int expected = ncores - 1;
     uint64_t sd_deadline = timer_ms() + 10;
@@ -684,15 +695,15 @@ void irq_init(void) {
 
     for (int i = 0; i < 256; i++)
         idt_set_entry(i, ensure_high(isr_stub_table[i]));
-    for (int i = 0; i < 32; i++)
+    for (int i = 0; i < VECTOR_TIMER; i++)
         irq_register(i, default_exception);
 
-    idt_set_entry_user(0x80, ensure_high(isr_stub_table[0x80]));
-    idt_set_entry_user(3, ensure_high(isr_stub_table[3]));
+    idt_set_entry_user(VECTOR_SYSCALL, ensure_high(isr_stub_table[VECTOR_SYSCALL]));
+    idt_set_entry_user(VECTOR_BP, ensure_high(isr_stub_table[VECTOR_BP]));
 
-    irq_register(0xFE, tlb_shootdown_handler);
+    irq_register(VECTOR_TLB_SHOOT, tlb_shootdown_handler);
 
-    irq_register(0xFD, resched_ipi_handler);
+    irq_register(VECTOR_RESCHED, resched_ipi_handler);
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);
@@ -708,9 +719,9 @@ void irq_init(void) {
     lapic_write(LAPIC_TPR, 0);
     serial_puts("IRQ: LAPIC enabled\n");
 
-    irq_register(32, timer_handler);
+    irq_register(VECTOR_TIMER, timer_handler);
     lapic_write(LAPIC_TIMER_DIV, 0x03);
-    lapic_write(LAPIC_TIMER, 0x20020);
+    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_PERIODIC);
     lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms);
     serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
 
@@ -721,12 +732,12 @@ void lapic_delay_ms(uint32_t ms) {
     if (ms == 0) return;
 
     uint32_t count = ms * lapic_ticks_per_ms;
-    lapic_write(LAPIC_TIMER, 0x00020);
+    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_ONESHOT);
     lapic_write(LAPIC_TIMER_INIT, count);
 
     while (lapic[LAPIC_TIMER_CUR / 4] > 0)
         arch_halt();
 
-    lapic_write(LAPIC_TIMER, 0x20020);
+    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_PERIODIC);
     lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms);
 }

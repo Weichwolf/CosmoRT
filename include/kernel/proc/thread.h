@@ -94,6 +94,9 @@ typedef struct thread {
     uint64_t wake_at_tsc;
 
     void *robust_list;
+
+    void (*kthread_fn)(void *);
+    void *kthread_arg;
 } thread_t;
 
 thread_t *thread_alloc(void);

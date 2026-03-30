@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1480/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1502/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -64,11 +64,34 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
   keyboard IRQ), slab_t::lock (arp_slab aus net dispatch), tcp rxring/hash_lock,
   page_alloc buddy_lock, page_cache pc_lock, rng_lock, dmesg_lock
 
-### RT-4: Threaded IRQs (abhaengig von RT-3)
+### RT-4: Threaded IRQs
 
-- [ ] Hard-IRQ Handler: nur ACK + Wake eines IRQ-Threads
-- [ ] IRQ-Thread pro Vector (schedulebar, preemptibel)
-- [ ] Abhaengig von RT-2 (IRQ-Threads brauchen PI-Mutex)
+Timer-IRQ bleibt Hard-IRQ (Scheduler-Heartbeat, nicht threadbar).
+Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
+
+#### RT-4a: IRQ-Thread Infrastruktur (erledigt)
+
+- [x] irq_thread_create(name, handler_fn, prio): Kernel-Thread SCHED_FIFO
+- [x] irq_thread_wake(thread): aus Hard-IRQ, weckt den Thread
+- [x] Thread-Loop: blockiert → handler_fn() → blockiert (Endlosschleife)
+- [x] Hard-IRQ Pattern: ACK + irq_thread_wake, sonst nichts
+- [x] kthread_run im Scheduler: Kernel-Threads ohne Prozess/PML4
+- [x] Magic Numbers in irq.c → VECTOR_* Defines
+- [x] 12 ktest (irqt_*): Infrastruktur-Regression
+
+#### RT-4b: Device-IRQs → Threads (Agent)
+
+- [ ] NIC (e1000/virtio-net): net_thread (Paket-Dispatch, ARP/TCP/UDP)
+- [ ] Keyboard (hv_kbd/virtio-input): input_thread (Event, VT-Dispatch)
+- [ ] Serial: serial_thread (PTY-Bridge, VT-Output)
+- [ ] rt_poll eliminieren (rt_poll.c/rt_poll.h loeschen)
+
+#### RT-4c: Lock-Konvertierung Welle 2 (Agent, nach RT-4b)
+
+- [ ] Locks die vorher IRQ-Kontext waren → mutex_t:
+  process_t::lock, pty_t::lock, slab arp_slab, tcp rxring/hash,
+  packet queue locks
+- [ ] Alle verbleibenden Spinlocks pruefen
 
 ### RT-5: RCU (Agent, parallel zu RT-2..4)
 

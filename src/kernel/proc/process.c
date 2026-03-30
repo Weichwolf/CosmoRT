@@ -54,6 +54,8 @@ thread_t *thread_alloc(void) {
         t->tid = tid;
         tid_table[tid] = t;
         mutex_unlock(&pid_lock);
+        t->kthread_fn = 0;
+        t->kthread_arg = 0;
         event_queue_init(&t->eq);
     }
     return t;
