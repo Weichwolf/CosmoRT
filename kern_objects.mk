@@ -12,7 +12,6 @@ KERN_ASM = $(BUILD)/kernel/entry.o \
 KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/irq.o \
             $(BUILD)/kernel/core/sched.o \
-            $(BUILD)/kernel/core/edf.o \
             $(BUILD)/kernel/core/timer.o \
             $(BUILD)/kernel/core/smp.o \
             $(BUILD)/kernel/core/tss.o \

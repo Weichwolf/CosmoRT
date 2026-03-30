@@ -52,11 +52,46 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 - [x] Fix: saved_priority init in CLONE_THREAD (war 0 statt -1 → PI deboost kaputt)
 - [x] ktest: 12 PI-Mutex Tests (lock/unlock, deadlock, trylock, contention, PI boost/deboost, stress, priority ordering)
 
-### RT-3: Spinlock-Konvertierung (manuell, pro Subsystem)
+### RT-3: Spinlock-Konvertierung
 
-- [ ] Audit: welche Spinlocks koennen schlafen, welche muessen spinnen (IRQ-Kontext)
-- [ ] Subsystem-weise konvertieren (VFS, IPC, Netzwerk, Prozesse)
-- [ ] Adaptive Spinning: kurzer Spin vor Mutex-Sleep wenn Owner laeuft
+#### RT-3a: Infrastruktur (Agent)
+
+- [ ] raw_spinlock_t Typ + raw_spin_lock/raw_spin_unlock API (= heutiges spinlock_t)
+- [ ] mutex_t Typ als Wrapper um rt_mutex_t (sleeping, PI-aware)
+- [ ] mutex_init/mutex_lock/mutex_unlock/mutex_trylock API
+- [ ] Adaptive Spinning in mutex_lock: kurzer Spin wenn Owner laeuft
+
+#### RT-3b: Rename spinlock_t → raw_spinlock_t (Agent, mechanisch)
+
+- [ ] Alle spinlock_t Deklarationen → raw_spinlock_t
+- [ ] Alle spin_lock/spin_unlock → raw_spin_lock/raw_spin_unlock
+- [ ] spinlock.h: raw_spinlock_t als primaerer Typ
+- [ ] Rein mechanisch, keine Semantik-Aenderung
+
+#### RT-3c: IPC Konvertierung (Agent)
+
+- [ ] pipe locks → mutex_t
+- [ ] eventfd/timerfd/inotify locks → mutex_t
+- [ ] futex hash locks → mutex_t
+- [ ] NICHT: eq_locks (IRQ-Kontext), packet queues (NIC-IRQ)
+
+#### RT-3d: VFS/ext2 Konvertierung (Agent)
+
+- [ ] inode/dentry/mount locks → mutex_t
+- [ ] ext2 block-alloc/inode-cache locks → mutex_t
+- [ ] bcache locks → mutex_t
+
+#### RT-3e: Socket/Netzwerk Konvertierung (Agent)
+
+- [ ] socket/unix_socket locks → mutex_t
+- [ ] NICHT: packet queue locks (q_push aus NIC-IRQ)
+
+#### RT-3f: Prozesse/MM Konvertierung (Agent)
+
+- [ ] VMA locks → mutex_t
+- [ ] process table locks → mutex_t
+- [ ] slab locks → mutex_t (pruefen ob slab_alloc aus IRQ gerufen wird)
+- [ ] PTY locks → mutex_t
 
 ### RT-4: Threaded IRQs (manuell)
 

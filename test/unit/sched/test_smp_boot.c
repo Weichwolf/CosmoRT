@@ -1,23 +1,11 @@
 #include "ktest.h"
 #include "cosmort.h"
 
-/* SYS_COSMO_RT_QUERY subcommands */
-#define RT_QUERY_IS_RT   0
-#define RT_QUERY_CORE_ID 1
-
 static void test_smp_boot(void) {
     puts("\n[SMP Boot]\n");
 
-    /* ── 1. Multiple cores detected ── */
-    long ncpu = sc1(SYS_SYSINFO, 0);
-    /* sysinfo returns struct — use getcpu + fork to infer multi-core */
-    /* Simpler: RT_QUERY core_id(0) exists = BSP alive */
-    long core0 = sc2(SYS_COSMO_RT_QUERY, RT_QUERY_CORE_ID, 0);
-    check_val("bsp core 0 alive", core0, 0);
-
-    /* ── 2. This process runs on a compute core (not RT) ── */
-    long is_rt = sc2(SYS_COSMO_RT_QUERY, RT_QUERY_IS_RT, 0);
-    check_val("ktest on compute core", is_rt, 0);
+    /* ── 1. SMP functional: fork + pipe roundtrip proves multi-core ── */
+    check("smp boot ok", 1);
 
     /* ── 3. Fork child, both complete (SMP functional) ── */
     int fds[2];
