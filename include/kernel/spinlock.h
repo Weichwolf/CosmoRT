@@ -1,26 +1,64 @@
-/* CosmoRT Spinlock — compatibility layer over raw_spinlock_t
+/* CosmoRT Spinlock — ticket lock for SMP safety
  *
- * All spinlock_t usage maps directly to raw_spinlock_t.
- * For sleeping locks with priority inheritance, use mutex_t.
+ * Always used with IRQ disable: spin_lock_irq / spin_unlock_irq.
+ * Bare spin_lock/spin_unlock for contexts where IRQs are already disabled.
+ *
+ * This is the hardware spinlock. For sleeping locks with PI, use mutex_t.
  */
 #ifndef SPINLOCK_H
 #define SPINLOCK_H
 
-#include "core/raw_spinlock.h"
+#include <stdint.h>
 
-typedef raw_spinlock_t spinlock_t;
+typedef struct {
+    volatile uint32_t next;
+    volatile uint32_t owner;
+} spinlock_t;
 
-#define SPINLOCK_INIT RAW_SPINLOCK_INIT
+#define SPINLOCK_INIT {0, 0}
 
-#define spin_lock       raw_spin_lock
-#define spin_unlock     raw_spin_unlock
-#define spin_trylock    raw_spin_trylock
+static inline void spin_lock(spinlock_t *l) {
+    uint32_t ticket = __sync_fetch_and_add(&l->next, 1);
+    while (__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE) != ticket)
+        __asm__ volatile("pause");
+}
 
-#define irq_save        raw_irq_save
-#define irq_restore     raw_irq_restore
+static inline void spin_unlock(spinlock_t *l) {
+    __asm__ volatile("" ::: "memory"); /* compiler barrier */
+    __sync_fetch_and_add(&l->owner, 1);
+}
 
-#define spin_lock_irq   raw_spin_lock_irq
-#define spin_unlock_irq raw_spin_unlock_irq
-#define spin_trylock_irq raw_spin_trylock_irq
+static inline int spin_trylock(spinlock_t *l) {
+    uint32_t cur = l->owner;
+    return __sync_bool_compare_and_swap(&l->next, cur, cur + 1);
+}
+
+/* Lock with IRQ save/disable */
+static inline uint64_t irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags) {
+    __asm__ volatile("push %0; popfq" :: "r"(flags) : "memory");
+}
+
+static inline void spin_lock_irq(spinlock_t *l, uint64_t *flags) {
+    *flags = irq_save();
+    spin_lock(l);
+}
+
+static inline void spin_unlock_irq(spinlock_t *l, uint64_t flags) {
+    spin_unlock(l);
+    irq_restore(flags);
+}
+
+static inline int spin_trylock_irq(spinlock_t *l, uint64_t *flags) {
+    *flags = irq_save();
+    if (spin_trylock(l)) return 1;
+    irq_restore(*flags);
+    return 0;
+}
 
 #endif

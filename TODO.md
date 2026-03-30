@@ -61,12 +61,9 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 - [x] mutex_init/mutex_lock/mutex_unlock/mutex_trylock API
 - [x] Adaptive Spinning in mutex_lock: kurzer Spin wenn Owner laeuft
 
-#### RT-3b: Rename spinlock_t → raw_spinlock_t (Agent, mechanisch)
+#### RT-3b: ~~Rename spinlock_t → raw_spinlock_t~~ ENTFAELLT
 
-- [ ] Alle spinlock_t Deklarationen → raw_spinlock_t
-- [ ] Alle spin_lock/spin_unlock → raw_spin_lock/raw_spin_unlock
-- [ ] spinlock.h: raw_spinlock_t als primaerer Typ
-- [ ] Rein mechanisch, keine Semantik-Aenderung
+spinlock_t bleibt spinlock_t. mutex_t ist der sleeping Lock. Kein raw_-Prefix.
 
 #### RT-3c: IPC Konvertierung (Agent)
 
