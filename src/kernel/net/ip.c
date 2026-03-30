@@ -36,7 +36,11 @@ void ip_send_raw(const uint8_t *data, uint16_t len) {
         if (n) n->send(data, len);
     } else {
         rt_channel_t *tx = net_tx_channel();
-        if (tx) rt_channel_push(tx, data, (uint32_t)len);
+        if (tx) {
+            rt_channel_push(tx, data, (uint32_t)len);
+            extern void net_irq_thread_wake(void);
+            net_irq_thread_wake();
+        }
     }
 }
 

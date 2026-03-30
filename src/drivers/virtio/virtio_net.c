@@ -53,8 +53,8 @@ static void rx_refill(void) {
 static void virtio_net_irq(void *ctx) {
     (void)ctx;
     virtio_isr_read(&net_dev);
-    extern void net_poll(void);
-    net_poll();
+    extern void net_irq_thread_wake(void);
+    net_irq_thread_wake();
 }
 
 static void vnet_get_mac(uint8_t mac[6]) {

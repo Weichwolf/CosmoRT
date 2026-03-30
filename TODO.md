@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1502/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1524/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -79,12 +79,15 @@ Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
 - [x] Magic Numbers in irq.c → VECTOR_* Defines
 - [x] 12 ktest (irqt_*): Infrastruktur-Regression
 
-#### RT-4b: Device-IRQs → Threads (Agent)
+#### RT-4b: Device-IRQs → Threads (erledigt)
 
-- [ ] NIC (e1000/virtio-net): net_thread (Paket-Dispatch, ARP/TCP/UDP)
-- [ ] Keyboard (hv_kbd/virtio-input): input_thread (Event, VT-Dispatch)
-- [ ] Serial: serial_thread (PTY-Bridge, VT-Output)
-- [ ] rt_poll eliminieren (rt_poll.c/rt_poll.h loeschen)
+- [x] NIC (e1000/virtio-net): net_thread (Paket-Dispatch, ARP/TCP/UDP)
+- [x] Keyboard (hv_kbd/virtio-input): input_thread (Event-Ring, VT-Dispatch)
+- [x] Serial: serial_thread (PTY-Bridge, on-demand wake)
+- [x] rt_poll eliminiert (rt_poll.c/rt_poll.h geloescht)
+- [x] timer_poll direkt aus timer_handler (kein rt_poll mehr)
+- [x] TX-Wake: ip_send_raw weckt net_thread nach TX-Ring push
+- [x] 11 ktest (tirq_*): Threaded-IRQ Validierung
 
 #### RT-4c: Lock-Konvertierung Welle 2 (Agent, nach RT-4b)
 

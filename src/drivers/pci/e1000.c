@@ -100,11 +100,8 @@ static void read_mac(void) {
 static void e1000_irq_handler(void *ctx) {
     (void)ctx;
     e1000_read(E1000_ICR);
-    extern void net_poll(void);
-    for (int i = 0; i < 16; i++) {
-        net_poll();
-        if (!(rx_descs[rx_cur].status & E1000_RXD_STAT_DD)) break;
-    }
+    extern void net_irq_thread_wake(void);
+    net_irq_thread_wake();
 }
 
 int e1000_init(void) {

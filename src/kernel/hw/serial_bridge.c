@@ -1,17 +1,17 @@
-/* Serial ↔ VT bridge — routes serial RX → PTY input, PTY output → serial TX */
+/* Serial-VT bridge — routes serial RX to PTY input, PTY output to serial TX */
 
 #include "hw/serial.h"
 #include "vt/pty.h"
 #include "vt/vt.h"
+#include "core/irq_thread.h"
+
+#define SERIAL_BRIDGE_MAX_RX 16
+#define SERIAL_THREAD_PRIO   80
 
 static int serial_vt = 0;
 static int esc_pending;
 
-void serial_bridge_init(void) {
-    serial_vt = 0;
-    esc_pending = 0;
-    serial_puts("serial: bridge attached to VT0\n");
-}
+static irq_thread_t serial_irq_thread;
 
 static void bridge_rx_byte(char c) {
     if (esc_pending) {
@@ -48,12 +48,24 @@ static void bridge_rx_byte(char c) {
         pty_master_write(vt_pty_id(serial_vt), &c, 1);
 }
 
-void serial_bridge_poll(void) {
-    for (int i = 0; i < 16; i++) {
+static void serial_thread_handler(void) {
+    for (int i = 0; i < SERIAL_BRIDGE_MAX_RX; i++) {
         char c = serial_getchar();
         if (!c) break;
         bridge_rx_byte(c);
     }
+}
+
+void serial_bridge_init(void) {
+    serial_vt = 0;
+    esc_pending = 0;
+    irq_thread_create(&serial_irq_thread, "serial", serial_thread_handler, SERIAL_THREAD_PRIO);
+    serial_puts("serial: bridge attached to VT0\n");
+}
+
+void serial_bridge_poll(void) {
+    if (serial_data_available() && serial_irq_thread.thread)
+        irq_thread_wake(&serial_irq_thread);
 }
 
 void serial_bridge_tx(int vt_id, const char *buf, int len) {

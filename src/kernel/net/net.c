@@ -1,9 +1,9 @@
-/* CosmoRT Network Stack — NIC registration, global state, packet queues. */
+/* CosmoRT Network Stack — NIC registration, global state, packet queues */
 
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/rt.h"
-#include "core/rt_poll.h"
+#include "core/irq_thread.h"
 #include "hw/serial.h"
 
 static const nic_driver_t *nic;
@@ -73,15 +73,29 @@ rt_channel_t *net_tx_channel(void) {
     return tx_ring_ready ? &tx_ring : 0;
 }
 
+#define NET_THREAD_PRIO 90
+#define NET_RX_BATCH    64
+
+static irq_thread_t net_irq_thread;
+
+static void net_thread_handler(void) {
+    extern int net_rx_poll(int max_work);
+    extern int net_tx_poll(int max_work);
+    net_rx_poll(NET_RX_BATCH);
+    net_tx_poll(NET_RX_BATCH);
+}
+
+void net_irq_thread_wake(void) {
+    if (net_irq_thread.thread)
+        irq_thread_wake(&net_irq_thread);
+}
+
 int net_init(void) {
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
     rt_channel_init(&tx_ring, tx_ring_buf, NET_TX_RING_SIZE);
     tx_ring_ready = 1;
 
-    extern int net_rx_poll(int max_work);
-    extern int net_tx_poll(int max_work);
-    rt_poll_register(RT_PRIO_NET_RX, net_rx_poll, 64);
-    rt_poll_register(RT_PRIO_NET_TX, net_tx_poll, 64);
+    irq_thread_create(&net_irq_thread, "net", net_thread_handler, NET_THREAD_PRIO);
     return 0;
 }

@@ -1,8 +1,7 @@
-/* CosmoRT Timer Wheel — RT-Core owned, no locks. */
+/* CosmoRT Timer Wheel — RT-Core owned, no locks */
 
 #include "core/timer_wheel.h"
 #include "core/timer.h"
-#include "core/rt_poll.h"
 #include "hw/serial.h"
 
 static timer_wheel_t tw;
@@ -35,9 +34,6 @@ void timer_wheel_init(void) {
     tw_last_ms = timer_ms();
 
     rt_channel_init(&tw_req_ring, tw_req_buf, TW_REQ_RING_SIZE);
-
-    extern int timer_poll(int max_work);
-    rt_poll_register(RT_PRIO_TIMER, timer_poll, 0);
 }
 
 static int tw_alloc_entry(void) {

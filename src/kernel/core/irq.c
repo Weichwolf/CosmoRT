@@ -678,8 +678,8 @@ static void timer_handler(int vector) {
     random_add_interrupt_entropy();
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
-    extern void rt_poll_run(void);
-    rt_poll_run();
+    extern int timer_poll(int max_work);
+    timer_poll(0);
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }
