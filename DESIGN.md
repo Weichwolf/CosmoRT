@@ -31,20 +31,42 @@ Ein Device-Name, pro Prozess geroutet. Wie /dev/tty (Controlling Terminal).
 | /dev/input/event0 | Input-Queue des Slots | Empfaengt Keyboard/Maus |
 | /dev/snd/pcmC0D0p | Audio-Stream des Slots | Aktiv: spielt. Pinned: immer. Sonst: stumm |
 
-### 1.3 Audio-Router + MIDI
+### 1.3 Audio-Mixer (24-Kanal)
 
-Jeder Slot hat Audio IN/OUT (Stereo) und MIDI IN/OUT. Der Kernel routet
-beliebige Slot-zu-Slot-Verbindungen. Wie JACK aber im Kernel.
+Eigenstaendiges Kernel-Subsystem. Nicht an VT-Slots gebunden — Slots
+sind Consumers die Kanaele aus dem Pool belegen.
 
-| Pro Slot | Device | Zweck |
-|----------|--------|-------|
-| Audio IN | /dev/snd/pcmC0D0c | Empfaengt von Slot oder HW-Input |
-| Audio OUT | /dev/snd/pcmC0D0p | Sendet an Slot oder Master-Mix |
-| MIDI IN | /dev/midi | Empfaengt MIDI Events |
-| MIDI OUT | /dev/midi | Sendet MIDI Events |
+```
+24-Kanal Kernel-Mixer
+  Kanal 1-2:   Slot F1 (Synth, Stereo OUT)
+  Kanal 3-4:   Slot F3 (Reverb, Stereo IN+OUT)
+  Kanal 5-6:   Hardware Mikrofon IN
+  Kanal 7-24:  frei / dynamisch zuweisbar
+  Master Bus -> Hardware DAC
+```
 
-MIDI: 3-Byte-Messages, Kernel-Router mit Routing-Tabelle, Timestamped
-Events (sample-genau). Kein Parsing, kein Processing, nur Routing.
+| Eigenschaft | Detail |
+|-------------|--------|
+| Kanaele | 24 Stereo, dynamisch zuweisbar (Pool) |
+| Routing | Kanal-zu-Kanal, Kanal-zu-Master, HW-IN-zu-Kanal |
+| Graph-Ordering | Topologischer Sort, sequentiell pro Audio-Periode |
+| Mixer-Thread | Kernel-Thread SCHED_FIFO, geweckt vom Audio-DMA-IRQ |
+| Deadline-Miss | Zero-fill (Silence) + Xrun-Counter pro Kanal |
+| Slot-Belegung | 0 Kanaele (Terminal), 2 (Stereo-App), N (Multi-Out) |
+
+### 1.4 MIDI-Router
+
+Kernel-internes MIDI-Routing zwischen Slots und Hardware.
+
+| Eigenschaft | Detail |
+|-------------|--------|
+| Ports | Pro Slot: MIDI IN + MIDI OUT, dynamisch |
+| Routing | Routing-Tabelle, beliebige Port-zu-Port-Verbindungen |
+| Transport | 3-Byte-Messages, Ringbuffer pro Verbindung |
+| Timing | Timestamped Events (sample-genau) |
+| Device | /dev/midi (ALSA rawmidi kompatibel) |
+
+Kein Parsing, kein Processing, nur Routing mit Timestamps.
 
 ### 1.2 UI-Stack
 

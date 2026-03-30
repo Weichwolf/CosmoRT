@@ -33,15 +33,49 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 ## Natives RT (Kern-Architektur)
 
-- [ ] NOHZ_FULL: Timer-Ticks auf isolierten Cores eliminieren (ohne: 1ms Jitter)
-- [ ] RCU (Read-Copy-Update): lock-free Read-Side fuer Kernel-Datenstrukturen
-- [ ] Spinlocks -> PI-Mutexes (sleeping locks) im normalen Kernel-Pfad
+### RT-1: Preemption-Modell (Architektur, manuell)
+
+- [ ] Full + Lazy Preemption spezifizieren (wann preempted, wann deferred)
+- [ ] Preemption-Points im Scheduler dokumentieren
+
+### RT-2: PI-Mutex (Agent)
+
+- [ ] rt_mutex Datenstruktur + API (lock, unlock, trylock)
+- [ ] Priority-Inheritance Chain (Boosting + Deboosting)
+- [ ] ktest: PI-Inversion-Tests (High prio wartet auf Low prio)
+
+### RT-3: Spinlock-Konvertierung (manuell, pro Subsystem)
+
+- [ ] Audit: welche Spinlocks koennen schlafen, welche muessen spinnen (IRQ-Kontext)
+- [ ] Subsystem-weise konvertieren (VFS, IPC, Netzwerk, Prozesse)
 - [ ] Adaptive Spinning: kurzer Spin vor Mutex-Sleep wenn Owner laeuft
-- [ ] Threaded IRQs (Hard-IRQ nur ACK+Wake, Verarbeitung im Thread)
-- [ ] Preemption-Modell: Full + Lazy Preemption spezifizieren und implementieren
-- [ ] Bounded WCET auf allen Pfaden (keine unbounded Loops)
+
+### RT-4: Threaded IRQs (manuell)
+
+- [ ] Hard-IRQ Handler: nur ACK + Wake eines IRQ-Threads
+- [ ] IRQ-Thread pro Vector (schedulebar, preemptibel)
+- [ ] Abhaengig von RT-2 (IRQ-Threads brauchen PI-Mutex)
+
+### RT-5: RCU (Agent, parallel zu RT-2..4)
+
+- [ ] RCU Datenstruktur (grace period, callback queue)
+- [ ] rcu_read_lock/rcu_read_unlock (preempt_disable/enable)
+- [ ] synchronize_rcu / call_rcu
+- [ ] ktest: concurrent read/write Tests
+
+### RT-6: NOHZ_FULL (abhaengig von RT-4)
+
+- [ ] Timer-Ticks auf isolierten Cores eliminieren
+- [ ] Abhaengig von Threaded IRQs (kein periodischer Timer-IRQ noetig)
+
+### RT-7: Unabhaengige Tasks (Agent)
+
+- [ ] isolcpus: CPU-Isolation fuer Latenz-Cores
 - [ ] CPU-Frequency-Invarianz: WCET kompensiert Turbo-Boost/P-States
-- [ ] isolcpus fuer dedizierte Latenz-Cores
+
+### RT-8: Validierung (letzter Schritt)
+
+- [ ] Bounded WCET Audit auf allen Pfaden
 - [ ] Latenz-Messung + ktest Assertions (<10us WCET Ziel)
 
 ---
@@ -220,15 +254,22 @@ ext2 hat kein Journal, keine Extents, 32-Bit Timestamps (Y2038).
 
 ---
 
-## Audio-Router + MIDI (DAW-Kern)
+## Audio-Mixer 24-Kanal (DAW-Kern)
 
-- [ ] Audio IN/OUT (Stereo) pro Slot (/dev/snd/pcmC0D0p, /dev/snd/pcmC0D0c)
-- [ ] Kernel Audio-Router: Slot-zu-Slot Verbindungen (nicht nur Slot→Master)
-- [ ] MIDI-Port pro Slot (/dev/midi)
-- [ ] MIDI Kernel-Router: Routing-Tabelle + Ringbuffer pro Verbindung
+- [ ] 24-Kanal Stereo Mixer-Pool (dynamische Zuweisung an Slots)
+- [ ] Kanal-zu-Kanal Routing (Audio-Graph)
+- [ ] Graph-Ordering: topologischer Sort, sequentiell pro Audio-Periode
+- [ ] Mixer Kernel-Thread: SCHED_FIFO, geweckt vom Audio-DMA-IRQ
+- [ ] Deadline-Miss: Zero-fill (Silence) + Xrun-Counter pro Kanal
+- [ ] HW-Input Kanaele (Mikrofon → Kanal)
+
+## MIDI-Router
+
+- [ ] MIDI IN/OUT Port pro Slot (dynamisch)
+- [ ] Kernel MIDI-Router: Routing-Tabelle + Ringbuffer pro Verbindung
 - [ ] Timestamped MIDI Events (sample-genau)
-- [ ] ALSA rawmidi kompatible Userspace-API
-- [ ] Audio-Mixer: 12-Spur, pro Slot
+- [ ] /dev/midi (ALSA rawmidi kompatibel)
+- [ ] Audio-Mixer: 24-Kanal Pool (siehe Audio-Mixer Sektion)
 
 ---
 
