@@ -443,7 +443,7 @@ not_pts:
         if (!f) return -ENOMEM;
 
         f->type = is_dir ? VFS_DIR : VFS_FILE;
-        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH | O_NONBLOCK);
         f->refcount = 1;
         f->backend = VFS_BACKEND_EXT2;
         f->offset = 0;
@@ -491,7 +491,7 @@ not_pts:
     if (!f) return -ENOMEM;
 
     f->type = node->type;
-    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH | O_NONBLOCK);
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
