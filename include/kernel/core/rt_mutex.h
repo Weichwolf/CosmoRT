@@ -4,8 +4,9 @@
  * blocks on a mutex held by a low-priority thread, the owner is
  * temporarily boosted to prevent priority inversion.
  *
- * V1: spin-wait with arch_pause(). True blocking (setjmp/longjmp)
- * replaces this in V2.
+ * V2: true blocking via kernel_setjmp/longjmp. Waiters sleep in the
+ * scheduler and are woken by sched_wake on unlock. Adaptive spin
+ * for owners running on other cores.
  *
  * Waiters array sorted by priority (highest first). Fixed capacity
  * sufficient for kernel-internal use (not exposed to userspace).

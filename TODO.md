@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1494/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1456/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -43,54 +43,25 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 - [x] DESIGN.md §13 aktualisiert
 - [x] ktest: test_preempt.c (preempt infrastructure tests)
 
-### RT-2: PI-Mutex (erledigt)
+### RT-2: PI-Mutex (V2 erledigt)
 
-- [x] rt_mutex Datenstruktur + API (lock, unlock, trylock) — core/rt_mutex.h/.c
-- [x] Priority-Inheritance: Boosting + Deboosting (single-level, V1 spin-wait)
-- [x] Waiter-Array sortiert nach Prioritaet (hoechste zuerst, Handoff an Top)
-- [x] Deadlock-Detection (recursive lock → -EDEADLK)
-- [x] Fix: saved_priority init in CLONE_THREAD (war 0 statt -1 → PI deboost kaputt)
-- [x] ktest: 12 PI-Mutex Tests (lock/unlock, deadlock, trylock, contention, PI boost/deboost, stress, priority ordering)
+- [x] rt_mutex Datenstruktur + API (lock, unlock, trylock)
+- [x] Priority-Inheritance: Boosting + Deboosting (single-level)
+- [x] Waiter-Array sortiert nach Prioritaet
+- [x] Deadlock-Detection, Adaptive Spinning
+- [x] **V2: Echtes Blocking** (kernel_setjmp/longjmp statt Spin-Wait)
+- [x] FUTEX_LOCK_PI/UNLOCK_PI: cross-process shared futex Fix (epid)
 
-### RT-3: Spinlock-Konvertierung
+### RT-3: Spinlock→mutex Konvertierung (abhaengig von RT-2 V2)
 
-#### RT-3a: Infrastruktur (Agent)
+- [x] RT-3a: spinlock_t + mutex_t Infrastruktur
+- [ ] RT-3c: IPC (pipe, eventfd, timerfd, inotify, futex hash → mutex_t)
+- [ ] RT-3d: VFS/ext2 (inode, dentry, mount, bcache → mutex_t)
+- [ ] RT-3e: Socket/Netzwerk (socket, unix_socket → mutex_t)
+- [ ] RT-3f: Prozesse/MM (VMA, process table, slab, PTY → mutex_t)
+- NICHT: eq_locks, packet queues, core_rq (IRQ-Kontext → bleibt spinlock_t)
 
-- [x] raw_spinlock_t Typ + raw_spin_lock/raw_spin_unlock API (= heutiges spinlock_t)
-- [x] mutex_t Typ als Wrapper um rt_mutex_t (sleeping, PI-aware)
-- [x] mutex_init/mutex_lock/mutex_unlock/mutex_trylock API
-- [x] Adaptive Spinning in mutex_lock: kurzer Spin wenn Owner laeuft
-
-#### RT-3b: ~~Rename spinlock_t → raw_spinlock_t~~ ENTFAELLT
-
-spinlock_t bleibt spinlock_t. mutex_t ist der sleeping Lock. Kein raw_-Prefix.
-
-#### RT-3c: IPC Konvertierung (Agent)
-
-- [ ] pipe locks → mutex_t
-- [ ] eventfd/timerfd/inotify locks → mutex_t
-- [ ] futex hash locks → mutex_t
-- [ ] NICHT: eq_locks (IRQ-Kontext), packet queues (NIC-IRQ)
-
-#### RT-3d: VFS/ext2 Konvertierung (Agent)
-
-- [ ] inode/dentry/mount locks → mutex_t
-- [ ] ext2 block-alloc/inode-cache locks → mutex_t
-- [ ] bcache locks → mutex_t
-
-#### RT-3e: Socket/Netzwerk Konvertierung (Agent)
-
-- [ ] socket/unix_socket locks → mutex_t
-- [ ] NICHT: packet queue locks (q_push aus NIC-IRQ)
-
-#### RT-3f: Prozesse/MM Konvertierung (Agent)
-
-- [ ] VMA locks → mutex_t
-- [ ] process table locks → mutex_t
-- [ ] slab locks → mutex_t (pruefen ob slab_alloc aus IRQ gerufen wird)
-- [ ] PTY locks → mutex_t
-
-### RT-4: Threaded IRQs (manuell)
+### RT-4: Threaded IRQs (abhaengig von RT-3)
 
 - [ ] Hard-IRQ Handler: nur ACK + Wake eines IRQ-Threads
 - [ ] IRQ-Thread pro Vector (schedulebar, preemptibel)

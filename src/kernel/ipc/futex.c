@@ -273,7 +273,7 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
 
 /* ── FUTEX_LOCK_PI ──────────────────────────────── */
 
-static long futex_lock_pi(uint32_t *uaddr) {
+static long futex_lock_pi_pid(uint32_t *uaddr, uint32_t pid) {
     thread_t *self = thread_current();
     if (!self) return -EFAULT;
     uint32_t tid = (uint32_t)self->tid;
@@ -295,8 +295,6 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
     /* Block via wait queue */
     {
-        process_t *p = self->proc;
-        uint32_t pid = p ? p->pid : 0;
         int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
         uint64_t flags;
         spin_lock_irq(&futex_hash[bucket].lock, &flags);
@@ -357,7 +355,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
 /* ── FUTEX_UNLOCK_PI ────────────────────────────── */
 
-static long futex_unlock_pi(uint32_t *uaddr) {
+static long futex_unlock_pi_pid(uint32_t *uaddr, uint32_t pid) {
     thread_t *self = thread_current();
     if (!self) return -EFAULT;
     uint32_t tid = (uint32_t)self->tid;
@@ -374,7 +372,7 @@ static long futex_unlock_pi(uint32_t *uaddr) {
     if (cur & FUTEX_WAITERS) {
         /* Waiters present — clear TID, keep WAITERS bit, wake one */
         __sync_val_compare_and_swap(uaddr, cur, FUTEX_WAITERS);
-        futex_wake(uaddr, 1);
+        futex_wake_pid(uaddr, 1, pid);
     } else {
         /* No waiters — just release */
         __sync_val_compare_and_swap(uaddr, cur, 0);
@@ -526,9 +524,9 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
                              uaddr2, 1, val3);
     case FUTEX_LOCK_PI:
-        return futex_lock_pi(uaddr);
+        return futex_lock_pi_pid(uaddr, epid);
     case FUTEX_UNLOCK_PI:
-        return futex_unlock_pi(uaddr);
+        return futex_unlock_pi_pid(uaddr, epid);
     case FUTEX_WAKE_OP: {
         /* Simplified WAKE_OP: wake val waiters on uaddr, then
          * apply operation on *uaddr2 and conditionally wake val3

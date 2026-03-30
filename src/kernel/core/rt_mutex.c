@@ -1,9 +1,9 @@
 /* CosmoRT RT Mutex — Priority-Inheritance Mutex
  *
- * V1: spin-wait blocking. PI boost/deboost is the real value here.
- * The spinlock protects only the owner/waiter metadata (short hold).
- * Actual waiting is a pause loop checking owner — not ideal but
- * correct and sufficient for kernel-internal use.
+ * V2: true blocking. Waiters sleep via kernel_setjmp/longjmp and are
+ * woken by sched_wake on unlock. The spinlock protects only the
+ * owner/waiter metadata (short hold). PI boost/deboost prevents
+ * priority inversion.
  */
 
 #include "core/rt_mutex.h"
@@ -11,6 +11,12 @@
 #include "core/percpu.h"
 #include "linux/errno.h"
 #include "arch/arch.h"
+
+extern void sched_wake(thread_t *t);
+extern void sched_add(thread_t *t);
+extern int  kernel_setjmp(uint64_t buf[8]);
+extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+extern uint64_t pml4[];
 
 /* ── Init ──────────────────────────────────────── */
 
@@ -123,11 +129,23 @@ int rt_mutex_lock(rt_mutex_t *m) {
         if (!found)
             waiters_insert(m, cur);
 
+        /* Block: thread sleeps until woken by rt_mutex_unlock */
+        cur->state = THREAD_BLOCKED;
         spin_unlock_irq(&m->lock, flags);
 
-        /* Spin-wait with pause (owner not running, PI boosted) */
-        for (int i = 0; i < 10000; i++)
-            arch_pause();
+        /* Yield to scheduler via kernel_setjmp/longjmp.
+         * kernel_setjmp saves our position in kernel_yield_jmpbuf.
+         * kernel_longjmp(jmpbuf,1) returns to thread_run's setjmp,
+         * which puts us back in the sched_loop. When sched_wake
+         * re-enqueues us, thread_run sees in_kernel_yield and
+         * longjmps back here with return value 1. */
+        if (kernel_setjmp(cur->kernel_yield_jmpbuf) == 0) {
+            cur->in_kernel_yield = 1;
+            arch_set_cr3(virt_to_phys(pml4));
+            kernel_longjmp(cur->jmpbuf, 1); /* back to sched_loop */
+        }
+        /* Woken — loop back, re-check if lock is free */
+        continue;
     }
 }
 
@@ -160,19 +178,28 @@ void rt_mutex_unlock(rt_mutex_t *m) {
     /* PI deboost */
     pi_deboost_owner(owner);
 
+    thread_t *new_owner = 0;
+
     if (m->waiter_count == 0) {
         /* No waiters: just release */
         m->owner = 0;
     } else {
         /* Hand off to highest-priority waiter (index 0) */
-        m->owner = m->waiters[0];
+        new_owner = m->waiters[0];
         for (int i = 0; i < m->waiter_count - 1; i++)
             m->waiters[i] = m->waiters[i + 1];
         m->waiter_count--;
         m->waiters[m->waiter_count] = 0;
+        /* Don't assign new owner yet — the waiter re-acquires in its loop.
+         * Clear owner so the woken thread's CAS succeeds. */
+        m->owner = 0;
     }
 
     spin_unlock_irq(&m->lock, flags);
+
+    /* Wake the highest-priority waiter outside the spinlock */
+    if (new_owner)
+        sched_wake(new_owner);
 }
 
 /* ── Query ─────────────────────────────────────── */
