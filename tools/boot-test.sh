@@ -25,7 +25,7 @@ while read t; do
     fi
     echo -n "[$ltp_total/313] $t ... "
     cd /tmp
-    /opt/rtimeout 30 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
+    /opt/rtimeout 5 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
         echo "PASS"

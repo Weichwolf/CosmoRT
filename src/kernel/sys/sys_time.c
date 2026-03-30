@@ -60,18 +60,30 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
             t->nanosleep_deadline = 0;
             return 0; /* sleep completed */
         }
-        /* Woken early — keep deadline for restart after signal handler */
-        /* Woken early (signal) — write remaining time */
-        if (rem) {
-            uint64_t left_ms = dl - now;
-            struct k_timespec krem = {
-                .tv_sec = (long)(left_ms / 1000),
-                .tv_nsec = (long)((left_ms % 1000) * 1000000)
-            };
-            int r2 = copy_to_user(rem, &krem, sizeof(krem));
-            if (r2) return r2;
+        /* Check if a signal is actually pending for delivery.
+         * If yes: return -EINTR so check_signals_syscall_path delivers it.
+         * If no: re-block for the remaining time (signal already delivered). */
+        {
+            process_t *p = t->proc;
+            uint64_t deliverable = p ? ((p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked) : 0;
+            if (deliverable) {
+                if (rem) {
+                    uint64_t left_ms = dl - now;
+                    struct k_timespec krem = {
+                        .tv_sec = (long)(left_ms / 1000),
+                        .tv_nsec = (long)((left_ms % 1000) * 1000000)
+                    };
+                    copy_to_user(rem, &krem, sizeof(krem));
+                }
+                return -EINTR;
+            }
         }
-        return -EINTR;
+        /* No signal pending — re-block for remaining time */
+        {
+            uint64_t left_ms = dl - now;
+            thread_block_ms((int)(left_ms > 0x7FFFFFFFUL ? 0x7FFFFFFF : left_ms));
+            __builtin_unreachable();
+        }
     }
 
     /* First call — compute deadline and block */
