@@ -1,8 +1,9 @@
-/* Calibrated timer — geschwindigkeitsunabhaengige Zeitbasis */
+/* Calibrated timer — frequency-invariant time base */
 #ifndef TIMER_H
 #define TIMER_H
 
 #include <stdint.h>
+#include "arch/arch.h"
 
 void timer_init(void);
 
@@ -16,10 +17,12 @@ extern uint64_t timer_tsc_per_ms;
 
 extern uint64_t timer_boot_tsc;
 
+extern uint64_t tsc_khz;
+
+extern int tsc_invariant;
+
 static inline uint64_t timer_tsc_now(void) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+    return arch_rdtsc();
 }
 
 static inline uint64_t timer_deadline_tsc(uint64_t ms_from_now) {

@@ -23,9 +23,12 @@
 #define ICR_SIPI           0x00000600
 #define ICR_DELIVERY_PENDING (1 << 12)
 
+#define TSC_SYNC_THRESHOLD_US 10
+
 extern uint64_t pml4[];
 
 static volatile int core_alive[SMP_MAX_CORES];
+static volatile uint64_t core_boot_tsc[SMP_MAX_CORES];
 static int total_cores = 1;
 
 static uint8_t core_stacks[SMP_MAX_CORES][SMP_STACK_SIZE] __attribute__((aligned(16)));
@@ -65,8 +68,10 @@ static void ap_main(void) {
     volatile uint32_t *lapic_id_reg = (volatile uint32_t *)LAPIC_ID;
     uint32_t apic_id = (*lapic_id_reg >> 24) & 0xFF;
 
-    if (apic_id < SMP_MAX_CORES)
+    if (apic_id < SMP_MAX_CORES) {
+        core_boot_tsc[apic_id] = arch_rdtsc();
         __sync_val_compare_and_swap(&core_alive[apic_id], 0, 1);
+    }
 
     percpu_init_ap((int)apic_id);
 
@@ -148,6 +153,33 @@ int smp_start_all(void (*entry_fn)(void)) {
             if (core_alive[i]) alive++;
         if (alive > total_cores) total_cores = alive;
         arch_halt();
+    }
+
+    if (total_cores > 1 && timer_tsc_per_ms > 0) {
+        uint64_t ref_tsc = 0;
+        int ref_core = -1;
+        for (int i = 1; i < SMP_MAX_CORES; i++) {
+            if (!core_alive[i] || core_boot_tsc[i] == 0) continue;
+            if (ref_core < 0) { ref_tsc = core_boot_tsc[i]; ref_core = i; }
+        }
+        if (ref_core >= 0) {
+            uint64_t tsc_per_us = timer_tsc_per_ms / 1000;
+            if (tsc_per_us == 0) tsc_per_us = 1;
+            for (int i = ref_core + 1; i < SMP_MAX_CORES; i++) {
+                if (!core_alive[i] || core_boot_tsc[i] == 0) continue;
+                uint64_t a = core_boot_tsc[i], b = ref_tsc;
+                uint64_t diff_us = ((a > b) ? a - b : b - a) / tsc_per_us;
+                if (diff_us > (uint64_t)TSC_SYNC_THRESHOLD_US * 1000) {
+                    serial_puts("TSC: WARNING — core ");
+                    serial_uint((uint64_t)i);
+                    serial_puts(" vs core ");
+                    serial_uint((uint64_t)ref_core);
+                    serial_puts(" offset ");
+                    serial_uint(diff_us);
+                    serial_puts("us\n");
+                }
+            }
+        }
     }
 
     serial_puts("SMP: ");

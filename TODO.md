@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1593/1. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1609/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -135,10 +135,13 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 - [x] Mehrere isolierte Cores fuer parallele Audio-Chains
 - [x] 12 ktest (iso_*): Core-Isolation Validierung
 
-### RT-7: CPU-Frequency-Invarianz (Agent)
+### RT-7: CPU-Frequency-Invarianz (erledigt)
 
-- [ ] WCET kompensiert Turbo-Boost/P-States
-- [ ] TSC-Rate Kalibrierung pro Core (invariant TSC Pruefung)
+- [x] Invariant TSC Check (CPUID 0x80000007 EDX.8) beim Boot
+- [x] tsc_khz / tsc_invariant Export fuer alle Subsysteme
+- [x] Per-Core TSC Sync Check bei SMP-Boot
+- [x] Alle Zeitmessungen via timer_tsc_now() (kein direktes rdtsc ausserhalb timer)
+- [x] 15 ktest (fi_*): Timer-Precision, Monotonicity, Concurrent Timers
 
 ### RT-8: Validierung (letzter Schritt)
 

@@ -1,63 +1,102 @@
-/* Calibrated timer — uses TSC, calibrated against APIC timer. */
+/* Calibrated timer — frequency-invariant time base via TSC + PIT. */
 
 #include "core/timer.h"
 #include "core/irq.h"
 #include "hw/serial.h"
 #include "arch/arch.h"
 
-static int lapic_ready = 0;
+#define PIT_FREQ          1193182
+#define PIT_10MS          (PIT_FREQ / 100)
+#define PIT_CMD_PORT      0x43
+#define PIT_CH2_PORT      0x42
+#define PIT_GATE_PORT     0x61
+#define PIT_GATE_ENABLE   0x01
+#define PIT_GATE_MASK     0xFC
+#define PIT_OUT_BIT       0x20
+#define PIT_CH2_MODE      0xB0
 
-static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
+#define CPUID_INVARIANT_TSC_LEAF 0x80000007
+#define CPUID_INVARIANT_TSC_BIT  (1u << 8)
+#define CPUID_EXT_MAX_LEAF       0x80000000
+
+#define TSC_PER_MS_FALLBACK 1000000
+
+static int lapic_ready = 0;
 
 uint64_t timer_tsc_per_ms = 0;
 uint64_t timer_boot_tsc = 0;
+uint64_t tsc_khz = 0;
+int tsc_invariant = 0;
+
 #define boot_tsc timer_boot_tsc
 
+static void serial_uint(uint64_t v) {
+    char tmp[20]; int ti = 0;
+    do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
+    while (ti--) serial_putchar(tmp[ti]);
+}
+
+static void tsc_check_invariant(void) {
+    uint32_t eax, ebx, ecx, edx;
+    arch_cpuid(CPUID_EXT_MAX_LEAF, &eax, &ebx, &ecx, &edx);
+    if (eax < CPUID_INVARIANT_TSC_LEAF) {
+        serial_puts("TSC: CPUID 0x80000007 not supported — assuming variant\n");
+        return;
+    }
+    arch_cpuid(CPUID_INVARIANT_TSC_LEAF, &eax, &ebx, &ecx, &edx);
+    if (edx & CPUID_INVARIANT_TSC_BIT) {
+        tsc_invariant = 1;
+        serial_puts("TSC: invariant\n");
+    } else {
+        serial_puts("TSC: WARNING — not invariant, timers may drift under P-state changes\n");
+    }
+}
+
 void timer_init(void) {
-    boot_tsc = rdtsc();
+    boot_tsc = arch_rdtsc();
 
-    #define PIT_FREQ 1193182
-    #define PIT_10MS (PIT_FREQ / 100)
+    tsc_check_invariant();
 
-    arch_outb(0x43, 0xB0);
-    arch_outb(0x42, (uint8_t)(PIT_10MS & 0xFF));
-    arch_outb(0x42, (uint8_t)(PIT_10MS >> 8));
+    arch_outb(PIT_CMD_PORT, PIT_CH2_MODE);
+    arch_outb(PIT_CH2_PORT, (uint8_t)(PIT_10MS & 0xFF));
+    arch_outb(PIT_CH2_PORT, (uint8_t)(PIT_10MS >> 8));
 
-    uint8_t gate = arch_inb(0x61);
-    gate = (gate & 0xFC) | 0x01;
-    arch_outb(0x61, gate);
+    uint8_t gate = arch_inb(PIT_GATE_PORT);
+    gate = (gate & PIT_GATE_MASK) | PIT_GATE_ENABLE;
+    arch_outb(PIT_GATE_PORT, gate);
 
-    gate &= 0xFE;
-    arch_outb(0x61, gate);
-    gate |= 0x01;
-    arch_outb(0x61, gate);
+    gate &= ~PIT_GATE_ENABLE;
+    arch_outb(PIT_GATE_PORT, gate);
+    gate |= PIT_GATE_ENABLE;
+    arch_outb(PIT_GATE_PORT, gate);
 
-    uint64_t tsc_start = rdtsc();
+    uint64_t tsc_start = arch_rdtsc();
 
     uint8_t status;
     do {
-        status = arch_inb(0x61);
-    } while (!(status & 0x20));
+        status = arch_inb(PIT_GATE_PORT);
+    } while (!(status & PIT_OUT_BIT));
 
-    uint64_t tsc_end = rdtsc();
+    uint64_t tsc_end = arch_rdtsc();
     uint64_t tsc_10ms = tsc_end - tsc_start;
 
     timer_tsc_per_ms = tsc_10ms / 10;
-    if (timer_tsc_per_ms == 0) timer_tsc_per_ms = 1000000;
+    if (timer_tsc_per_ms == 0) timer_tsc_per_ms = TSC_PER_MS_FALLBACK;
+
+    tsc_khz = timer_tsc_per_ms;
 
     serial_puts("Timer: ");
-    char tmp[20]; int ti = 0;
-    uint64_t v = timer_tsc_per_ms;
-    do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
-    while (ti--) serial_putchar(tmp[ti]);
-    serial_puts(" TSC/ms\n");
+    serial_uint(timer_tsc_per_ms);
+    serial_puts(" TSC/ms (");
+    serial_uint(tsc_khz);
+    serial_puts(" kHz)\n");
 
     lapic_ready = 1;
 }
 
 uint64_t timer_ms(void) {
     if (timer_tsc_per_ms == 0) return 0;
-    return (rdtsc() - boot_tsc) / timer_tsc_per_ms;
+    return (arch_rdtsc() - boot_tsc) / timer_tsc_per_ms;
 }
 
 uint32_t timer_epoch_sec(void) {
@@ -70,8 +109,8 @@ void timer_sleep_ms(uint32_t ms) {
     if (lapic_ready) {
         lapic_delay_ms(ms);
     } else {
-        uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
-        while (rdtsc() < target)
+        uint64_t target = arch_rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
+        while (arch_rdtsc() < target)
             arch_pause();
     }
 }
@@ -126,9 +165,6 @@ void rtc_init(void) {
                   + (uint64_t)min * 60 + (uint64_t)sec;
 
     serial_puts("RTC: ");
-    char tmp[20]; int ti = 0;
-    uint64_t v = rtc_epoch_sec;
-    do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
-    while (ti--) serial_putchar(tmp[ti]);
+    serial_uint(rtc_epoch_sec);
     serial_puts(" epoch sec\n");
 }
