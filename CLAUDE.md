@@ -226,4 +226,4 @@ TODO.md:
 
 ## Ralph-Loop
 
-make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. CosmoRT ist ein greenfield Projekt mit dem Anspruch mindestens Linux-Niveau und ARINC 653 Partitionierung.
+make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. Keine Skips. Tests sind Spezifikation. Alles implementieren. CosmoRT ist ein greenfield Projekt mit dem Anspruch mindestens Linux-Niveau und ARINC 653 Partitionierung.
