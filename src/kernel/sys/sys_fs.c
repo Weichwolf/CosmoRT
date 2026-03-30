@@ -250,7 +250,11 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
         if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
             kpath[4]=='c' && kpath[5]=='/')
             pname = kpath + 6;
-        if (pname && procfs_open(pname)) { exists = 1; goto found; }
+        if (pname) {
+            if (procfs_open(pname)) { exists = 1; goto found; }
+            extern int procfs_pid_exists(const char *name);
+            if (procfs_pid_exists(pname)) { exists = 1; goto found; }
+        }
     }
     /* Device special files and virtual dirs */
     {
