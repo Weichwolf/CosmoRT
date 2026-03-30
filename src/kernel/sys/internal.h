@@ -279,7 +279,7 @@ long do_ptrace(void);
 long do_syslog_stub(void);
 long do_sched_rr_get_interval(int pid, void *tp);
 long do_vhangup(void);
-long do_adjtimex(void);
+long do_adjtimex(void *txc);
 long do_chroot(void);
 long do_acct(void);
 long do_settimeofday(void);

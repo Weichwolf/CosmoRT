@@ -119,8 +119,33 @@ long do_sched_rr_get_interval(int pid, void *tp) {
 /* vhangup: no-op */
 long do_vhangup(void) { return 0; }
 
-/* adjtimex: no-op */
-long do_adjtimex(void) { return 0; }
+/* adjtimex: validate modes, reject unsupported. Read-only time info. */
+struct k_timex {
+    unsigned int modes;
+    long offset, freq, maxerror, esterror;
+    int status;
+    long constant, precision, tolerance;
+    struct { long tv_sec, tv_usec; } time;
+    long tick, ppsfreq, jitter, shift, stabil, jitcnt, calcnt, errcnt, stbcnt;
+    int tai;
+    int _pad[11];
+};
+long do_adjtimex(void *utxc) {
+    struct k_timex *txc = (struct k_timex *)utxc;
+    if (!txc) return -EFAULT;
+    struct k_timex ktx;
+    int r = copy_from_user(&ktx, txc, sizeof(ktx));
+    if (r) return r;
+    unsigned modes = ktx.modes;
+    if (modes & 0x8000U) return -EINVAL;  /* ADJ_SETOFFSET not supported */
+    if (modes & ~0x803fU) return -EINVAL; /* reject unknown bits */
+    extern uint32_t timer_epoch_sec(void);
+    ktx.time.tv_sec = (long)timer_epoch_sec();
+    ktx.time.tv_usec = 0;
+    ktx.tick = 10000;
+    copy_to_user(txc, &ktx, sizeof(ktx));
+    return 0; /* TIME_OK */
+}
 
 /* chroot: single-user, no real chroot */
 long do_chroot(void) { return 0; }

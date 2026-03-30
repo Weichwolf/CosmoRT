@@ -233,7 +233,7 @@
     X(SYS_SYSLOG, syslog, do_syslog_stub()) \
     X(SYS_SCHED_RR_GET_INTERVAL, sched_rr_get_interval, do_sched_rr_get_interval((int)a1, (void *)a2)) \
     X(SYS_VHANGUP, vhangup, do_vhangup()) \
-    X(SYS_ADJTIMEX, adjtimex, do_adjtimex()) \
+    X(SYS_ADJTIMEX, adjtimex, do_adjtimex((void *)a1)) \
     X(SYS_CHROOT, chroot, do_chroot()) \
     X(SYS_ACCT, acct, do_acct()) \
     X(SYS_SETTIMEOFDAY, settimeofday, do_settimeofday()) \
