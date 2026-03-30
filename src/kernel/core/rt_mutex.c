@@ -74,6 +74,8 @@ static int waiters_insert(rt_mutex_t *m, thread_t *t) {
 
 /* ── Lock ──────────────────────────────────────── */
 
+#define ADAPTIVE_SPIN_MAX 1000
+
 int rt_mutex_lock(rt_mutex_t *m) {
     thread_t *cur = thread_current();
 
@@ -94,6 +96,22 @@ int rt_mutex_lock(rt_mutex_t *m) {
             return -EDEADLK;
         }
 
+        /* Adaptive spin: if owner is running on another core, spin briefly
+         * instead of blocking. Saves sleep+wake overhead for short critical
+         * sections. Must happen BEFORE PI boost. */
+        thread_t *own = m->owner;
+        if (own && own->state == THREAD_RUNNING) {
+            spin_unlock_irq(&m->lock, flags);
+
+            for (int i = 0; i < ADAPTIVE_SPIN_MAX; i++) {
+                arch_pause();
+                if (!m->owner) break;
+                if (own->state != THREAD_RUNNING) break;
+            }
+            /* Retry from the top — re-acquire spinlock, re-check owner */
+            continue;
+        }
+
         /* PI boost: raise owner to our priority if needed */
         pi_boost_owner(m->owner, cur->priority);
 
@@ -107,9 +125,9 @@ int rt_mutex_lock(rt_mutex_t *m) {
 
         spin_unlock_irq(&m->lock, flags);
 
-        /* V1: spin-wait with pause */
+        /* Spin-wait with pause (owner not running, PI boosted) */
         for (int i = 0; i < 10000; i++)
-            __asm__ volatile("pause");
+            arch_pause();
     }
 }
 
