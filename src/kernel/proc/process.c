@@ -349,6 +349,8 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->sched_policy = SCHED_OTHER;
     t->priority = PRIO_MIN;
     t->saved_priority = -1;
+    t->preempt_count = 0;
+    t->need_resched = 0;
     t->fs_base = 0;
     t->cpu_affinity = -1;
     t->timeslice = RR_TIMESLICE;

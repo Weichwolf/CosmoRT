@@ -426,6 +426,12 @@ void sched_preempt(void *frame_ptr) {
         }
     }
 
+    /* Preemption disabled (critical section) — defer */
+    if (cur->preempt_count > 0) {
+        cur->need_resched = 1;
+        return;
+    }
+
     /* SCHED_FIFO: never preempt (runs until yield/block) */
     if (cur->sched_policy == SCHED_FIFO) return;
 

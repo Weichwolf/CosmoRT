@@ -70,6 +70,8 @@ typedef struct thread {
     int      sched_policy;
     int      priority;           /* 0 = normal, 1-31 = RT */
     int      saved_priority;     /* original priority before PI boost, -1 = not boosted */
+    int      preempt_count;      /* >0 = preemption disabled (critical section) */
+    volatile int need_resched;   /* 1 = reschedule pending (checked at preempt_enable/syscall-return) */
     uint64_t fs_base;            /* per-thread FS base for TLS */
     int      cpu_affinity;       /* -1 = any core, 0..SMP_MAX_CORES-1 = pinned */
     uint64_t timeslice;          /* remaining ticks for SCHED_RR */

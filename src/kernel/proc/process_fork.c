@@ -297,6 +297,8 @@ long do_fork(void) {
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
+    ct->preempt_count = 0;
+    ct->need_resched = 0;
     ct->cpu_affinity = -1;
     ct->timeslice = RR_TIMESLICE;
     ct->proc = child;
@@ -464,6 +466,8 @@ long do_vfork(unsigned long flags, void *child_stack,
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
+    ct->preempt_count = 0;
+    ct->need_resched = 0;
     ct->cpu_affinity = -1;
     ct->timeslice = RR_TIMESLICE;
     ct->proc = child;

@@ -548,7 +548,7 @@ TERM=xterm-256color. Bernstein-Theme.
 
 | Eigenschaft | Detail |
 |-------------|--------|
-| Nativ preemptibles Kernel | <10µs WCET Ziel |
+| Full Preemption (RT) + Lazy (Non-RT) | preempt_count + need_resched, <10µs WCET |
 | Sleeping Locks (PI-Mutexes) | Spinlocks nur HW-Register/IRQ-Interna |
 | Adaptive Spinning | Kurzer Spin vor Mutex-Sleep wenn Owner laeuft |
 | Threaded IRQs | Hard-IRQ nur ACK+Wake |
@@ -566,6 +566,13 @@ TERM=xterm-256color. Bernstein-Theme.
 | ext4 | Journal, Extents, Checksums |
 | CUBIC | RFC 8312 |
 | Kein Swap | MADV_FREE + THP |
+
+### Preemption-Modell
+
+RT-Tasks (SCHED_FIFO/RR): Sofortige Preemption bei hoeher-priorem Task.
+Non-RT-Tasks (SCHED_OTHER): Lazy Preemption (Syscall-Return, Timer-Tick).
+Kernel-Pfade: preemptibel ausser in preempt_disable/enable Sektionen.
+preempt_count pro Thread. need_resched Flag.
 
 ---
 

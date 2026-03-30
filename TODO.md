@@ -35,8 +35,13 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
 ### RT-1: Preemption-Modell (Architektur, manuell)
 
-- [ ] Full + Lazy Preemption spezifizieren (wann preempted, wann deferred)
-- [ ] Preemption-Points im Scheduler dokumentieren
+- [x] Full + Lazy Preemption spezifizieren (wann preempted, wann deferred)
+- [x] Preemption-Points im Scheduler dokumentieren
+- [x] preempt_count + need_resched in thread_t
+- [x] preempt_disable/preempt_enable/cond_resched API (core/preempt.h)
+- [x] sched_preempt: preempt_count guard + RT immediate vs lazy preemption
+- [x] DESIGN.md §13 aktualisiert
+- [x] ktest: test_preempt.c (preempt infrastructure tests)
 
 ### RT-2: PI-Mutex (Agent)
 
