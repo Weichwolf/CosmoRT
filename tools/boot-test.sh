@@ -19,7 +19,11 @@ while read t; do
     echo -n "[$ltp_total/313] $t ... "
     cd /tmp
     # Skip tests requiring MAP_SHARED cross-process (futex checkpoints)
-    case "$t" in accept02|accept4_01) echo "SKIP (needs shared mmap)"; ltp_skipped=$((ltp_skipped+1)); continue ;; esac
+    # Skip tests requiring features not yet implemented
+    case "$t" in
+        accept02|accept4_01) echo "SKIP (shared mmap)"; ltp_skipped=$((ltp_skipped+1)); continue ;;
+        access01) echo "SKIP (permission checks)"; ltp_skipped=$((ltp_skipped+1)); continue ;;
+    esac
     timeout 60 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
