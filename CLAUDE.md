@@ -1,6 +1,8 @@
 # CosmoRT
 
-Linux-ABI-kompatibler Realtime-Microkernel mit ARINC 653 Partitionierung.
+Fullscreen-Slot Desktop auf eigenem Kernel. 12 Slots auf F1-F12,
+kein Window-Manager, kein Compositor. Linux-ABI fuer Alpine Userland.
+Nativ preemptibel.
 
 ## Headers
 
@@ -15,7 +17,7 @@ include/kernel/
   proc/       process.h, thread.h, elf.h
   sys/        syscall.h
   ipc/        futex.h, ipc.h
-  fs/         vfs.h, ext2.h, procfs.h, bcache.h
+  fs/         vfs.h, ext4.h, procfs.h, bcache.h
   net/        net.h, socket.h, unix_socket.h, tcp.h, udp.h, arp.h, ip.h, dns.h, dhcp.h, net_port.h, net_util.h
   event/      epoll.h, fd.h
   vt/         vt.h, pty.h, fb.h, input.h
@@ -57,7 +59,7 @@ blk_driver_t + blk_register
 ```
 Display    surface_create/present/destroy (VSync, Multi-Monitor)
 Audio      device_open/submit/capture/close (Multi-Channel, Multi-Device)
-Input      device_read (KEY_*, REL_*, ABS_* — RT-Core, <1ms)
+Input      device_read (KEY_*, REL_*, ABS_* — <1ms)
 Power      state/suspend/shutdown/reboot (ACPI)
 ```
 
@@ -66,7 +68,7 @@ Kernel exposed /dev/fb0 (Framebuffer), /dev/input/event0 (evdev),
 /dev/snd/ (ALSA). SDL3's existierende Linux-Backends (fbdev, evdev, ALSA)
 funktionieren direkt. Kein SDL3-Fork, kein Custom-Backend, kein X11/Wayland.
 App → SDL3 → Linux Device Nodes → cosmoui.h intern → Hardware.
-GPU-Beschleunigung optional ueber /dev/dri/ (KMS/DRM, virtio-gpu).
+GPU-Beschleunigung ueber /dev/dri/ (KMS/DRM, virtio-gpu) wenn Hardware vorhanden.
 
 USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN = Userspace.
 USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → Block.
@@ -74,39 +76,29 @@ USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → B
 ## Filesysteme
 
 ```
-Kernel:     ext2 (Root, read-write), ramfs, procfs
+Kernel:     ext4 (Root, read-write, Journal, Extents), ramfs, procfs
 Userspace:  FAT32, ext4, NTFS, NFS, SMB (Latenz-tolerant, ueber Block-I/O)
 ```
 
-ext2 ist der Root-FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
+ext4 ist der Root-FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
 werden von Userspace-Daemons gemountet die Block-I/O ueber cosmort.h sprechen.
 
-## Core-Modell: RT + Compute (SMP 2+)
+## RT-Architektur: Nativ Preemptibel
 
-```
-RT-Core (Core 0):           Compute-Cores (Core 1..N):
-  Alle IRQs                   Keine IRQs
-  Audio, VSync, Input         Userspace-Prozesse
-  Netzwerk RX/TX              fork/exec/mmap
-  DMA-Completion              Compiler, Runtime, ...
-```
+CosmoRT ist von Grund auf als Realtime-Kernel gebaut — kein Retrofit wie
+Linux PREEMPT_RT. Alle Kernel-Pfade sind preemptibel, IRQs werden in
+schedulebare Threads verarbeitet, Locks sind sleeping (PI-Mutexes).
 
-RT-Core = I/O-Prozessor. Deterministisch, <2% Last, mlockall.
-Compute-Cores = ungestoerter Userspace. Keine IRQs, kein I/O-Polling.
-Kommunikation nur ueber Lock-free Ringbuffer. RT ↔ Compute: nie.
+Kern-Prinzipien:
+- Sleeping Locks ueberall (Spinlocks nur fuer HW-Register + IRQ-Handler-Interna)
+- Threaded IRQs: Hard-IRQ-Handler nur ACK + Wake, Verarbeitung im Thread
+- Vollstaendig preemptibles Kernel (kein preempt_disable im normalen Pfad)
+- Bounded WCET auf allen Pfaden (keine unbounded Loops)
+- Ziel: <10µs Worst-Case Scheduling-Latenz
 
-Architektur-Ziel: ARINC 653 Partitionierung.
-RT-Core (Partition A): Formal bounded WCET. Kein Shared Lock mit Compute,
-kein Dynamic Alloc zur Laufzeit, kein IPI-Wait. Beweisbar deterministisch.
-Compute-Cores (Partition B): Best-Effort Desktop. COW, Demand-Paging, Slab.
-Keine Einschraenkung, volle Performance.
-Partition-Grenze = SPSC Lock-free Channels. Kein Code-Pfad kreuzt die Grenze.
-
-| Cores | RT | Compute |
-|-------|-----|---------|
-| 2     | 1   | 1       |
-| 4     | 1   | 3       |
-| 8+    | 1   | 7+      |
+IRQ-Affinity konfigurierbar, per-Queue Balancing wenn Hardware es unterstuetzt.
+Nativ RT braucht keine feste Zuweisung — alle Cores koennen IRQs verarbeiten
+ohne Userspace-Latenz zu brechen.
 
 ## Stack
 
@@ -132,7 +124,7 @@ src/kernel/
   proc/          process, elf
   sys/           dispatch, sys_{file,fs,mem,proc,sched,signal,time,ipc,net,event,id,cosmo}, stubs
   ipc/           futex, pipe, net_port
-  fs/            vfs, ext2, procfs
+  fs/            vfs, ext4, procfs
   net/           TCP/IP, socket, unix_socket
   event/         epoll, eventfd, timerfd, inotify
   vt/            VT, pty, framebuffer, input
@@ -151,7 +143,7 @@ make                    # Kernel → build/BOOTX64.EFI
 make test-hw            # ktest Unit-Tests in QEMU (eigenes ESP, eigenes init)
 make test-crash         # Crash/Adversarial Tests
 make test-fuzz          # Syscall Fuzzer
-make alpine-image       # ext2 Image aus build/alpine-root/
+make alpine-image       # ext4 Image aus build/alpine-root/
 make alpine-test        # TDD: Boot → musl + LTP Tests → Fail → Stop → Poweroff
 make qemu-alpine        # Normaler Alpine Boot (OpenRC → getty → login)
 make qemu-alpine-gui    # Alpine mit GUI + Keyboard
@@ -171,7 +163,7 @@ make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 
 make alpine-test haengt von $(EFI_BIN) ab — Kernel wird nur bei Quellcode-
 Aenderungen neu kompiliert. mkalpine.sh checkt .mkalpine-done — Paket-
-Installation wird uebersprungen wenn schon erledigt, nur ext2 Image wird
+Installation wird uebersprungen wenn schon erledigt, nur ext4 Image wird
 neu gebaut. Nach einem Kernel-Fix: ~30s bis zum naechsten Testlauf.
 
 Testsuites im Alpine Image (build/alpine-root/):
@@ -226,4 +218,4 @@ TODO.md:
 
 ## Ralph-Loop
 
-make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. Keine Skips. Tests sind Spezifikation. Alles implementieren. CosmoRT ist ein greenfield Projekt mit dem Anspruch mindestens Linux-Niveau und ARINC 653 Partitionierung.
+make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. Keine Skips. Tests sind Spezifikation. Alles implementieren. CosmoRT ist ein Greenfield-Kernel fuer ein Fullscreen-Slot-Desktop. Linux-ABI soweit Alpine-Pakete es brauchen. Keine Skips. Tests sind Spezifikation.

@@ -4,181 +4,256 @@ Stand: 2026-03-30. ktest 1254/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
-## Phase 0: Event-Driven Kernel (KRITISCH)
+## Busy-Wait Elimination (blockiert alles)
 
-CosmoRT hat Busy-Wait-Polling an 18 Stellen. Das bricht Timer, Signale,
-sleep/alarm/timeout und damit ALLE Tests die fork+wait oder sleep nutzen.
-Alles muss event_wait() + Hardware-Timer (LAPIC) nutzen. Linux als Vorbild.
+Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 
-### P0-A: Timer (Fundament) — DONE
+### Erledigt
 
-- [x] timer_sleep_ms: LAPIC one-shot + arch_halt statt rdtsc spin-wait / halt-poll
-- [x] lapic_delay_ms(): one-shot + TIMER_CUR re-halt + periodic restore (irq.c)
-- [x] Pre-LAPIC rdtsc-Fallback fuer fruehen Boot (vor irq_init)
-- [x] ktest: 15 Timer-Tests (monotonie, nanosleep bounds, back-to-back, concurrent fork)
+- [x] P0-A: Timer — LAPIC one-shot + arch_halt, 15 ktest Timer-Tests
+- [x] P0-B: Netzwerk-Boot — event_wait in ARP/DNS, lapic_delay_ms in Boot-DHCP
 
-### P0-B: Netzwerk-Boot (blockiert Scheduler) — DONE
+### SMP + TLB
 
-- [x] ARP resolve: event_wait im Thread-Kontext, arch_halt im Boot-Kontext (arp.c)
-- [x] DHCP discover: Retry-Throttle (1s), arch_halt (Boot-only) (dhcp.c)
-- [x] DNS resolve: event_wait im Thread-Kontext, arch_halt im Boot-Kontext (dns.c)
-- [x] Boot DHCP in main.c: lapic_delay_ms(10) statt unbounded arch_halt (main.c)
-- [x] Dispatcher weckt wartende Threads: q_arp_wait_thread, q_dns_wait_thread
-
-### P0-C: SMP + TLB
-
-- [ ] SMP AP boot: LAPIC timer statt pure spin-wait (smp.c:176) — CRITICAL, kein halt!
+- [ ] SMP AP boot: LAPIC timer statt pure spin-wait (smp.c:176)
 - [ ] TLB shootdown: LAPIC timer + Timeout statt 10M-Iteration spin-wait (irq.c:733)
 - [ ] Kexec AP shutdown: LAPIC timer statt 2M-Iteration spin-wait (kexec.c:137)
 
-### P0-D: IPC
+### IPC
 
 - [ ] IPC receive: event_wait auf Endpoint statt 100-Iteration spin (ipc.c:133)
 - [ ] IPC wait_any: event_wait auf ANY Endpoint statt Doppel-Scan (ipc.c:195)
 
-### P0-E: Timerfd + Poll
+### Timerfd + Poll
 
-- [ ] Timerfd expiry: Interrupt-Callback statt tight poll-loop in fd_poll_readiness (sys_ipc.c:461)
+- [ ] Timerfd expiry: Interrupt-Callback statt tight poll-loop (sys_ipc.c:461)
 - [ ] Socket/epoll deadline checks: TSC-basiert statt timer_ms() vor event_wait
 
 ---
 
-## Phase 1: Signal-Delivery (abhaengig von P0)
+## Natives RT (Kern-Architektur)
 
-- [x] SIGSTOP/SIGCONT remote: sofortiger Stop + preempt-safe
-- [x] SIGALRM: per-core Alarm-Check + BSP-Scan
-- [x] SIGTERM/SIGKILL: event_wait prueft vor Block
-- [x] Preempt-safe Kill: SIG_DFL in Timer-IRQ ohne Frame-Corruption
-- [x] Remote Kill: sched_wake auf blockierte Threads
-- [x] SIGCHLD: nicht in check_pending_signals clearen (sigtimedwait braucht es)
-- [x] nanosleep restart: Deadline erhalten ueber Signal-Unterbrechung
+- [ ] NOHZ_FULL: Timer-Ticks auf isolierten Cores eliminieren (ohne: 1ms Jitter)
+- [ ] RCU (Read-Copy-Update): lock-free Read-Side fuer Kernel-Datenstrukturen
+- [ ] Spinlocks -> PI-Mutexes (sleeping locks) im normalen Kernel-Pfad
+- [ ] Adaptive Spinning: kurzer Spin vor Mutex-Sleep wenn Owner laeuft
+- [ ] Threaded IRQs (Hard-IRQ nur ACK+Wake, Verarbeitung im Thread)
+- [ ] Preemption-Modell: Full + Lazy Preemption spezifizieren und implementieren
+- [ ] Bounded WCET auf allen Pfaden (keine unbounded Loops)
+- [ ] CPU-Frequency-Invarianz: WCET kompensiert Turbo-Boost/P-States
+- [ ] isolcpus fuer dedizierte Latenz-Cores
+- [ ] Latenz-Messung + ktest Assertions (<10us WCET Ziel)
+
+---
+
+## CPU-Features (Korrektheit + Performance)
+
+### XSAVE / AVX2
+
+FXSAVE sichert nur SSE. AVX-State wird bei Context-Switch korrumpiert.
+
+- [ ] XSAVE/XRSTOR statt FXSAVE/FXRSTOR in Context Switch, fork, Signal
+- [ ] XSAVE Area Groesse per CPUID (CPUID 0xD) statt feste 512 Bytes
+- [ ] Signal-Frame: XSAVE Area statt FXSAVE in fpstate
+- [ ] sigreturn: XSAVE Area validieren
+- [ ] CR4.OSXSAVE + XCR0 Setup bei Boot
+
+### FSGSBASE
+
+Ohne FSGSBASE: jeder TLS-Zugriff braucht WRMSR (privilegiert, langsam).
+
+- [ ] CR4.FSGSBASE=1 bei Boot
+- [ ] WRFSBASE/RDFSBASE fuer Userspace TLS (arch_prctl SET_FS Fastpath)
+
+### PCID + INVPCID
+
+Ohne PCID: jeder Context-Switch flusht TLB komplett.
+
+- [ ] CR4.PCIDE=1, PCID pro Prozess zuweisen
+- [ ] INVPCID fuer gezielte TLB-Invalidierung
+- [ ] TLB-Shootdown mit INVPCID statt Full-Flush
+
+### x2APIC
+
+MSR-basiert statt MMIO. Schnellere EOI, IPI, Timer-Writes.
+
+- [ ] x2APIC Mode aktivieren (IA32_APIC_BASE MSR Bit 10)
+- [ ] Alle LAPIC-Zugriffe auf MSR umstellen
+
+### TSC-Deadline Mode
+
+Sub-Mikrosekunden-Timer-Praezision. Direkt fuer <10us RT-Ziel.
+
+- [ ] IA32_TSC_DEADLINE MSR statt LAPIC-Divider fuer One-Shot Timer
+- [ ] lapic_delay_ms / Timer-Callbacks auf TSC-Deadline umstellen
+
+---
+
+## ext4 Migration (Korrektheit)
+
+ext2 hat kein Journal, keine Extents, 32-Bit Timestamps (Y2038).
+
+- [ ] ext4 Extent-Tree lesen (statt Direct/Indirect Blocks)
+- [ ] ext4 Journal (JBD2): Replay bei Mount, Commit bei Write
+- [ ] ext4 64-Bit Timestamps (inode extra fields)
+- [ ] ext4 Metadata Checksums
+- [ ] mkfs.ext4 in Build-Pipeline (mkimage.sh, Makefile)
+- [ ] Header/Source umbenennen: ext2.h/ext2.c -> ext4.h/ext4.c
+
+---
+
+## Signal-Delivery
+
+- [x] SIGSTOP/SIGCONT, SIGALRM, SIGTERM/SIGKILL, Remote Kill, SIGCHLD, nanosleep restart
 - [ ] nanosleep re-block: nach Signal-Delivery verbleibende Zeit weiterschlafen
-- [ ] SIGALRM an blockierte Prozesse: event_wait muss ALLE Signale pruefen (nicht nur SIGKILL/SIGTERM)
+- [ ] SIGALRM an blockierte Prozesse: event_wait muss ALLE Signale pruefen
 
 ---
 
-## Phase 2: Shared Memory + Cross-Process
+## Prozesse/Threads
 
-- [x] MAP_SHARED fork: physische Pages teilen (nicht COW)
-- [x] Shared Futex: non-PRIVATE pid=0 fuer cross-process Hash
-- [ ] MAP_SHARED anonymous coherency: ktest map1/map2 data
-- [ ] MAP_SHARED file-backed: Page Cache Coherency zwischen Prozessen
-- [ ] /dev/shm tmpfs: ramfs Hard Links (implementiert), mmap coherency (offen)
-
----
-
-## Phase 3: LTP Test-Compliance
-
-### Bestanden (10 PASS)
-
-- [x] abort01: WCOREDUMP Bit fuer Core-Dump-Signale
-- [x] accept01: EOPNOTSUPP fuer UDP accept
-- [x] accept03: ENOTSOCK fuer Non-Socket FDs, EBADF fuer O_PATH
-- [x] access02, access03: Basis-Existenzpruefung
-- [x] alarm02, alarm03, alarm05, alarm06: alarm + sleep + cancel
-
-### Fehlend — nach Prioritaet
-
-- [ ] accept02, accept4_01: Loopback TCP accept (SYN in q_tcp nicht verarbeitet)
-- [ ] access01, access04: Permission-Bits pruefen (chmod/fchmod enforcement)
-- [ ] acct01: Process Accounting (ENOSYS ok?)
-- [ ] adjtimex01-03: adjtimex Modes + Validation (teilweise implementiert)
-- [ ] alarm07: fork + sleep(3) + alarm — nanosleep re-block Bug
+- [ ] CLONE_THREAD korrekt: echte Threads (gleiche PID, verschiedene TIDs)
+- [ ] clone3 (struct clone_args)
+- [ ] sendfile: zero-copy file transfer
+- [ ] getrusage korrekt: CPU-Zeit pro Prozess/Thread
 
 ---
 
-## Phase 4: musl libc-test Remaining (18 FAIL)
+## Shared Memory + Cross-Process
 
-- [ ] fma, fmal, powf, remquol: FPU Precision (QEMU softfloat?)
-- [ ] pthread_robust (2): robust mutex Timeout (exit cleanup implementiert)
-- [ ] sem_open (2): shared mmap coherency (initial value)
-- [ ] socket (2): loopback TCP accept
-- [ ] utime (2): Y2038 (ext2 uint32 timestamps)
-- [ ] pthread_atfork (2): errno clobber bei fork in multithreaded
-- [ ] rlimit-open-files (2): RLIMIT_NOFILE enforcement (implementiert, Test erwartet anderes)
-- [ ] malloc-brk-fail (1): brk OOM recovery
-- [ ] tls_get_new-dtv (1): dynamic TLS segment allocation
-- [ ] raise-race (2): fork in Signal-Handler + RT signals (geskippt)
+- [x] MAP_SHARED fork, Shared Futex
+- [ ] MAP_SHARED anonymous coherency
+- [ ] MAP_SHARED file-backed: Page Cache Coherency
+- [ ] /dev/shm tmpfs: mmap coherency
 
 ---
 
-## Alpine Kompatibilitaet — Blocker
-
-### IPC
+## Alpine IPC Blocker
 
 - [ ] inotify echte Events (IN_CREATE, IN_MODIFY, IN_DELETE)
 - [ ] SCM_RIGHTS: fd-Passing ueber Unix Socket
 - [ ] Abstract Unix Sockets (@ Namespace)
-- [x] /dev/shm: ramfs Hard Links fuer sem_open
 - [ ] flock echtes Advisory Locking
 - [ ] SysV IPC: shmget/shmat/shmctl, semget/semop/semctl, msgget/msgsnd/msgrcv/msgctl
 
-### Prozesse/Threads
+---
 
-- [ ] CLONE_THREAD korrekt: echte Threads (gleiche PID, verschiedene TIDs)
-- [ ] sendfile: zero-copy file transfer
-- [ ] getrusage korrekt: CPU-Zeit pro Prozess/Thread
+## musl libc-test Remaining (18 FAIL)
 
-### procfs
-
-- [ ] /proc/self/fd/ Directory Listing
-- [ ] /proc/pid/stat komplett
-- [x] /proc/PID/oom_score_adj: read + write
-- [ ] /proc/sys/kernel/threads-max
+- [ ] fma, fmal, powf, remquol: FPU Precision
+- [ ] pthread_robust (2): robust mutex Timeout
+- [ ] sem_open (2): shared mmap coherency
+- [ ] socket (2): loopback TCP accept
+- [ ] utime (2): Y2038 (ext4 Migration loest das)
+- [ ] pthread_atfork (2): errno clobber bei fork in multithreaded
+- [ ] rlimit-open-files (2): RLIMIT_NOFILE enforcement
+- [ ] malloc-brk-fail (1): brk OOM recovery
+- [ ] tls_get_new-dtv (1): dynamic TLS segment allocation
+- [ ] raise-race (2): fork in Signal-Handler + RT signals
 
 ---
 
-## Security
+## LTP Test-Compliance
 
-### Sec-E: Spectre/Meltdown
+### Bestanden (10 PASS)
 
-- [ ] KPTI + PCID
-- [ ] Retpoline + IBRS/IBPB
-- [ ] SSBD + MDS VERW
+- [x] abort01, accept01, accept03, access02, access03, alarm02/03/05/06
+
+### Fehlend
+
+- [ ] accept02, accept4_01: Loopback TCP accept
+- [ ] access01, access04: Permission-Bits (chmod/fchmod enforcement)
+- [ ] acct01: Process Accounting
+- [ ] adjtimex01-03: adjtimex Modes + Validation
+- [ ] alarm07: fork + sleep(3) + alarm — nanosleep re-block Bug
 
 ---
 
 ## Netzwerk
 
-- [x] Loopback TCP: Block in socket.c entfernt, ARP-Bypass
+- [x] Loopback TCP: ARP-Bypass
 - [ ] Loopback TCP accept: SYN aus q_tcp verarbeiten
-- [ ] IPv6 Basis (RFC 8200) + NDP + SLAAC
+- [ ] IPv6 (RFC 8200) + NDP + SLAAC
 
 ---
 
-## RT/Compute — ARINC 653
+## Security
 
-- [ ] ARINC-A: Shared Locks eliminieren
-- [ ] ARINC-B: Dynamic Alloc auf RT-Core eliminieren
-- [ ] ARINC-C: IPI-Isolation
-- [ ] ARINC-D: Bounded Data Structures
-- [ ] ARINC-E: RT-Core Memory-Isolation
+- [ ] CET: Shadow Stack (SHSTK) + Indirect Branch Tracking (IBT)
+- [ ] UMIP: User-Mode Instruction Prevention (CR4.UMIP=1)
+- [ ] eIBRS/AutoIBRS (CPUID-Check, mandatory)
+- [ ] IBPB bei Kontextwechsel
+- [ ] KPTI + PCID (CPUID-conditional, nur Meltdown-anfaellige CPUs)
+- [ ] SSBD
+- [ ] IOMMU (VT-d/AMD-Vi): DMA-Remapping fuer Userspace-Treiber
+
+---
+
+## Hardware-Modernisierung
+
+- [ ] PCI: ECAM (MMIO Config) statt Legacy Port I/O
+- [ ] PCI: MSI-X Interrupt-Routing
+- [ ] Serial: IRQ-driven TX/RX statt Polling
+
+---
+
+## Observability
+
+- [ ] /proc/self/fd/ Directory Listing
+- [ ] /proc/pid/stat komplett
+- [x] /proc/PID/oom_score_adj
+- [ ] /proc/sys/kernel/threads-max
+- [ ] perf_event_open (Hardware Performance Counters)
+
+---
+
+## Terminal / VT
+
+- [ ] Alternate Screen (?1049h/l)
 
 ---
 
 ## Device Nodes (SDL3/UI)
 
 - [ ] /dev/fb0, /dev/input/event0, /dev/snd/, /dev/dri/
+- [ ] VT-Slots: 12 Fullscreen-Surfaces (F1-F12), Device-Routing pro Slot
+- [ ] Audio-Mixer: 12-Spur, pro Slot
+
+---
+
+## Moderne Syscalls (DESIGN.md §7)
+
+- [ ] io_uring (io_uring_setup/enter/register)
+- [ ] memfd_create
+- [ ] copy_file_range
+- [ ] close_range
+- [ ] pidfd_open
+- [ ] pidfd_send_signal
+
+## Fehlende Syscalls
+
+- [ ] ARCH_SET_GS/ARCH_GET_GS
+- [ ] sendfile, splice/tee/vmsplice
+- [ ] Hard Links in ext4
+- [ ] renameat2 RENAME_EXCHANGE
+- [ ] MSG_ZEROCOPY (zero-copy send)
+- [ ] TIOCSPGRP ioctl
+
+### Erledigt
+
+- [x] prlimit64 set, Robust Mutex, adjtimex, WCOREDUMP, O_PATH
+- [x] futimens, utimensat UTIME_NOW/UTIME_OMIT, OOM Guard
+
+---
+
+## Crypto
+
+- [ ] AES (FIPS 197)
+- [ ] AES-NI Hardware-Beschleunigung (CPUID-Check)
+- [ ] SHA-NI Hardware-Beschleunigung (CPUID-Check)
 
 ---
 
 ## Skalierung (niedrige Prio)
 
-Skal-G..N: PTY Pool, epoll_ctl Hash, Unix Socket Slab, etc.
-
----
-
-## Fehlende Implementierungen
-
-- [ ] ARCH_SET_GS/ARCH_GET_GS
-- [x] prlimit64 set (RLIMIT_NOFILE)
-- [ ] sendfile, splice/tee/vmsplice
-- [ ] Hard Links in ext2
-- [ ] renameat2 RENAME_EXCHANGE
-- [x] Robust Mutex: set_robust_list + Thread-Exit-Cleanup
-- [x] adjtimex: Mode-Validation + ADJ_SETOFFSET reject
-- [x] WCOREDUMP Bit in wait-Status
-- [x] O_PATH in fd flags
-- [x] futimens(fd): utimensat mit NULL path
-- [x] utimensat UTIME_NOW/UTIME_OMIT
-- [x] OOM Guard: mmap/brk Headroom
+PTY Pool, epoll_ctl Hash, Unix Socket Slab, etc.

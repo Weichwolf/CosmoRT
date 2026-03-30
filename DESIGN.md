@@ -1,13 +1,67 @@
 # CosmoRT Design Specification
 
-Spec-Tree. Definiert korrektes Verhalten durch externe Standards + Architektur-Entscheidungen.
-Code wird gegen dieses Dokument verifiziert. Abweichungen sind Bugs.
-
-Keine Implementierungsdetails — die stehen im Code.
+Fullscreen-Slot Desktop auf eigenem Kernel. Abweichungen sind Bugs.
 
 ---
 
-## 1. CPU / Architecture
+## 1. Desktop: Fullscreen-Slots
+
+12 Fullscreen-Slots auf F1-F12. Kein Window-Manager, kein Compositor,
+kein Display-Server. Jeder Slot ist ein Terminal oder eine Anwendung.
+F-Tasten wechseln im Kernel — Apps merken davon nichts.
+
+```
+F1: [Claude Code]  Terminal          -> Glyph-Rendering in FB
+F2: [make]         Terminal          -> Glyph-Rendering in FB
+F3: [github.com]   WPE WebKit       -> /dev/fb0
+F4: [docs.kernel]  WPE WebKit       -> /dev/fb0
+F5: [Figma]        WASM-App         -> SDL3 -> /dev/fb0
+F6: [Doom]         SDL3-Game        -> SDL3 -> /dev/fb0
+```
+
+### 1.1 Device-Routing pro Slot
+
+Jeder Prozess oeffnet /dev/fb0, /dev/input/event0, /dev/snd/pcmC0D0p.
+Der Kernel routet basierend auf dem VT-Slot des Prozesses.
+Ein Device-Name, pro Prozess geroutet. Wie /dev/tty (Controlling Terminal).
+
+| Device | Routing | Aktiver Slot |
+|--------|---------|-------------|
+| /dev/fb0 | Slot-FB des Prozesses | Auf Monitor angezeigt |
+| /dev/input/event0 | Input-Queue des Slots | Empfaengt Keyboard/Maus |
+| /dev/snd/pcmC0D0p | Audio-Stream des Slots | Aktiv: spielt. Pinned: immer. Sonst: stumm |
+
+12-Spur Audio-Mixer im Kernel: jeder Slot hat eigenen Audio-Stream.
+
+### 1.2 UI-Stack
+
+```
+Anwendung (Game, GUI, Player)
+         |
+      SDL3 API (unmodifiziert, Alpine-Paket)
+         |
+  SDL3 Linux-Backends (fbdev, evdev, ALSA, KMS/DRM)
+         |
+  Linux Device Nodes (/dev/fb0, /dev/input/event0, /dev/snd/*, /dev/dri/)
+         |
+  CosmoRT Kernel (cosmoui.h intern -> Hardware)
+```
+
+| SDL3 Backend | Device Node | Kernel-Subsystem |
+|--------------|-------------|------------------|
+| fbdev | /dev/fb0 (mmap) | Framebuffer (fb.c) |
+| evdev | /dev/input/event0 (read) | Input (input.c) |
+| ALSA | /dev/snd/pcmC0D0p | Audio |
+| KMS/DRM | /dev/dri/card0 | GPU (virtio-gpu) |
+
+Kernel exposed Standard Linux Device Nodes. SDL3 funktioniert direkt.
+
+Kompatibel mit: SDL2/SDL3-Anwendungen, Dear ImGui, RetroArch,
+WPE WebKit, WASM-Apps (Wasmer/Wasmtime + SDL3).
+
+---
+
+## 2. CPU / Architecture
 
 ### 1.1 x86_64 Baseline
 
@@ -17,7 +71,7 @@ Keine Implementierungsdetails — die stehen im Code.
 | AMD64 Architecture Programmer's Manual | AMD Vol 1-5 | Equivalent, AMD-spezifische MSRs |
 | System V ABI AMD64 | https://gitlab.com/x86-psABIs/x86-64-ABI | Calling Convention, Stack Layout, Register Usage |
 
-Entscheidung: x86_64 only (ARM64/RISC-V geplant via src/arch/).
+x86_64. ARM64/RISC-V via src/arch/.
 
 ### 1.2 Paging
 
@@ -36,42 +90,55 @@ PTE Software-Bits:
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Intel SDM Vol 3 Chapter 10 | Local APIC | Timer (Periodic, Vector 32), EOI, ICR (IPI) |
-| Intel SDM Vol 3 §10.6 | I/O APIC | IRQ Routing (alle auf Core 0) |
-| Intel SDM Vol 3 §10.12 | IPI (Inter-Processor Interrupt) | rt_wake: Vector 0xFD, Fixed Delivery |
-
-Entscheidung: Alle IRQs auf Core 0 (RT-Core). Kein IRQ-Balancing.
+| Intel SDM Vol 3 §10.12.1 | x2APIC | MSR-basiert (schnellere EOI/IPI als MMIO xAPIC) |
+| Intel SDM Vol 3 §10.6 | I/O APIC | IRQ Routing, konfigurierbare Affinity |
+| Intel SDM Vol 3 §10.12 | IPI (Inter-Processor Interrupt) | Reschedule-IPI: Vector 0xFD, Fixed Delivery |
 
 ### 1.4 SIMD / FPU
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Intel SDM Vol 1 Chapter 10 | SSE/SSE2 | Userspace SSE/SSE2 |
-| Intel SDM Vol 1 §10.5 | FXSAVE/FXRSTOR (512 Bytes) | Context Switch, fork, Signal |
+| Intel SDM Vol 1 Chapter 14 | AVX/AVX2 | Userspace AVX/AVX2 (x86-64-v3 Baseline) |
+| Intel SDM Vol 1 §13.5 | XSAVE/XRSTOR | Context Switch, fork, Signal (XSAVE Area) |
 | Intel SDM Vol 2 | MXCSR Register | Init 0x1F80, sanitized bei sigreturn |
 
-Entscheidung: SSE2 maximum (WASM SIMD Limit). Kein AVX/AVX-512, kein XSAVE.
-Kernel: -mno-sse (außer sha256.c). RT-Core: SSE frei (kein User-FPU).
+AVX2 Userspace-Baseline (x86-64-v3). XSAVE/XRSTOR fuer Context Switch.
+Kein AVX-512. Kernel: -mno-sse -mno-avx.
 
-### 1.5 CPU Security Features
-
-| Spec | Referenz | CosmoRT Scope |
-|------|----------|---------------|
-| Intel SDM Vol 3 §4.6 | SMEP (Supervisor Mode Execution Prevention) | CR4.SMEP=1: Kernel kann keinen User-Code ausfuehren |
-| Intel SDM Vol 3 §4.6 | SMAP (Supervisor Mode Access Prevention) | CR4.SMAP=1: Kernel kann keine User-Pages lesen/schreiben (außer explizit) |
-| Intel SDM Vol 3 §6.15 | NX/XD Bit | No-Execute: Daten-Pages nicht ausfuehrbar |
-
-Entscheidung: SMEP + SMAP + NX mandatory bei Boot. Fehlen = Panic.
-
-### 1.6 TSC / Timer
+### 1.5 CPU Features (Performance)
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| Intel SDM Vol 3 §17.17 | Time-Stamp Counter (TSC) | timer_ms(), Calibration via LAPIC |
-| Intel SDM Vol 3 §10.5.4 | LAPIC Timer | Periodic, Divider 16, Init 10000000 |
+| Intel SDM Vol 3 §4.10.1 | PCID (Process Context Identifiers) | TLB-Eintraege pro Adressraum, kein Full-Flush bei Switch |
+| Intel SDM Vol 3 §4.10.2 | INVPCID | Gezielte TLB-Invalidierung (Single-Addr, Single-PCID, All) |
+| Intel SDM Vol 2 | FSGSBASE (RDFSBASE/WRFSBASE) | Schnelle FS/GS-Base aus Userspace (TLS), kein Syscall noetig |
+
+PCID + FSGSBASE mandatory. Fehlen = Panic.
+
+### 1.6 CPU Security Features
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 §4.6 | SMEP (Supervisor Mode Execution Prevention) | CR4.SMEP=1 |
+| Intel SDM Vol 3 §4.6 | SMAP (Supervisor Mode Access Prevention) | CR4.SMAP=1 |
+| Intel SDM Vol 3 §6.15 | NX/XD Bit | No-Execute auf Daten-Pages |
+| Intel SDM Vol 3 §4.11.1 | UMIP (User-Mode Instruction Prevention) | SGDT/SIDT/SLDT/SMSW/STR aus Userspace blockiert |
+| Intel CET Spec | CET (Control-flow Enforcement) | Shadow Stack (SHSTK) + Indirect Branch Tracking (IBT) |
+
+SMEP + SMAP + NX + UMIP + CET mandatory. Fehlen = Panic.
+
+### 1.7 TSC / Timer
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| Intel SDM Vol 3 §17.17 | Time-Stamp Counter (TSC) | timer_ms(), Calibration via PIT |
+| Intel SDM Vol 3 §10.5.4 | LAPIC Timer | Periodic 1kHz, One-Shot, TSC-Deadline Mode |
+| Intel SDM Vol 3 §10.5.4.1 | TSC-Deadline Mode | IA32_TSC_DEADLINE MSR, Sub-Mikrosekunden-Praezision |
 
 ---
 
-## 2. Boot
+## 3. Boot
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
@@ -79,11 +146,11 @@ Entscheidung: SMEP + SMAP + NX mandatory bei Boot. Fehlen = Panic.
 | ACPI Specification 6.5 | https://uefi.org/specifications | PM1a_CNT (Shutdown), S5 Sleep State |
 | GNU-EFI | https://sourceforge.net/projects/gnu-efi/ | EFI Application Build |
 
-Entscheidung: UEFI-only (kein Legacy BIOS). GPT Partitioning.
+UEFI-only. GPT.
 
 ---
 
-## 3. Linux ABI
+## 4. Linux ABI
 
 ### 3.1 Syscall ABI
 
@@ -93,7 +160,7 @@ Entscheidung: UEFI-only (kein Legacy BIOS). GPT Partitioning.
 | Linux syscall convention | man 2 syscall | rax=nr, rdi/rsi/rdx/r10/r8/r9=args, rax=return |
 | Linux errno | include/uapi/asm-generic/errno.h | EPERM(1) bis ECONNREFUSED(111) |
 
-Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
+Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 
 ### 3.2 ELF
 
@@ -108,7 +175,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 |------|----------|---------------|
 | POSIX.1-2017 §2.4 | Signal Concepts | 31 Standard-Signale |
 | Linux sigaction | man 2 rt_sigaction | SA_RESTART, SA_SIGINFO, SA_NOCLDSTOP |
-| Linux signal frame x86_64 | arch/x86/kernel/signal.c | ucontext_t, siginfo_t, FXSAVE in fpstate |
+| Linux signal frame x86_64 | arch/x86/kernel/signal.c | ucontext_t, siginfo_t, XSAVE in fpstate |
 
 ### 3.4 Process
 
@@ -125,7 +192,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | POSIX.1-2017 mmap | IEEE 1003.1 | MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED |
-| Linux mmap | man 2 mmap | MAP_SHARED (TODO), MAP_NORESERVE |
+| Linux mmap | man 2 mmap | MAP_SHARED, MAP_NORESERVE |
 | Linux madvise | man 2 madvise | MADV_DONTNEED, MADV_FREE |
 | Linux brk | man 2 brk | Heap Management |
 | Linux mlock | man 2 mlock | mlockall(MCL_CURRENT\|MCL_FUTURE) |
@@ -138,7 +205,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | Linux openat | man 2 openat | AT_FDCWD, O_CLOEXEC |
 | Linux *at Syscalls | man 2 openat, mkdirat, etc. | Legacy delegiert an *at-Varianten |
 | Linux fcntl | man 2 fcntl | F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL |
-| Linux ioctl | man 2 ioctl | TIOCGWINSZ, TIOCSWINSZ, TIOCSPGRP (TODO) |
+| Linux ioctl | man 2 ioctl | TIOCGWINSZ, TIOCSWINSZ, TIOCSPGRP |
 | Linux getdents64 | man 2 getdents64 | Directory Iteration |
 | Linux statx | man 2 statx | Extended stat |
 
@@ -184,7 +251,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | POSIX.1-2017 Scheduling | IEEE 1003.1 | sched_yield, sched_setaffinity |
-| Linux SCHED_OTHER/FIFO/RR | man 7 sched | CFS-equivalent auf Compute-Cores |
+| Linux SCHED_OTHER/FIFO/RR | man 7 sched | EDF + Priority, alle Cores preemptibel |
 
 ### 3.12 System
 
@@ -197,7 +264,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 
 ---
 
-## 4. Netzwerk Protokolle
+## 5. Netzwerk Protokolle
 
 ### 4.1 IP
 
@@ -210,7 +277,7 @@ Entscheidung: Exakt Linux x86_64 ABI. ELF-Binaries laufen unveraendert.
 | RFC 4861 | Neighbor Discovery for IPv6 | NDP (replaces ARP for IPv6) |
 | RFC 4862 | IPv6 Stateless Address Autoconfiguration | SLAAC |
 
-Entscheidung: Dual-Stack (IPv4 + IPv6).
+Dual-Stack (IPv4 + IPv6).
 
 ### 4.2 TCP
 
@@ -227,7 +294,7 @@ Entscheidung: Dual-Stack (IPv4 + IPv6).
 | RFC 6298 | Computing TCP Retransmission Timer | RTO Calculation |
 | RFC 1122 §4.2 | TCP Requirements | Keepalive (75s, 9 Probes) |
 
-Entscheidung: Kein Nagle (immer TCP_NODELAY-Verhalten).
+Kein Nagle. Immer TCP_NODELAY.
 
 ### 4.3 UDP
 
@@ -260,23 +327,24 @@ Entscheidung: Kein Nagle (immer TCP_NODELAY-Verhalten).
 |------|----------|---------------|
 | RFC 1035 | Domain Names — Implementation | A-Record Query, Response Parsing, Name Compression |
 
-Entscheidung: Kernel-DNS nur fuer Boot. Userspace-DNS fuer alles andere.
+Kernel-DNS nur Boot. Userspace-DNS fuer alles andere.
 
 ---
 
-## 5. Crypto
+## 6. Crypto
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | FIPS 180-4 | Secure Hash Standard (SHA-256) | Block-Hashing |
-| FIPS 197 | AES | Geplant |
-| Intel SHA Extensions | SHA-NI (sha256rnds2, sha256msg1/2) | Geplant (CPUID Check) |
+| FIPS 197 | AES | Block-Cipher |
+| Intel AES-NI | AESENC/AESDEC/AESKEYGENASSIST | HW-beschleunigtes AES (CPUID Check) |
+| Intel SHA Extensions | SHA-NI (sha256rnds2, sha256msg1/2) | HW-beschleunigtes SHA-256 (CPUID Check) |
 
-Entscheidung: SHA-256 als universelle Hash-Funktion. Integer-Arithmetik, kein FP.
+SHA-256 als Hash-Funktion. AES-NI und SHA-NI wenn CPU unterstuetzt.
 
 ---
 
-## 6. Security Hardening
+## 7. Security Hardening
 
 ### 6.1 Address Space Layout Randomization (ASLR)
 
@@ -313,16 +381,16 @@ Stack-Overflow → #PF auf Guard Page → SIGSEGV. Keine Silent Corruption.
 
 | Mitigation | Spec | CosmoRT Scope |
 |-----------|------|---------------|
-| KPTI (Kernel Page Table Isolation) | — | Separate User/Kernel Page-Tables (geplant) |
-| Retpoline | — | Indirect Branch Mitigation (-mindirect-branch=thunk) |
-| IBRS/IBPB | Intel SDM | Indirect Branch Prediction Barrier |
+| eIBRS / AutoIBRS | Intel SDM, AMD PPR | Hardware Branch Prediction Barrier (CPUID-Check, mandatory) |
+| KPTI (Kernel Page Table Isolation) | — | CPUID-conditional: nur auf Meltdown-anfaelligen CPUs (pre-Ice-Lake Intel) |
+| IBPB | Intel SDM | Indirect Branch Prediction Barrier bei Kontextwechsel |
 | SSBD | Intel SDM | Speculative Store Bypass Disable |
 
-Entscheidung: Minimum Retpoline + IBPB bei Kontextwechsel. KPTI geplant.
+eIBRS/AutoIBRS + IBPB. KPTI CPUID-conditional. Kein Retpoline.
 
 ---
 
-## 7. Moderne Syscalls
+## 8. Moderne Syscalls
 
 Zusaetzlich zu den Linux-ABI Basics (Sektion 3):
 
@@ -335,11 +403,9 @@ Zusaetzlich zu den Linux-ABI Basics (Sektion 3):
 | pidfd_open | man 2 pidfd_open | Race-freies Process-Management |
 | pidfd_send_signal | man 2 pidfd_send_signal | Signal via pidfd (kein PID-Reuse Race) |
 
-Entscheidung: io_uring ist Pflicht (Node.js Performance). memfd_create ist Pflicht (Chrome/Wayland).
-
 ---
 
-## 8. Observability
+## 9. Observability
 
 | Feature | Referenz | CosmoRT Scope |
 |---------|----------|---------------|
@@ -347,49 +413,59 @@ Entscheidung: io_uring ist Pflicht (Node.js Performance). memfd_create ist Pflic
 | /proc/pid/status | Linux procfs | Prozess-Status (Name, State, VmRSS) |
 | /proc/pid/cmdline | Linux procfs | Kommandozeile (ps, htop) |
 | /proc/meminfo | Linux procfs | Systemweiter Speicher-Status |
-| perf_event_open | man 2 perf_event_open | Hardware Performance Counters (geplant) |
+| perf_event_open | man 2 perf_event_open | Hardware Performance Counters |
 
 ---
 
-## 9. Hardware / Treiber
+## 10. Hardware / Treiber
 
 Kernel: nur 5 Primitives (MMIO, DMA, IRQ, PCI, FW) via cosmort.h.
 Alle Geraetetreiber in Userspace oder als Kernel-Module ueber cosmort.h.
 
-### 9.1 PCI
+### 9.1 IOMMU
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| PCI Local Bus Spec 3.0 | PCI-SIG | Config Space (Port I/O 0xCF8/0xCFC) |
-| PCIe Base Spec 5.0 | PCI-SIG | MMIO Config, MSI-X (geplant) |
+| Intel VT-d Spec 4.0 | Intel Virtualization Technology for Directed I/O | DMA Remapping, Interrupt Remapping |
+| AMD-Vi Spec | AMD I/O Virtualization Technology | Equivalent (AMD Plattformen) |
 
-### 9.2 VirtIO
+DMA-Schutz fuer Userspace-Treiber. Ohne IOMMU kann ein buggy Treiber
+per DMA beliebig physischen Speicher lesen/schreiben.
+
+### 9.2 PCI
+
+| Spec | Referenz | CosmoRT Scope |
+|------|----------|---------------|
+| PCIe Base Spec 5.0 | PCI-SIG | ECAM (MMIO Config Space, 4096B), MSI-X |
+| PCI Local Bus Spec 3.0 | PCI-SIG | Legacy Port I/O 0xCF8/0xCFC als Fallback |
+
+### 9.3 VirtIO
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | VirtIO Spec 1.2 | https://docs.oasis-open.org/virtio/ | virtio-net, virtio-blk, virtio-gpu, virtio-input |
 | VirtIO PCI Transport | VirtIO Spec §4.1 | Capability Structure, Notify, ISR |
 
-### 9.3 E1000
+### 9.4 E1000
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Intel 82540EM (E1000) | Intel Datasheet | TX/RX Descriptors, MMIO Registers |
 
-### 9.4 Hyper-V
+### 9.5 Hyper-V
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | Hyper-V TLFS 6.0b | Microsoft Top-Level Functional Spec | Hypercall Page, SynIC, VMBus, MSRs |
 | VMBus Protocol | TLFS Chapter 11 | Channel Offer/Open/Close, GPA Direct |
 
-### 9.5 Serial
+### 9.6 Serial
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| 16550 UART | National Semiconductor | COM1 (0x3F8), Polling TX/RX |
+| 16550 UART | National Semiconductor | COM1 (0x3F8), IRQ-driven TX/RX (Polling nur Boot) |
 
-### 9.6 Userspace-Treiber (via cosmort.h)
+### 9.7 Userspace-Treiber (via cosmort.h)
 
 | Spec | Referenz | Treiber |
 |------|----------|---------|
@@ -398,25 +474,25 @@ Alle Geraetetreiber in Userspace oder als Kernel-Module ueber cosmort.h.
 | Intel HD Audio Spec | Intel | Audio Codec, Streams, DMA Buffer Descriptor List |
 | AHCI Spec 1.3.1 | Intel | SATA Controller (Legacy-SSDs/HDDs) |
 
-Entscheidung: Alle Geraetetreiber ausser NIC in Userspace via cosmort.h.
+Geraetetreiber ausser NIC in Userspace via cosmort.h.
 
 ---
 
-## 10. Terminal / VT
+## 11. Terminal / VT
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
 | ECMA-48 | Control Functions for Coded Character Sets | CSI Sequences, SGR (Colors) |
 | VT100/VT220 | DEC Terminal Reference | Cursor Movement, Scrolling, Erase |
-| XTerm Control Sequences | https://invisible-island.net/xterm/ | Alternate Screen (?1049h/l, geplant) |
+| XTerm Control Sequences | https://invisible-island.net/xterm/ | Alternate Screen (?1049h/l) |
 | Unicode 15.0 | https://unicode.org | UTF-8 Decoding, Glyph Mapping |
 | Linux Input Events | include/uapi/linux/input-event-codes.h | KEY_*, REL_*, ABS_* |
 
-Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
+TERM=xterm-256color. Bernstein-Theme.
 
 ---
 
-## 11. Dateisystem
+## 12. Dateisystem
 
 ### 11.1 VFS
 
@@ -424,36 +500,41 @@ Entscheidung: TERM=xterm-256color. ANSI 16-Color Palette (Bernstein-Theme).
 |------|----------|---------------|
 | POSIX.1-2017 File System | IEEE 1003.1 | Path Resolution, Symlinks, Permissions |
 
-### 11.2 ext2 (Root-Filesystem)
+### 11.2 ext4 (Root-Filesystem)
 
 | Spec | Referenz | CosmoRT Scope |
 |------|----------|---------------|
-| ext2 | https://www.nongnu.org/ext2-disk/ | Read-Write, Direct+Indirect+Double-Indirect Blocks |
-| mkfs.ext2 | Host-Tool | Image-Erstellung mit -d (Directory Population) |
+| ext4 | https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout | Extents, Journal, 64-Bit, Checksums |
+| mkfs.ext4 | Host-Tool | Image-Erstellung mit -d (Directory Population) |
 
 ---
 
-## 12. Architektur-Entscheidungen
+## 13. Architektur
 
-Nicht aus einem Standard, sondern CosmoRT-eigen.
-
-| Entscheidung | Begruendung |
-|-------------|-------------|
-| 1 RT-Core + N Compute-Cores | Deterministische I/O-Latenz, kein Lock zwischen Partitionen |
-| ARINC 653 Partitionierung | RT-Core formal bounded, Compute best-effort |
-| SPSC Channels (kein Shared Lock) | Lock-free, kein Priority Inversion, WCET berechenbar |
-| Alle Allokationen O(1) | Slab, Free-List, Bitmap — kein O(n) Scan |
-| Alle Lookups O(1) oder O(log n) | Hash-Tabellen, AVL-Tree — kein linearer Scan |
-| SSE2 Maximum (kein AVX) | WASM SIMD Limit, FXSAVE reicht |
-| Single-User | Kein UID/GID Enforcement, Permissions gespeichert aber nur +x enforced |
-| Kernel-DNS/DHCP nur Boot | Anwendungsprotokolle gehoeren in Userspace |
-| ext2 als Kernel-FS | Standard-Format, mkfs.ext2 auf Host, read-write |
-| CUBIC statt Reno | Modern, RFC 8312, bessere Performance bei hoher Bandbreite |
-| Kein Swap | MADV_FREE + THP statt Disk-Swap |
+| Eigenschaft | Detail |
+|-------------|--------|
+| Nativ preemptibles Kernel | <10µs WCET Ziel |
+| Sleeping Locks (PI-Mutexes) | Spinlocks nur HW-Register/IRQ-Interna |
+| Adaptive Spinning | Kurzer Spin vor Mutex-Sleep wenn Owner laeuft |
+| Threaded IRQs | Hard-IRQ nur ACK+Wake |
+| NOHZ_FULL (Tickless) | Timer-Ticks auf isolierten Cores eliminiert |
+| RCU (Read-Copy-Update) | Lock-free Read-Side fuer Kernel-Datenstrukturen |
+| Preemption: Full + Lazy | Preemption an jedem Punkt, Lazy fuer Batch-Pfade |
+| CPU-Frequency-Invarianz | WCET-Berechnung kompensiert Turbo-Boost/P-States |
+| IRQ-Affinity konfigurierbar | Per-Queue Balancing |
+| Allokationen O(1) | Slab, Free-List, Bitmap |
+| Lookups O(1) oder O(log n) | Hash-Tabellen, AVL-Tree |
+| Bounded WCET | Keine unbounded Loops |
+| AVX2 Userspace, XSAVE | Kein AVX-512 |
+| Single-User | Kein UID/GID Enforcement |
+| Kernel-DNS/DHCP nur Boot | Anwendungsprotokolle in Userspace |
+| ext4 | Journal, Extents, Checksums |
+| CUBIC | RFC 8312 |
+| Kein Swap | MADV_FREE + THP |
 
 ---
 
-## 13. Userland: Alpine Linux + musl
+## 14. Userland: Alpine Linux + musl
 
 | Komponente | Quelle | Bemerkung |
 |------------|--------|-----------|
@@ -465,91 +546,24 @@ Nicht aus einem Standard, sondern CosmoRT-eigen.
 | Node.js | Alpine nodejs Paket | Self-Hosting: Claude Code |
 | Init | Eigener Init oder OpenRC | Kein systemd |
 
-Entscheidung: Kein eigenes Userland. Alpine liefert alles oberhalb der Syscall-Schicht.
-CosmoRT implementiert die Linux-Syscall-ABI, Alpine-Binaries laufen unveraendert.
-
-### 13.1 UI-Stack: SDL3 ueber Linux Device Nodes
-
-```
-Anwendung (Game, GUI, Player)
-         │
-      SDL3 API (unmodifiziert, Alpine-Paket)
-         │
-  SDL3 Linux-Backends (fbdev, evdev, ALSA, KMS/DRM)
-         │
-  Linux Device Nodes (/dev/fb0, /dev/input/event0, /dev/snd/*, /dev/dri/)
-         │
-  CosmoRT Kernel (cosmoui.h intern → Hardware)
-```
-
-| SDL3 Backend | Device Node | Kernel-Subsystem |
-|--------------|-------------|------------------|
-| fbdev | /dev/fb0 (mmap) | Framebuffer (fb.c) |
-| evdev | /dev/input/event0 (read) | Input (input.c) |
-| ALSA | /dev/snd/pcmC0D0p | Audio (RT-Core) |
-| KMS/DRM | /dev/dri/card0 | GPU (virtio-gpu, spaeter) |
-
-Entscheidung: Kein Custom SDL3-Backend. Kernel exposed Standard Linux Device
-Nodes. SDL3 (apk add sdl3) funktioniert direkt. Kein Fork, keine Patches.
-
-### 13.2 VT-Slots = Fullscreen Surfaces
-
-12 Fullscreen-Slots auf F1-F12 (BeOS-Philosophie, siehe notes/DESKTOP.md).
-Jeder Slot ist ein Terminal ODER eine SDL3-App. Kernel managed die Slots:
-
-```
-F1: [Claude Code]  Terminal          → Glyph-Rendering in FB
-F2: [make]         Terminal          → Glyph-Rendering in FB
-F3: [github.com]   WPE WebKit       → /dev/fb0
-F4: [docs.kernel]  WPE WebKit       → /dev/fb0
-F5: [Figma]        WASM-App         → SDL3 → /dev/fb0
-F6: [Doom]         SDL3-Game        → SDL3 → /dev/fb0
-```
-
-F-Tasten wechseln im Kernel — Apps merken davon nichts.
-12-Spur Audio-Mixer im RT-Core: jeder Slot hat eigenen Audio-Stream.
-
-### 13.3 Device-Routing pro Slot
-
-Jeder Prozess oeffnet /dev/fb0, /dev/input/event0, /dev/snd/pcmC0D0p.
-Der Kernel routet basierend auf dem VT-Slot des Prozesses:
-
-```
-Prozess auf F1: open("/dev/fb0") → Kernel mappt auf Slot 1 Framebuffer
-Prozess auf F3: open("/dev/fb0") → Kernel mappt auf Slot 3 Framebuffer
-```
-
-Ein Device-Name, pro Prozess geroutet. Wie /dev/tty (Controlling Terminal).
-Apps sehen immer /dev/fb0 — der Kernel weiss welcher Slot gemeint ist.
-Keine Namespaces, kein Multiplexing in Userspace.
-
-| Device | Routing | Aktiver Slot |
-|--------|---------|-------------|
-| /dev/fb0 | Slot-FB des Prozesses | Auf Monitor angezeigt |
-| /dev/input/event0 | Input-Queue des Slots | Empfaengt Keyboard/Maus |
-| /dev/snd/pcmC0D0p | Audio-Stream des Slots | Aktiv: spielt. Pinned: immer. Sonst: stumm |
-
-Was automatisch funktioniert:
-- Alles was SDL2/SDL3 nutzt (tausende Anwendungen)
-- Dear ImGui, RetroArch, Mediaplayer, Spiele
-- WPE WebKit: eine Webseite pro Slot (keine Tabs)
-- WASM-Apps ueber Wasmer/Wasmtime + SDL3
-- Software-Rendering sofort, GPU optional (/dev/dri/)
+Alpine liefert alles oberhalb der Syscall-Schicht. Binaries laufen unveraendert.
+Desktop-Konzept, UI-Stack und Device-Routing: siehe §1.
 
 ---
 
-## 14. Abweichungen von Linux
+## 15. Abweichungen von Linux
 
 Bewusste Abweichungen. Dokumentiert damit sie nicht als Bug behandelt werden.
 
-| Feature | Linux | CosmoRT | Grund |
-|---------|-------|---------|-------|
-| IRQ-Verteilung | RSS/RPS/RFS | Alle auf Core 0 | RT-Core Modell |
-| Scheduler | CFS (fair) | EDF + Priority | Realtime-faehig |
-| Page-Reclaim | kswapd + Direct Reclaim | MADV_FREE Lazy + THP | Kein Swap-Device |
-| Netfilter | iptables/nftables | Keiner | Single-User, kein Firewall im Kernel |
-| Namespaces | cgroups + namespaces | Keine | Single-User |
-| Security Modules | SELinux/AppArmor | Keiner | Single-User |
-| SysV IPC | shmget/semget/msgget | Implementieren | Alpine-Pakete (PostgreSQL, etc.) brauchen es |
-| Filesystem Journaling | ext4 Journal | ext2 (kein Journal) | Einfachheit, fsck bei Bedarf |
-| Dynamic Linker | ld-linux.so | ld-musl-x86_64.so.1 | musl libc (statisch + dynamisch) |
+| Feature | Linux | CosmoRT |
+|---------|-------|---------|
+| Desktop | X11/Wayland Compositor + Window Manager | 12 Fullscreen-Slots, Kernel-managed |
+| IRQ-Verteilung | RSS/RPS/RFS | Konfigurierbar, per-Queue Balancing |
+| Scheduler | CFS (fair) | EDF + Priority |
+| Page-Reclaim | kswapd + Direct Reclaim | MADV_FREE Lazy + THP |
+| Netfilter | iptables/nftables | Keiner |
+| Namespaces | cgroups + namespaces | Keine |
+| Security Modules | SELinux/AppArmor | Keiner |
+| SysV IPC | shmget/semget/msgget | Implementieren |
+| Filesystem | ext4 (alle Features) | ext4 (Extents, Journal, Checksums) |
+| Dynamic Linker | ld-linux.so | ld-musl-x86_64.so.1 |
