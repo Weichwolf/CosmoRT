@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1574/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1593/1. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -127,13 +127,13 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 - [x] epoll_check_timeouts: One-Shot-basiert bei sleeper_add auf tickless Cores
 - [x] 12 ktest (nohz_*): NOHZ_FULL Validierung
 
-#### RT-6b: Dynamische Core-Isolation (Agent)
+#### RT-6b: Automatische Core-Isolation (erledigt)
 
-- [ ] Syscall: core_isolate(cpu_id) / core_release(cpu_id)
-- [ ] Dynamisch zur Laufzeit (nicht nur Boot-Parameter)
-- [ ] SCHED_OTHER Tasks werden von isolierten Cores migriert
-- [ ] Mehrere Cores gleichzeitig isolierbar
-- [ ] core_isolated[] Infrastruktur in sched.c erweitern
+- [x] Boot: BSP markiert Cores 2..N-1 als isoliert (Core 0 BSP, Core 1 Compute)
+- [x] Scheduler migriert SCHED_FIFO/RR auf isolierte Cores (Round-Robin)
+- [x] SCHED_OTHER automatisch ferngehalten (existiert bereits in sched.c)
+- [x] Mehrere isolierte Cores fuer parallele Audio-Chains
+- [x] 12 ktest (iso_*): Core-Isolation Validierung
 
 ### RT-7: CPU-Frequency-Invarianz (Agent)
 

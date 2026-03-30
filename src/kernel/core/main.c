@@ -177,6 +177,20 @@ void kernel_main(struct boot_info *info) {
     extern void sched_loop(void);
     smp_start_all(sched_loop);
 
+    {
+        int ncores = smp_num_cores();
+        extern void sched_isolate_core(int core_id);
+        for (int c = 2; c < ncores; c++)
+            sched_isolate_core(c);
+        if (ncores > 2) {
+            serial_puts("sched: isolated cores 2..");
+            char t[4]; int ti = 0, v = ncores - 1;
+            do { t[ti++] = '0' + v % 10; v /= 10; } while (v);
+            while (ti--) serial_putchar(t[ti]);
+            serial_putchar('\n');
+        }
+    }
+
     extern int hyperv_detect(void);
     extern void hyperv_init(void);
     extern void hyperv_synic_init(void);

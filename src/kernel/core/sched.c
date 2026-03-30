@@ -92,18 +92,17 @@ void sched_add(thread_t *t) {
     int ncores = smp_num_cores();
 
     if (cpu < 0 || cpu >= SMP_MAX_CORES) {
-        if (ncores == 2) {
-            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
-                cpu = 0;
-            else
-                cpu = 1;
-        } else {
-            if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR)
-                cpu = 0;
-            else {
-                static volatile int next_cpu = 0;
-                cpu = 1 + (__sync_fetch_and_add(&next_cpu, 1) % (ncores - 1));
+        if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR) {
+            static volatile int next_iso = 0;
+            int best = -1;
+            for (int i = 0; i < ncores; i++) {
+                int c = 1 + ((__sync_fetch_and_add(&next_iso, 0) + i) % (ncores - 1));
+                if (core_isolated[c]) { best = c; __sync_fetch_and_add(&next_iso, 1); break; }
             }
+            cpu = (best >= 0) ? best : 0;
+        } else {
+            static volatile int next_cpu = 0;
+            cpu = 1 + (__sync_fetch_and_add(&next_cpu, 1) % (ncores - 1));
         }
     }
 
