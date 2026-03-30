@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1545/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1562/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -105,12 +105,13 @@ Device-IRQs → eigene Kernel-Threads (schedulebar, preemptibel, mutex-faehig).
   - dmesg_lock: serial_putchar aus Exception-Handlern und Panic-Pfaden
   - buddy_lock: page_alloc ueberall, zu riskant
 
-### RT-5: RCU (Agent, parallel zu RT-2..4)
+### RT-5: RCU (erledigt)
 
-- [ ] RCU Datenstruktur (grace period, callback queue)
-- [ ] rcu_read_lock/rcu_read_unlock (preempt_disable/enable)
-- [ ] synchronize_rcu / call_rcu
-- [ ] ktest: concurrent read/write Tests
+- [x] RCU Datenstruktur (grace period, callback queue)
+- [x] rcu_read_lock/rcu_read_unlock (preempt_disable/enable)
+- [x] synchronize_rcu / call_rcu
+- [x] rcu_check_quiescent in sched_preempt (Timer-Tick = QS)
+- [x] ktest: 12 Tests (17 Checks) — Scheduling, Preemption, IPC intakt
 
 ### RT-6: NOHZ_FULL (abhaengig von RT-4)
 

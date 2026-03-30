@@ -10,6 +10,7 @@
 #include "core/rt.h"
 #include "core/timer.h"
 #include "core/event_queue.h"
+#include "core/rcu.h"
 #include "arch/arch.h"
 
 static uint8_t core_isolated[SMP_MAX_CORES];
@@ -286,6 +287,7 @@ void sched_preempt(void *frame_ptr) {
     }
 
     epoll_check_timeouts();
+    rcu_check_quiescent();
 
     {
         thread_t *alarm_t = percpu_self()->current_thread;
