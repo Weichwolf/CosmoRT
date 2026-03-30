@@ -53,11 +53,12 @@ void check_pending_signals(void) {
         if (handler == 0) {
             /* SIG_DFL — POSIX default actions */
             switch (sig) {
-            /* Ignore */
+            /* Ignore: clear pending bit and skip */
             case 17: /* SIGCHLD */
             case 23: /* SIGURG */
             case 28: /* SIGWINCH */
             case 29: /* SIGIO */
+                p->sig_pending &= ~SIG_BIT(sig);
                 continue;
             /* Stop (SIGTSTP, SIGSTOP, SIGTTIN, SIGTTOU) — stop current thread */
             case 19: case 20: case 21: case 22: {

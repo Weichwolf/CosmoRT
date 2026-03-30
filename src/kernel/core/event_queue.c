@@ -116,10 +116,10 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     if (timeout_ms == 0)
         return -11; /* EAGAIN */
 
-    /* Check for fatal signals (SIGKILL/SIGTERM) before blocking.
-     * SIGKILL: always delivers (unkillable process prevention).
-     * SIGTERM with SIG_DFL: delivers (allows timeout/kill to terminate stuck processes).
-     * Other signals: NOT checked here — spurious EINTR breaks futex_wait/pthread_cond. */
+    /* Check for fatal signals before blocking.
+     * Only SIGKILL and SIGTERM (SIG_DFL) are checked here.
+     * Other signals (SIGALRM etc.) are delivered via check_alarm_timers
+     * which posts events to wake the thread. */
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
     if (cur->proc) {
