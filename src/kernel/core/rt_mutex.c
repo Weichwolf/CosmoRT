@@ -100,13 +100,18 @@ int rt_mutex_lock(rt_mutex_t *m) {
         if (!found)
             waiters_insert(m, cur);
 
-        cur->state = THREAD_BLOCKED;
         spin_unlock_irq(&m->lock, flags);
 
-        if (kernel_setjmp(cur->kernel_yield_jmpbuf) == 0) {
-            cur->in_kernel_yield = 1;
-            arch_set_cr3(virt_to_phys(pml4));
-            kernel_longjmp(cur->jmpbuf, 1);
+        if (cur->kthread_fn) {
+            for (int i = 0; i < ADAPTIVE_SPIN_MAX; i++)
+                arch_pause();
+        } else {
+            cur->state = THREAD_BLOCKED;
+            if (kernel_setjmp(cur->kernel_yield_jmpbuf) == 0) {
+                cur->in_kernel_yield = 1;
+                arch_set_cr3(virt_to_phys(pml4));
+                kernel_longjmp(cur->jmpbuf, 1);
+            }
         }
         continue;
     }
