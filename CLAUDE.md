@@ -190,6 +190,11 @@ ABI:
 - Keine Magic Numbers — benannte Konstanten aus linux.h
 - Keine Stubs (return 0) — korrekt implementieren oder -ENOSYS
 
+Kommentare:
+- Keine. Code der Kommentare braucht ist zu komplex — refactoren statt kommentieren.
+- Kommentare veralten ohne Compiler-Warnung. Technische Schulden.
+- Einzige Ausnahme: Einzeiler am Dateianfang: /* CosmoRT <Subsystem> — <was die Datei ist> */
+
 Code-Organisation:
 - Bottom-Up: Helpers oben, Caller unten. Keine Forward-Declarations
 - Hot-Path frei von Strings und Error-Output (cold-Funktionen auslagern)
@@ -216,6 +221,3 @@ TODO.md:
 - Testcount im Header aktualisieren
 - Alte erledigte Phasen in Zusammenfassung verschieben
 
-## Ralph-Loop
-
-make alpine-test zeigt den ersten FAIL in /tmp/cosmo-serial.log Analysiere den Fehler, finde den Kernel-Bug, fixe ihn. Committe den Fix. Laufe make alpine-test erneut. Wiederhole bis alle Tests passen oder du nicht weiterkommst. Kein Fragen, kein Warten. Arbeite selbststaendig. test src in build/alpine-root/opt/. Keine Skips. Tests sind Spezifikation. Alles implementieren. CosmoRT ist ein Greenfield-Kernel fuer ein Fullscreen-Slot-Desktop. Linux-ABI soweit Alpine-Pakete es brauchen. Keine Skips. Tests sind Spezifikation.
