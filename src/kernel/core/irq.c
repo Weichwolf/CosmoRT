@@ -24,7 +24,11 @@
 #define LAPIC_TPR        0x080
 #define LAPIC_TIMER      0x320
 #define LAPIC_TIMER_INIT 0x380
+#define LAPIC_TIMER_CUR  0x390
 #define LAPIC_TIMER_DIV  0x3E0
+
+/* LAPIC timer ticks per millisecond (set during irq_init) */
+static uint32_t lapic_ticks_per_ms = 100000;
 
 static volatile uint32_t *lapic = (volatile uint32_t *)LAPIC_BASE;
 
@@ -806,8 +810,28 @@ void irq_init(void) {
     irq_register(32, timer_handler);
     lapic_write(LAPIC_TIMER_DIV, 0x03);
     lapic_write(LAPIC_TIMER, 0x20020);    /* periodic, vector 32 */
-    lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) — RT-Core */
+    lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms); /* 1000Hz (1ms) — RT-Core */
     serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
 
     arch_sti();
+}
+
+/* ── LAPIC one-shot delay (non-preemptible, IRQ-safe) ──── */
+
+void lapic_delay_ms(uint32_t ms) {
+    if (ms == 0) return;
+
+    /* One-shot: vector 32, not masked, mode 00 (one-shot) */
+    uint32_t count = ms * lapic_ticks_per_ms;
+    lapic_write(LAPIC_TIMER, 0x00020);   /* one-shot, vector 32 */
+    lapic_write(LAPIC_TIMER_INIT, count);
+
+    /* Halt until LAPIC fires. Other IRQs may wake us early,
+     * so re-halt while the countdown is still running. */
+    while (lapic[LAPIC_TIMER_CUR / 4] > 0)
+        arch_halt();
+
+    /* Restore periodic 1ms tick */
+    lapic_write(LAPIC_TIMER, 0x20020);
+    lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms);
 }

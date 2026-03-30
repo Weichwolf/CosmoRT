@@ -2,8 +2,12 @@
  * Also reads CMOS RTC at boot for wall-clock epoch offset. */
 
 #include "core/timer.h"
+#include "core/irq.h"
 #include "hw/serial.h"
 #include "arch/arch.h"
+
+/* Set after irq_init — signals LAPIC one-shot is available */
+static int lapic_ready = 0;
 
 static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
 
@@ -61,6 +65,8 @@ void timer_init(void) {
     do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
     while (ti--) serial_putchar(tmp[ti]);
     serial_puts(" TSC/ms\n");
+
+    lapic_ready = 1;
 }
 
 uint64_t timer_ms(void) {
@@ -73,18 +79,20 @@ uint32_t timer_epoch_sec(void) {
 }
 
 /* Kernel-only non-preemptible delay. For HW init timing (SMP SIPI, device
- * reset). NOT for userspace sleep — use event_wait with timeout instead. */
+ * reset). NOT for userspace sleep — use event_wait with timeout instead.
+ *
+ * Post-irq_init: LAPIC one-shot + HLT (no CPU burn, IRQs handled).
+ * Pre-irq_init: RDTSC busy-wait fallback (no LAPIC yet). */
 void timer_sleep_ms(uint32_t ms) {
-    if (ms < 10) {
-        /* Short sleep: RDTSC busy-wait (accurate, needed for hardware timing) */
+    if (ms == 0) return;
+
+    if (lapic_ready) {
+        lapic_delay_ms(ms);
+    } else {
+        /* Pre-LAPIC boot: RDTSC busy-wait (only during early init) */
         uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;
         while (rdtsc() < target)
             arch_pause();
-    } else {
-        /* Long sleep: hlt until timer ticks pass (no CPU burn) */
-        uint64_t deadline = timer_ms() + ms;
-        while (timer_ms() < deadline)
-            arch_halt();
     }
 }
 

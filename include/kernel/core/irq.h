@@ -30,4 +30,8 @@ void ioapic_route_irq(uint8_t irq, uint8_t vector);
 /* TLB shootdown: flush TLB on all other cores sharing this PML4 */
 void tlb_shootdown(uint64_t pml4_phys);
 
+/* LAPIC one-shot delay: sleep ms milliseconds using LAPIC timer + HLT.
+ * Non-preemptible, but allows IRQs. Restores periodic mode after. */
+void lapic_delay_ms(uint32_t ms);
+
 #endif

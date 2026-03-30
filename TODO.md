@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1234/1. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1254/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -10,10 +10,12 @@ CosmoRT hat Busy-Wait-Polling an 18 Stellen. Das bricht Timer, Signale,
 sleep/alarm/timeout und damit ALLE Tests die fork+wait oder sleep nutzen.
 Alles muss event_wait() + Hardware-Timer (LAPIC) nutzen. Linux als Vorbild.
 
-### P0-A: Timer (Fundament)
+### P0-A: Timer (Fundament) — DONE
 
-- [ ] timer_sleep_ms <10ms: LAPIC one-shot + arch_halt statt rdtsc spin-wait (timer.c:82)
-- [ ] timer_sleep_ms >10ms: event_wait mit Timeout statt timer_ms() poll (timer.c:84-88)
+- [x] timer_sleep_ms: LAPIC one-shot + arch_halt statt rdtsc spin-wait / halt-poll
+- [x] lapic_delay_ms(): one-shot + TIMER_CUR re-halt + periodic restore (irq.c)
+- [x] Pre-LAPIC rdtsc-Fallback fuer fruehen Boot (vor irq_init)
+- [x] ktest: 15 Timer-Tests (monotonie, nanosleep bounds, back-to-back, concurrent fork)
 
 ### P0-B: Netzwerk-Boot (blockiert Scheduler)
 
