@@ -614,8 +614,13 @@ long do_accept(int fd, void *addr, int *addrlen) {
     }
 
     socket_t *ls = sock_from_fd(fd);
-    if (!ls) return -EBADF;
-    if (ls->is_dgram) return -EOPNOTSUPP; /* UDP: accept not supported */
+    if (!ls) {
+        /* Distinguish EBADF (fd doesn't exist) from ENOTSOCK (fd is not a socket) */
+        process_t *ap = proc_current();
+        if (ap && fd_get(&ap->fds, fd)) return -ENOTSOCK;
+        return -EBADF;
+    }
+    if (ls->is_dgram) return -EOPNOTSUPP;
     if (ls->state != SOCK_LISTENING) return -EINVAL;
 
     /* Check accept queue first (pre-queued connections) */
