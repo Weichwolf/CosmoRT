@@ -215,8 +215,19 @@ ext2 hat kein Journal, keine Extents, 32-Bit Timestamps (Y2038).
 
 ## Device Nodes (SDL3/UI)
 
-- [ ] /dev/fb0, /dev/input/event0, /dev/snd/, /dev/dri/
+- [ ] /dev/fb0, /dev/input/event0, /dev/dri/
 - [ ] VT-Slots: 12 Fullscreen-Surfaces (F1-F12), Device-Routing pro Slot
+
+---
+
+## Audio-Router + MIDI (DAW-Kern)
+
+- [ ] Audio IN/OUT (Stereo) pro Slot (/dev/snd/pcmC0D0p, /dev/snd/pcmC0D0c)
+- [ ] Kernel Audio-Router: Slot-zu-Slot Verbindungen (nicht nur Slot→Master)
+- [ ] MIDI-Port pro Slot (/dev/midi)
+- [ ] MIDI Kernel-Router: Routing-Tabelle + Ringbuffer pro Verbindung
+- [ ] Timestamped MIDI Events (sample-genau)
+- [ ] ALSA rawmidi kompatible Userspace-API
 - [ ] Audio-Mixer: 12-Spur, pro Slot
 
 ---

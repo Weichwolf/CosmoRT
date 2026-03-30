@@ -31,7 +31,20 @@ Ein Device-Name, pro Prozess geroutet. Wie /dev/tty (Controlling Terminal).
 | /dev/input/event0 | Input-Queue des Slots | Empfaengt Keyboard/Maus |
 | /dev/snd/pcmC0D0p | Audio-Stream des Slots | Aktiv: spielt. Pinned: immer. Sonst: stumm |
 
-12-Spur Audio-Mixer im Kernel: jeder Slot hat eigenen Audio-Stream.
+### 1.3 Audio-Router + MIDI
+
+Jeder Slot hat Audio IN/OUT (Stereo) und MIDI IN/OUT. Der Kernel routet
+beliebige Slot-zu-Slot-Verbindungen. Wie JACK aber im Kernel.
+
+| Pro Slot | Device | Zweck |
+|----------|--------|-------|
+| Audio IN | /dev/snd/pcmC0D0c | Empfaengt von Slot oder HW-Input |
+| Audio OUT | /dev/snd/pcmC0D0p | Sendet an Slot oder Master-Mix |
+| MIDI IN | /dev/midi | Empfaengt MIDI Events |
+| MIDI OUT | /dev/midi | Sendet MIDI Events |
+
+MIDI: 3-Byte-Messages, Kernel-Router mit Routing-Tabelle, Timestamped
+Events (sample-genau). Kein Parsing, kein Processing, nur Routing.
 
 ### 1.2 UI-Stack
 
