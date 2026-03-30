@@ -1,6 +1,6 @@
 # CosmoRT — Offene Punkte
 
-Stand: 2026-03-30. ktest 1436/0. musl libc-test 454/18 (96.2%). LTP laeuft.
+Stand: 2026-03-30. ktest 1460/0. musl libc-test 454/18 (96.2%). LTP laeuft.
 
 ---
 
@@ -43,11 +43,14 @@ Busy-Wait-Polling bricht Timer, Signale, sleep/alarm/timeout.
 - [x] DESIGN.md §13 aktualisiert
 - [x] ktest: test_preempt.c (preempt infrastructure tests)
 
-### RT-2: PI-Mutex (Agent)
+### RT-2: PI-Mutex (erledigt)
 
-- [ ] rt_mutex Datenstruktur + API (lock, unlock, trylock)
-- [ ] Priority-Inheritance Chain (Boosting + Deboosting)
-- [ ] ktest: PI-Inversion-Tests (High prio wartet auf Low prio)
+- [x] rt_mutex Datenstruktur + API (lock, unlock, trylock) — core/rt_mutex.h/.c
+- [x] Priority-Inheritance: Boosting + Deboosting (single-level, V1 spin-wait)
+- [x] Waiter-Array sortiert nach Prioritaet (hoechste zuerst, Handoff an Top)
+- [x] Deadlock-Detection (recursive lock → -EDEADLK)
+- [x] Fix: saved_priority init in CLONE_THREAD (war 0 statt -1 → PI deboost kaputt)
+- [x] ktest: 12 PI-Mutex Tests (lock/unlock, deadlock, trylock, contention, PI boost/deboost, stress, priority ordering)
 
 ### RT-3: Spinlock-Konvertierung (manuell, pro Subsystem)
 

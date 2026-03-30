@@ -307,6 +307,7 @@ long do_clone(unsigned long flags, void *child_stack,
     t->sig_blocked = cur->sig_blocked; /* inherit parent thread's signal mask */
     t->sched_policy = cur->sched_policy;
     t->priority = cur->priority;
+    t->saved_priority = -1;
     t->cpu_affinity = -1;
     t->timeslice = RR_TIMESLICE;
 
