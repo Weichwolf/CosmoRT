@@ -285,7 +285,9 @@ void kernel_main(struct boot_info *info) {
         serial_puts("net: DHCP...");
         net_dhcp_send_discover();
 
-        /* Blocking DHCP wait (up to 5 seconds, retry every 1s) */
+        /* Blocking DHCP wait (up to 5 seconds, retry every 1s).
+         * lapic_delay_ms: LAPIC one-shot + HLT, wakes on any IRQ
+         * (NIC packet). Bounded 10ms sleep prevents unbounded stall. */
         uint64_t dhcp_deadline = timer_ms() + 5000;
         uint64_t last_discover = timer_ms();
         int dhcp_ok = 0;
@@ -298,7 +300,7 @@ void kernel_main(struct boot_info *info) {
                 net_dhcp_send_discover();
                 last_discover = timer_ms();
             }
-            arch_halt(); /* sleep until next IRQ */
+            lapic_delay_ms(10);
         }
 
         if (dhcp_ok) {

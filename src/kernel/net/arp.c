@@ -8,6 +8,8 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
+#include "core/event_queue.h"
+#include "proc/process.h"
 #include "mm/slab.h"
 
 /* ── Helpers ──────────────────────────────────────── */
@@ -155,8 +157,10 @@ void arp_input(const uint8_t *pkt, int len) {
         return;
 
     if (op == 2) {
-        /* ARP Reply — update cache */
+        /* ARP Reply — update cache + wake resolver */
         arp_cache_insert(sender_ip, sender_mac);
+        struct thread *wt = __atomic_load_n(&q_arp_wait_thread, __ATOMIC_ACQUIRE);
+        if (wt) event_post(wt, EQ_SOCKET_DATA, 0);
     } else if (op == 1) {
         /* ARP Request — if target IP is ours, send reply */
         const uint8_t *target_ip = pkt + 38;
@@ -205,12 +209,31 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     mcpy(pkt + 38, ip, 4);
     ip_send_raw(pkt, 42);
 
-    /* Wait for cache to be populated by arp_input (called from dispatcher) */
+    /* Wait for cache to be populated by arp_input (called from dispatcher).
+     * Thread context: event_wait (yields CPU to scheduler).
+     * Boot context (no thread): arch_halt loop. */
+    thread_t *cur = thread_current();
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
-    while (timer_ms() < deadline) {
-        if (arp_cache_lookup(ip, mac_out) == 0)
-            return 0;
-        net_idle();
+
+    if (cur) {
+        __atomic_store_n(&q_arp_wait_thread, cur, __ATOMIC_RELEASE);
+        while (timer_ms() < deadline) {
+            if (arp_cache_lookup(ip, mac_out) == 0) {
+                __atomic_store_n(&q_arp_wait_thread, (struct thread *)0, __ATOMIC_RELEASE);
+                return 0;
+            }
+            int remain = (int)(deadline - timer_ms());
+            if (remain <= 0) break;
+            event_t ev;
+            event_wait(&cur->eq, &ev, remain);
+        }
+        __atomic_store_n(&q_arp_wait_thread, (struct thread *)0, __ATOMIC_RELEASE);
+    } else {
+        while (timer_ms() < deadline) {
+            if (arp_cache_lookup(ip, mac_out) == 0)
+                return 0;
+            arch_halt();
+        }
     }
     return -1;
 }

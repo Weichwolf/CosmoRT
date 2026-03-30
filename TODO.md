@@ -17,12 +17,13 @@ Alles muss event_wait() + Hardware-Timer (LAPIC) nutzen. Linux als Vorbild.
 - [x] Pre-LAPIC rdtsc-Fallback fuer fruehen Boot (vor irq_init)
 - [x] ktest: 15 Timer-Tests (monotonie, nanosleep bounds, back-to-back, concurrent fork)
 
-### P0-B: Netzwerk-Boot (blockiert Scheduler)
+### P0-B: Netzwerk-Boot (blockiert Scheduler) — DONE
 
-- [ ] ARP resolve: event_wait auf ARP-Reply statt busy-wait loop (arp.c:210)
-- [ ] DHCP discover: event_wait auf Paketankunft statt busy-wait loop (dhcp.c:40)
-- [ ] DNS resolve: event_wait auf UDP-Reply statt busy-wait loop (dns.c:78)
-- [ ] Boot DHCP in main.c: event_wait statt arch_halt loop (main.c:292)
+- [x] ARP resolve: event_wait im Thread-Kontext, arch_halt im Boot-Kontext (arp.c)
+- [x] DHCP discover: Retry-Throttle (1s), arch_halt (Boot-only) (dhcp.c)
+- [x] DNS resolve: event_wait im Thread-Kontext, arch_halt im Boot-Kontext (dns.c)
+- [x] Boot DHCP in main.c: lapic_delay_ms(10) statt unbounded arch_halt (main.c)
+- [x] Dispatcher weckt wartende Threads: q_arp_wait_thread, q_dns_wait_thread
 
 ### P0-C: SMP + TLB
 

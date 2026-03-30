@@ -6,6 +6,7 @@
 #include "net/net_util.h"
 #include "net/arp.h"
 #include "core/rt.h"
+#include "core/event_queue.h"
 
 /* Forward declarations */
 extern void tcp_input(const uint8_t *pkt, int len);
@@ -71,9 +72,11 @@ static int net_rx_one(const nic_driver_t *n) {
         uint16_t dport = get16(pkt + 36);
         if (dport == 68)
             q_push(&q_udp_dhcp, pkt, len);
-        else if (dns_local_port && dport == dns_local_port)
+        else if (dns_local_port && dport == dns_local_port) {
             q_push(&q_udp_dns, pkt, len);
-        else {
+            struct thread *wt = __atomic_load_n(&q_dns_wait_thread, __ATOMIC_ACQUIRE);
+            if (wt) event_post(wt, EQ_SOCKET_DATA, 0);
+        } else {
             udp_input(pkt, len);
         }
         queued = 1;
