@@ -1,8 +1,8 @@
 # CosmoRT
 
-Fullscreen-Slot Desktop auf eigenem Kernel. 12 Slots auf F1-F12,
-kein Window-Manager, kein Compositor. Linux-ABI fuer Alpine Userland.
-Nativ preemptibel.
+Fullscreen-Slot Desktop mit Kernel-Audio. 12 Slots, 24-Kanal Mixer,
+MIDI-Router — kein Window-Manager, kein Userspace-Audio-Stack.
+Linux-ABI fuer Alpine Userland. Nativ preemptibel.
 
 ## Headers
 

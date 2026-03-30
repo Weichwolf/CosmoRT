@@ -1,6 +1,8 @@
 # CosmoRT Design Specification
 
-Fullscreen-Slot Desktop auf eigenem Kernel. Abweichungen sind Bugs.
+Fullscreen-Slot Desktop mit Kernel-Audio. 12 Slots, 24-Kanal Mixer,
+MIDI-Router. Audio-Routing und Multimedia sind Kernel-Primitives.
+Abweichungen sind Bugs.
 
 ---
 
