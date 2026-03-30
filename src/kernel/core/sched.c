@@ -426,23 +426,36 @@ void sched_preempt(void *frame_ptr) {
         }
     }
 
-    /* Preemption disabled (critical section) — defer */
+    /* ── Preemption decision: Full (RT) vs Lazy (Non-RT) ──
+     *
+     * preempt_count > 0: thread is in a critical section, defer.
+     * RT tasks (SCHED_FIFO/RR): preempt if higher-priority task waiting.
+     * Non-RT tasks (SCHED_OTHER): preempt every tick (round-robin). */
+
     if (cur->preempt_count > 0) {
-        cur->need_resched = 1;
+        cur->need_resched = 1; /* deferred — checked at preempt_enable */
         return;
     }
 
-    /* SCHED_FIFO: never preempt (runs until yield/block) */
-    if (cur->sched_policy == SCHED_FIFO) return;
-
-    /* SCHED_RR: decrement timeslice */
-    if (cur->sched_policy == SCHED_RR) {
-        if (cur->timeslice > 0) {
-            cur->timeslice--;
-            return; /* still has time */
+    if (cur->sched_policy == SCHED_FIFO || cur->sched_policy == SCHED_RR) {
+        /* RT tasks: check if a higher-priority task is queued */
+        int cpu_id = cpu->core_id;
+        uint32_t bm = core_rq[cpu_id].bitmap;
+        uint32_t higher = bm & ~((1u << (cur->priority + 1)) - 1);
+        if (!higher) {
+            if (cur->sched_policy == SCHED_RR) {
+                if (cur->timeslice > 0) {
+                    cur->timeslice--;
+                    return;
+                }
+                if (!(bm & (1u << cur->priority))) return; /* no peer */
+                cur->timeslice = RR_TIMESLICE;
+            } else {
+                return; /* SCHED_FIFO: no higher-priority task */
+            }
         }
-        cur->timeslice = RR_TIMESLICE; /* reset for next run */
     }
+    /* SCHED_OTHER: always preempt (round-robin at priority 0) */
 
     /* Save current thread context from interrupt frame */
     cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
