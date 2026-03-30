@@ -151,11 +151,9 @@ extern uint64_t pml4[];
 /* Futex trace: always on for debugging condvar hang */
 static volatile int futex_trace = 0;
 
-static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
+static long futex_wait_pid(uint32_t *uaddr, uint32_t val, int timeout_ms, uint32_t pid) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
-    process_t *p = t->proc;
-    uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
     if (futex_trace) {
         serial_puts("FW t"); serial_hex64(t->tid);
@@ -227,9 +225,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
 
-static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
-    process_t *p = proc_current();
-    uint32_t pid = p ? p->pid : 0;
+static long futex_wake_pid(uint32_t *uaddr, uint32_t max_wake, uint32_t pid) {
     int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
     long woken = 0;
     if (futex_trace) {
@@ -263,6 +259,16 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
         serial_puts("FK="); serial_hex64(woken); serial_putchar('\n');
     }
     return woken;
+}
+
+/* Wrappers using current process PID (for internal callers: PI, requeue, exit) */
+static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
+    process_t *p = proc_current();
+    return futex_wait_pid(uaddr, val, timeout_ms, p ? p->pid : 0);
+}
+static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
+    process_t *p = proc_current();
+    return futex_wake_pid(uaddr, max_wake, p ? p->pid : 0);
 }
 
 /* ── FUTEX_LOCK_PI ──────────────────────────────── */
@@ -501,12 +507,18 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
 long do_futex(uint32_t *uaddr, int op, uint32_t val,
               const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
     int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100); /* strip PRIVATE + CLOCK_REALTIME */
-
+    /* Shared futexes (no PRIVATE flag): use pid=0 so cross-process
+     * wait/wake on MAP_SHARED pages hash to the same bucket. */
+    uint32_t epid = 0; /* effective pid for hash */
+    if (op & FUTEX_PRIVATE_FLAG) {
+        process_t *fp = proc_current();
+        epid = fp ? fp->pid : 0;
+    }
     switch (cmd) {
     case FUTEX_WAIT:
-        return futex_wait(uaddr, val, timespec_to_ms(timeout));
+        return futex_wait_pid(uaddr, val, timespec_to_ms(timeout), epid);
     case FUTEX_WAKE:
-        return futex_wake(uaddr, val);
+        return futex_wake_pid(uaddr, val, epid);
     case FUTEX_REQUEUE:
         return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
                              uaddr2, 0, 0);
