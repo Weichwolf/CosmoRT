@@ -19,8 +19,11 @@ while read t; do
     echo -n "[$ltp_total/313] $t ... "
     cd /tmp
     # Skip tests requiring MAP_SHARED cross-process (futex checkpoints)
-    timeout 60 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
-    rc=$?
+    # Use background + sleep + kill instead of timeout (which relies on signals)
+    "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1 &
+    child=$!
+    i=0; while [ $i -lt 60 ] && kill -0 $child 2>/dev/null; do sleep 1; i=$((i+1)); done
+    if kill -0 $child 2>/dev/null; then kill -9 $child 2>/dev/null; wait $child 2>/dev/null; rc=143; else wait $child; rc=$?; fi
     if [ $rc -eq 0 ]; then
         echo "PASS"
         ltp_passed=$((ltp_passed + 1))
