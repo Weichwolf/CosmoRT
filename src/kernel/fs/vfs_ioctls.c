@@ -140,9 +140,8 @@ int vfs_stat(const char *path, struct k_stat *buf) {
         fill_ext2_stat(ino, &ip, buf);
         return 0;
     }
-    int lerr = 0;
-    struct vfs_node *node = vfs_lookup_err(path, &lerr);
-    if (!node) return lerr ? lerr : -ENOENT;
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
     fill_stat(node, buf);
     return 0;
 }
@@ -250,9 +249,8 @@ int vfs_chmod(const char *path, uint32_t mode) {
         inotify_event(path, IN_ATTRIB);
         return 0;
     }
-    int lerr = 0;
-    struct vfs_node *node = vfs_lookup_err(path, &lerr);
-    if (!node) return lerr ? lerr : -ENOENT;
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
     node->mode = mode & 07777;
     inotify_event(path, IN_ATTRIB);
     return 0;
@@ -313,9 +311,8 @@ int vfs_truncate(const char *path, int64_t length) {
         return ext2_truncate(ino, (size_t)length);
     }
 
-    int lerr = 0;
-    struct vfs_node *node = vfs_lookup_err(path, &lerr);
-    if (!node) return lerr ? lerr : -ENOENT;
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
     if (node->type == VFS_DIR) return -EISDIR;
 
     size_t new_size = (size_t)length;

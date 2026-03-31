@@ -73,8 +73,6 @@ void vfs_init(void);
 
 /* Path operations */
 struct vfs_node *vfs_lookup(const char *path);
-struct vfs_node *vfs_lookup_err(const char *path, int *err);
-struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
 struct vfs_node *vfs_create(const char *path, int type);
 
 /* File operations (take process fd_table, return fd or error) */
