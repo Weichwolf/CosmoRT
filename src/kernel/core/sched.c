@@ -576,6 +576,29 @@ void sched_loop(void) {
             case BLOCK_MUTEX:
                 pp->state = THREAD_BLOCKED;
                 break;
+            case BLOCK_EVENT: {
+                pp->state = THREAD_BLOCKED;
+                pp->wake_at_tsc = pp->blocking_info.deadline_tsc;
+                if (pp->wake_at_tsc)
+                    epoll_sleeper_add_ext(pp);
+                event_queue_t *eq = (event_queue_t *)pp->blocking_info.context;
+                if (eq) {
+                    __asm__ volatile("mfence" ::: "memory");
+                    if (arch_load_acquire(&eq->head) != eq->tail) {
+                        pp->state = THREAD_RUNNABLE;
+                        sched_add(pp);
+                        break;
+                    }
+                }
+                if (!pp->wake_at_tsc)
+                    epoll_sleeper_add_ext(pp);
+                break;
+            }
+            case BLOCK_SLEEP:
+                pp->state = THREAD_BLOCKED;
+                pp->wake_at_tsc = pp->blocking_info.deadline_tsc;
+                epoll_sleeper_add_ext(pp);
+                break;
             default:
                 if (pp->state == THREAD_RUNNABLE)
                     sched_add(pp);
