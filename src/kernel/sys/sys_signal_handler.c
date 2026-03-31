@@ -200,10 +200,9 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     if (t->state == THREAD_STOPPED) {
         extern uint64_t pml4[];
         extern void thread_return_to_kernel(thread_t *t);
-        t->rip = frame->rcx;
-        t->rsp = cpu->user_rsp;
-        t->rax = frame->rax;
+        save_user_state_for_block(t, 0);
         t->rip -= 2;
+        t->rax = frame->rax;
         arch_set_cr3(virt_to_phys(pml4));
         thread_return_to_kernel(t);
     }

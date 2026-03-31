@@ -10,9 +10,7 @@
 
 extern void sched_add(thread_t *t);
 extern void sched_wake(thread_t *t);
-extern int  kernel_setjmp(uint64_t buf[8]);
-extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-extern uint64_t pml4[];
+extern void switch_to_idle(thread_t *cur);
 
 static void irq_thread_loop(void *arg) {
     irq_thread_t *it = (irq_thread_t *)arg;
@@ -21,13 +19,7 @@ static void irq_thread_loop(void *arg) {
     for (;;) {
         while (!__atomic_load_n(&it->pending, __ATOMIC_ACQUIRE)) {
             self->state = THREAD_BLOCKED;
-            if (kernel_setjmp(self->kernel_yield_jmpbuf) == 0) {
-                self->in_kernel_yield = 1;
-                arch_set_cr3(virt_to_phys(pml4));
-                kernel_longjmp(self->jmpbuf, 1);
-            }
-            if (__atomic_load_n(&it->pending, __ATOMIC_ACQUIRE))
-                break;
+            switch_to_idle(self);
         }
 
         __atomic_store_n(&it->pending, 0, __ATOMIC_RELEASE);
@@ -70,6 +62,12 @@ void irq_thread_create(irq_thread_t *it, const char *name, irq_thread_fn handler
         return;
     }
     t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
+
+    {
+        extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+        extern void kthread_entry_trampoline(void);
+        thread_init_kstack(t, kthread_entry_trampoline);
+    }
 
     it->thread = t;
 

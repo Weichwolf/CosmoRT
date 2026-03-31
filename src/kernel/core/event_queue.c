@@ -121,11 +121,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     cur->state = THREAD_BLOCKED;
 
     __asm__ volatile("mfence" ::: "memory");
-    if (arch_load_acquire(&eq->head) != eq->tail) {
-        cur->state = THREAD_RUNNABLE;
-        extern void sched_add(thread_t *t);
-        sched_add(cur);
-    }
 
     arch_set_cr3(virt_to_phys(pml4));
     thread_return_to_kernel(cur);

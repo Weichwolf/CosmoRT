@@ -7,8 +7,9 @@
 #include "arch/arch.h"
 
 extern void sched_wake(thread_t *t);
-extern void sched_add(thread_t *t);
-extern void sched_block_preblocked(void);
+extern void switch_to_idle(thread_t *cur);
+
+#define RT_MUTEX_ADAPTIVE_SPIN_MAX 1000
 
 void rt_mutex_init(rt_mutex_t *m) {
     m->owner = 0;
@@ -57,8 +58,6 @@ static int waiters_insert(rt_mutex_t *m, thread_t *t) {
     return 0;
 }
 
-#define ADAPTIVE_SPIN_MAX 1000
-
 int rt_mutex_lock(rt_mutex_t *m) {
     thread_t *cur = thread_current();
 
@@ -81,7 +80,7 @@ int rt_mutex_lock(rt_mutex_t *m) {
         if (own && own->state == THREAD_RUNNING) {
             spin_unlock_irq(&m->lock, flags);
 
-            for (int i = 0; i < ADAPTIVE_SPIN_MAX; i++) {
+            for (int i = 0; i < RT_MUTEX_ADAPTIVE_SPIN_MAX; i++) {
                 arch_pause();
                 if (!m->owner) break;
                 if (own->state != THREAD_RUNNING) break;
@@ -99,11 +98,10 @@ int rt_mutex_lock(rt_mutex_t *m) {
             waiters_insert(m, cur);
 
         cur->state = THREAD_BLOCKED;
-        cur->blocked_in_kernel = 1;
 
         spin_unlock_irq(&m->lock, flags);
 
-        sched_block_preblocked();
+        switch_to_idle(cur);
         continue;
     }
 }

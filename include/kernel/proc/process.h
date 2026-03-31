@@ -79,8 +79,6 @@ void proc_init(void);
 
 int proc_create_elf(const void *elf_data, size_t elf_len);
 
-void thread_run(thread_t *t);
-
 void thread_return_to_kernel(thread_t *t);
 
 process_t *proc_current(void);

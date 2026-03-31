@@ -278,6 +278,10 @@ long do_fork(void) {
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
 
+    extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+    extern void userspace_entry_trampoline(void);
+    thread_init_kstack(ct, userspace_entry_trampoline);
+
     child->main_thread = ct;
     child->threads = ct;
     child->thread_count = 1;
@@ -441,6 +445,12 @@ long do_vfork(unsigned long flags, void *child_stack,
         return -ENOMEM;
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
+
+    {
+        extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+        extern void userspace_entry_trampoline(void);
+        thread_init_kstack(ct, userspace_entry_trampoline);
+    }
 
     child->main_thread = ct;
     child->threads = ct;

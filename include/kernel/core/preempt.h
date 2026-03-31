@@ -5,6 +5,8 @@
 #include "percpu.h"
 #include "proc/thread.h"
 
+extern void sched_preempt_voluntary(struct thread *t);
+
 static inline void preempt_disable(void) {
     struct thread *t = thread_current();
     if (t) t->preempt_count++;
@@ -16,13 +18,8 @@ static inline void preempt_enable(void) {
     int cnt = --t->preempt_count;
     if (cnt == 0 && t->need_resched) {
         t->need_resched = 0;
-        extern void sched_add(struct thread *t);
-        extern void thread_return_to_kernel(struct thread *t);
-        if (t->state == THREAD_RUNNING) {
-            t->state = THREAD_RUNNABLE;
-            sched_add(t);
-            thread_return_to_kernel(t);
-        }
+        if (t->state == THREAD_RUNNING)
+            sched_preempt_voluntary(t);
     }
 }
 
@@ -39,13 +36,8 @@ static inline void cond_resched(void) {
     struct thread *t = thread_current();
     if (t && t->preempt_count == 0 && t->need_resched) {
         t->need_resched = 0;
-        extern void sched_add(struct thread *t);
-        extern void thread_return_to_kernel(struct thread *t);
-        if (t->state == THREAD_RUNNING) {
-            t->state = THREAD_RUNNABLE;
-            sched_add(t);
-            thread_return_to_kernel(t);
-        }
+        if (t->state == THREAD_RUNNING)
+            sched_preempt_voluntary(t);
     }
 }
 

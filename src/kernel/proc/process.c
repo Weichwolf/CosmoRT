@@ -319,6 +319,10 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     if (!t->kstack) goto fail_thread;
     t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
 
+    extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+    extern void userspace_entry_trampoline(void);
+    thread_init_kstack(t, userspace_entry_trampoline);
+
     p->main_thread = t;
     p->threads = t;
     p->thread_count = 1;
@@ -365,52 +369,21 @@ int proc_create_from_vfs(const char *path) {
     return pid;
 }
 
-extern int kernel_setjmp(uint64_t buf[8]);
-extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
 extern void context_resume(thread_t *t) __attribute__((noreturn));
-
-__attribute__((noinline, optimize("O0")))
-void thread_run(thread_t *t) {
-    percpu_t *cpu = percpu_self();
-
-    t->state = THREAD_RUNNING;
-    cpu->current_thread = t;
-
-    if (kernel_setjmp(t->jmpbuf) != 0) {
-        arch_set_cr3(virt_to_phys(pml4));
-        cpu->current_thread = 0;
-        return;
-    }
-
-    arch_set_cr3(virt_to_phys(t->proc->pml4));
-
-    extern void tss_set_rsp0(uint64_t rsp0);
-    tss_set_rsp0(t->kstack_top);
-    cpu->kernel_rsp = t->kstack_top;
-
-    if (t->blocked_in_kernel) {
-        t->blocked_in_kernel = 0;
-        context_resume(t);
-    }
-
-    if (t->in_kernel_yield) {
-        t->in_kernel_yield = 0;
-        arch_sti();
-        extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-        kernel_longjmp(t->kernel_yield_jmpbuf, 1);
-    }
-
-    arch_set_fs_base(t->fs_base);
-
-    arch_fxrstor(t->fxsave_area);
-
-    proc_enter_ring3(t);
-}
+extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+extern void userspace_entry_trampoline(void);
 
 void thread_return_to_kernel(thread_t *t) {
-    arch_sti();
-    kernel_longjmp(t->jmpbuf, 1);
+    thread_init_kstack(t, userspace_entry_trampoline);
+    arch_set_cr3(virt_to_phys(pml4));
+
+    percpu_t *cpu = percpu_self();
+    int core = cpu->core_id;
+    extern thread_t *sched_get_idle(int core);
+    thread_t *idle = sched_get_idle(core);
+    cpu->current_thread = idle;
+    idle->state = THREAD_RUNNING;
+    context_resume(idle);
 }
 
 process_t *proc_current(void) {

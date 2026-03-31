@@ -262,6 +262,12 @@ long do_clone(unsigned long flags, void *child_stack,
     if (!t->kstack) { thread_free(t); return -ENOMEM; }
     t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
 
+    {
+        extern void thread_init_kstack(thread_t *t, void (*entry)(void));
+        extern void userspace_entry_trampoline(void);
+        thread_init_kstack(t, userspace_entry_trampoline);
+    }
+
     if (flags & CLONE_SETTLS) {
         t->fs_base = tls;
     } else {

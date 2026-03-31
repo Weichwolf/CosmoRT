@@ -1,4 +1,4 @@
-/* CosmoRT Scheduler — per-core priority queues (32 levels) */
+/* CosmoRT Scheduler — unified context_switch, per-core idle threads */
 
 #include "proc/thread.h"
 #include "proc/process.h"
@@ -19,11 +19,14 @@ _Static_assert(offsetof(thread_t, kstack_rsp) == 168,
                "THREAD_KSTACK_RSP_OFF mismatch");
 
 extern void context_switch(thread_t *prev, thread_t *next);
-extern int context_save(thread_t *t);
 extern void context_resume(thread_t *t) __attribute__((noreturn));
-extern int kernel_setjmp(uint64_t buf[8]);
-extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
+extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
 extern uint64_t pml4[];
+extern void tss_set_rsp0(uint64_t rsp0);
+
+#define IDLE_TID_BASE       (-1)
+#define IDLE_STACK_SIZE     16384
+#define PREEMPT_FRAME_SLOTS 6
 
 static uint8_t core_isolated[SMP_MAX_CORES];
 
@@ -35,6 +38,61 @@ static struct {
     spinlock_t lock;
     uint32_t   bitmap;
 } core_rq[SMP_MAX_CORES];
+
+static thread_t idle_threads[SMP_MAX_CORES];
+static uint8_t idle_stacks[SMP_MAX_CORES][IDLE_STACK_SIZE] __attribute__((aligned(16)));
+static thread_t *preempt_pending[SMP_MAX_CORES];
+
+void userspace_entry_trampoline(void);
+void kthread_entry_trampoline(void);
+void switch_to_idle(thread_t *cur);
+
+void thread_init_kstack(thread_t *t, void (*entry)(void)) {
+    uint64_t *sp = (uint64_t *)t->kstack_top;
+    *--sp = (uint64_t)entry;
+    *--sp = 0;
+    *--sp = 0;
+    *--sp = 0;
+    *--sp = 0;
+    *--sp = 0;
+    *--sp = 0;
+    t->kstack_rsp = (uint64_t)sp;
+}
+
+void userspace_entry_trampoline(void) {
+    thread_t *t = thread_current();
+    arch_sti();
+    arch_set_fs_base(t->fs_base);
+    arch_fxrstor(t->fxsave_area);
+    arch_set_cr3(virt_to_phys(t->proc->pml4));
+    proc_enter_ring3(t);
+}
+
+void kthread_entry_trampoline(void) {
+    thread_t *t = thread_current();
+    arch_sti();
+    t->kthread_fn(t->kthread_arg);
+    t->state = THREAD_DEAD;
+    switch_to_idle(t);
+    __builtin_unreachable();
+}
+
+thread_t *sched_get_idle(int core) {
+    return &idle_threads[core];
+}
+
+void sched_set_preempt_pending(int core, thread_t *t) {
+    preempt_pending[core] = t;
+}
+
+void switch_to_idle(thread_t *cur) {
+    percpu_t *cpu = percpu_self();
+    int core = cpu->core_id;
+    thread_t *idle = &idle_threads[core];
+    cpu->current_thread = idle;
+    idle->state = THREAD_RUNNING;
+    context_switch(cur, idle);
+}
 
 static int count_isolated(void) {
     int n = 0, ncores = smp_num_cores();
@@ -155,29 +213,8 @@ void sched_wake(thread_t *t) {
 
 void sched_block(void) {
     thread_t *cur = thread_current();
-
     cur->state = THREAD_BLOCKED;
-    cur->blocked_in_kernel = 1;
-
-    if (context_save(cur) != 0)
-        return;
-
-    if (cur->proc)
-        arch_set_cr3(virt_to_phys(pml4));
-    kernel_longjmp(cur->jmpbuf, 1);
-}
-
-void sched_block_preblocked(void) {
-    thread_t *cur = thread_current();
-
-    cur->blocked_in_kernel = 1;
-
-    if (context_save(cur) != 0)
-        return;
-
-    if (cur->proc)
-        arch_set_cr3(virt_to_phys(pml4));
-    kernel_longjmp(cur->jmpbuf, 1);
+    switch_to_idle(cur);
 }
 
 __attribute__((hot))
@@ -357,6 +394,7 @@ void sched_preempt(void *frame_ptr) {
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
     if (!cur || cur->state != THREAD_RUNNING) return;
+    if (cur->tid < 0) return;
 
     uint64_t *f = (uint64_t *)frame_ptr;
 
@@ -415,16 +453,23 @@ void sched_preempt(void *frame_ptr) {
     cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
 
     cur->fs_base = arch_get_fs_base();
-
     arch_fxsave(cur->fxsave_area);
 
     if (cur->state == THREAD_RUNNING)
         cur->state = THREAD_RUNNABLE;
+
     extern void lapic_eoi(void);
     lapic_eoi();
     arch_set_kernel_gs_base((uint64_t)(uintptr_t)cpu);
     arch_set_cr3(virt_to_phys(pml4));
-    kernel_longjmp(cur->jmpbuf, 1);
+
+    preempt_pending[cpu->core_id] = cur;
+    thread_init_kstack(cur, userspace_entry_trampoline);
+
+    thread_t *idle = &idle_threads[cpu->core_id];
+    cpu->current_thread = idle;
+    idle->state = THREAD_RUNNING;
+    context_resume(idle);
 }
 
 __attribute__((cold))
@@ -435,6 +480,7 @@ void sched_init(void) {
         }
         core_rq[c].lock = (spinlock_t)SPINLOCK_INIT;
         core_rq[c].bitmap = 0;
+        preempt_pending[c] = 0;
     }
     serial_puts("sched: per-core RT init (");
     char t[4]; int ti = 0, v = PRIO_LEVELS;
@@ -445,57 +491,6 @@ void sched_init(void) {
     do { t[ti++] = '0' + v % 10; v /= 10; } while (v);
     while (ti--) serial_putchar(t[ti]);
     serial_puts(" cores)\n");
-}
-
-static uint8_t idle_stacks[SMP_MAX_CORES][16384] __attribute__((aligned(16)));
-
-static void kthread_trampoline(thread_t *t) {
-    arch_sti();
-    t->kthread_fn(t->kthread_arg);
-    t->state = THREAD_DEAD;
-    kernel_longjmp(t->jmpbuf, 1);
-}
-
-__attribute__((noinline, optimize("O0")))
-static void kthread_run(thread_t *t) {
-    percpu_t *cpu = percpu_self();
-    extern void tss_set_rsp0(uint64_t rsp0);
-
-    t->state = THREAD_RUNNING;
-    cpu->current_thread = t;
-
-    tss_set_rsp0(t->kstack_top);
-    cpu->kernel_rsp = t->kstack_top;
-
-    if (kernel_setjmp(t->jmpbuf) != 0) {
-        cpu->current_thread = 0;
-        return;
-    }
-
-    if (t->blocked_in_kernel) {
-        t->blocked_in_kernel = 0;
-        context_resume(t);
-    }
-
-    if (t->in_kernel_yield) {
-        t->in_kernel_yield = 0;
-        arch_sti();
-        kernel_longjmp(t->kernel_yield_jmpbuf, 1);
-    }
-
-    {
-        uint64_t new_rsp = (t->kstack_top - 8) & ~0xFULL;
-        void (*tramp)(thread_t *) = kthread_trampoline;
-        __asm__ volatile(
-            "movq %0, %%rsp\n\t"
-            "movq %1, %%rdi\n\t"
-            "jmpq *%2\n\t"
-            :
-            : "r"(new_rsp), "r"(t), "r"(tramp)
-            : "memory"
-        );
-    }
-    __builtin_unreachable();
 }
 
 static int sched_thread_valid(thread_t *t) {
@@ -516,10 +511,16 @@ void sched_loop_once(void) {
                 thread_free(next);
             return;
         }
-        if (next->kthread_fn)
-            kthread_run(next);
-        else
-            thread_run(next);
+        percpu_t *cpu = percpu_self();
+        next->state = THREAD_RUNNING;
+        cpu->current_thread = next;
+        tss_set_rsp0(next->kstack_top);
+        cpu->kernel_rsp = next->kstack_top;
+
+        thread_t *idle = &idle_threads[cpu->core_id];
+        context_switch(idle, next);
+
+        cpu->current_thread = idle;
         if (next->state == THREAD_RUNNABLE)
             sched_add(next);
     } else {
@@ -530,11 +531,27 @@ void sched_loop_once(void) {
 void sched_loop(void) {
     int core = percpu_self()->core_id;
     percpu_t *cpu = percpu_self();
-    extern void tss_set_rsp0(uint64_t rsp0);
-    (void)core;
+
+    thread_t *idle = &idle_threads[core];
+    idle->state = THREAD_RUNNING;
+    idle->tid = IDLE_TID_BASE - core;
+    idle->kstack_rsp = 0;
+    idle->proc = 0;
+    idle->kthread_fn = 0;
+    idle->priority = -1;
+    idle->sched_policy = SCHED_OTHER;
+    idle->preempt_count = 0;
+    idle->need_resched = 0;
+    cpu->current_thread = idle;
 
     for (;;) {
         cpu->need_resched = 0;
+
+        thread_t *pp = preempt_pending[core];
+        if (pp) {
+            preempt_pending[core] = 0;
+            sched_add(pp);
+        }
 
         thread_t *next = sched_pick();
         if (next) {
@@ -543,10 +560,15 @@ void sched_loop(void) {
                     thread_free(next);
                 continue;
             }
-            if (next->kthread_fn)
-                kthread_run(next);
-            else
-                thread_run(next);
+
+            next->state = THREAD_RUNNING;
+            cpu->current_thread = next;
+            tss_set_rsp0(next->kstack_top);
+            cpu->kernel_rsp = next->kstack_top;
+
+            context_switch(idle, next);
+
+            cpu->current_thread = idle;
             if (next->state == THREAD_RUNNABLE)
                 sched_add(next);
         } else {
@@ -571,6 +593,8 @@ void sched_loop(void) {
                     nohz_cancel_oneshot(core);
             }
 
+            if (core_rq[core].bitmap || preempt_pending[core])
+                continue;
             arch_halt();
         }
     }
