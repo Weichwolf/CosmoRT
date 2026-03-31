@@ -56,7 +56,8 @@ KTEST_UNIT_OBJ = $(TBUILD)/main.o \
     $(patsubst $(TESTDIR)/unit/net/%.c,$(TBUILD)/unit/net/%.o,$(wildcard $(TESTDIR)/unit/net/*.c)) \
     $(patsubst $(TESTDIR)/unit/proc/%.c,$(TBUILD)/unit/proc/%.o,$(wildcard $(TESTDIR)/unit/proc/*.c)) \
     $(patsubst $(TESTDIR)/unit/perf/%.c,$(TBUILD)/unit/perf/%.o,$(wildcard $(TESTDIR)/unit/perf/*.c)) \
-    $(patsubst $(TESTDIR)/libc/%.c,$(TBUILD)/libc/%.o,$(wildcard $(TESTDIR)/libc/*.c))
+    $(patsubst $(TESTDIR)/libc/%.c,$(TBUILD)/libc/%.o,$(wildcard $(TESTDIR)/libc/*.c)) \
+    $(patsubst $(TESTDIR)/ltp/%.c,$(TBUILD)/ltp/%.o,$(wildcard $(TESTDIR)/ltp/*.c))
 
 KTEST_CRASH_OBJ = $(TBUILD)/main.o \
     $(patsubst $(TESTDIR)/crash/%.c,$(TBUILD)/crash/%.o,$(wildcard $(TESTDIR)/crash/*.c))
@@ -76,6 +77,7 @@ $(TBUILD)/unit/sched $(TBUILD)/unit/signal $(TBUILD)/unit/sys \
 $(TBUILD)/unit/hw $(TBUILD)/unit/net $(TBUILD)/unit/proc \
 $(TBUILD)/unit/perf \
 $(TBUILD)/libc \
+$(TBUILD)/ltp \
 $(TBUILD)/hw/gen $(TBUILD)/crash/gen $(TBUILD)/fuzz/gen:
 	@mkdir -p $@
 
@@ -118,6 +120,9 @@ $(TBUILD)/unit/perf/%.o: $(TESTDIR)/unit/perf/%.c $(TESTDIR)/ktest.h | $(TBUILD)
 	$(CC) $(TCFLAGS) -c -o $@ $<
 
 $(TBUILD)/libc/%.o: $(TESTDIR)/libc/%.c $(TESTDIR)/ktest.h | $(TBUILD)/libc
+	$(CC) $(TCFLAGS) -c -o $@ $<
+
+$(TBUILD)/ltp/%.o: $(TESTDIR)/ltp/%.c $(TESTDIR)/ktest.h | $(TBUILD)/ltp
 	$(CC) $(TCFLAGS) -c -o $@ $<
 
 $(TBUILD)/crash/%.o: $(TESTDIR)/crash/%.c $(TESTDIR)/ktest.h | $(TBUILD)/crash

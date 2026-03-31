@@ -312,11 +312,17 @@ long kill_one(process_t *target, int sig) {
         target->state = PROC_ZOMBIE;
         target->exit_code = 128 + sig;
         {
+            extern void sched_wake(thread_t *t);
             thread_t *t = target->threads;
             while (t) {
-                if (t->state == THREAD_BLOCKED || t->state == THREAD_RUNNING ||
-                    t->state == THREAD_STOPPED)
+                int old = t->state;
+                if (old == THREAD_BLOCKED) {
+                    /* Wake first so scheduler can dequeue, then mark dead */
+                    sched_wake(t);  /* BLOCKED → RUNNABLE + enqueued */
                     t->state = THREAD_DEAD;
+                } else if (old == THREAD_RUNNING || old == THREAD_STOPPED) {
+                    t->state = THREAD_DEAD;
+                }
                 t = t->proc_next;
             }
         }

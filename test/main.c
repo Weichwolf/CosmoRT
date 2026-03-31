@@ -5,7 +5,7 @@
 #include "ktest.h"
 
 #define SIGALRM 14
-#define TEST_TIMEOUT 10
+#define TEST_TIMEOUT 5
 
 int failures = 0;
 int passes = 0;
