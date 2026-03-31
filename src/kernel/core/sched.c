@@ -159,7 +159,9 @@ void sched_add(thread_t *t) {
     int ncores = smp_num_cores();
 
     if (cpu < 0 || cpu >= SMP_MAX_CORES) {
-        if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR) {
+        if (ncores <= 1) {
+            cpu = 0;
+        } else if (t->sched_policy == SCHED_FIFO || t->sched_policy == SCHED_RR) {
             static volatile int next_iso = 0;
             int best = -1;
             for (int i = 0; i < ncores; i++) {
