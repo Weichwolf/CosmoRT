@@ -3,18 +3,13 @@
 #include "internal.h"
 
 void sched_preempt_voluntary(thread_t *t) {
-    extern uint64_t pml4[];
-    extern void sched_set_preempt_pending(int core, thread_t *t);
-    percpu_t *cpu = percpu_self();
-    syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
-    uint64_t orig_nr = frame->rax;
-    save_user_state_for_block(t, 0);
-    t->rip -= 2;
-    t->rax = orig_nr;
-    t->state = THREAD_RUNNABLE;
-    sched_set_preempt_pending(cpu->core_id, t);
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
+    extern void schedule(void);
+    extern void sched_add(thread_t *t);
+    if (t->state == THREAD_RUNNING)
+        t->state = THREAD_RUNNABLE;
+    sched_add(t);
+    t->blocking_info.type = BLOCK_YIELD;
+    schedule();
 }
 
 long do_sched_yield(void) {

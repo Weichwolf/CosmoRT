@@ -26,8 +26,6 @@ extern void tss_set_rsp0(uint64_t rsp0);
 
 #define IDLE_TID_BASE       (-1)
 #define IDLE_STACK_SIZE     16384
-#define PREEMPT_FRAME_SLOTS 6
-
 static uint8_t core_isolated[SMP_MAX_CORES];
 
 static struct {
@@ -41,12 +39,12 @@ static struct {
 
 static thread_t idle_threads[SMP_MAX_CORES];
 static uint8_t idle_stacks[SMP_MAX_CORES][IDLE_STACK_SIZE] __attribute__((aligned(16)));
-static thread_t *preempt_pending[SMP_MAX_CORES];
 static thread_t *prev_thread[SMP_MAX_CORES];
 
 void userspace_entry_trampoline(void);
 void kthread_entry_trampoline(void);
 void switch_to_idle(thread_t *cur);
+void schedule(void);
 
 void thread_init_kstack(thread_t *t, void (*entry)(void)) {
     uint64_t *sp = (uint64_t *)t->kstack_top;
@@ -82,13 +80,12 @@ thread_t *sched_get_idle(int core) {
     return &idle_threads[core];
 }
 
-void sched_set_preempt_pending(int core, thread_t *t) {
-    preempt_pending[core] = t;
-}
-
 void switch_to_idle(thread_t *cur) {
     percpu_t *cpu = percpu_self();
     int core = cpu->core_id;
+
+    prev_thread[core] = cur;
+
     thread_t *idle = &idle_threads[core];
     cpu->current_thread = idle;
     idle->state = THREAD_RUNNING;
@@ -456,21 +453,22 @@ void sched_preempt(void *frame_ptr) {
     cur->fs_base = arch_get_fs_base();
     arch_fxsave(cur->fxsave_area);
 
-    if (cur->state == THREAD_RUNNING)
-        cur->state = THREAD_RUNNABLE;
-
     extern void lapic_eoi(void);
     lapic_eoi();
     arch_set_kernel_gs_base((uint64_t)(uintptr_t)cpu);
-    arch_set_cr3(virt_to_phys(pml4));
 
-    preempt_pending[cpu->core_id] = cur;
-    thread_init_kstack(cur, userspace_entry_trampoline);
+    cur->blocking_info.type = BLOCK_PREEMPT;
+    schedule();
 
-    thread_t *idle = &idle_threads[cpu->core_id];
-    cpu->current_thread = idle;
-    idle->state = THREAD_RUNNING;
-    context_resume(idle);
+    f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;
+    f[4] = cur->r11; f[5] = cur->r10; f[6] = cur->r9;  f[7] = cur->r8;
+    f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
+    f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
+    f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
+    arch_set_fs_base(cur->fs_base);
+    arch_fxrstor(cur->fxsave_area);
+    if (cur->proc)
+        arch_set_cr3(virt_to_phys(cur->proc->pml4));
 }
 
 __attribute__((used))
@@ -496,7 +494,6 @@ void sched_init(void) {
         }
         core_rq[c].lock = (spinlock_t)SPINLOCK_INIT;
         core_rq[c].bitmap = 0;
-        preempt_pending[c] = 0;
     }
     serial_puts("sched: per-core RT init (");
     char t[4]; int ti = 0, v = PRIO_LEVELS;
@@ -566,12 +563,20 @@ void sched_loop(void) {
         thread_t *pp = prev_thread[core];
         if (pp) {
             prev_thread[core] = 0;
-        }
-
-        pp = preempt_pending[core];
-        if (pp) {
-            preempt_pending[core] = 0;
-            sched_add(pp);
+            switch (pp->blocking_info.type) {
+            case BLOCK_YIELD:
+                break;
+            case BLOCK_PREEMPT:
+                if (pp->state == THREAD_RUNNING)
+                    pp->state = THREAD_RUNNABLE;
+                sched_add(pp);
+                break;
+            default:
+                if (pp->state == THREAD_RUNNABLE)
+                    sched_add(pp);
+                break;
+            }
+            pp->blocking_info.type = BLOCK_NONE;
         }
 
         thread_t *next = sched_pick();
@@ -590,11 +595,6 @@ void sched_loop(void) {
             context_switch(idle, next);
 
             cpu->current_thread = idle;
-            if (next->blocking_info.type == BLOCK_YIELD) {
-                next->blocking_info.type = BLOCK_NONE;
-            } else if (next->state == THREAD_RUNNABLE) {
-                sched_add(next);
-            }
         } else {
             uint64_t idle_top = (uint64_t)(uintptr_t)
                 (idle_stacks[core] + sizeof(idle_stacks[core]));
@@ -617,7 +617,7 @@ void sched_loop(void) {
                     nohz_cancel_oneshot(core);
             }
 
-            if (core_rq[core].bitmap || preempt_pending[core])
+            if (core_rq[core].bitmap || prev_thread[core])
                 continue;
             arch_halt();
         }
