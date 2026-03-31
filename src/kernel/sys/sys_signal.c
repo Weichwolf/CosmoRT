@@ -205,7 +205,7 @@ long do_rt_sigprocmask(int how, const uint64_t *set, uint64_t *oldset,
 /* ── SYS_KILL (62) ──────────────────────────────────── */
 
 /* Send signal to a single process. Returns 0 or negative errno. */
-static long kill_one(process_t *target, int sig) {
+long kill_one(process_t *target, int sig) {
     /* Can't signal zombie/dead processes */
     if (target->state != PROC_ALIVE) return -ESRCH;
 
