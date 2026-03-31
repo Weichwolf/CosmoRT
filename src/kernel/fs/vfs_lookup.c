@@ -4,23 +4,28 @@
 
 /* ── Path lookup ─────────────────────────────────── */
 
-#define SYMLOOP_MAX 8
+#define SYMLOOP_MAX 40  /* Linux: MAX_NESTED_LINKS */
+#define NAME_MAX    255
+#define PATH_MAX    4096
 
 /* Iterative path lookup with symlink resolution.
  * follow_last: if 0, don't follow symlink on the final path component
  *              (needed for readlink/lstat semantics).
- * err: set to -ELOOP when symlink depth exceeds SYMLOOP_MAX. */
+ * err: set to specific errno on failure. */
 static struct vfs_node *vfs_lookup_impl(const char *path, int depth,
                                         int follow_last, int *err) {
     /* Single path buffer on stack — no recursion */
-    char buf[512];
+    char buf[PATH_MAX];
     int blen = kstrlen(path);
-    if (blen >= (int)sizeof(buf)) return 0;
+    if (blen >= (int)sizeof(buf)) {
+        if (err) *err = -ENAMETOOLONG;
+        return 0;
+    }
     for (int i = 0; i <= blen; i++) buf[i] = path[i];
 
 restart:
     if (depth > SYMLOOP_MAX) { if (err) *err = -ELOOP; return 0; }
-    if (!buf[0]) return 0;
+    if (!buf[0]) { if (err) *err = -ENOENT; return 0; }
     if (buf[0] == '/' && buf[1] == 0) return vfs_root_node;
 
     struct vfs_node *cur = vfs_root_node;
@@ -35,11 +40,18 @@ restart:
         while (*p && *p != '/') p++;
         int len = (int)(p - start);
 
+        /* Component name length check — Linux NAME_MAX */
+        if (len > NAME_MAX) {
+            if (err) *err = -ENAMETOOLONG;
+            return 0;
+        }
+
         /* Check if this is the last component */
         const char *rest = p;
         while (*rest == '/') rest++;
         int is_last = (*rest == 0);
 
+        /* Current node must be a directory to traverse into */
         if (cur->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
 
         struct vfs_node *child = cur->children;
@@ -55,17 +67,20 @@ restart:
             }
             child = child->next;
         }
-        if (!found) return 0;
+        if (!found) { if (err) *err = -ENOENT; return 0; }
 
         /* Follow symlinks transparently (skip last component if !follow_last) */
         if (found->type == VFS_SYMLINK && (follow_last || !is_last)) {
             const char *target = found->symlink_target;
-            if (!target[0]) return 0;
+            if (!target[0]) { if (err) *err = -ENOENT; return 0; }
             depth++;
 
             int tlen = kstrlen(target);
             int rlen = kstrlen(p);
-            if (tlen + 1 + rlen >= (int)sizeof(buf)) return 0;
+            if (tlen + 1 + rlen >= (int)sizeof(buf)) {
+                if (err) *err = -ENAMETOOLONG;
+                return 0;
+            }
 
             if (target[0] == '/') {
                 /* Absolute symlink: build "target/remaining" in buf */
