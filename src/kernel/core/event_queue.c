@@ -91,6 +91,21 @@ void thread_block_ms(int timeout_ms) {
     cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
     cur->rax = orig_syscall_nr;
 
+    /* Check for deliverable signals — restart syscall immediately
+     * so caller (e.g. do_nanosleep) sees the signal and returns -EINTR. */
+    if (cur->proc) {
+        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+        uint64_t deliverable = all_pending & ~cur->sig_blocked;
+        if (deliverable) {
+            cur->state = THREAD_RUNNABLE;
+            extern void sched_add(thread_t *t);
+            sched_add(cur);
+            arch_set_cr3(virt_to_phys(pml4));
+            thread_return_to_kernel(cur);
+            /* unreachable */
+        }
+    }
+
     cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
     cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
     epoll_sleeper_add_ext(cur);
@@ -116,16 +131,16 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     if (timeout_ms == 0)
         return -11; /* EAGAIN */
 
-    /* Check for fatal signals (SIGKILL/SIGTERM) before blocking.
-     * SIGKILL: always delivers (unkillable process prevention).
-     * SIGTERM with SIG_DFL: delivers (allows timeout/kill to terminate stuck processes).
-     * Other signals: NOT checked here — spurious EINTR breaks futex_wait/pthread_cond. */
+    /* Check for any deliverable signals before blocking.
+     * Linux: any unblocked pending signal interrupts blocking syscalls
+     * with -EINTR (or -ERESTARTSYS for SA_RESTART).
+     * The signal is delivered by check_pending_signals on syscall return. */
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
     if (cur->proc) {
         uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        uint64_t fatal = all_pending & (SIG_BIT(9) | SIG_BIT(15)); /* SIGKILL, SIGTERM */
-        if (fatal & ~cur->sig_blocked) return -4; /* EINTR */
+        uint64_t deliverable = all_pending & ~cur->sig_blocked;
+        if (deliverable) return -4; /* EINTR */
     }
 
     /* Block: save user state for syscall restart.
