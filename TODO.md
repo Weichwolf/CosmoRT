@@ -159,45 +159,53 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 
 ## Scheduler-Rewrite: Ein context_switch (BLOCKER)
 
-Drei Mechanismen die sich korrumpieren muessen zu einem werden.
-Invarianten-Violations: Stack Aliasing, asymmetrisches Blocking, TOCTOU.
-Vorbild: Linux switch_to().
+Root Cause: Thread wird sichtbar fuer sched_wake BEVOR context_switch
+seinen RSP speichert. Anderer Core dispatcht Thread auf altem RSP →
+Stack Aliasing → Korruption.
 
-### Phase 1: context_resume eliminieren (IN ARBEIT)
+Linux-Loesung: Thread wird erst NACH context_switch fuer Wake sichtbar.
+Reihenfolge: context_switch (RSP gespeichert) → Wake-Queue → sichtbar.
 
-- [x] Per-CPU Idle-Thread in sched_loop
-- [x] switch_to_idle via context_switch(cur, idle)
-- [x] sched_loop: context_switch(idle, next) statt thread_run/kthread_run
-- [x] sched_block: switch_to_idle statt context_save+longjmp
-- [x] rt_mutex: switch_to_idle statt sched_block_preblocked
-- [x] irq_thread: switch_to_idle statt kernel_yield
-- [ ] sched_preempt: context_switch(cur, idle) statt context_resume(idle)
-- [ ] event_wait: switch_to_idle statt thread_return_to_kernel
-- [ ] thread_block_ms: switch_to_idle statt thread_return_to_kernel
-- [ ] thread_return_to_kernel eliminieren
+### Phase 1: Blocking-Protokoll redesignen
 
-### Phase 2: Invarianten-Violations fixen
+Kern-Invariante: Ein Thread darf erst fuer sched_wake erreichbar sein
+NACHDEM context_switch seinen RSP gespeichert hat.
 
-- [ ] Stack-Ownership: thread_init_kstack NIE auf laufendem Thread
-- [ ] Atomare Transitions: kein Fenster zwischen state=BLOCKED und context_switch
-- [ ] event_wait mfence race-check: nach switch_to_idle resume, nicht als Workaround
-- [ ] preempt_pending eliminieren (context_switch macht sched_add safe)
+- [ ] schedule() Funktion: sched_pick + context_switch(cur, next)
+- [ ] Blocking-Protokoll:
+  1. Caller setzt cur->blocked_reason (mutex, event, sleep, etc.)
+  2. schedule() wird aufgerufen
+  3. schedule() setzt state=BLOCKED + context_switch atomar
+  4. NACH context_switch (auf idle Stack): Thread in Wake-Queue eintragen
+  5. Erst jetzt ist Thread fuer sched_wake sichtbar
+- [ ] Wake-Queue-Eintrag im Idle-Pfad statt im Caller-Pfad
+- [ ] sched_preempt: context_switch(cur, idle), kein thread_init_kstack
+
+### Phase 2: Alle Blocking-Pfade umstellen
+
+- [ ] event_wait: schedule() + Wake-Queue im Idle-Pfad
+- [ ] thread_block_ms: schedule() + Sleeper-Eintrag im Idle-Pfad
+- [ ] rt_mutex_lock: schedule() + Waiter-Eintrag bereits unter Lock (safe)
+- [ ] irq_thread_loop: schedule() fuer Blocking
+- [ ] do_exit: schedule() ohne Rueckkehr
+- [ ] sched_yield: schedule() mit state=RUNNABLE
 
 ### Phase 3: Altlasten entfernen
 
-- [ ] kernel_setjmp/longjmp aus Scheduler-Pfaden entfernen
-- [ ] kernel_yield_jmpbuf, in_kernel_yield aus thread_t entfernen
-- [ ] blocked_in_kernel aus thread_t entfernen
-- [ ] context_save, context_resume aus Scheduler-Nutzung entfernen
-- [ ] thread_run (process.c) entfernen
-- [ ] sched_block_preblocked entfernen
+- [ ] context_resume aus Scheduler eliminieren
+- [ ] thread_return_to_kernel eliminieren
+- [ ] thread_init_kstack auf laufende Threads eliminieren
+- [ ] preempt_pending eliminieren
+- [ ] kernel_setjmp/longjmp aus Scheduler eliminieren
+- [ ] kernel_yield_jmpbuf, in_kernel_yield, blocked_in_kernel entfernen
+- [ ] thread_run, kthread_run, sched_block_preblocked entfernen
 
 ### Phase 4: Code-Konsolidierung
 
 - [ ] do_fork/do_vfork zusammenlegen (330 Zeilen Duplikat)
 - [ ] save_user_state_for_block mit sched_preempt User-Save vereinen
-- [ ] Lock-Typen konsolidieren: spinlock_t + mutex_t (hw_spinlock_t → spinlock_t)
-- [ ] UID/GID Stubs aufraeumen (Single-User braucht 13 Syscalls nicht)
+- [ ] Lock-Typen: spinlock_t + mutex_t (hw_spinlock_t → spinlock_t)
+- [ ] UID/GID Stubs aufraeumen
 
 ---
 
