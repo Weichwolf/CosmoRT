@@ -211,11 +211,8 @@ void sched_wake(thread_t *t) {
 
 void sched_block(void) {
     thread_t *cur = thread_current();
-    percpu_t *cpu = percpu_self();
-    uint64_t saved_frame = cpu->syscall_frame;
     cur->blocking_info.type = BLOCK_MUTEX;
     schedule();
-    percpu_self()->syscall_frame = saved_frame;
 }
 
 __attribute__((hot))
@@ -576,26 +573,6 @@ void sched_loop(void) {
                 break;
             case BLOCK_MUTEX:
                 pp->state = THREAD_BLOCKED;
-                break;
-            case BLOCK_EVENT: {
-                event_queue_t *eq = (event_queue_t *)pp->blocking_info.context;
-                if (pp->blocking_info.deadline_tsc)
-                    pp->wake_at_tsc = pp->blocking_info.deadline_tsc;
-                pp->state = THREAD_BLOCKED;
-                __asm__ volatile("mfence" ::: "memory");
-                if (pp->blocking_info.deadline_tsc)
-                    epoll_sleeper_add_ext(pp);
-                if (eq && arch_load_acquire(&eq->head) != eq->tail) {
-                    int old = __sync_val_compare_and_swap(&pp->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-                    if (old == THREAD_BLOCKED)
-                        sched_add(pp);
-                }
-                break;
-            }
-            case BLOCK_SLEEP:
-                pp->state = THREAD_BLOCKED;
-                pp->wake_at_tsc = pp->blocking_info.deadline_tsc;
-                epoll_sleeper_add_ext(pp);
                 break;
             default:
                 if (pp->state == THREAD_RUNNABLE)
