@@ -7,7 +7,7 @@
 #include "arch/arch.h"
 
 extern void sched_wake(thread_t *t);
-extern void switch_to_idle(thread_t *cur);
+extern void schedule(void);
 
 #define RT_MUTEX_ADAPTIVE_SPIN_MAX 1000
 
@@ -97,11 +97,10 @@ int rt_mutex_lock(rt_mutex_t *m) {
         if (!found)
             waiters_insert(m, cur);
 
-        cur->state = THREAD_BLOCKED;
-
         spin_unlock_irq(&m->lock, flags);
 
-        switch_to_idle(cur);
+        cur->blocking_info.type = BLOCK_MUTEX;
+        schedule();
         continue;
     }
 }

@@ -211,8 +211,8 @@ void sched_wake(thread_t *t) {
 
 void sched_block(void) {
     thread_t *cur = thread_current();
-    cur->state = THREAD_BLOCKED;
-    switch_to_idle(cur);
+    cur->blocking_info.type = BLOCK_MUTEX;
+    schedule();
 }
 
 __attribute__((hot))
@@ -570,6 +570,9 @@ void sched_loop(void) {
                 if (pp->state == THREAD_RUNNING)
                     pp->state = THREAD_RUNNABLE;
                 sched_add(pp);
+                break;
+            case BLOCK_MUTEX:
+                pp->state = THREAD_BLOCKED;
                 break;
             default:
                 if (pp->state == THREAD_RUNNABLE)
