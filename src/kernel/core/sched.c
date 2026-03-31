@@ -563,7 +563,12 @@ void sched_loop(void) {
     for (;;) {
         cpu->need_resched = 0;
 
-        thread_t *pp = preempt_pending[core];
+        thread_t *pp = prev_thread[core];
+        if (pp) {
+            prev_thread[core] = 0;
+        }
+
+        pp = preempt_pending[core];
         if (pp) {
             preempt_pending[core] = 0;
             sched_add(pp);
@@ -585,8 +590,11 @@ void sched_loop(void) {
             context_switch(idle, next);
 
             cpu->current_thread = idle;
-            if (next->state == THREAD_RUNNABLE)
+            if (next->blocking_info.type == BLOCK_YIELD) {
+                next->blocking_info.type = BLOCK_NONE;
+            } else if (next->state == THREAD_RUNNABLE) {
                 sched_add(next);
+            }
         } else {
             uint64_t idle_top = (uint64_t)(uintptr_t)
                 (idle_stacks[core] + sizeof(idle_stacks[core]));

@@ -18,23 +18,18 @@ void sched_preempt_voluntary(thread_t *t) {
 }
 
 long do_sched_yield(void) {
-    thread_t *t = thread_current();
-    if (!t) return 0;
+    extern void schedule(void);
+    extern void sched_add(thread_t *t);
+    thread_t *cur = thread_current();
+    if (!cur) return 0;
 
-    if (t->proc) {
-        uint64_t pending = t->proc->sig_pending & ~t->sig_blocked;
-        if (pending & ((1ULL << 9) | (1ULL << 19) | (1ULL << 20) |
-                       (1ULL << 21) | (1ULL << 22)))
-            check_pending_signals();
-    }
+    if (cur->state == THREAD_RUNNING)
+        cur->state = THREAD_RUNNABLE;
+    sched_add(cur);
 
-    extern uint64_t pml4[];
-    extern void sched_set_preempt_pending(int core, thread_t *t);
-    save_user_state_for_block(t, 0);
-    t->state = THREAD_RUNNABLE;
-    sched_set_preempt_pending(percpu_self()->core_id, t);
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
+    cur->blocking_info.type = BLOCK_YIELD;
+    schedule();
+
     return 0;
 }
 
