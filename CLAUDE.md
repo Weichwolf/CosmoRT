@@ -183,6 +183,26 @@ Bei jedem Design-Problem: wie machen es BeOS/Haiku, Linux PREEMPT_RT, macOS/XNU?
 Beste Konzepte uebernehmen. Wenn etwas in CosmoRT nicht optimal ist, stoppen und
 Verbesserung vorschlagen statt weiterbauen.
 
+## Kernel-Invarianten
+
+Verletzung ist ein Bug. Keine Ausnahmen.
+
+| MUSS | DARF NICHT |
+|------|------------|
+| Ein Thread, ein Kernel-Stack. Exklusiv bis Thread-Tod. | Stack Aliasing, Stack-Reuse, Trampoline auf fremdem Stack |
+| Ein Context-Switch: context_switch(prev, next). Symmetrisch, atomar. | Mehrere Mechanismen, asymmetrisches Blocking, longjmp |
+| State-Change und Switch in einer Operation. | Fenster zwischen State und Switch (TOCTOU, verlorene Wakeups) |
+| Jede Ressource hat genau einen Owner. | Shared Ownership ohne Lock |
+| Ein Pfad pro Konzept. | Copy-Paste-Varianten |
+| Jeder Kernel-Pfad terminiert in endlicher Zeit. | Unbounded Loops, Spin ohne Timeout |
+| Nur was Userspace nicht kann gehoert in den Kernel. | Userspace-Funktionalitaet im Kernel |
+| Fehler → Panic oder -ERRNO. Nie stille Korruption. | Weiterarbeiten mit inkonsistentem State |
+| Jede Abhaengigkeit ist im Typ oder API sichtbar. | Globals die Reihenfolge voraussetzen |
+| Jeder Code-Punkt ist unterbrechbar oder explizit geschuetzt. | Daten unter RSP, cli/sti als Workaround |
+| Zero-Copy wo moeglich. Pointer statt Daten bewegen. | memcpy zwischen Kernel-Buffern |
+| Kernel, Treiber, Userspace koennen sich nicht korrumpieren. | Kernel-Interna in Treiber-API |
+| Syscall-Restart ist safe. Doppeltes Wake ist No-Op. | State-Mutationen die bei Wiederholung brechen |
+
 ## Regeln
 
 Build:
