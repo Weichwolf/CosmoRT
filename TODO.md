@@ -157,41 +157,47 @@ Isolierte Cores: tickless, fuer Audio-Chains. Mehrere RT-Cores moeglich.
 
 ---
 
-## RT-9: Echtes schedule() (Kernel-Thread Blocking)
+## Scheduler-Rewrite: Ein context_switch (BLOCKER)
 
-kernel_yield_jmpbuf ist nicht nestbar — IRQ-Thread-Loop und rt_mutex_lock
-teilen sich denselben Buffer. Aktuell Workaround: kthreads spinnen bei
-Mutex-Contention. Richtige Loesung: vollstaendiger Kernel-Stack-Context-Save
-wie Linux/BeOS.
+Drei Mechanismen die sich korrumpieren muessen zu einem werden.
+Invarianten-Violations: Stack Aliasing, asymmetrisches Blocking, TOCTOU.
+Vorbild: Linux switch_to().
 
-### RT-9a: Kernel-Stack Context-Save (erledigt)
+### Phase 1: context_resume eliminieren (IN ARBEIT)
 
-- [x] context_save/context_resume/context_switch in context.asm
-- [x] sched_block(): context_save + kernel_longjmp zurueck zum Scheduler
-- [x] kthread_run/thread_run: context_resume fuer blocked_in_kernel Threads
-- [x] thread_t: kstack_rsp + blocked_in_kernel Felder
-- [x] Static assert fuer Assembly-Offset
-- [x] ktest: 12 Checks (sb_*) — Scheduler-Regression
+- [x] Per-CPU Idle-Thread in sched_loop
+- [x] switch_to_idle via context_switch(cur, idle)
+- [x] sched_loop: context_switch(idle, next) statt thread_run/kthread_run
+- [x] sched_block: switch_to_idle statt context_save+longjmp
+- [x] rt_mutex: switch_to_idle statt sched_block_preblocked
+- [x] irq_thread: switch_to_idle statt kernel_yield
+- [ ] sched_preempt: context_switch(cur, idle) statt context_resume(idle)
+- [ ] event_wait: switch_to_idle statt thread_return_to_kernel
+- [ ] thread_block_ms: switch_to_idle statt thread_return_to_kernel
+- [ ] thread_return_to_kernel eliminieren
 
-### RT-9b: rt_mutex auf sched_block umstellen (Agent)
+### Phase 2: Invarianten-Violations fixen
 
-- [ ] rt_mutex_lock: sched_block() statt kernel_setjmp/longjmp
-- [ ] rt_mutex_unlock: sched_wake restored den Blocked-Thread via sched_resume
-- [ ] kthread Spin-Workaround entfernen
-- [ ] Kernel-Threads koennen jetzt auf Mutexes schlafen
+- [ ] Stack-Ownership: thread_init_kstack NIE auf laufendem Thread
+- [ ] Atomare Transitions: kein Fenster zwischen state=BLOCKED und context_switch
+- [ ] event_wait mfence race-check: nach switch_to_idle resume, nicht als Workaround
+- [ ] preempt_pending eliminieren (context_switch macht sched_add safe)
 
-### RT-9c: IRQ-Thread-Loop auf sched_block umstellen (Agent)
+### Phase 3: Altlasten entfernen
 
-- [ ] irq_thread_loop: sched_block() statt kernel_setjmp/longjmp
-- [ ] kernel_yield_jmpbuf entfaellt (wird durch sched_block ersetzt)
-- [ ] Nested Blocking funktioniert: IRQ-Thread blockiert in Loop, wacht auf,
-  ruft Handler auf, Handler blockiert in mutex_lock — beides auf eigenem Stack
+- [ ] kernel_setjmp/longjmp aus Scheduler-Pfaden entfernen
+- [ ] kernel_yield_jmpbuf, in_kernel_yield aus thread_t entfernen
+- [ ] blocked_in_kernel aus thread_t entfernen
+- [ ] context_save, context_resume aus Scheduler-Nutzung entfernen
+- [ ] thread_run (process.c) entfernen
+- [ ] sched_block_preblocked entfernen
 
-### RT-9d: event_wait auf sched_block umstellen (Agent)
+### Phase 4: Code-Konsolidierung
 
-- [ ] thread_block_ms: sched_block() statt kernel_yield
-- [ ] event_wait Blocking-Pfad: sched_block()
-- [ ] Einheitlicher Blocking-Mechanismus fuer den gesamten Kernel
+- [ ] do_fork/do_vfork zusammenlegen (330 Zeilen Duplikat)
+- [ ] save_user_state_for_block mit sched_preempt User-Save vereinen
+- [ ] Lock-Typen konsolidieren: spinlock_t + mutex_t (hw_spinlock_t → spinlock_t)
+- [ ] UID/GID Stubs aufraeumen (Single-User braucht 13 Syscalls nicht)
 
 ---
 
