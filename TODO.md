@@ -1,6 +1,15 @@
 # CosmoRT — Offene Punkte
 
-Stand: musl 452/20 PASS/FAIL, LTP 11/87 PASS/FAIL (105/313 erreicht)
+Stand: ktest 1235/0, musl 452/20, LTP 11/87 (105/313 erreicht)
+
+## Lock-Granularitaet: Globale Locks → Linux-Vorbild
+
+Globale Locks blockieren alle Cores — inkompatibel mit RT. Linux-Vorbild: per-CPU, per-Object, per-Zone.
+
+- [ ] **Per-CPU Page Lists** (page_alloc.c): `buddy_lock` global → per-CPU Freelists mit Batch-Refill. Hot-Path (alloc/free) wird lock-free. `zone->lock` nur fuer Refill wenn per-CPU-Liste leer. Vorbild: Linux `struct per_cpu_pages`, Batch 31.
+- [ ] **Per-Inode Lock** (ext2.c, vfs.c): `fs_lock` global → rw_semaphore in `vfs_node`. Parallele Reads auf verschiedenen Dateien blockieren sich nicht mehr. Vorbild: Linux `inode->i_rwsem`.
+- [ ] **Per-Block Locking** (bcache.c): Globales bcache-Lock → per-Block atomare Flags oder per-Inode Granularitaet. Vorbild: Linux `bh->b_state` Bitops.
+- [ ] **Per-CPU Slab** (slab.c): Globale Freelist → per-CPU partial lists. Vorbild: Linux SLUB per-CPU Caches.
 
 ## musl libc-test Fixes (20 FAIL → 0)
 

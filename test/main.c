@@ -1,9 +1,11 @@
-/* CosmoRT Hardware Test — parallel test runner
- * ALL tests (unit + crash) run in fork'd children.
- * Batch of BATCH children run concurrently.
- * Parent collects results via MAP_SHARED slots + wait4.
+/* CosmoRT Hardware Test — sequential runner with per-test timeout
+ * ALL tests run in fork'd children, one at a time.
+ * 10-second alarm() timeout per child.
  * Tests self-register via .ktest linker section. */
 #include "ktest.h"
+
+#define SIGALRM 14
+#define TEST_TIMEOUT 10
 
 int failures = 0;
 int passes = 0;
@@ -11,14 +13,11 @@ int passes = 0;
 extern const ktest_entry_t __start_ktest[];
 extern const ktest_entry_t __stop_ktest[];
 
-#define BATCH 1
-
 /* Allocate MAP_SHARED anonymous memory */
 static void *shared_alloc(long size) {
     return (void *)sc6(SYS_MMAP, 0, size, PROT_READ | PROT_WRITE,
                         MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 }
-
 
 void _start_c(void) {
     passes = 0;
@@ -27,111 +26,87 @@ void _start_c(void) {
 
     int total = (int)(__stop_ktest - __start_ktest);
 
-    /* Allocate shared slots for result reporting */
-    test_slot_t *slots = (test_slot_t *)shared_alloc(BATCH * (long)sizeof(test_slot_t));
-    if ((long)slots < 0) {
+    test_slot_t *slot = (test_slot_t *)shared_alloc((long)sizeof(test_slot_t));
+    if ((long)slot < 0) {
         puts("FATAL: shared_alloc failed\n");
         sc1(SYS_EXIT_GROUP, 1);
         __builtin_unreachable();
     }
 
-    int idx = 0;
-    while (idx < total) {
-        int batch_size = total - idx;
-        if (batch_size > BATCH) batch_size = BATCH;
+    for (int idx = 0; idx < total; idx++) {
+        const ktest_entry_t *t = &__start_ktest[idx];
 
-        /* Clear slots */
-        for (int s = 0; s < batch_size; s++) {
-            slots[s].done = 0;
-            slots[s].pass_cnt = 0;
-            slots[s].fail_cnt = 0;
-            slots[s].exit_code = -1;
-            slots[s].pid = 0;
+        slot->done = 0;
+        slot->pass_cnt = 0;
+        slot->fail_cnt = 0;
+        slot->exit_code = -1;
+        slot->pid = 0;
+
+        long pid = sc0(SYS_FORK);
+        if (pid < 0) {
+            puts("  FAIL  "); puts(t->name); puts(" (fork failed)\n");
+            failures++;
+            continue;
+        }
+        if (pid == 0) {
+            sc2(SYS_SETPGID, 0, 0);
+            sc0(SYS_SETSID);
+            sc1(SYS_ALARM, TEST_TIMEOUT);
+            failures = 0;
+            passes = 0;
+            t->fn();
+            slot->pass_cnt = passes;
+            slot->fail_cnt = failures;
+            slot->done = 1;
+            sc1(SYS_EXIT_GROUP, (long)failures);
+            __builtin_unreachable();
         }
 
-        /* Fork children */
-        for (int s = 0; s < batch_size; s++) {
-            const ktest_entry_t *t = &__start_ktest[idx + s];
-            long pid = sc0(SYS_FORK);
-            if (pid < 0) {
-                puts("  FAIL  "); puts(t->name); puts(" (fork failed)\n");
-                slots[s].done = 1;
-                slots[s].fail_cnt = 1;
-                failures++;
-                continue;
-            }
-            if (pid == 0) {
-                /* Child: own process group + session so tests that check
-                 * getpgrp()==getpid() work correctly in forked context. */
-                sc2(SYS_SETPGID, 0, 0);
-                sc0(SYS_SETSID);
-                failures = 0;
-                passes = 0;
-                t->fn();
-                slots[s].pass_cnt = passes;
-                slots[s].fail_cnt = failures;
-                slots[s].done = 1;
-                sc1(SYS_EXIT_GROUP, (long)failures);
-                __builtin_unreachable();
-            }
-            slots[s].pid = pid;
+        slot->pid = pid;
+
+        int status = 0;
+        long w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+
+        if (w < 0) {
+            puts("  FAIL  "); puts(t->name); puts(" (wait4 failed)\n");
+            failures++;
+            continue;
         }
 
-        /* Wait for all children in this batch.
-         * Timeout: 1000 yield iterations per child. */
-        for (int s = 0; s < batch_size; s++) {
-            if (slots[s].pid <= 0) continue;
+        int exit_signal = status & 0x7F;
+        int exit_code = exit_signal ? (128 + exit_signal) : ((status >> 8) & 0xFF);
+        slot->exit_code = exit_code;
 
-            int status = 0;
-            long w = sc4(SYS_WAIT4, slots[s].pid, (long)&status, 0, 0);
-
-            const ktest_entry_t *t = &__start_ktest[idx + s];
-
-            if (w < 0) {
-                puts("  FAIL  "); puts(t->name); puts(" (wait4 failed)\n");
-                failures++;
-                continue;
+        if (exit_signal == SIGALRM) {
+            puts("  FAIL  "); puts(t->name); puts(" (TIMEOUT)\n");
+            failures++;
+        } else if (!slot->done) {
+            puts("  --- "); puts(t->name); puts(": CRASHED (status=");
+            put_int(exit_code); puts(")\n");
+            failures++;
+        } else if (slot->fail_cnt == 0 && exit_code == 0) {
+            passes += slot->pass_cnt;
+            if (t->crash) {
+                puts("  --- "); puts(t->name); puts(": child OK ---\n");
             }
-
-            /* Decode wait status */
-            int exit_signal = status & 0x7F;
-            int exit_code = exit_signal ? (128 + exit_signal) : ((status >> 8) & 0xFF);
-            slots[s].exit_code = exit_code;
-
-            /* Collect results from shared slot */
-            if (!slots[s].done) {
-                /* Child died before writing results */
-                puts("  --- "); puts(t->name); puts(": CRASHED (status=");
+        } else {
+            passes += slot->pass_cnt;
+            failures += slot->fail_cnt;
+            if (slot->fail_cnt == 0 && exit_code != 0) {
+                puts("  FAIL  "); puts(t->name); puts(" (exit=");
                 put_int(exit_code); puts(")\n");
                 failures++;
-            } else if (slots[s].fail_cnt == 0 && exit_code == 0) {
-                passes += slots[s].pass_cnt;
-                if (t->crash) {
-                    puts("  --- "); puts(t->name); puts(": child OK ---\n");
-                }
-            } else {
-                passes += slots[s].pass_cnt;
-                failures += slots[s].fail_cnt;
-                if (slots[s].fail_cnt == 0 && exit_code != 0) {
-                    puts("  FAIL  "); puts(t->name); puts(" (exit=");
-                    put_int(exit_code); puts(")\n");
-                    failures++;
-                }
             }
         }
-
-        idx += batch_size;
     }
 
-    /* Unmap shared slots */
-    sc2(SYS_MUNMAP, (long)slots, BATCH * (long)sizeof(test_slot_t));
+    sc2(SYS_MUNMAP, (long)slot, (long)sizeof(test_slot_t));
 
     puts("\n=== ");
     put_int((long)passes); puts(" passed, ");
     put_int((long)failures); puts(" failed ===\n");
     if (failures == 0) puts("ALL PASSED\n");
 
-    /* Power off */
     sc3(SYS_REBOOT, (long)0xFEE1DEAD, (long)0x28121969, (long)0x4321FEDC);
     sc1(SYS_EXIT_GROUP, (long)failures);
     __builtin_unreachable();
