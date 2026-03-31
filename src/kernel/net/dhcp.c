@@ -1,12 +1,12 @@
-/* CosmoRT DHCP Client — kernel-level DHCP for boot */
+/* CosmoRT DHCP Client — kernel-level DHCP for boot
+ * Extracted from net.c (Phase D1).
+ */
 
 #include "net/dhcp.h"
 #include "net/net.h"
 #include "net/net_util.h"
 #include "net/ip.h"
 #include "core/timer.h"
-#include "core/event_queue.h"
-#include "proc/process.h"
 
 static uint32_t dhcp_saved_xid;
 
@@ -37,14 +37,10 @@ int net_dhcp_check(void) {
 int net_dhcp(void) {
     net_dhcp_send_discover();
     uint64_t deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
-    uint64_t next_retry = timer_ms() + 1000;
     while (timer_ms() < deadline) {
         if (net_dhcp_check()) return 0;
-        if (timer_ms() >= next_retry) {
-            net_dhcp_send_discover();
-            next_retry = timer_ms() + 1000;
-        }
-        arch_halt();
+        net_dhcp_send_discover();
+        net_idle();
     }
     return -1;
 }

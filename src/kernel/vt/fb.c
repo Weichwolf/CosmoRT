@@ -1,4 +1,13 @@
-/* CosmoRT Framebuffer — bilinear glyph scaler + alpha blit */
+/* CosmoRT Framebuffer — bilinear glyph scaler + alpha blit
+ *
+ * All math is 16.16 fixed-point. No floating point in kernel.
+ *
+ * Boot: fb_init() maps the UEFI framebuffer, computes scale factor from
+ * fb_height / 720, scales all font glyphs once via bilinear interpolation,
+ * stores results in glyph_cache[].
+ *
+ * Render: fb_blit_glyph() alpha-composites a cached glyph onto the FB.
+ */
 
 #include "vt/fb.h"
 #include "boot_info.h"
@@ -7,6 +16,8 @@
 #include "mm/page_alloc.h"
 #include "memops.h"
 #include "gen/font_atlas.h"
+
+/* ── Fixed-point 16.16 ──────────────────────────────── */
 
 #define FP_SHIFT 16
 #define FP_ONE   (1 << FP_SHIFT)
@@ -21,6 +32,8 @@ static inline int32_t fp_div(int32_t a, int32_t b) {
     return (int32_t)(((int64_t)a << FP_SHIFT) / b);
 }
 
+/* ── State ──────────────────────────────────────────── */
+
 static uint32_t *fb_base;
 static int fb_w, fb_h, fb_pitch_px;
 static int have_fb;
@@ -28,11 +41,13 @@ static int have_fb;
 static scaled_glyph_t glyph_cache[FONT_NUM_GLYPHS];
 static int scaled_w, scaled_h;
 
+/* Bulk allocation for glyph data (avoid per-glyph page_alloc overhead) */
 static uint8_t *glyph_data_pool;
 static int glyph_data_offset;
 static int glyph_data_capacity;
 
 static uint8_t *glyph_data_alloc(int bytes) {
+    /* Align to 8 bytes */
     bytes = (bytes + 7) & ~7;
     if (glyph_data_offset + bytes > glyph_data_capacity)
         return 0;
@@ -41,8 +56,11 @@ static uint8_t *glyph_data_alloc(int bytes) {
     return p;
 }
 
+/* ── Bilinear interpolation (fixed-point) ──────────── */
+
 static uint8_t bilinear_sample(const uint8_t *src, int src_w, int src_h,
                                int32_t sx_fp, int32_t sy_fp) {
+    /* Clamp to source bounds */
     if (sx_fp < 0) sx_fp = 0;
     if (sy_fp < 0) sy_fp = 0;
 
@@ -55,14 +73,17 @@ static uint8_t bilinear_sample(const uint8_t *src, int src_w, int src_h,
     if (y0 >= src_h) y0 = src_h - 1;
     if (y1 >= src_h) y1 = src_h - 1;
 
+    /* Fractional parts (0..65535) */
     int32_t fx = sx_fp & (FP_ONE - 1);
     int32_t fy = sy_fp & (FP_ONE - 1);
 
+    /* 4 source pixels */
     uint32_t p00 = src[y0 * src_w + x0];
     uint32_t p10 = src[y0 * src_w + x1];
     uint32_t p01 = src[y1 * src_w + x0];
     uint32_t p11 = src[y1 * src_w + x1];
 
+    /* Bilinear blend (all in integer with 16-bit fraction) */
     uint32_t top = p00 * (uint32_t)(FP_ONE - fx) + p10 * (uint32_t)fx;
     uint32_t bot = p01 * (uint32_t)(FP_ONE - fx) + p11 * (uint32_t)fx;
     uint32_t val = (top >> FP_SHIFT) * (uint32_t)(FP_ONE - fy) +
@@ -70,9 +91,12 @@ static uint8_t bilinear_sample(const uint8_t *src, int src_w, int src_h,
     return (uint8_t)(val >> FP_SHIFT);
 }
 
+/* ── Scale all glyphs ──────────────────────────────── */
+
 static void scale_all_glyphs(void) {
     int glyph_bytes = scaled_w * scaled_h;
     int total_bytes = glyph_bytes * FONT_NUM_GLYPHS;
+    /* Round up to pages */
     int pages = (total_bytes + 4095) / 4096;
     glyph_data_pool = (uint8_t *)pages_alloc(pages);
     if (!glyph_data_pool) {
@@ -82,6 +106,7 @@ static void scale_all_glyphs(void) {
     glyph_data_capacity = pages * 4096;
     glyph_data_offset = 0;
 
+    /* Scale factors: source → dest mapping */
     int32_t sx_step = fp_div(FONT_BASE_W << FP_SHIFT, scaled_w << FP_SHIFT);
     int32_t sy_step = fp_div(FONT_BASE_H << FP_SHIFT, scaled_h << FP_SHIFT);
 
@@ -107,6 +132,8 @@ static void scale_all_glyphs(void) {
     }
 }
 
+/* ── Public API ─────────────────────────────────────── */
+
 void fb_init(struct boot_info *info) {
     have_fb = 0;
     if (!info->fb_addr || !info->fb_width || !info->fb_height) {
@@ -119,7 +146,12 @@ void fb_init(struct boot_info *info) {
     fb_pitch_px = (int)(info->fb_pitch / (info->fb_bpp / 8));
     fb_base = (uint32_t *)phys_to_virt(info->fb_addr);
 
+    /* Compute scaled glyph size: scale = fb_h / 720 (baseline) */
+    /* For 1080p: scale = 1.5, glyph = 13x28 (from 9x19)
+     * For 720p: scale = 1.0, glyph = 9x19
+     * Fixed-point: scale_fp = fb_h * FP_ONE / 720 */
     int32_t scale_fp = fp_div(fb_h << FP_SHIFT, 720 << FP_SHIFT);
+    /* Minimum scale = 1.0 */
     if (scale_fp < FP_ONE) scale_fp = FP_ONE;
 
     scaled_w = (fp_mul(FONT_BASE_W << FP_SHIFT, scale_fp) + FP_HALF) >> FP_SHIFT;
@@ -129,12 +161,14 @@ void fb_init(struct boot_info *info) {
 
     scale_all_glyphs();
 
+    /* Clear to black */
     for (int y = 0; y < fb_h; y++)
         kmemset(fb_base + y * fb_pitch_px, 0, (size_t)fb_w * 4);
 
     have_fb = 1;
 
     serial_puts("fb: ");
+    /* Print resolution */
     { int v = fb_w; char t[6]; int j = 0;
       do { t[j++] = '0' + (v % 10); v /= 10; } while (v);
       while (j--) serial_putchar(t[j]); }

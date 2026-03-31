@@ -2,10 +2,12 @@
 
 #include "internal.h"
 
+/* ── pselect6 / select → convert to poll ── */
+
 long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long num) {
     uint64_t *writefds = (uint64_t *)a3;
     uint64_t *exceptfds = (uint64_t *)a4;
-    (void)exceptfds;
+    (void)exceptfds; /* exceptfds: not yet supported */
 
     if (nfds <= 0) return 0;
     if (nfds > 256) nfds = 256;
@@ -13,12 +15,14 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
     int nwords = (nfds + 63) / 64;
     if (nwords > 4) nwords = 4;
 
+    /* Read fd_set bitmaps from userspace */
     uint64_t kread[4] = {0}, kwrite[4] = {0};
     if (readfds && user_ok((uint64_t)readfds, (uint64_t)(nwords * 8)))
         copy_from_user(kread, readfds, (size_t)(nwords * 8));
     if (writefds && user_ok((uint64_t)writefds, (uint64_t)(nwords * 8)))
         copy_from_user(kwrite, writefds, (size_t)(nwords * 8));
 
+    /* Build pollfd array */
     struct { int fd; short events; short revents; } pfd[256];
     int npfd = 0;
     for (int i = 0; i < nfds && npfd < 256; i++) {
@@ -27,22 +31,23 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
         if (in_read || in_write) {
             pfd[npfd].fd = i;
             pfd[npfd].events = 0;
-            if (in_read)  pfd[npfd].events |= 1;
-            if (in_write) pfd[npfd].events |= 4;
+            if (in_read)  pfd[npfd].events |= 1; /* POLLIN */
+            if (in_write) pfd[npfd].events |= 4; /* POLLOUT */
             pfd[npfd].revents = 0;
             npfd++;
         }
     }
     if (npfd == 0) return 0;
 
+    /* Compute timeout in ms */
     int timeout_ms = -1;
-    if (num == 270 && a5) {
+    if (num == 270 && a5) { /* pselect6: timespec */
         struct { long sec; long nsec; } ts;
         if (user_ok(a5, 16)) {
             copy_from_user(&ts, (void *)a5, 16);
             timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
         }
-    } else if (num == 23 && a5) {
+    } else if (num == 23 && a5) { /* select: timeval */
         struct { long sec; long usec; } tv;
         if (user_ok(a5, 16)) {
             copy_from_user(&tv, (void *)a5, 16);
@@ -52,18 +57,19 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
 
     long ret = do_poll(pfd, npfd, timeout_ms);
 
+    /* Write back fd_set bitmaps */
     uint64_t out_read[4] = {0}, out_write[4] = {0};
     int total_ready = 0;
     for (int i = 0; i < npfd; i++) {
-        if (pfd[i].revents & 1) {
+        if (pfd[i].revents & 1) { /* POLLIN */
             out_read[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
         }
-        if (pfd[i].revents & 4) {
+        if (pfd[i].revents & 4) { /* POLLOUT */
             out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
         }
-        if (pfd[i].revents & 0x18) {
+        if (pfd[i].revents & 0x18) { /* POLLERR|POLLHUP → both read and write */
             out_read[pfd[i].fd / 64]  |= (1ULL << (pfd[i].fd % 64));
             out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
@@ -80,9 +86,11 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
     return total_ready > 0 ? (long)total_ready : (ret == 0 ? 0 : ret);
 }
 
+/* ── ppoll (271) ── */
+
 long do_ppoll(long a1, long a2, long a3) {
     int timeout_ms = -1;
-    if (a3) {
+    if (a3) { /* timespec *tmo */
         struct { long sec; long nsec; } ts;
         if (user_ok(a3, 16) && !copy_from_user(&ts, (void *)a3, 16))
             timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);

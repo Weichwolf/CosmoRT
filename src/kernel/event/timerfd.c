@@ -3,10 +3,14 @@
 #include "event/epoll.h"
 #include "proc/process.h"
 #include "mm/slab.h"
+#include "spinlock.h"
 #include "core/timer.h"
 #include "event/fd.h"
 
+/* User-pointer validation + copy helpers */
 #include "uaccess.h"
+
+/* ── Timerfd pool ────────────────────────────────── */
 
 #define TIMERFD_POOL_MAX 16
 
@@ -16,6 +20,8 @@ static slab_t    timerfd_slab;
 void timerfd_init(void) {
     slab_init(&timerfd_slab, timerfd_pool, (int)sizeof(timerfd_t), TIMERFD_POOL_MAX);
 }
+
+/* ── SYS_TIMERFD_CREATE (283) ────────────────────── */
 
 long do_timerfd_create(int clockid, int flags) {
     (void)clockid;
@@ -28,13 +34,12 @@ long do_timerfd_create(int clockid, int flags) {
     tfd->expire_ms = 0;
     tfd->interval_ms = 0;
     tfd->expirations = 0;
-    tfd->expire_tsc = 0;
-    tfd->interval_tsc = 0;
     tfd->armed = 0;
     tfd->flags = flags;
     tfd->refcount = 1;
-    tfd->lock = (mutex_t)MUTEX_INIT;
+    tfd->lock = (spinlock_t)SPINLOCK_INIT;
 
+    /* TFD_CLOEXEC/TFD_NONBLOCK → fd flags (values match O_CLOEXEC/O_NONBLOCK) */
     int fd_flags = O_RDWR;
     if (flags & TFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
     if (flags & TFD_NONBLOCK) fd_flags |= O_NONBLOCK;
@@ -71,7 +76,8 @@ long do_timerfd_settime(int fd, int tfd_flags,
     struct k_itimerspec knew;
     { int r = copy_from_user(&knew, new_value, sizeof(knew)); if (r) return r; }
 
-    mutex_lock(&tfd->lock);
+    uint64_t irqf;
+    spin_lock_irq(&tfd->lock, &irqf);
 
     if (old_value) {
         struct k_itimerspec kold;
@@ -95,32 +101,26 @@ long do_timerfd_settime(int fd, int tfd_flags,
     if (val_ms == 0 && int_ms == 0) {
         tfd->armed = 0;
         tfd->expirations = 0;
-        tfd->expire_tsc = 0;
-        tfd->interval_tsc = 0;
     } else {
-        if (tfd_flags & 1)
+        if (tfd_flags & 1) /* TFD_TIMER_ABSTIME */
             tfd->expire_ms = val_ms;
         else
             tfd->expire_ms = timer_ms() + val_ms;
         tfd->interval_ms = int_ms;
-        if (tfd_flags & 1)
-            tfd->expire_tsc = timer_boot_tsc + val_ms * timer_tsc_per_ms;
-        else
-            tfd->expire_tsc = timer_tsc_now() + val_ms * timer_tsc_per_ms;
-        tfd->interval_tsc = int_ms * timer_tsc_per_ms;
         tfd->expirations = 0;
         tfd->armed = 1;
     }
 
-    mutex_unlock(&tfd->lock);
+    spin_unlock_irq(&tfd->lock, irqf);
     return 0;
 }
 
+/* Check if any timerfd has expired — used by epoll_check_timeouts */
 int timerfd_any_expired(void) {
-    uint64_t now_tsc = timer_tsc_now();
+    uint64_t now = timer_ms();
     for (int i = 0; i < TIMERFD_POOL_MAX; i++) {
         timerfd_t *t = &timerfd_pool[i];
-        if (t->armed && t->expire_tsc && now_tsc >= t->expire_tsc) return 1;
+        if (t->armed && now >= t->expire_ms) return 1;
     }
     return 0;
 }
@@ -130,32 +130,30 @@ long timerfd_read(void *obj, void *buf, long count) {
     timerfd_t *tfd = (timerfd_t *)obj;
     if (!tfd) return -EBADF;
 
-    mutex_lock(&tfd->lock);
+    uint64_t irqf;
+    spin_lock_irq(&tfd->lock, &irqf);
 
     if (tfd->armed) {
-        uint64_t now_tsc = timer_tsc_now();
-        while (tfd->armed && tfd->expire_tsc && now_tsc >= tfd->expire_tsc) {
+        uint64_t now = timer_ms();
+        while (tfd->armed && now >= tfd->expire_ms) {
             tfd->expirations++;
-            if (tfd->interval_tsc > 0) {
-                tfd->expire_tsc += tfd->interval_tsc;
+            if (tfd->interval_ms > 0)
                 tfd->expire_ms += tfd->interval_ms;
-            } else {
+            else
                 tfd->armed = 0;
-                tfd->expire_tsc = 0;
-            }
         }
     }
 
     if (tfd->expirations == 0) {
-        mutex_unlock(&tfd->lock);
+        spin_unlock_irq(&tfd->lock, irqf);
         return -EAGAIN;
     }
 
     uint64_t val = tfd->expirations;
     tfd->expirations = 0;
-    mutex_unlock(&tfd->lock);
+    spin_unlock_irq(&tfd->lock, irqf);
 
-    copy_to_user(buf, &val, sizeof(val));
+    copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);
 }
 

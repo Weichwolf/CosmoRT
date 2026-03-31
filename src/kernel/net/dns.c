@@ -1,4 +1,6 @@
-/* CosmoRT DNS Resolver — kernel-level DNS for boot */
+/* CosmoRT DNS Resolver — kernel-level DNS for boot
+ * Extracted from net.c (Phase D1).
+ */
 
 #include "net/dns.h"
 #include "net/net.h"
@@ -6,8 +8,6 @@
 #include "net/ip.h"
 #include "net/arp.h"
 #include "core/timer.h"
-#include "core/event_queue.h"
-#include "proc/process.h"
 
 uint16_t dns_local_port = 0;
 
@@ -75,23 +75,9 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
 
     uint8_t reply[Q_PKT];
     uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
-    thread_t *cur = thread_current();
-    if (cur)
-        __atomic_store_n(&q_dns_wait_thread, cur, __ATOMIC_RELEASE);
-
     while (timer_ms() < deadline) {
         int len = q_pop(&q_udp_dns, reply, sizeof(reply));
-        if (len < 42 + 12) {
-            if (cur) {
-                int remain = (int)(deadline - timer_ms());
-                if (remain <= 0) break;
-                event_t ev;
-                event_wait(&cur->eq, &ev, remain);
-            } else {
-                arch_halt();
-            }
-            continue;
-        }
+        if (len < 42 + 12) { net_idle(); continue; }
 
         uint8_t *rdns = reply + 42;
         if (get16(rdns) != txid) continue;
@@ -122,15 +108,11 @@ int net_dns_resolve(const char *hostname, uint8_t ip_out[4]) {
             if (rtype == 1 && rdlen == 4 && ri2 + 4 <= rdns_len) {
                 mcpy(ip_out, rdns+ri2, 4);
                 dns_local_port = 0;
-                if (cur)
-                    __atomic_store_n(&q_dns_wait_thread, (struct thread *)0, __ATOMIC_RELEASE);
                 return 0;
             }
             ri2 += rdlen;
         }
     }
     dns_local_port = 0;
-    if (cur)
-        __atomic_store_n(&q_dns_wait_thread, (struct thread *)0, __ATOMIC_RELEASE);
     return -1;
 }

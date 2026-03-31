@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #else
+/* Freestanding userspace — define types directly */
 typedef unsigned long      uint64_t;
 typedef long               int64_t;
 typedef unsigned int       uint32_t;
@@ -17,6 +18,8 @@ typedef unsigned long      size_t;
 typedef long               ssize_t;
 #define NULL ((void *)0)
 #endif
+
+/* ── Stat struct — Linux x86_64 layout ── */
 
 struct k_stat {
     uint64_t st_dev, st_ino;
@@ -31,6 +34,8 @@ struct k_stat {
     int64_t  __unused[3];
 };
 
+/* ── Timespec — shared kernel/user boundary struct ── */
+
 #ifndef K_TIMESPEC_DEFINED
 #define K_TIMESPEC_DEFINED
 struct k_timespec { long tv_sec; long tv_nsec; };
@@ -43,12 +48,16 @@ struct k_itimerspec {
     struct k_timespec it_value;
 };
 
+/* ── Signal action — Linux-compatible layout for rt_sigaction ── */
+
 struct k_sigaction {
-    void    *sa_handler;
+    void    *sa_handler;   /* SIG_DFL=0, SIG_IGN=1, or handler address */
     uint64_t sa_flags;
     void    *sa_restorer;
     uint64_t sa_mask;
 };
+
+/* ── epoll_event — packed, matches Linux ABI ── */
 
 struct epoll_event {
     uint32_t events;

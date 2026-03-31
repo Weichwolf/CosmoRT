@@ -1,13 +1,21 @@
-/* CosmoRT hv_mouse — Hyper-V Synthetic Mouse */
+/* CosmoRT hv_mouse — Hyper-V Synthetic Mouse
+ *
+ * Receives mouse input via VMBus channel (Synthrdp HID).
+ * Stub: detects and opens channel.
+ *
+ * Only imports: hw.h, config.h, serial.h, vmbus.h
+ */
 
 #include "vmbus.h"
 #include "cosmort.h"
 
+/* Hyper-V Mouse GUID: {cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a} */
 static const uint8_t HV_MOUSE_GUID[16] = {
     0x9e, 0xb6, 0xa8, 0xcf, 0x4a, 0x5b, 0xc0, 0x4c,
     0xb9, 0x8b, 0x8b, 0xa1, 0xa1, 0xf3, 0xf9, 0x5a
 };
 
+/* Mouse protocol */
 #define HV_MOUSE_PROTO_REQUEST   1
 #define HV_MOUSE_PROTO_RESPONSE  2
 #define HV_MOUSE_PROTO_EVENT     3
@@ -25,10 +33,14 @@ struct hv_mouse_version_req {
 
 struct hv_mouse_report {
     struct hv_mouse_msg hdr;
-    uint8_t  report_data[];
+    uint8_t  report_data[];  /* HID report */
 } __attribute__((packed));
 
+/* ---- State ---- */
+
 static struct vmbus_channel *mouse_ch;
+
+/* ---- Callback ---- */
 
 static void hv_mouse_callback(struct vmbus_channel *ch, void *ctx) {
     (void)ctx;
@@ -38,9 +50,20 @@ static void hv_mouse_callback(struct vmbus_channel *ch, void *ctx) {
     if (len >= (int)sizeof(struct hv_mouse_msg)) {
         struct hv_mouse_msg *msg = (struct hv_mouse_msg *)buf;
         if (msg->type == HV_MOUSE_PROTO_EVENT) {
+            /* TODO Hyper-V Mouse — needs:
+             * 1. Parse HID report (report_data[]) → extract x/y/buttons
+             *    HID descriptors come via PROTO_RESPONSE after version ACK.
+             *    Hyper-V sends absolute coordinates (0..65535 range).
+             * 2. Feed parsed events into input subsystem (input_report_abs)
+             *    so they reach the VT cursor or CosmoUI compositor.
+             * 3. Handle protocol ACK: after processing each event batch,
+             *    send HV_MOUSE_PROTO_ACK back to host. Without ACK the
+             *    host queues up and eventually stops sending events. */
         }
     }
 }
+
+/* ---- Init ---- */
 
 int hv_mouse_init(void) {
     mouse_ch = vmbus_find_channel(HV_MOUSE_GUID);
@@ -57,6 +80,7 @@ int hv_mouse_init(void) {
         return -1;
     }
 
+    /* Version negotiation */
     struct hv_mouse_version_req ver;
     hw_memset(&ver, 0, sizeof(ver));
     ver.hdr.type = HV_MOUSE_PROTO_REQUEST;
@@ -65,6 +89,9 @@ int hv_mouse_init(void) {
 
     vmbus_send_pkt(mouse_ch, VMBUS_PKT_DATA_INBAND, &ver, sizeof(ver), 0, 0);
 
+    /* TODO: wait for HV_MOUSE_PROTO_RESPONSE, parse HID descriptor,
+     * then enter event loop. Currently version request is sent but
+     * response is not awaited — mouse events will arrive but are dropped. */
     serial_puts("hv_mouse: ready (stub — events dropped)\n");
     return 0;
 }

@@ -18,8 +18,9 @@
 #define O_NOATIME       0x40000
 #define O_CLOEXEC       0x80000
 #define O_PATH          0x200000
-#define O_TMPFILE       0x410000
+#define O_TMPFILE       0x410000  /* O_TMPFILE | O_DIRECTORY */
 
+/* fcntl commands */
 #define F_DUPFD         0
 #define F_GETFD         1
 #define F_SETFD         2
@@ -35,32 +36,37 @@
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC      1
 
+/* flock for fcntl F_GETLK/F_SETLK/F_SETLKW */
 struct k_flock {
-    short l_type;
-    short l_whence;
-    long  l_start;
-    long  l_len;
-    int   l_pid;
+    short l_type;       /* F_RDLCK, F_WRLCK, F_UNLCK */
+    short l_whence;     /* SEEK_SET, SEEK_CUR, SEEK_END */
+    long  l_start;      /* offset */
+    long  l_len;        /* 0 = entire file */
+    int   l_pid;        /* PID of lock owner */
 };
 #define F_RDLCK  0
 #define F_WRLCK  1
 #define F_UNLCK  2
 
+/* Seek */
 #define SEEK_SET        0
 #define SEEK_CUR        1
 #define SEEK_END        2
 
+/* AT constants */
 #define AT_FDCWD              (-100)
 #define AT_SYMLINK_NOFOLLOW   0x100
 #define AT_REMOVEDIR          0x200
 #define AT_SYMLINK_FOLLOW     0x400
 #define AT_EMPTY_PATH         0x1000
 
+/* access() mode bits */
 #define F_OK    0
 #define R_OK    4
 #define W_OK    2
 #define X_OK    1
 
+/* renameat2 flags */
 #define RENAME_NOREPLACE      (1 << 0)
 #define RENAME_EXCHANGE       (1 << 1)
 #define RENAME_WHITEOUT       (1 << 2)

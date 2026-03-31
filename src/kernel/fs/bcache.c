@@ -4,10 +4,13 @@
 #include "mm/page_alloc.h"
 #include "memops.h"
 #include "hw/serial.h"
-#include "core/mutex.h"
+#include "spinlock.h"
 
+/* Forward declarations for block driver */
 extern int blk_read(uint64_t block, void *buf);
 extern int blk_write(uint64_t block, const void *buf);
+
+/* ── Hash table ───────────────────────────────────── */
 
 #define HASH_BUCKETS 64
 #define HASH(b) ((b) & (HASH_BUCKETS - 1))
@@ -15,8 +18,11 @@ extern int blk_write(uint64_t block, const void *buf);
 static struct bcache_entry entries[BCACHE_SIZE];
 static struct bcache_entry *hash_table[HASH_BUCKETS];
 
-static struct bcache_entry lru_head;
-static mutex_t cache_lock = MUTEX_INIT;
+/* LRU list: head = most recently used, tail = least recently used */
+static struct bcache_entry lru_head;  /* sentinel */
+static spinlock_t cache_lock = SPINLOCK_INIT;
+
+/* ── LRU helpers ──────────────────────────────────── */
 
 static void lru_remove(struct bcache_entry *e) {
     if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
@@ -30,6 +36,8 @@ static void lru_push_front(struct bcache_entry *e) {
     if (lru_head.lru_next) lru_head.lru_next->lru_prev = e;
     lru_head.lru_next = e;
 }
+
+/* ── Hash helpers ─────────────────────────────────── */
 
 static void hash_insert(struct bcache_entry *e) {
     int h = HASH(e->block_nr);
@@ -56,6 +64,8 @@ static struct bcache_entry *hash_find(uint64_t block) {
     return 0;
 }
 
+/* ── Init ─────────────────────────────────────────── */
+
 void bcache_init(void) {
     lru_head.lru_next = 0;
     lru_head.lru_prev = 0;
@@ -70,6 +80,7 @@ void bcache_init(void) {
             serial_puts("bcache: page_alloc failed\n");
             return;
         }
+        /* All entries start on LRU (free) */
         lru_push_front(&entries[i]);
     }
 
@@ -83,20 +94,29 @@ void bcache_init(void) {
     serial_puts(" blocks, 1MB)\n");
 }
 
-static struct bcache_entry *evict_one(void) {
-    struct bcache_entry *e = lru_head.lru_prev;
+/* ── Evict LRU entry ─────────────────────────────── */
 
+static struct bcache_entry *evict_one(void) {
+    /* Walk LRU from tail (least recently used) */
+    struct bcache_entry *e = lru_head.lru_prev;
+    /* lru_head.lru_prev is the tail (sentinel has no lru_prev initially).
+     * Walk backwards from the end of the list. */
+
+    /* Find tail by walking forward from head */
     struct bcache_entry *tail = lru_head.lru_next;
     if (!tail) return 0;
     while (tail->lru_next) tail = tail->lru_next;
 
+    /* Walk backwards from tail to find unpinned entry */
     e = tail;
     while (e && e != &lru_head) {
         if (e->refcount == 0) {
+            /* Flush if dirty */
             if (e->dirty && e->block_nr != BCACHE_INVALID) {
                 blk_write(e->block_nr, e->data);
                 e->dirty = 0;
             }
+            /* Remove from hash and LRU */
             if (e->block_nr != BCACHE_INVALID)
                 hash_remove(e);
             lru_remove(e);
@@ -110,21 +130,27 @@ static struct bcache_entry *evict_one(void) {
     return 0;
 }
 
-struct bcache_entry *bcache_get(uint64_t block) {
-    mutex_lock(&cache_lock);
+/* ── Get (read + pin) ─────────────────────────────── */
 
+struct bcache_entry *bcache_get(uint64_t block) {
+    uint64_t flags;
+    spin_lock_irq(&cache_lock, &flags);
+
+    /* Check cache */
     struct bcache_entry *e = hash_find(block);
     if (e) {
         e->refcount++;
+        /* Move to front of LRU */
         lru_remove(e);
         lru_push_front(e);
-        mutex_unlock(&cache_lock);
+        spin_unlock_irq(&cache_lock, flags);
         return e;
     }
 
+    /* Cache miss — evict and read */
     e = evict_one();
     if (!e) {
-        mutex_unlock(&cache_lock);
+        spin_unlock_irq(&cache_lock, flags);
         return 0;
     }
 
@@ -134,35 +160,45 @@ struct bcache_entry *bcache_get(uint64_t block) {
     hash_insert(e);
     lru_push_front(e);
 
-    mutex_unlock(&cache_lock);
+    /* Read from disk (drop lock during I/O) */
+    spin_unlock_irq(&cache_lock, flags);
 
     if (blk_read(block, e->data) < 0) {
-        mutex_lock(&cache_lock);
+        /* Read failed — remove from cache */
+        spin_lock_irq(&cache_lock, &flags);
         hash_remove(e);
         lru_remove(e);
         e->block_nr = BCACHE_INVALID;
         e->refcount = 0;
         lru_push_front(e);
-        mutex_unlock(&cache_lock);
+        spin_unlock_irq(&cache_lock, flags);
         return 0;
     }
 
     return e;
 }
 
+/* ── Put (unpin) ──────────────────────────────────── */
+
 void bcache_put(struct bcache_entry *e) {
     if (!e) return;
-    mutex_lock(&cache_lock);
+    uint64_t flags;
+    spin_lock_irq(&cache_lock, &flags);
     if (e->refcount > 0) e->refcount--;
-    mutex_unlock(&cache_lock);
+    spin_unlock_irq(&cache_lock, flags);
 }
+
+/* ── Mark dirty ───────────────────────────────────── */
 
 void bcache_mark_dirty(struct bcache_entry *e) {
     if (e) e->dirty = 1;
 }
 
+/* ── Sync all dirty ───────────────────────────────── */
+
 void bcache_sync(void) {
-    mutex_lock(&cache_lock);
+    uint64_t flags;
+    spin_lock_irq(&cache_lock, &flags);
 
     for (int i = 0; i < BCACHE_SIZE; i++) {
         if (entries[i].dirty && entries[i].block_nr != BCACHE_INVALID) {
@@ -171,8 +207,10 @@ void bcache_sync(void) {
         }
     }
 
-    mutex_unlock(&cache_lock);
+    spin_unlock_irq(&cache_lock, flags);
 }
+
+/* ── Convenience: write through cache ─────────────── */
 
 int bcache_write_block(uint64_t block, const void *data) {
     struct bcache_entry *e = bcache_get(block);

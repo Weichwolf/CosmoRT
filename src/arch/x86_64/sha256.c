@@ -1,6 +1,12 @@
-/* SHA-256 — FIPS 180-4, scalar C. */
+/* SHA-256 — FIPS 180-4, scalar C.
+ *
+ * Portable implementation. No SSE/AVX. ~80 lines core.
+ * Lives in arch/ for future SIMD variants (SHA-NI, SSE2).
+ * Compiled with -msse2 (no -mno-sse) so SIMD upgrade is a drop-in. */
 
 #include "crypto/sha256.h"
+
+/* ── Round constants (first 32 bits of fractional cube roots of first 64 primes) ── */
 
 static const uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -20,6 +26,8 @@ static const uint32_t K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 };
+
+/* ── Helpers ── */
 
 #define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 #define CH(x,y,z)  (((x) & (y)) ^ (~(x) & (z)))
@@ -55,6 +63,8 @@ static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
+/* ── Public API ── */
+
 void sha256_init(sha256_ctx_t *ctx) {
     ctx->state[0] = 0x6a09e667; ctx->state[1] = 0xbb67ae85;
     ctx->state[2] = 0x3c6ef372; ctx->state[3] = 0xa54ff53a;
@@ -68,6 +78,7 @@ void sha256_update(sha256_ctx_t *ctx, const void *data, size_t len) {
     size_t off = ctx->count & 63;
     ctx->count += len;
 
+    /* Fill partial block */
     if (off) {
         size_t fill = 64 - off;
         if (len < fill) {
@@ -80,12 +91,14 @@ void sha256_update(sha256_ctx_t *ctx, const void *data, size_t len) {
         len -= fill;
     }
 
+    /* Full blocks */
     while (len >= 64) {
         sha256_transform(ctx->state, p);
         p += 64;
         len -= 64;
     }
 
+    /* Remaining bytes */
     for (size_t i = 0; i < len; i++) ctx->buf[i] = p[i];
 }
 
@@ -93,6 +106,7 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t hash[32]) {
     uint64_t bits = ctx->count * 8;
     size_t off = ctx->count & 63;
 
+    /* Padding: 0x80, then zeros, then 64-bit BE length */
     ctx->buf[off++] = 0x80;
     if (off > 56) {
         while (off < 64) ctx->buf[off++] = 0;
@@ -101,6 +115,7 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t hash[32]) {
     }
     while (off < 56) ctx->buf[off++] = 0;
 
+    /* Length in bits, big-endian */
     ctx->buf[56] = (uint8_t)(bits >> 56);
     ctx->buf[57] = (uint8_t)(bits >> 48);
     ctx->buf[58] = (uint8_t)(bits >> 40);
@@ -111,6 +126,7 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t hash[32]) {
     ctx->buf[63] = (uint8_t)(bits);
     sha256_transform(ctx->state, ctx->buf);
 
+    /* Output state as big-endian bytes */
     for (int i = 0; i < 8; i++) {
         hash[4*i+0] = (uint8_t)(ctx->state[i] >> 24);
         hash[4*i+1] = (uint8_t)(ctx->state[i] >> 16);

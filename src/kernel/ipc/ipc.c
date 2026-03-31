@@ -1,9 +1,12 @@
-/* CosmoRT IPC — Synchronous message passing + Notifications */
+/* CosmoRT IPC — Synchronous message passing + Notifications
+ *
+ * Per-endpoint locks for scalability (no global contention).
+ * Global lock only for endpoint allocation (rare path).
+ */
 
 #include "ipc/ipc.h"
 #include "proc/process.h"
 #include "core/percpu.h"
-#include "core/event_queue.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "proc/thread.h"
@@ -11,19 +14,23 @@
 
 extern void sched_add(thread_t *t);
 
+/* Thread lookup — delegated to process.c O(1) tid_table */
+
+/* Wake a thread blocked on IPC receive */
 static void ipc_wake_receiver(ipc_endpoint_t *ep) {
     if (ep->blocked_tid > 0) {
         thread_t *t = thread_find_by_tid(ep->blocked_tid);
-        if (t)
-            event_post(t, EQ_IPC_MSG, (uint64_t)0);
+        if (t && t->state == THREAD_BLOCKED)
+            sched_add(t);
         ep->blocked_tid = -1;
     }
     ep->blocked_pid = -1;
 }
 
 static ipc_endpoint_t endpoints[IPC_MAX_ENDPOINTS];
-static spinlock_t ipc_alloc_lock = SPINLOCK_INIT;
+static spinlock_t ipc_alloc_lock = SPINLOCK_INIT; /* only for create */
 
+/* Per-endpoint lock helpers (cast _lock field to spinlock_t*) */
 static inline spinlock_t *ep_lock(ipc_endpoint_t *ep) {
     return (spinlock_t *)&ep->_lock;
 }
@@ -115,16 +122,27 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
         return 0;
     }
 
+    /* Record blocked info and set state */
     ep->state = EP_RECV_WAIT;
     process_t *cur = proc_current();
     if (cur) ep->blocked_pid = (int)cur->pid;
-    thread_t *ct = thread_current();
+    thread_t *ct = percpu_self()->current_thread;
     if (ct) ep->blocked_tid = ct->tid;
     spin_unlock_irq(ep_lock(ep), flags);
 
-    if (ct) {
-        event_t ev;
-        event_wait(&ct->eq, &ev, -1);
+    /* Spin briefly then return EAGAIN — caller retries */
+    for (int i = 0; i < 100; i++) {
+        arch_pause();
+        spin_lock_irq(ep_lock(ep), &flags);
+        if (ep->notify_word || ep->state == EP_SEND_WAIT) {
+            spin_unlock_irq(ep_lock(ep), flags);
+            return ipc_try_recv(ep_id, msg);
+        }
+        if (ep->state != EP_RECV_WAIT) {
+            spin_unlock_irq(ep_lock(ep), flags);
+            return ipc_try_recv(ep_id, msg);
+        }
+        spin_unlock_irq(ep_lock(ep), flags);
     }
     return -EAGAIN;
 }
@@ -175,31 +193,12 @@ int ipc_notify(int ep_id, uint64_t bits) {
 }
 
 int ipc_wait_any(const ipc_wait_set_t *set, ipc_msg_t *msg) {
-    for (int i = 0; i < set->count; i++) {
-        if (ipc_try_recv(set->ep_ids[i], msg) == 0)
-            return i;
-    }
-
-    thread_t *ct = thread_current();
-    if (!ct) return -1;
-
-    for (int i = 0; i < set->count; i++) {
-        int id = set->ep_ids[i];
-        if (id < 0 || id >= IPC_MAX_ENDPOINTS) continue;
-        ipc_endpoint_t *ep = &endpoints[id];
-        uint64_t flags;
-        spin_lock_irq(ep_lock(ep), &flags);
-        if (ep->state != EP_FREE && ep->blocked_tid <= 0) {
-            ep->state = EP_RECV_WAIT;
-            ep->blocked_tid = ct->tid;
-            process_t *cur = proc_current();
-            if (cur) ep->blocked_pid = (int)cur->pid;
+    for (int round = 0; round < 2; round++) {
+        for (int i = 0; i < set->count; i++) {
+            if (ipc_try_recv(set->ep_ids[i], msg) == 0)
+                return i;
         }
-        spin_unlock_irq(ep_lock(ep), flags);
+        if (round == 0) arch_pause();
     }
-
-    event_t ev;
-    event_wait(&ct->eq, &ev, -1);
-
     return -1;
 }

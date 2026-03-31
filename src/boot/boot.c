@@ -1,13 +1,22 @@
-/* CosmoRT UEFI Bootloader */
+/* COSMO OS UEFI Bootloader — Minimal
+ *
+ * 1. Get GOP framebuffer
+ * 2. Get memory map
+ * 3. ExitBootServices
+ * 4. Jump to kernel_entry (ASM)
+ *
+ * After ExitBootServices, NO UEFI calls allowed.
+ */
 
 #include <efi.h>
 #include <efilib.h>
 
+/* Boot info passed to kernel */
 struct boot_info {
     UINT64 fb_addr;
     UINT32 fb_width;
     UINT32 fb_height;
-    UINT32 fb_pitch;
+    UINT32 fb_pitch;       /* bytes per scanline */
     UINT32 fb_bpp;
     UINT64 mmap_addr;
     UINT64 mmap_size;
@@ -19,8 +28,10 @@ static struct boot_info binfo;
 static EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
 static EFI_GUID acpi2_guid = ACPI_20_TABLE_GUID;
 
+/* Kernel entry point — in entry.asm */
 extern void kernel_entry(struct boot_info *info);
 
+/* Find ACPI RSDP */
 static UINT64 find_rsdp(EFI_SYSTEM_TABLE *ST) {
     for (UINTN i = 0; i < ST->NumberOfTableEntries; i++) {
         if (CompareGuid(&ST->ConfigurationTable[i].VendorGuid, &acpi2_guid) == 0)
@@ -37,6 +48,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ST->ConOut->ClearScreen(ST->ConOut);
     Print(L"COSMO OS Bootloader\r\n");
 
+    /* ── GOP ── */
     status = BS->LocateProtocol(&gop_guid, NULL, (void **)&gop);
     if (EFI_ERROR(status)) {
         Print(L"FATAL: No GOP\r\n");
@@ -54,12 +66,14 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     Print(L"GOP: %dx%d @ 0x%lx\r\n",
           binfo.fb_width, binfo.fb_height, binfo.fb_addr);
 
+    /* ── Memory Map ── */
     UINTN mmap_size = 0, map_key, desc_size;
     UINT32 desc_ver;
     EFI_MEMORY_DESCRIPTOR *mmap = NULL;
 
+    /* First call: get size */
     BS->GetMemoryMap(&mmap_size, NULL, &map_key, &desc_size, &desc_ver);
-    mmap_size += 4 * desc_size;
+    mmap_size += 4 * desc_size; /* padding for the allocation itself */
 
     status = BS->AllocatePool(EfiLoaderData, mmap_size, (void **)&mmap);
     if (EFI_ERROR(status)) {
@@ -80,18 +94,25 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     Print(L"Memory map: %d entries\r\n", mmap_size / desc_size);
     Print(L"Calling ExitBootServices...\r\n");
 
+    /* ── ExitBootServices ── */
     status = BS->ExitBootServices(ImageHandle, map_key);
     if (EFI_ERROR(status)) {
+        /* Memory map changed — retry */
         mmap_size += 4 * desc_size;
         BS->GetMemoryMap(&mmap_size, mmap, &map_key, &desc_size, &desc_ver);
         status = BS->ExitBootServices(ImageHandle, map_key);
         if (EFI_ERROR(status)) {
+            /* Can't print anymore if first ExitBootServices partially succeeded */
             for (;;) __asm__ volatile("hlt");
         }
     }
 
+    /* ── NO UEFI CALLS BEYOND THIS POINT ── */
+
+    /* Jump to kernel */
     kernel_entry(&binfo);
 
+    /* Never reached */
     for (;;) __asm__ volatile("hlt");
     return EFI_SUCCESS;
 }

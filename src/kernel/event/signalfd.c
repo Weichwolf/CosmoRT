@@ -1,4 +1,10 @@
-/* CosmoRT signalfd — intentionally unimplemented */
+/* CosmoRT signalfd — intentionally unimplemented
+ *
+ * signalfd requires deep integration with the signal delivery path:
+ * pending signals must be consumed by read() instead of delivered to
+ * handlers. Complexity outweighs benefit — programs fall back to
+ * sigaction/sigwaitinfo. Node.js does not require signalfd.
+ */
 
 #include "event/epoll.h"
 

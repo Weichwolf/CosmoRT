@@ -1,4 +1,8 @@
-/* COM1 serial — 115200 baud, 8N1, ring buffer for dmesg */
+/* COM1 serial — 115200 baud, 8N1, ring buffer for dmesg
+ *
+ * All output is mirrored to a 64KB ring buffer. procfs reads it live
+ * via serial_dmesg_read() — no VFS writes, no file I/O from serial.
+ */
 
 #include "hw/serial.h"
 #include "spinlock.h"
@@ -10,19 +14,23 @@
 static inline void port_out8(uint16_t port, uint8_t val) { arch_outb(port, val); }
 static inline uint8_t port_in8(uint16_t port) { return arch_inb(port); }
 
+/* ── dmesg ring buffer ─────────────────────────────── */
+
 #define DMESG_SIZE (64 * 1024)
 
 static char dmesg_ring[DMESG_SIZE];
-static int dmesg_head;
-static int dmesg_len;
+static int dmesg_head;  /* next write position (wraps) */
+static int dmesg_len;   /* total bytes stored (capped at DMESG_SIZE) */
 static spinlock_t dmesg_lock = SPINLOCK_INIT;
+
+/* ── Public API ────────────────────────────────────── */
 
 void serial_init(void) {
     port_out8(COM1 + 1, 0x00);
     port_out8(COM1 + 3, 0x80);
-    port_out8(COM1 + 0, 0x01);
+    port_out8(COM1 + 0, 0x01);  /* 115200 baud */
     port_out8(COM1 + 1, 0x00);
-    port_out8(COM1 + 3, 0x03);
+    port_out8(COM1 + 3, 0x03);  /* 8N1 */
     port_out8(COM1 + 2, 0xC7);
     port_out8(COM1 + 4, 0x0B);
 }
@@ -32,6 +40,7 @@ void serial_putchar(char c) {
         ;
     port_out8(COM1, c);
 
+    /* Append to ring buffer (multi-core safe) */
     uint64_t df;
     spin_lock_irq(&dmesg_lock, &df);
     dmesg_ring[dmesg_head] = c;
@@ -60,7 +69,7 @@ void serial_hex64(uint64_t v) {
 
 char serial_getchar(void) {
     if (!(port_in8(COM1 + 5) & 0x01))
-        return 0;
+        return 0; /* no data available */
     return (char)port_in8(COM1);
 }
 
@@ -68,16 +77,19 @@ int serial_data_available(void) {
     return (port_in8(COM1 + 5) & 0x01) ? 1 : 0;
 }
 
+/* ── dmesg read (for procfs) ─────────────────────── */
+
 int serial_dmesg_read(char *buf, int offset, int size) {
     if (offset >= dmesg_len || size <= 0) return 0;
     int avail = dmesg_len - offset;
     if (size > avail) size = avail;
 
+    /* Ring start: oldest byte position */
     int start;
     if (dmesg_len < DMESG_SIZE)
         start = 0;
     else
-        start = dmesg_head;
+        start = dmesg_head; /* oldest byte is at write cursor when full */
 
     for (int i = 0; i < size; i++) {
         int idx = (start + offset + i) % DMESG_SIZE;

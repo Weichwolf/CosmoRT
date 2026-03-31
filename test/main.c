@@ -11,7 +11,7 @@ int passes = 0;
 extern const ktest_entry_t __start_ktest[];
 extern const ktest_entry_t __stop_ktest[];
 
-#define BATCH 1
+#define BATCH 4
 
 /* Allocate MAP_SHARED anonymous memory */
 static void *shared_alloc(long size) {

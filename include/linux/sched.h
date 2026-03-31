@@ -16,6 +16,7 @@
 #define CLONE_CHILD_CLEARTID 0x00200000
 #define CLONE_CHILD_SETTID   0x01000000
 
+/* Namespace flags — not supported (single-user, no containers) */
 #define CLONE_NEWNS          0x00020000
 #define CLONE_NEWCGROUP      0x02000000
 #define CLONE_NEWUTS         0x04000000

@@ -1,7 +1,6 @@
 /* CosmoRT Interrupt handling — APIC + IDT, thread-aware */
 
 #include "core/irq.h"
-#include "core/timer.h"
 #include "hw/serial.h"
 #include "proc/thread.h"
 #include "proc/process.h"
@@ -16,17 +15,7 @@
 #include "arch/arch.h"
 #include "memops.h"
 
-#define VECTOR_DE        0
-#define VECTOR_BP        3
-#define VECTOR_UD        6
-#define VECTOR_GP        13
-#define VECTOR_PF        14
-#define VECTOR_MF        16
-#define VECTOR_XF        19
-#define VECTOR_TIMER     32
-#define VECTOR_SYSCALL   0x80
-#define VECTOR_RESCHED   0xFD
-#define VECTOR_TLB_SHOOT 0xFE
+/* ── Local APIC ────────────────────────────────────── */
 
 #define LAPIC_PHYS       0xFEE00000
 #define LAPIC_BASE       (LAPIC_PHYS + PHYS_OFFSET)
@@ -35,20 +24,15 @@
 #define LAPIC_TPR        0x080
 #define LAPIC_TIMER      0x320
 #define LAPIC_TIMER_INIT 0x380
-#define LAPIC_TIMER_CUR  0x390
 #define LAPIC_TIMER_DIV  0x3E0
-
-#define LAPIC_LVT_PERIODIC (1 << 17)
-#define LAPIC_LVT_TIMER_PERIODIC (LAPIC_LVT_PERIODIC | VECTOR_TIMER)
-#define LAPIC_LVT_TIMER_ONESHOT  (VECTOR_TIMER)
-
-static uint32_t lapic_ticks_per_ms = 100000;
 
 static volatile uint32_t *lapic = (volatile uint32_t *)LAPIC_BASE;
 
 static void lapic_write(uint32_t reg, uint32_t val) { lapic[reg/4] = val; }
 
 void lapic_eoi(void) { lapic_write(LAPIC_EOI, 0); }
+
+/* ── I/O APIC ──────────────────────────────────────── */
 
 #define IOAPIC_PHYS 0xFEC00000
 #define IOAPIC_BASE (IOAPIC_PHYS + PHYS_OFFSET)
@@ -70,10 +54,14 @@ void ioapic_route_irq(uint8_t irq, uint8_t vector) {
     ioapic_write(0x10 + irq*2 + 1, 0);
 }
 
+/* Level-triggered, active-low — required for PCI INTx shared IRQs */
 void ioapic_route_irq_level(uint8_t irq, uint8_t vector) {
+    /* Bit 13 = active-low, bit 15 = level-triggered */
     ioapic_write(0x10 + irq*2, (uint32_t)vector | (1 << 13) | (1 << 15));
     ioapic_write(0x10 + irq*2 + 1, 0);
 }
+
+/* ── IDT ───────────────────────────────────────────── */
 
 struct idt_entry {
     uint16_t offset_lo;
@@ -115,6 +103,8 @@ static void idt_set_entry_user(int n, uint64_t handler) {
     idt[n].reserved   = 0;
 }
 
+/* ── Helpers ───────────────────────────────────────── */
+
 typedef struct {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
@@ -122,7 +112,10 @@ typedef struct {
     uint64_t rip, cs, rflags, rsp, ss;
 } irq_frame_t;
 
+/* Forward declaration */
 static void default_exception_with_frame(int vector, irq_frame_t *frame);
+
+/* ── Cold-path error helpers (keep strings out of hot IRQ dispatch) ── */
 
 __attribute__((cold, noreturn))
 static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
@@ -152,6 +145,8 @@ static void segfault_log(uint64_t cr2, uint64_t rip, uint64_t error, int pid) {
     }
 }
 
+/* ── Handlers ──────────────────────────────────────── */
+
 #define MAX_HANDLERS 256
 static irq_handler_t handlers[MAX_HANDLERS];
 volatile int irq_event_pending = 0;
@@ -163,16 +158,19 @@ void irq_register(int vector, irq_handler_t handler) {
 
 __attribute__((hot))
 void irq_dispatch(int vector, irq_frame_t *frame) {
-    if (vector == VECTOR_SYSCALL) {
+    /* INT 0x80: syscall from Ring 3 (legacy path) */
+    if (vector == 0x80) {
         long sysnum = (long)frame->rax;
         frame->rax = (uint64_t)sys_handler(
             sysnum, (long)frame->rdi, (long)frame->rsi,
             (long)frame->rdx, (long)frame->r10, (long)frame->r8,
             (long)frame->r9);
-        if (sysnum != SYS_RT_SIGRETURN) {
+        /* Signal delivery for INT 0x80 path: sync irq_frame ↔ thread_t */
+        if (sysnum != 15 /* SYS_RT_SIGRETURN */) {
             extern void check_pending_signals(void);
             thread_t *t = percpu_self()->current_thread;
             if (t && t->proc && (t->proc->sig_pending & ~t->sig_blocked)) {
+                /* Save irq frame → thread_t */
                 t->r15 = frame->r15; t->r14 = frame->r14;
                 t->r13 = frame->r13; t->r12 = frame->r12;
                 t->r11 = frame->r11; t->r10 = frame->r10;
@@ -184,6 +182,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 t->rip = frame->rip; t->rflags = frame->rflags;
                 t->rsp = frame->rsp;
                 check_pending_signals();
+                /* Write back thread_t → irq frame */
                 frame->r15 = t->r15; frame->r14 = t->r14;
                 frame->r13 = t->r13; frame->r12 = t->r12;
                 frame->r11 = t->r11; frame->r10 = t->r10;
@@ -199,11 +198,16 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         return;
     }
 
+    /* Page fault (vector 14): demand paging */
     if (vector == 14) {
         uint64_t cr2 = arch_get_cr2();
         uint64_t error = frame->error;
 
+        /* Kernel-mode fault (bit 2 = 0): try demand paging for user addresses */
         if (!(error & 4)) {
+            /* If faulting address is in user half, the kernel was accessing
+             * a valid-but-unmapped user buffer (e.g. copy_path_from_user).
+             * Look up VMA, demand-map if possible, resume. */
             if (cr2 < 0x800000000000ULL) {
                 percpu_t *kcpu = percpu_self();
                 thread_t *kt = kcpu->current_thread;
@@ -224,10 +228,12 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         if (knp) {
                             uint64_t kpage_addr = cr2 & ~0xFFFULL;
                             if (k_file_ino) {
+                                /* File-backed demand page in kernel access path */
                                 uint64_t foff = k_file_offset + (kpage_addr - k_vma_start);
                                 uint64_t phys = 0;
                                 if (k_shared)
                                     phys = page_cache_lookup(k_file_ino, foff);
+                                /* Shared writable: map read-only for dirty tracking */
                                 int kmap_prot = kprot;
                                 if (k_shared && (kprot & PROT_WRITE))
                                     kmap_prot = kprot & ~PROT_WRITE;
@@ -254,12 +260,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                 if (kpage) {
                                     if (map_user_page(kp->pml4, kpage_addr,
                                                       virt_to_phys(kpage), kprot) == 0) {
-                                        return;
+                                        return; /* resume kernel code */
                                     }
                                     page_free(kpage);
                                 }
                             }
                         }
+                        /* Kernel write to COW user page */
                         if (kcow) {
                             uint64_t kpage_addr = cr2 & ~0xFFFULL;
                             extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
@@ -289,12 +296,18 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                             }
                         }
                     }
+                    /* trylock failed → fall through to fault_recover */
                 }
             }
+            /* Kernel accessed unmapped user address (e.g. bad pointer from syscall).
+             * If fault_recover is armed, resume execution at the setjmp return
+             * point by restoring callee-saved registers and RSP/RIP from the
+             * jmpbuf into the IRQ frame. The setjmp will return 1 (via RAX). */
             {
                 percpu_t *kfcpu = percpu_self();
                 if (kfcpu->fault_recover && cr2 < 0x800000000000ULL) {
                     kfcpu->fault_recover = 0;
+                    /* jmpbuf layout: [rbx, rbp, r12, r13, r14, r15, rsp, rip] */
                     uint64_t *jb = kfcpu->fault_jmpbuf;
                     frame->rbx = jb[0];
                     frame->rbp = jb[1];
@@ -302,15 +315,16 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     frame->r13 = jb[3];
                     frame->r14 = jb[4];
                     frame->r15 = jb[5];
-                    frame->rsp = jb[6] + 8;
+                    frame->rsp = jb[6] + 8; /* +8: skip return addr (not popped by ret) */
                     frame->rip = jb[7];
-                    frame->rax = 1;
-                    return;
+                    frame->rax = 1; /* setjmp return value */
+                    return; /* IRET will resume at setjmp return */
                 }
             }
             pf_kernel_panic(cr2, error, frame->rip);
         }
 
+        /* User-mode page fault — try demand paging */
         percpu_t *cpu = percpu_self();
         thread_t *t = cpu->current_thread;
         process_t *p = t ? t->proc : 0;
@@ -320,10 +334,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             spin_lock_irq(&p->lock, &vma_flags);
             vma_t *vma = vma_find(p->vma_root, cr2);
             if (vma) {
+                /* Protection violation: check write permission */
                 if ((error & 1) && (error & 2) && !(vma->prot & PROT_WRITE)) {
+                    /* Write to read-only VMA → kill */
                     spin_unlock_irq(&p->lock, vma_flags);
                     goto kill_process;
                 }
+                /* COW fault: write to present page with COW bit in writable VMA */
                 if ((error & 1) && (error & 2) && (vma->prot & PROT_WRITE)) {
                     int cow_prot = vma->prot;
                     spin_unlock_irq(&p->lock, vma_flags);
@@ -331,6 +348,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
                     uint64_t pte = read_pte_pub(p->pml4, page_addr);
                     #define PTE_COW_IRQ (1ULL << 9)
+                    /* Write to writable VMA but page not COW: re-map with correct prot.
+                     * This handles mprotect race (PTE stale after VMA prot change). */
                     if ((pte & 1) && !(pte & PTE_COW_IRQ)) {
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
                         if (map_user_page(p->pml4, page_addr, phys, cow_prot) == 0) {
@@ -343,17 +362,22 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         uint64_t old_phys = pte & 0x000FFFFFFFFFF000ULL;
                         int rc = page_refcount(old_phys);
                         if (rc <= 1) {
+                            /* Last reference: just restore write + remove COW */
                             if (map_user_page(p->pml4, page_addr, old_phys, cow_prot) == 0) {
                                 arch_invlpg(page_addr);
                                 return;
                             }
                         } else {
+                            /* Shared: copy page, release our ref on old */
                             uint64_t *new_page = alloc_page();
                             if (new_page) {
                                 kmemcpy(new_page, phys_to_virt(old_phys), 4096);
                                 if (map_user_page(p->pml4, page_addr,
                                                   virt_to_phys(new_page), cow_prot) == 0) {
                                     arch_invlpg(page_addr);
+                                    /* Notify dedup: old hash invalidated, new page diverged */
+                                    /* page_free handles refcount: decrements and
+                                     * only returns to buddy when count reaches 0 */
                                     page_free(phys_to_virt(old_phys));
                                     return;
                                 }
@@ -363,6 +387,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     }
                     goto kill_process;
                 }
+                /* NX violation: page present + instruction fetch, but VMA allows exec.
+                 * Re-map the page with correct permissions (PTE stale from mprotect race). */
                 if ((error & 1) && (error & 0x10) && (vma->prot & PROT_EXEC)) {
                     int nx_prot = vma->prot;
                     spin_unlock_irq(&p->lock, vma_flags);
@@ -373,11 +399,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
                         if (map_user_page(p->pml4, page_addr, phys, nx_prot) == 0) {
                             arch_invlpg(page_addr);
-                            return;
+                            return; /* resume execution */
                         }
                     }
                     goto kill_process;
                 }
+                /* Not-present fault in a valid VMA → allocate page.
+                 * PROT_NONE VMAs must NOT be demand-paged — access = SIGSEGV. */
                 if (!(error & 1) && (vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) {
                     int dp_prot = vma->prot;
                     int dp_huge = (vma->flags & VMA_HUGEPAGE);
@@ -390,11 +418,15 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
 
+                    /* File-backed demand paging */
                     if (__builtin_expect(dp_file_ino != 0, 0)) {
                         uint64_t foff = dp_file_offset + (page_addr - vma_start);
                         uint64_t phys = 0;
+                        /* MAP_SHARED: check page cache first */
                         if (dp_shared)
                             phys = page_cache_lookup(dp_file_ino, foff);
+                        /* MAP_SHARED + writable: map read-only for dirty tracking.
+                         * Write faults will enable PTE_WRITE; CPU sets PTE_DIRTY. */
                         int map_prot = dp_prot;
                         if (dp_shared && (dp_prot & PROT_WRITE))
                             map_prot = dp_prot & ~PROT_WRITE;
@@ -419,6 +451,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         goto kill_process;
                     }
 
+                    /* Anonymous: try 2MB huge page if VMA is eligible and aligned */
                     if (dp_huge) {
                         uint64_t huge_base = cr2 & ~0x1FFFFFULL;
                         if (huge_base >= vma_start &&
@@ -427,10 +460,11 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                             if (hp) {
                                 if (map_user_huge_page(p->pml4, huge_base,
                                                        virt_to_phys(hp), dp_prot) == 0) {
-                                    return;
+                                    return; /* resume execution */
                                 }
                                 huge_page_free(hp);
                             }
+                            /* Fallback to 4KB */
                         }
                     }
 
@@ -438,7 +472,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if (page) {
                         if (map_user_page(p->pml4, page_addr,
                                           virt_to_phys(page), dp_prot) == 0) {
-                            return;
+                            return; /* resume execution */
                         }
                         page_free(page);
                     }
@@ -449,10 +483,13 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         }
 
     kill_process:
+        /* Try to deliver SIGSEGV to user handler before killing */
         if (t && t->proc) {
             process_t *faultp = t->proc;
-            struct k_sigaction *sa = &faultp->sig_actions[SIGSEGV];
-            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(SIGSEGV))) {
+            struct k_sigaction *sa = &faultp->sig_actions[11]; /* SIGSEGV=11 */
+            if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(11))) {
+                /* User SIGSEGV handler registered and not blocked — deliver signal.
+                 * Save IRQ frame into thread_t, deliver, write back. */
                 t->fault_addr = cr2;
                 t->rip = frame->rip;
                 t->rsp = frame->rsp;
@@ -467,8 +504,9 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 t->r14 = frame->r14; t->r15 = frame->r15;
 
                 extern void deliver_signal(thread_t *t, int signo);
-                deliver_signal(t, SIGSEGV);
+                deliver_signal(t, 11);
 
+                /* Write back modified registers to IRQ frame */
                 frame->rip = t->rip;
                 frame->rsp = t->rsp;
                 frame->rflags = t->rflags;
@@ -480,25 +518,37 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                 frame->r10 = t->r10; frame->r11 = t->r11;
                 frame->r12 = t->r12; frame->r13 = t->r13;
                 frame->r14 = t->r14; frame->r15 = t->r15;
-                return;
+                return; /* resume into signal handler */
             }
         }
 
         segfault_log(cr2, frame->rip, error, (t && t->proc) ? (int)t->proc->pid : -1);
         if (t && t->proc) {
+            /* Use do_exit_group to properly close FDs, wake parent, etc. */
             extern void do_exit_group(int status);
+            /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
             arch_set_cr3(virt_to_phys(t->proc->pml4));
-            do_exit_group(139);
+            do_exit_group(139); /* SIGSEGV */
+            /* do_exit_group calls thread_return_to_kernel internally */
         }
         pf_kernel_panic(cr2, error, frame->rip);
     }
 
-    if (vector < VECTOR_TIMER && vector != VECTOR_PF) {
+    /* Other CPU exceptions (0-31, except 14 handled above): use frame-aware handler */
+    if (vector < 32 && vector != 14) {
         default_exception_with_frame(vector, frame);
         return;
     }
 
-    if (vector == VECTOR_TIMER || vector == VECTOR_RESCHED) {
+    /* Timer (vector 32): RT scheduler preemption */
+    if (vector == 32) {
+        extern void sched_preempt(void *frame);
+        sched_preempt(frame);
+    }
+
+    /* Reschedule IPI (vector 0xFD): preempt immediately instead of
+     * waiting for next timer tick. Gives <1ms wake-up latency. */
+    if (vector == 0xFD) {
         extern void sched_preempt(void *frame);
         sched_preempt(frame);
     }
@@ -509,11 +559,16 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
     lapic_eoi();
 }
 
+/* Exception handler — kills user thread, halts on kernel fault */
+
 __attribute__((cold))
 static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
 
+    /* Kernel-mode exception during syscall with fault_recover armed:
+     * the kernel faulted on user-supplied data (e.g. fxrstor with garbage).
+     * Recover via longjmp → sys_handler returns -EFAULT. */
     if (!(frame->cs & 3) && cpu->fault_recover) {
         cpu->fault_recover = 0;
         uint64_t *jb = cpu->fault_jmpbuf;
@@ -526,17 +581,23 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         return;
     }
 
+    /* User-mode exception: try to deliver as signal before killing.
+     * Map: GPF(13), Page Fault(14) → SIGSEGV(11);
+     *      INT3(3) → SIGTRAP(5); FPE(0,16,19) → SIGFPE(8) */
     if (t && t->proc && (frame->cs & 3)) {
         int signo = 0;
-        if (vector == VECTOR_GP || vector == VECTOR_PF) signo = SIGSEGV;
-        else if (vector == VECTOR_BP) signo = SIGTRAP;
-        else if (vector == VECTOR_DE || vector == VECTOR_MF || vector == VECTOR_XF) signo = SIGFPE;
-        else if (vector == VECTOR_UD) signo = SIGILL;
+        if (vector == 13 || vector == 14) signo = SIGSEGV;
+        else if (vector == 3) signo = SIGTRAP;
+        else if (vector == 0 || vector == 16 || vector == 19) signo = SIGFPE;
+        else if (vector == 6) signo = SIGILL;
 
         if (signo) {
             struct k_sigaction *sa = &t->proc->sig_actions[signo];
+            /* Only deliver if handler exists AND signal not already blocked
+             * (blocked = we're already in the handler → avoid infinite loop) */
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(signo))) {
-                if (vector == VECTOR_PF) {
+                /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
+                if (vector == 14) {
                     t->fault_addr = arch_get_cr2();
                 } else {
                     t->fault_addr = frame->rip;
@@ -565,7 +626,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
                 frame->r10 = t->r10; frame->r11 = t->r11;
                 frame->r12 = t->r12; frame->r13 = t->r13;
                 frame->r14 = t->r14; frame->r15 = t->r15;
-                return;
+                return; /* resume into signal handler */
             }
         }
     }
@@ -580,7 +641,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_puts(" rsp=");
     serial_hex64(frame->rsp);
 
-    if (vector == VECTOR_PF) {
+    if (vector == 14) {
         uint64_t cr2 = arch_get_cr2();
         serial_puts(" CR2="); serial_hex64(cr2);
     }
@@ -607,6 +668,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         serial_puts(" r15="); serial_hex64(frame->r15);
         serial_puts(" fs=");  serial_hex64(arch_get_fs_base());
         serial_puts(" killed\n");
+        /* Use do_exit_group to properly close FDs, wake parent, etc. */
         extern void do_exit_group(int status);
         arch_set_cr3(virt_to_phys(t->proc->pml4));
         t->proc->exit_signal = vector;
@@ -619,6 +681,8 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
 
 __attribute__((cold))
 static void default_exception(int vector) {
+    /* Legacy path without frame — shouldn't be called for exceptions
+     * that go through irq_dispatch with frame, but kept as fallback */
     serial_puts("\nEXCEPTION ");
     serial_putchar('0' + vector / 10);
     serial_putchar('0' + vector % 10);
@@ -626,12 +690,16 @@ static void default_exception(int vector) {
     arch_cli_halt();
 }
 
+/* ── TLB Shootdown IPI ─────────────────────────────── */
+
 static volatile uint64_t shootdown_pml4 = 0;
 static volatile int shootdown_ack = 0;
 static spinlock_t shootdown_lock = SPINLOCK_INIT;
 
 static void tlb_shootdown_handler(int vector) {
     (void)vector;
+    /* Flush TLB if this core uses the affected address space, or if
+     * pml4==0 (unconditional flush, e.g. from free_address_space). */
     uint64_t target = shootdown_pml4;
     if (target == 0) {
         arch_flush_tlb();
@@ -642,11 +710,12 @@ static void tlb_shootdown_handler(int vector) {
             arch_flush_tlb();
     }
     __sync_fetch_and_add(&shootdown_ack, 1);
+    /* EOI handled by irq_dispatch — do NOT double-EOI */
 }
 
 void tlb_shootdown(uint64_t pml4_phys) {
     int ncores = smp_num_cores();
-    if (ncores < 2) return;
+    if (ncores < 2) return; /* single core, local invlpg suffices */
 
     uint64_t flags;
     spin_lock_irq(&shootdown_lock, &flags);
@@ -655,19 +724,22 @@ void tlb_shootdown(uint64_t pml4_phys) {
     shootdown_pml4 = pml4_phys;
     arch_mfence();
 
+    /* Send IPI to all other cores: all-excluding-self shorthand, vector 0xFE */
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
-    *icr_lo = 0x000C0000 | VECTOR_TLB_SHOOT;
+    *icr_lo = 0x000C0000 | 0xFE;
 
+    /* Wait for all other cores to ACK (with timeout to avoid deadlock) */
     int expected = ncores - 1;
-    uint64_t sd_deadline = timer_ms() + 10;
-    while (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) < expected) {
-        if (timer_ms() >= sd_deadline)
+    for (int i = 0; i < 10000000; i++) {
+        if (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) >= expected)
             break;
         arch_pause();
     }
 
     spin_unlock_irq(&shootdown_lock, flags);
 }
+
+/* ── Timer ─────────────────────────────────────────── */
 
 static volatile uint64_t tick_count = 0;
 
@@ -676,34 +748,46 @@ static void timer_handler(int vector) {
     __sync_fetch_and_add(&tick_count, 1);
     extern void random_add_interrupt_entropy(void);
     random_add_interrupt_entropy();
+    /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
-    extern int timer_poll(int max_work);
-    timer_poll(0);
+    /* Prioritised I/O polling: net, timers, audio, input, vsync */
+    extern void rt_poll_run(void);
+    rt_poll_run();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }
+
+/* ── Reschedule IPI ────────────────────────────────── */
 
 static void resched_ipi_handler(int vector) {
     (void)vector;
     percpu_self()->need_resched = 1;
 }
 
+/* ── Init ──────────────────────────────────────────── */
+
 __attribute__((cold))
 void irq_init(void) {
     arch_cli();
 
+    /* ISR stub addresses are identity-mapped (EFI relocations).
+     * Add PHYS_OFFSET so they resolve via direct map in user PML4. */
     for (int i = 0; i < 256; i++)
         idt_set_entry(i, ensure_high(isr_stub_table[i]));
-    for (int i = 0; i < VECTOR_TIMER; i++)
+    for (int i = 0; i < 32; i++)
         irq_register(i, default_exception);
 
-    idt_set_entry_user(VECTOR_SYSCALL, ensure_high(isr_stub_table[VECTOR_SYSCALL]));
-    idt_set_entry_user(VECTOR_BP, ensure_high(isr_stub_table[VECTOR_BP]));
+    idt_set_entry_user(0x80, ensure_high(isr_stub_table[0x80]));
+    /* int3 (breakpoint) must be DPL=3 for userspace abort()/SIGTRAP */
+    idt_set_entry_user(3, ensure_high(isr_stub_table[3]));
 
-    irq_register(VECTOR_TLB_SHOOT, tlb_shootdown_handler);
+    /* TLB shootdown IPI vector */
+    irq_register(0xFE, tlb_shootdown_handler);
 
-    irq_register(VECTOR_RESCHED, resched_ipi_handler);
+    /* Reschedule IPI (0xFD): sets need_resched flag on target core.
+     * Breaks hlt + triggers reschedule on next sched_loop iteration. */
+    irq_register(0xFD, resched_ipi_handler);
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);
@@ -719,25 +803,11 @@ void irq_init(void) {
     lapic_write(LAPIC_TPR, 0);
     serial_puts("IRQ: LAPIC enabled\n");
 
-    irq_register(VECTOR_TIMER, timer_handler);
+    irq_register(32, timer_handler);
     lapic_write(LAPIC_TIMER_DIV, 0x03);
-    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_PERIODIC);
-    lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms);
+    lapic_write(LAPIC_TIMER, 0x20020);    /* periodic, vector 32 */
+    lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) — RT-Core */
     serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
 
     arch_sti();
-}
-
-void lapic_delay_ms(uint32_t ms) {
-    if (ms == 0) return;
-
-    uint32_t count = ms * lapic_ticks_per_ms;
-    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_ONESHOT);
-    lapic_write(LAPIC_TIMER_INIT, count);
-
-    while (lapic[LAPIC_TIMER_CUR / 4] > 0)
-        arch_halt();
-
-    lapic_write(LAPIC_TIMER, LAPIC_LVT_TIMER_PERIODIC);
-    lapic_write(LAPIC_TIMER_INIT, lapic_ticks_per_ms);
 }

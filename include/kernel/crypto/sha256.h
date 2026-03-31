@@ -1,4 +1,6 @@
-/* CosmoRT SHA-256 — FIPS 180-4 compliant. */
+/* CosmoRT SHA-256 — FIPS 180-4 compliant.
+ * Scalar C implementation (portable). No inline-asm.
+ * RT-Core safe: no FPU, no malloc. */
 #ifndef CRYPTO_SHA256_H
 #define CRYPTO_SHA256_H
 
@@ -8,7 +10,7 @@
 typedef struct {
     uint32_t state[8];
     uint8_t  buf[64];
-    uint64_t count;
+    uint64_t count;       /* bytes processed */
 } sha256_ctx_t;
 
 void sha256_init(sha256_ctx_t *ctx);

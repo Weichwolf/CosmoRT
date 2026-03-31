@@ -1,15 +1,24 @@
-/* CosmoRT hyperv_fb — Hyper-V Synthetic Framebuffer (Synthvid) */
+/* CosmoRT hyperv_fb — Hyper-V Synthetic Framebuffer (Synthvid)
+ *
+ * Maps the Hyper-V framebuffer for display output.
+ * Stub: detects device and reports resolution. Full rendering deferred.
+ *
+ * Only imports: hw.h, config.h, serial.h, vmbus.h
+ */
 
 #include "vmbus.h"
 #include "cosmort.h"
 
+/* Hyper-V Synthetic Video GUID: {da0a7802-e377-4aac-8e77-0558eb1073f8} */
 static const uint8_t SYNTHVID_GUID[16] = {
     0x02, 0x78, 0x0a, 0xda, 0x77, 0xe3, 0xac, 0x4a,
     0x8e, 0x77, 0x05, 0x58, 0xeb, 0x10, 0x73, 0xf8
 };
 
+/* Synthvid protocol versions */
 #define SYNTHVID_VERSION_WIN10  0x00030005
 
+/* Synthvid message types */
 #define SYNTHVID_MSG_ERROR             0
 #define SYNTHVID_MSG_VERSION_REQUEST   1
 #define SYNTHVID_MSG_VERSION_RESPONSE  2
@@ -48,13 +57,19 @@ struct synthvid_vram_location {
     uint64_t vram_gpa;
 } __attribute__((packed));
 
+/* ---- State ---- */
+
 static struct vmbus_channel *fb_ch;
 static volatile int fb_resp_ready;
+
+/* ---- Callback ---- */
 
 static void hyperv_fb_callback(struct vmbus_channel *ch, void *ctx) {
     (void)ch; (void)ctx;
     fb_resp_ready = 1;
 }
+
+/* ---- Init ---- */
 
 int hyperv_fb_init(void) {
     fb_ch = vmbus_find_channel(SYNTHVID_GUID);
@@ -71,6 +86,7 @@ int hyperv_fb_init(void) {
         return -1;
     }
 
+    /* Version negotiation */
     struct synthvid_version_req ver;
     hw_memset(&ver, 0, sizeof(ver));
     ver.hdr.type = SYNTHVID_MSG_VERSION_REQUEST;
@@ -84,6 +100,17 @@ int hyperv_fb_init(void) {
     while (!fb_resp_ready && hw_ms() < deadline)
         __asm__ volatile("pause");
 
+    /* TODO Hyper-V Framebuffer — needs:
+     * 1. Receive SYNTHVID_MSG_VERSION_RESPONSE, check is_accepted.
+     * 2. Send SYNTHVID_MSG_VRAM_LOCATION with a DMA-allocated VRAM
+     *    buffer (cosmo_dma_alloc, ~8MB for 1920x1080x32). Wait for
+     *    SYNTHVID_MSG_VRAM_LOCATION_ACK.
+     * 3. Send SYNTHVID_MSG_SITUATION_UPDATE with desired resolution.
+     *    Wait for ACK with actual resolution.
+     * 4. Register VRAM buffer as the fb.c framebuffer (fb_set_buffer)
+     *    so VT rendering writes there.
+     * 5. On dirty regions: send SYNTHVID_MSG_DIRT rectangles to tell
+     *    the host which parts of VRAM changed (performance). */
     serial_puts("hyperv_fb: ready (stub — no VRAM mapped)\n");
     return 0;
 }

@@ -2,34 +2,51 @@
 
 #include "internal.h"
 
-void sched_preempt_voluntary(thread_t *t) {
-    extern void schedule(void);
-    extern void sched_add(thread_t *t);
-    if (t->state == THREAD_RUNNING)
-        t->state = THREAD_RUNNABLE;
-    sched_add(t);
-    t->blocking_info.type = BLOCK_YIELD;
-    schedule();
-}
+/* ── SYS_sched_yield (24) ────────────────────────── */
 
 long do_sched_yield(void) {
-    extern void schedule(void);
+    /* Real yield: save user state, enqueue at tail, longjmp to sched_loop.
+     * sched_pick returns the next thread (FIFO round-robin), so other
+     * threads (e1000d, shell) get CPU time before we run again.
+     *
+     * sched_yield longjmps via thread_return_to_kernel, so
+     * check_signals_syscall_path in dispatch.c is never reached.
+     * Check signals explicitly before yielding. Stop signals
+     * (SIGTSTP/SIGSTOP) call thread_return_to_kernel themselves
+     * and never reach the yield code below. */
+    thread_t *t = thread_current();
+    if (!t) return 0;
+
+    /* sched_yield longjmps via thread_return_to_kernel, so the normal
+     * check_signals_syscall_path in dispatch.c is never reached.
+     * Check stop signals explicitly before yielding. We must save user
+     * state first (check_pending_signals reads percpu->syscall_frame for
+     * stop signals and calls thread_return_to_kernel which never comes
+     * back). For non-stop signals, we skip — they'll be delivered via
+     * the timer preempt path (sched_tick). */
+    if (t->proc) {
+        uint64_t pending = t->proc->sig_pending & ~t->sig_blocked;
+        /* Only handle stop (19-22) and fatal signals via check_pending_signals.
+         * SIGKILL (9) must also be handled since sched_yield bypasses dispatch. */
+        if (pending & ((1ULL << 9) | (1ULL << 19) | (1ULL << 20) |
+                       (1ULL << 21) | (1ULL << 22)))
+            check_pending_signals();
+    }
+
+    extern uint64_t pml4[];
     extern void sched_add(thread_t *t);
-    thread_t *cur = thread_current();
-    if (!cur) return 0;
-
-    if (cur->state == THREAD_RUNNING)
-        cur->state = THREAD_RUNNABLE;
-    sched_add(cur);
-
-    cur->blocking_info.type = BLOCK_YIELD;
-    schedule();
-
-    return 0;
+    save_user_state_for_block(t, 0); /* saves state, sets rax=0 */
+    sched_add(t);                    /* enqueue at tail (FIFO) */
+    t->state = THREAD_RUNNING;       /* prevent sched_loop double-add */
+    arch_set_cr3(virt_to_phys(pml4));
+    thread_return_to_kernel(t); /* longjmp to sched_loop */
+    return 0; /* unreachable */
 }
 
+/* ── SYS_sched_setaffinity (203) / getaffinity (204) ── */
+
 long do_sched_setaffinity(int pid, size_t cpusetsize, const uint64_t *mask) {
-    (void)pid;
+    (void)pid; /* pid=0 → current thread */
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
@@ -52,10 +69,12 @@ long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     if (t->cpu_affinity >= 0)
         kmask = 1ULL << t->cpu_affinity;
     else
-        kmask = ~0ULL;
+        kmask = ~0ULL;  /* all 64 cores */
     { int r = copy_to_user(mask, &kmask, 8); if (r) return r; }
     return (long)sizeof(uint64_t);
 }
+
+/* ── SYS_sched_setscheduler (144) / getscheduler (145) ── */
 
 struct sched_param_k { int sched_priority; };
 

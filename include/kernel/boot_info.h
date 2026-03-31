@@ -8,7 +8,7 @@ struct boot_info {
     uint64_t fb_addr;
     uint32_t fb_width;
     uint32_t fb_height;
-    uint32_t fb_pitch;
+    uint32_t fb_pitch;       /* bytes per scanline */
     uint32_t fb_bpp;
     uint64_t mmap_addr;
     uint64_t mmap_size;

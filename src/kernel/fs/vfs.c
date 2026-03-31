@@ -2,6 +2,8 @@
 
 #include "fs/vfs_internal.h"
 
+/* ── Slab pools ──────────────────────────────────── */
+
 #define VFS_NODE_MAX 256
 #define VFS_FILE_MAX 512
 
@@ -13,10 +15,13 @@ slab_t file_slab;
 struct vfs_node *vfs_root_node;
 uint64_t vfs_next_ino = 1;
 
+/* cwd is now per-process (process_t.cwd). Helper to get it: */
 char *vfs_get_cwd(void) {
     process_t *p = proc_current();
     return p ? p->cwd : 0;
 }
+
+/* ── String helpers ──────────────────────────────── */
 
 int kstrlen(const char *s) {
     int n = 0;
@@ -35,20 +40,27 @@ int kstreq(const char *a, const char *b) {
     return *a == *b;
 }
 
+/* ── procfs routing ──────────────────────────────── */
+
+/* Returns pointer to name after "/proc/" or NULL */
 const char *procfs_name(const char *path) {
     if (path[0]=='/' && path[1]=='p' && path[2]=='r' && path[3]=='o' &&
         path[4]=='c') {
         if (path[5] == '\0' || path[5] == '/') {
             const char *name = path + 5;
             if (*name == '/') name++;
-            return name;
+            return name; /* "" for /proc, "meminfo" for /proc/meminfo, etc. */
         }
     }
     return 0;
 }
 
+/* ── ext2 routing ─────────────────────────────────── */
+
+/* Returns 1 if path should use ramfs (not ext2) */
 int is_ramfs_path(const char *path) {
     if (!ext2_mounted()) return 1;
+    /* /dev/shm always ramfs */
     if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
         path[4]=='/' && path[5]=='s' && path[6]=='h' && path[7]=='m' &&
         (path[8]=='/' || path[8]==0))
@@ -56,10 +68,13 @@ int is_ramfs_path(const char *path) {
     return 0;
 }
 
+/* Walk an ext2 path component-by-component, following symlinks.
+ * Returns final inode number, or 0 on failure. */
 uint64_t ext2_walk(const char *path) {
     if (!path || path[0] != '/') return 0;
     if (path[0] == '/' && path[1] == 0) return EXT2_ROOT_INO;
 
+    /* Mutable copy for symlink restart */
     char buf[512];
     int blen = kstrlen(path);
     if (blen >= (int)sizeof(buf)) return 0;
@@ -68,7 +83,7 @@ uint64_t ext2_walk(const char *path) {
     int symloop = 0;
 
 restart:
-    if (symloop > 8) return 0;
+    if (symloop > 8) return 0;  /* ELOOP */
 
     uint32_t cur = EXT2_ROOT_INO;
     char *p = buf + 1;
@@ -77,6 +92,7 @@ restart:
         while (*p == '/') p++;
         if (!*p) break;
 
+        /* Extract component */
         char *start = p;
         while (*p && *p != '/') p++;
         int len = (int)(p - start);
@@ -90,6 +106,7 @@ restart:
         if (ext2_dir_lookup(cur, name, &child) < 0)
             return 0;
 
+        /* Check if child is a symlink — resolve transparently */
         struct ext2_inode ip;
         if (ext2_inode_read(child, &ip) == 0 &&
             (ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFLNK && ip.i_size > 0) {
@@ -99,9 +116,11 @@ restart:
             if (tlen <= 0) return 0;
             target[tlen] = 0;
 
+            /* Remaining path after this component */
             int rlen = kstrlen(p);
             int ttlen = tlen;
             if (target[0] == '/') {
+                /* Absolute symlink: target + "/" + remaining */
                 if (ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
                 for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
                 for (int i = 0; i < ttlen; i++) buf[i] = target[i];
@@ -110,6 +129,7 @@ restart:
                 for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
                 buf[off + rlen] = 0;
             } else {
+                /* Relative symlink: resolve from parent of current component */
                 int prefix_len = (int)(start - buf);
                 if (prefix_len + ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
                 for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
@@ -127,19 +147,24 @@ restart:
     return cur;
 }
 
+/* Public accessor for execve — walk ext2 path to inode */
 uint64_t ext2_walk_path(const char *path) {
     return ext2_walk(path);
 }
 
+/* Public accessor for execve — get file size from ext2 inode */
 uint64_t ext2_file_size(uint64_t ino) {
     struct ext2_inode ip;
     if (ext2_inode_read((uint32_t)ino, &ip) < 0) return 0;
     if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return 0;
+    /* i_size holds lower 32 bits; i_dir_acl holds upper 32 bits for regular files */
     uint64_t sz = ip.i_size;
+    /* Conservative: only use high bits if the FS actually uses them */
     if (ip.i_dir_acl) sz |= (uint64_t)ip.i_dir_acl << 32;
     return sz;
 }
 
+/* Walk to parent directory, extract basename. Returns parent inode or 0. */
 uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
     if (!path || path[0] != '/') return 0;
 
@@ -153,6 +178,7 @@ uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
 
     if (last_slash == 0) return EXT2_ROOT_INO;
 
+    /* Build parent path */
     char parent_path[256];
     int plen = last_slash < 255 ? last_slash : 255;
     for (int i = 0; i < plen; i++) parent_path[i] = path[i];
@@ -160,6 +186,8 @@ uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
 
     return ext2_walk(parent_path);
 }
+
+/* ── Node allocation ─────────────────────────────── */
 
 struct vfs_node *node_alloc(const char *name, int type) {
     struct vfs_node *n = (struct vfs_node *)slab_alloc(&node_slab);
@@ -191,10 +219,12 @@ void file_free(struct vfs_file *f) {
     slab_free(&file_slab, f);
 }
 
+/* Increment refcount on a vfs_file (for fork fd duplication) */
 void vfs_file_incref(struct vfs_file *f) {
     if (f) __sync_fetch_and_add(&f->refcount, 1);
 }
 
+/* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj) {
     if (!obj) return;
     struct vfs_file *f = (struct vfs_file *)obj;
@@ -202,8 +232,13 @@ void vfs_file_free_obj(void *obj) {
         file_free(f);
 }
 
+/* ── Inotify path helper ─────────────────────────── */
+
+/* Build full path from a ramfs node (for inotify events).
+ * Returns 1 on success, 0 on failure. */
 static int vfs_node_path(struct vfs_node *node, char *buf, int bufsize) {
     if (!node || bufsize < 2) return 0;
+    /* Stack of ancestors */
     struct vfs_node *stack[32];
     int depth = 0;
     struct vfs_node *n = node;
@@ -223,12 +258,15 @@ static int vfs_node_path(struct vfs_node *node, char *buf, int bufsize) {
     return 1;
 }
 
+/* Fire IN_MODIFY for a ramfs file node */
 void vfs_notify_modify(struct vfs_node *node) {
     if (!node) return;
     char path[256];
     if (vfs_node_path(node, path, 256))
         inotify_event(path, IN_MODIFY);
 }
+
+/* ── Init ────────────────────────────────────────── */
 
 void vfs_init(void) {
     slab_init(&node_slab, node_pool, (int)sizeof(struct vfs_node), VFS_NODE_MAX);
@@ -237,18 +275,24 @@ void vfs_init(void) {
     serial_puts("vfs: init (ramfs)\n");
 }
 
+/* ── Open/Close ──────────────────────────────────── */
+
 int vfs_open(const char *path, int flags, int mode) {
     (void)mode;
 
+    /* Device files */
+    /* /dev/console → PTY slave 0 (VT0) */
     if (kstreq(path, "/dev/console")) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
         int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)0L, flags & 3);
         return fd < 0 ? -EMFILE : fd;
     }
+    /* /dev/tty → current process's PTY (controlling terminal) */
     if (kstreq(path, "/dev/tty")) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
+        /* Find the PTY from existing fds (stdin is typically PTY_SLAVE) */
         for (int i = 0; i < 3; i++) {
             if (p->fds.entries[i].type == FD_PTY_SLAVE) {
                 int fd = fd_alloc(&p->fds, FD_PTY_SLAVE,
@@ -256,8 +300,10 @@ int vfs_open(const char *path, int flags, int mode) {
                 return fd < 0 ? -EMFILE : fd;
             }
         }
-        return -ENOTTY;
+        return -ENOTTY; /* no controlling terminal */
     }
+    /* /dev/tty1 through /dev/tty12 → PTY slave for VT N-1
+     * tty1=VT0, tty2=VT1, tty3=VT2, tty4=VT3. tty5-tty12 → ENOENT */
     if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
         path[4]=='/' && path[5]=='t' && path[6]=='t' && path[7]=='y' &&
         path[8] >= '1' && path[8] <= '9') {
@@ -265,7 +311,7 @@ int vfs_open(const char *path, int flags, int mode) {
         const char *d = path + 8;
         while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
         if (*d == '\0' && vt_num >= 1 && vt_num <= 12) {
-            int vt_id = vt_num - 1;
+            int vt_id = vt_num - 1; /* tty1 → VT0 */
             if (vt_id >= PTY_MAX) return -ENOENT;
             process_t *p = proc_current();
             if (!p) return -EFAULT;
@@ -273,6 +319,7 @@ int vfs_open(const char *path, int flags, int mode) {
             return fd < 0 ? -EMFILE : fd;
         }
     }
+    /* /dev/pts/N → PTY slave N (same as /dev/tty(N+1)) */
     if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
         path[4]=='/' && path[5]=='p' && path[6]=='t' && path[7]=='s' &&
         path[8]=='/') {
@@ -302,10 +349,11 @@ not_pts:
         return fd < 0 ? -EMFILE : fd;
     }
 
+    /* /proc directory itself? */
     if (kstreq(path, "/proc") || kstreq(path, "/proc/")) {
         procfs_fd_t *pf = procfs_fd_alloc();
         if (!pf) return -ENOMEM;
-        pf->handle = -1;
+        pf->handle = -1;  /* sentinel: directory listing, not a file */
         pf->offset = 0;
 
         process_t *p = proc_current();
@@ -316,17 +364,19 @@ not_pts:
         return fd;
     }
 
+    /* procfs path? */
     const char *pname = procfs_name(path);
     if (pname) {
         int handle = procfs_open(pname);
         if (!handle) {
+            /* Try per-PID dynamic path (e.g. /proc/123/stat) */
             int ptype = procfs_pid_exists(pname);
             if (ptype == 0) return -ENOENT;
-            if (ptype == 2) return -ELOOP;
+            if (ptype == 2) return -ELOOP; /* symlink — must readlink, not open */
 
             procfs_fd_t *pf = procfs_fd_alloc();
             if (!pf) return -ENOMEM;
-            pf->handle = (ptype == 3) ? -3 : -2;
+            pf->handle = (ptype == 3) ? -3 : -2; /* -3 = fd directory, -2 = per-pid file */
             pf->offset = 0;
             int ni = 0;
             while (ni < 63 && pname[ni]) { pf->name[ni] = pname[ni]; ni++; }
@@ -352,6 +402,7 @@ not_pts:
         return fd;
     }
 
+    /* ext2 path? */
     if (!is_ramfs_path(path)) {
         uint64_t ino64 = ext2_walk(path);
         uint32_t ino = (uint32_t)ino64;
@@ -360,11 +411,13 @@ not_pts:
             return -EEXIST;
 
         if (ino == 0 && (flags & O_CREAT)) {
+            /* Create file on ext2 */
             const char *basename;
             uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
             uint32_t parent_ino = (uint32_t)parent_ino64;
             if (parent_ino == 0) return -ENOENT;
 
+            /* Ensure parent is a directory */
             struct ext2_inode pip;
             if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
             if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
@@ -390,7 +443,7 @@ not_pts:
         if (!f) return -ENOMEM;
 
         f->type = is_dir ? VFS_DIR : VFS_FILE;
-        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH | O_NONBLOCK);
+        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
         f->refcount = 1;
         f->backend = VFS_BACKEND_EXT2;
         f->offset = 0;
@@ -411,8 +464,10 @@ not_pts:
         return fd;
     }
 
+    /* ramfs path */
     struct vfs_node *node = vfs_lookup(path);
 
+    /* O_NOFOLLOW: reject if final component is a symlink */
     if (node && (flags & O_NOFOLLOW)) {
         int lerr = 0;
         struct vfs_node *raw = vfs_lookup_nofollow(path, &lerr);
@@ -436,7 +491,7 @@ not_pts:
     if (!f) return -ENOMEM;
 
     f->type = node->type;
-    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH | O_NONBLOCK);
+    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
@@ -468,6 +523,7 @@ int vfs_close(int fd) {
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (f) {
+        /* Generate inotify close event based on open mode */
         if (f->path[0]) {
             int writable = (f->flags & (O_WRONLY | O_RDWR));
             inotify_event(f->path, writable ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
@@ -479,6 +535,8 @@ int vfs_close(int fd) {
     fd_close(&p->fds, fd);
     return 0;
 }
+
+/* ── CWD ─────────────────────────────────────────── */
 
 int vfs_getcwd(char *buf, size_t size) {
     char *cwd = vfs_get_cwd();
@@ -513,7 +571,10 @@ int vfs_chdir(const char *path) {
     return 0;
 }
 
+/* ── Populate ramfs ──────────────────────────────── */
+
 int vfs_add_file(const char *path, const void *data, size_t len) {
+    /* Ensure parent directories exist */
     ensure_dirs(path);
 
     struct vfs_node *node = vfs_create(path, VFS_FILE);
@@ -528,6 +589,7 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
     serial_puts("vfs: added ");
     serial_puts(path);
     serial_puts(" (");
+    /* Print size */
     char t[12]; int ti = 0;
     size_t v = len;
     do { t[ti++] = '0' + (char)(v % 10); v /= 10; } while (v);
@@ -537,10 +599,13 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
     return 0;
 }
 
+/* ── Kernel-internal file append (no process context) ── */
+
 long vfs_kernel_append(const char *path, const void *buf, size_t len) {
     if (!buf || !len) return 0;
 
     if (is_ramfs_path(path)) {
+        /* ramfs: find or create the node, append directly */
         struct vfs_node *node = vfs_lookup(path);
         if (!node) {
             ensure_dirs(path);
@@ -556,6 +621,7 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
         return (long)len;
     }
 
+    /* ext2: walk path, create if missing, append via ext2_write */
     uint64_t ino64 = ext2_walk(path);
     uint32_t ino = (uint32_t)ino64;
     if (ino == 0) {
@@ -582,6 +648,8 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
     return (long)rc;
 }
 
+/* ── Mount ext2 ───────────────────────────────────── */
+
 void vfs_mount_ext2(void) {
     if (ext2_mount() == 0)
         serial_puts("vfs: ext2 mounted as /\n");
@@ -595,6 +663,7 @@ uint64_t vfs_ext2_lookup(const char *path) {
 }
 
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
+    /* Try ramfs first (for embedded binaries like /lib/ld-musl-x86_64.so.1) */
     struct vfs_node *node = vfs_lookup(path);
     if (node && node->type == VFS_FILE && node->data && node->size > 0) {
         size_t sz = node->size;
@@ -607,6 +676,7 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
         return 0;
     }
 
+    /* Try ext2 */
     if (ext2_mounted()) {
         uint64_t ino64 = ext2_walk(path);
         uint32_t ino = (uint32_t)ino64;
@@ -622,6 +692,7 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
         uint8_t *buf = (uint8_t *)pages_alloc(npages);
         if (!buf) return -ENOMEM;
 
+        /* Read in chunks */
         size_t off = 0;
         while (off < sz) {
             size_t chunk = sz - off;
@@ -632,7 +703,7 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
                 return r;
             }
             off += (size_t)r;
-            if ((size_t)r < chunk) break;
+            if ((size_t)r < chunk) break; /* EOF */
         }
 
         *out_data = buf;

@@ -2,9 +2,12 @@
 
 #include "fs/vfs_internal.h"
 
+/* ── File growth ─────────────────────────────────── */
+
 int grow_file(struct vfs_node *node, size_t needed) {
     if (needed <= node->capacity) return 0;
 
+    /* Round up to page boundary */
     size_t new_cap = (needed + 4095) & ~4095ULL;
     int new_pages = (int)(new_cap / 4096);
     if (new_pages <= 0) new_pages = 1;
@@ -26,6 +29,8 @@ int grow_file(struct vfs_node *node, size_t needed) {
     return 0;
 }
 
+/* ── Read/Write ──────────────────────────────────── */
+
 long vfs_read(int fd, void *buf, size_t count) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -38,6 +43,7 @@ long vfs_read(int fd, void *buf, size_t count) {
 
     if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
+        /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
         uint8_t kbuf[4096];
         size_t total = 0;
         while (total < count) {
@@ -56,6 +62,7 @@ long vfs_read(int fd, void *buf, size_t count) {
         return (long)total;
     }
 
+    /* ramfs */
     if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
@@ -65,6 +72,7 @@ long vfs_read(int fd, void *buf, size_t count) {
     size_t avail = node->size - (size_t)f->offset;
     if (count > avail) count = avail;
 
+    /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
     if (node->data) {
         uint8_t kbuf[4096];
         size_t done = 0;
@@ -91,6 +99,7 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
         return (long)rc;
     }
 
+    /* ramfs */
     if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
@@ -128,6 +137,7 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
         return (long)total;
     }
 
+    /* ramfs */
     if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
@@ -166,10 +176,12 @@ long vfs_write(int fd, const void *buf, size_t count) {
     if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_FILE) return -EISDIR;
         if (f->flags & O_APPEND) {
+            /* Re-read inode size for append */
             struct ext2_inode ip;
             if (ext2_inode_read((uint32_t)f->disk_ino, &ip) == 0)
                 f->offset = ip.i_size;
         }
+        /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
         uint8_t kbuf[4096];
         size_t total = 0;
         while (total < count) {
@@ -184,6 +196,7 @@ long vfs_write(int fd, const void *buf, size_t count) {
         }
         f->offset += (uint64_t)total;
         f->disk_size = f->offset;
+        /* Invalidate page cache — demand-paged readers must see new data */
         extern void page_cache_invalidate_ino(uint64_t ino);
         page_cache_invalidate_ino(f->disk_ino);
         if (total > 0 && f->path[0])
@@ -191,6 +204,7 @@ long vfs_write(int fd, const void *buf, size_t count) {
         return (long)total;
     }
 
+    /* ramfs */
     if (!f->node) return -EBADF;
     struct vfs_node *node = f->node;
     if (node->type != VFS_FILE) return -EISDIR;
@@ -203,6 +217,7 @@ long vfs_write(int fd, const void *buf, size_t count) {
         if (grow_file(node, end) < 0) return -ENOMEM;
     }
 
+    /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
     {
         uint8_t kbuf[4096];
         size_t done = 0;
@@ -218,10 +233,13 @@ long vfs_write(int fd, const void *buf, size_t count) {
     if (end > node->size) node->size = end;
 
     vfs_notify_modify(node);
+    /* Invalidate page cache — demand-paged readers must see new data */
     extern void page_cache_invalidate_ino(uint64_t ino);
     page_cache_invalidate_ino(node->ino);
     return (long)count;
 }
+
+/* ── Read by inode (for demand paging in page fault handler) ── */
 
 static struct vfs_node *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) {
     if (!node) return 0;
@@ -237,6 +255,7 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
     if (backend == VFS_BACKEND_EXT2) {
         return (long)ext2_read((uint32_t)ino, buf, offset, len);
     }
+    /* ramfs: find node by inode, read from its data buffer */
     extern struct vfs_node *vfs_root_node;
     struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
     if (!node || node->type != VFS_FILE) return -ENOENT;
@@ -248,10 +267,13 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
     return (long)len;
 }
 
+/* Write by inode (for msync / dirty page write-back) */
+
 long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len) {
     if (backend == VFS_BACKEND_EXT2) {
         return (long)ext2_write((uint32_t)ino, buf, offset, len);
     }
+    /* ramfs: find node by inode, write to its data buffer */
     extern struct vfs_node *vfs_root_node;
     struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
     if (!node || node->type != VFS_FILE) return -ENOENT;

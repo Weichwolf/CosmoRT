@@ -1,9 +1,15 @@
-/* CosmoRT x86_64 Architecture Primitives */
+/* CosmoRT x86_64 Architecture Primitives
+ *
+ * All inline assembly lives here. src/kernel/ .c files must not
+ * contain __asm__ — they call arch_*() instead.
+ */
 #ifndef COSMO_ARCH_X86_64_H
 #define COSMO_ARCH_X86_64_H
 
 #include <stdint.h>
 #include <stddef.h>
+
+/* --- TLB / Address Space ------------------------------------------ */
 
 static inline void arch_flush_tlb(void) {
     __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3"
@@ -17,6 +23,8 @@ static inline void arch_invlpg(uint64_t va) {
 static inline void arch_set_cr3(uint64_t phys) {
     __asm__ volatile("mov %0, %%cr3" :: "r"(phys) : "memory");
 }
+
+/* --- Control Registers -------------------------------------------- */
 
 static inline uint64_t arch_get_cr2(void) {
     uint64_t v;
@@ -44,6 +52,8 @@ static inline void arch_set_cr4(uint64_t v) {
     __asm__ volatile("mov %0, %%cr4" :: "r"(v));
 }
 
+/* --- MSR ---------------------------------------------------------- */
+
 static inline uint64_t arch_rdmsr(uint32_t msr) {
     uint32_t lo, hi;
     __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
@@ -56,7 +66,7 @@ static inline void arch_wrmsr(uint32_t msr, uint64_t val) {
 }
 
 static inline void arch_set_fs_base(uint64_t val) {
-    arch_wrmsr(0xC0000100, val);
+    arch_wrmsr(0xC0000100, val);   /* IA32_FS_BASE */
 }
 
 static inline uint64_t arch_get_fs_base(void) {
@@ -64,8 +74,10 @@ static inline uint64_t arch_get_fs_base(void) {
 }
 
 static inline void arch_set_kernel_gs_base(uint64_t val) {
-    arch_wrmsr(0xC0000102, val);
+    arch_wrmsr(0xC0000102, val);   /* IA32_KERNEL_GS_BASE */
 }
+
+/* --- FPU / SSE state ---------------------------------------------- */
 
 static inline void arch_fxsave(void *area) {
     __asm__ volatile("fxsave %0" : "=m"(*(char (*)[512])area));
@@ -75,6 +87,8 @@ static inline void arch_fxrstor(const void *area) {
     __asm__ volatile("fxrstor %0" :: "m"(*(const char (*)[512])area));
 }
 
+/* --- CPU hints / halt --------------------------------------------- */
+
 static inline void arch_halt(void) {
     __asm__ volatile("sti; hlt");
 }
@@ -83,6 +97,7 @@ static inline void arch_cli_halt(void) {
     __asm__ volatile("cli; hlt");
 }
 
+/* Platform shutdown — implemented in qemu.c / hyperv.c */
 void arch_shutdown(void);
 
 static inline void arch_pause(void) {
@@ -97,32 +112,42 @@ static inline void arch_cli(void) {
     __asm__ volatile("cli");
 }
 
+/* --- Barriers ----------------------------------------------------- */
+
 static inline void arch_mfence(void) {
     __asm__ volatile("mfence" ::: "memory");
 }
 
-static inline void arch_wmb(void) { __asm__ volatile("" ::: "memory"); }
-static inline void arch_rmb(void) { __asm__ volatile("" ::: "memory"); }
-static inline void arch_mb(void)  { __asm__ volatile("mfence" ::: "memory"); }
+/* Memory barriers for lock-free data structures.
+ * x86 TSO: stores are ordered, loads are ordered. Only need compiler barriers
+ * for store-release/load-acquire. Full barriers for special cases. */
+static inline void arch_wmb(void) { __asm__ volatile("" ::: "memory"); }  /* write barrier (compiler) */
+static inline void arch_rmb(void) { __asm__ volatile("" ::: "memory"); }  /* read barrier (compiler) */
+static inline void arch_mb(void)  { __asm__ volatile("mfence" ::: "memory"); }  /* full barrier */
 
 static inline void arch_store_release(volatile uint32_t *p, uint32_t v) {
-    __asm__ volatile("" ::: "memory");
+    __asm__ volatile("" ::: "memory");  /* compiler barrier before store */
     *p = v;
 }
 static inline uint32_t arch_load_acquire(volatile uint32_t *p) {
     uint32_t v = *p;
-    __asm__ volatile("" ::: "memory");
+    __asm__ volatile("" ::: "memory");  /* compiler barrier after load */
     return v;
 }
 
+/* DMA cache coherency — x86 PCIe is cache-coherent, these are no-ops */
 static inline void arch_dma_sync_for_device(void *addr, size_t len) { (void)addr; (void)len; }
 static inline void arch_dma_sync_for_cpu(void *addr, size_t len) { (void)addr; (void)len; }
+
+/* --- TSC ---------------------------------------------------------- */
 
 static inline uint64_t arch_rdtsc(void) {
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
 }
+
+/* --- CPUID -------------------------------------------------------- */
 
 static inline void arch_cpuid(uint32_t leaf,
                                uint32_t *eax, uint32_t *ebx,
@@ -140,6 +165,8 @@ static inline void arch_cpuid_count(uint32_t leaf, uint32_t subleaf,
                      : "a"(leaf), "c"(subleaf));
 }
 
+/* --- RDRAND ------------------------------------------------------- */
+
 static inline uint64_t arch_rdrand(void) {
     uint64_t r;
     __asm__ volatile("rdrand %0" : "=r"(r));
@@ -153,6 +180,8 @@ static inline int arch_rdrand_checked(uint64_t *out) {
     *out = r;
     return ok;
 }
+
+/* --- I/O ports ---------------------------------------------------- */
 
 static inline void arch_outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
@@ -173,6 +202,8 @@ static inline uint32_t arch_inl(uint16_t port) {
     __asm__ volatile("inl %w1, %0" : "=a"(val) : "Nd"(port));
     return val;
 }
+
+/* --- Descriptor tables -------------------------------------------- */
 
 static inline void arch_lidt(const void *desc) {
     __asm__ volatile("lidt %0" :: "m"(*(const char (*)[10])desc));
@@ -196,19 +227,27 @@ static inline arch_desc_t arch_sidt(void) {
     return d;
 }
 
+/* --- Stack pointer ------------------------------------------------ */
+
 static inline uint64_t arch_get_rsp(void) {
     uint64_t sp;
     __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
     return sp;
 }
 
+/* --- SMAP (Supervisor Mode Access Prevention) --------------------- */
+
+/* STAC: temporarily allow kernel access to user pages (set AC in RFLAGS) */
 static inline void arch_stac(void) {
     __asm__ volatile(".byte 0x0f, 0x01, 0xcb" ::: "memory", "cc");
 }
 
+/* CLAC: revoke kernel access to user pages (clear AC in RFLAGS) */
 static inline void arch_clac(void) {
     __asm__ volatile(".byte 0x0f, 0x01, 0xca" ::: "memory", "cc");
 }
+
+/* --- Hyper-V hypercall -------------------------------------------- */
 
 static inline uint64_t arch_hyperv_call(uint64_t control, uint64_t input_phys,
                                          uint64_t output_phys, void *hc_page) {

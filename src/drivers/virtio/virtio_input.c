@@ -1,14 +1,26 @@
-/* CosmoRT virtio-input driver — keyboard + mouse */
+/* CosmoRT virtio-input driver — keyboard + mouse
+ *
+ * virtio-input PCI: vendor 0x1AF4, device 0x1052 (modern).
+ * Also matches legacy 0x1000-0x103F with subsys 18.
+ * VQ 0: eventq (input events from device), VQ 1: statusq (LED control).
+ *
+ * IRQ-driven: events buffered in ring, read via virtio_input_read().
+ * Supports multiple virtio-input devices (keyboard + mouse are separate).
+ */
 
 #include "virtio_input.h"
 #include "virtio.h"
 #include "cosmort.h"
+
+/* ── Virtio-input event (from device) ──────────────── */
 
 struct virtio_input_event_raw {
     uint16_t type;
     uint16_t code;
     int32_t  value;
 } __attribute__((packed));
+
+/* ── Per-device state ──────────────────────────────── */
 
 #define MAX_INPUT_DEVS 4
 #define NUM_EVENT_BUFS 32
@@ -17,13 +29,15 @@ struct virtio_input_event_raw {
 struct input_dev {
     virtio_dev_t dev;
     virtqueue_t  eventq;
-    uint8_t (*event_bufs)[EVENT_SIZE];
+    uint8_t (*event_bufs)[EVENT_SIZE];   /* DMA buffers for eventq */
     uint64_t event_bufs_phys;
     int active;
 };
 
 static struct input_dev devs[MAX_INPUT_DEVS];
 static int num_devs;
+
+/* ── Event ring buffer (shared across all devices) ── */
 
 #define EVRING_SIZE 64
 
@@ -32,11 +46,13 @@ static volatile int evring_head, evring_count;
 static hw_spinlock_t evring_lock = HW_SPINLOCK_INIT;
 
 static void evring_push(const struct input_event *ev) {
-    if (evring_count >= EVRING_SIZE) return;
+    if (evring_count >= EVRING_SIZE) return;  /* drop on overflow */
     int idx = (evring_head + evring_count) % EVRING_SIZE;
     evring[idx] = *ev;
     evring_count++;
 }
+
+/* ── Refill eventq with buffers ────────────────────── */
 
 static void eventq_refill(struct input_dev *d) {
     while (d->eventq.num_free >= 1) {
@@ -52,6 +68,8 @@ static void eventq_refill(struct input_dev *d) {
     }
     virtqueue_kick(&d->dev, 0);
 }
+
+/* ── IRQ handler ───────────────────────────────────── */
 
 static void input_irq(void *ctx) {
     struct input_dev *d = (struct input_dev *)ctx;
@@ -71,8 +89,10 @@ static void input_irq(void *ctx) {
                 .code  = raw->code,
                 .value = raw->value
             };
+            /* Skip EV_SYN — synchronization markers, not useful for consumers */
             if (ev.type != EV_SYN) {
                 evring_push(&ev);
+                /* Route to input subsystem (keyboard events → VT) */
                 if (ev.type == EV_KEY) {
                     input_event_t iev = { ev.type, ev.code, ev.value };
                     input_submit_event(&iev);
@@ -87,12 +107,15 @@ static void input_irq(void *ctx) {
     eventq_refill(d);
 }
 
+/* ── Init one device ───────────────────────────────── */
+
 static int init_one(struct input_dev *d) {
     virtio_dev_init(&d->dev, 0);
 
     if (virtqueue_setup(&d->dev, 0, &d->eventq) < 0)
         return -1;
 
+    /* Allocate DMA for event buffers */
     void *dma_virt;
     uint64_t dma_phys;
     uint32_t alloc = NUM_EVENT_BUFS * (uint32_t)EVENT_SIZE;
@@ -114,13 +137,18 @@ static int init_one(struct input_dev *d) {
     return 0;
 }
 
+/* ── Input subsystem registration ──────────────────── */
+
 static const input_driver_t virtio_input_driver = {
     .name = "virtio-input",
 };
 
+/* ── Public API ────────────────────────────────────── */
+
 int virtio_input_init(void) {
     num_devs = 0;
 
+    /* Scan PCI for all virtio-input devices */
     for (int bus = 0; bus < 256 && num_devs < MAX_INPUT_DEVS; bus++) {
         for (int slot = 0; slot < 32 && num_devs < MAX_INPUT_DEVS; slot++) {
             uint32_t id;
@@ -131,6 +159,7 @@ int virtio_input_init(void) {
             uint16_t pci_dev = (id >> 16) & 0xFFFF;
             if (vendor != 0x1AF4) continue;
 
+            /* virtio-input: device 0x1052 (modern) or legacy with subsys 18 */
             uint32_t subsys;
             cosmo_pci_config_read(bus, slot, 0, 0x2C, &subsys);
             uint16_t subsys_dev = (subsys >> 16) & 0xFFFF;
@@ -139,6 +168,7 @@ int virtio_input_init(void) {
                            (pci_dev >= 0x1000 && pci_dev <= 0x103F && subsys_dev == 18);
             if (!is_input) continue;
 
+            /* Use shared virtio transport (handles legacy I/O + modern MMIO) */
             struct input_dev *d = &devs[num_devs];
             if (virtio_pci_init_at(bus, slot, &d->dev) < 0)
                 continue;

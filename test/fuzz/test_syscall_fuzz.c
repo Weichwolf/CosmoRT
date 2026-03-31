@@ -68,8 +68,9 @@ static uint64_t nr_gen(void) {
             SYS_COSMO_MMIO_MAP, SYS_COSMO_DMA_ALLOC, SYS_COSMO_DMA_FREE,
             SYS_COSMO_IRQ_REGISTER, SYS_COSMO_PCI_READ, SYS_COSMO_PCI_WRITE,
             SYS_COSMO_FW_LOAD, SYS_COSMO_NIC_ATTACH, SYS_COSMO_KEXEC,
+            SYS_COSMO_RT_QUERY,
         };
-        return cosmo[xorshift64() % 9];
+        return cosmo[xorshift64() % 10];
     }
     if (r < 95) {
         /* Boundaries */

@@ -9,7 +9,9 @@
 static void test_tx_ring(void) {
     puts("\n[net/tx_ring]\n");
 
-    /* ktest runs in userspace (always on non-BSP core) */
+    /* Verify we're on a Compute core (ktest runs on Compute) */
+    long is_rt = sc2(SYS_COSMO_RT_QUERY, 0, 0);
+    check("ktest on compute core", is_rt == 0);
 
     /* TCP connect exercises the TX ring: SYN is built on Compute core,
      * pushed into TX ring, drained by RT-Core's net_poll(), sent via NIC.

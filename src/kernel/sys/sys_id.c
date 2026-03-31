@@ -7,6 +7,7 @@ long do_getgid(void)  { return 0; }
 long do_geteuid(void) { return 0; }
 long do_getegid(void) { return 0; }
 
+/* set*id: single-user, always root — accept and ignore */
 long do_setuid(long uid)   { (void)uid; return 0; }
 long do_setgid(long gid)   { (void)gid; return 0; }
 long do_setreuid(long ruid, long euid) { (void)ruid; (void)euid; return 0; }
@@ -20,6 +21,7 @@ long do_setresgid(long rgid, long egid, long sgid) {
 long do_setfsuid(long uid)  { (void)uid; return 0; }
 long do_setfsgid(long gid)  { (void)gid; return 0; }
 
+/* getres*id: write 0,0,0 to user pointers */
 long do_getresuid(long *ruid, long *euid, long *suid) {
     long zero = 0;
     if (ruid && user_ok((uint64_t)ruid, 4)) copy_to_user(ruid, &zero, 4);

@@ -1,4 +1,5 @@
-/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers. */
+/* CosmoRT — Hardware primitive syscalls (SYS_COSMO_*) for userspace drivers.
+ * Separate dispatch from Linux syscalls for clean jump-table generation. */
 
 #include "internal.h"
 #include "core/rt.h"
@@ -70,8 +71,49 @@ long do_cosmo_kexec(long a1, long a2) {
     return do_kexec((const void *)a1, (size_t)a2);
 }
 
+/* ── RT Query (subcommands via a1) ────────────────── */
+
+static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
+    switch (a1) {
+    case 0: return (long)rt_is_current_rt();
+    case 1: return (long)rt_core_id((int)a2);
+    case 2: rt_wake((int)a2); return 0;
+    case 3: {
+        extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
+        return (long)rt_timer_request((uint8_t)a2, (void *)a3, (uint32_t)a4);
+    }
+    case 4: {
+        extern int timer_wheel_cancel(void *ctx);
+        return (long)timer_wheel_cancel((void *)a2);
+    }
+    case 5: {
+        extern int timer_wheel_active_count(void);
+        return (long)timer_wheel_active_count();
+    }
+    case 6: {
+        extern int rt_poll_test_install(void);
+        return (long)rt_poll_test_install();
+    }
+    case 7: {
+        extern int rt_poll_test_restore(void);
+        return (long)rt_poll_test_restore();
+    }
+    case 8: {
+        extern int rt_poll_test_query(int sub, int prio);
+        return (long)rt_poll_test_query((int)a2, (int)a3);
+    }
+    default: return -EINVAL;
+    }
+}
+
+/* ── CosmoRT Syscall Dispatcher (0x10000+) ────────── */
+
 long cosmo_dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     (void)a6;
+    /* RT_QUERY is read-only observability — any process may call it */
+    if (num == SYS_COSMO_RT_QUERY)
+        return do_cosmo_rt_query(a1, a2, a3, a4);
+    /* All other 0x10000+ syscalls are HW primitives — drivers only */
     process_t *p = proc_current();
     if (!p || !p->is_driver) return -EPERM;
     switch (num) {

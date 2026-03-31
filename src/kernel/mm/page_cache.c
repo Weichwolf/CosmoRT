@@ -1,10 +1,13 @@
-/* CosmoRT Page Cache — (inode, offset) → physical page hash table */
+/* CosmoRT Page Cache — (inode, offset) → physical page hash table
+ *
+ * Hash table with chaining. Entries are slab-allocated.
+ * Protected by a single spinlock (sufficient for current single-RT-core I/O). */
 
 #include "mm/page_cache.h"
 #include "mm/slab.h"
 #include "spinlock.h"
 
-#define PC_HASH_SIZE 1024
+#define PC_HASH_SIZE 1024  /* must be power of 2 */
 
 typedef struct pc_entry {
     uint64_t ino;
@@ -109,7 +112,7 @@ void page_cache_evict(uint64_t phys) {
                 *pp = e->next;
                 spin_unlock_irq(&pc_lock, irqf);
                 slab_free(&pc_slab, e);
-                return;
+                return; /* one phys → one entry */
             }
             pp = &e->next;
         }

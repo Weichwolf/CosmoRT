@@ -1,4 +1,15 @@
-/* Kernel-compatible SPSC ring buffer — derived from CosmoLib cl_ring.h */
+/* Kernel-compatible SPSC ring buffer — derived from CosmoLib cl_ring.h
+ *
+ * Lock-free single-producer single-consumer. Lives on shared memory
+ * for zero-copy IPC between kernel and userspace driver processes.
+ *
+ * This is a freestanding version: no mmap, no libc memcpy.
+ * Uses GCC __atomic builtins instead of C11 <stdatomic.h> (freestanding).
+ * Uses kmemcpy from memops.h instead of libc memcpy.
+ *
+ * API matches CosmoLib cl_ring exactly — same struct layout, same
+ * semantics. Kernel and userspace see the same ring in shared memory.
+ */
 #ifndef RING_H
 #define RING_H
 
@@ -24,6 +35,7 @@ static inline size_t ring_sizeof(uint32_t capacity) {
     return sizeof(ring_t) + capacity;
 }
 
+/* Construct on pre-allocated memory (shared page, DMA buffer, etc.) */
 static inline ring_t *ring_on(void *mem, size_t mem_size) {
     if (!mem || mem_size < sizeof(ring_t) + 16) return 0;
     size_t data_space = mem_size - sizeof(ring_t);

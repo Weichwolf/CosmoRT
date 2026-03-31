@@ -10,6 +10,7 @@ percpu_t percpu_data[SMP_MAX_CORES];
 
 static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
 
+/* IA32_KERNEL_GS_BASE (MSR 0xC0000102): swapped with GS_BASE on swapgs */
 #define MSR_KERNEL_GS_BASE 0xC0000102
 #define MSR_GS_BASE        0xC0000101
 
@@ -22,7 +23,9 @@ void percpu_init_bsp(void) {
     p->in_kernel = 1;
     p->self = p;
 
+    /* Set KERNEL_GS_BASE so swapgs in SYSCALL entry loads our percpu */
     wrmsr(MSR_KERNEL_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
+    /* Also set GS_BASE so percpu_self works before first swapgs */
     wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
 
     serial_puts("percpu: BSP init\n");
@@ -42,6 +45,7 @@ void percpu_init_ap(int core_id) {
     wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
 }
 
+/* Slow path: LAPIC MMIO lookup (early boot before GS is set) */
 percpu_t *percpu_self_slow(void) {
     int id = smp_core_id();
     if (id < 0 || id >= SMP_MAX_CORES) id = 0;

@@ -3,9 +3,12 @@
 #include "internal.h"
 #include "core/event_queue.h"
 
+/* Resolve a relative path against CWD, handling "." and ".." components.
+ * Result written to out (max outsize bytes). Returns 0 on success. */
 int resolve_path(const char *path, char *out, int outsize) {
     if (!path || !out || outsize < 2) return -EINVAL;
 
+    /* Start from CWD for relative paths */
     int oi = 0;
     if (path[0] != '/') {
         process_t *p = proc_current();
@@ -13,38 +16,46 @@ int resolve_path(const char *path, char *out, int outsize) {
         while (*cwd && oi < outsize - 1) out[oi++] = *cwd++;
         if (oi > 1 && out[oi - 1] != '/' && oi < outsize - 1) out[oi++] = '/';
     }
+    /* Append path */
     while (*path && oi < outsize - 1) out[oi++] = *path++;
     out[oi] = '\0';
 
+    /* Normalize: resolve "." and ".." in-place */
     char *w = out, *r = out;
     if (*r == '/') *w++ = *r++;
     while (*r) {
         if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
-            r += 2;
+            r += 2; /* skip "/." */
         } else if (r[0] == '/' && r[1] == '.' && r[2] == '.' && (r[3] == '/' || r[3] == '\0')) {
-            r += 3;
+            r += 3; /* skip "/.." */
             if (w > out + 1) { w--; while (w > out + 1 && w[-1] != '/') w--; }
         } else {
             *w++ = *r++;
         }
     }
-    if (w == out) *w++ = '/';
+    if (w == out) *w++ = '/'; /* root */
+    /* Remove trailing slash (unless root) */
     if (w > out + 1 && w[-1] == '/') w--;
     *w = '\0';
     return 0;
 }
 
+/* Resolve dirfd + relative path.
+ * Absolute paths and AT_FDCWD are handled directly.
+ * Real dirfd with relative path → prepend directory path from open fd. */
 int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     int len = copy_path_from_user(kpath, upath, (size_t)max);
     if (len < 0) return len;
     if (kpath[0] == '/') return len;
 
+    /* Relative path with AT_FDCWD: resolve against process CWD */
     if (dirfd == AT_FDCWD) {
         char tmp[PATH_MAX];
         for (int i = 0; i <= len && i < PATH_MAX; i++) tmp[i] = kpath[i];
         return resolve_path(tmp, kpath, max);
     }
 
+    /* Real dirfd: look up the directory's path from the open vfs_file */
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, dirfd);
@@ -54,6 +65,7 @@ int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     if (!f || f->type != VFS_DIR) return -ENOTDIR;
     if (!f->path[0]) return -EBADF;
 
+    /* Build absolute path: dirpath + "/" + relative */
     char tmp[PATH_MAX];
     int di = 0;
     const char *dp = f->path;
@@ -63,9 +75,11 @@ int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     while (*rp && di < PATH_MAX - 1) tmp[di++] = *rp++;
     tmp[di] = '\0';
 
+    /* Copy back and normalize via resolve_path */
     return resolve_path(tmp, kpath, max);
 }
 
+/* Device file IDs (must match vfs.c) */
 #define DEV_NULL    1
 #define DEV_ZERO    2
 #define DEV_URANDOM 3
@@ -82,8 +96,8 @@ long do_write(int fd, const void *buf, size_t count) {
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL || devid == DEV_ZERO || devid == DEV_URANDOM)
-            return (long)count;
-        if (devid == DEV_TTY)  {
+            return (long)count; /* discard */
+        if (devid == DEV_TTY)  { /* write to serial */
             size_t actual = count > 0x10000 ? 0x10000 : count;
             uint8_t kbuf[256]; size_t pos = 0;
             while (pos < actual) {
@@ -110,22 +124,6 @@ long do_write(int fd, const void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_write(fd, buf, count);
-    if (fde->type == FD_PROCFS) {
-        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
-        if (!pf) return -EBADF;
-        extern int procfs_write(int handle, const char *buf, int len);
-        extern int procfs_pid_write(const char *name, const char *buf, int len);
-        char kbuf[256];
-        int want = (int)count;
-        if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
-        copy_from_user(kbuf, buf, (size_t)want);
-        int r;
-        if (pf->handle == -2)
-            r = procfs_pid_write(pf->name, kbuf, want);
-        else
-            r = procfs_write(pf->handle, kbuf, want);
-        return (long)r;
-    }
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
     if (fde->type == FD_UNIX_SOCK) {
@@ -143,6 +141,7 @@ long do_write(int fd, const void *buf, size_t count) {
         if (!pp || !is_write) return -EBADF;
         long r = pipe_write(pp, buf, count);
         if (r != -EAGAIN) return r;
+        /* Pipe full — block until reader drains */
         if (fde->flags & O_NONBLOCK) return -EAGAIN;
         return pipe_write_blocking(pp, buf, count);
     }
@@ -160,14 +159,18 @@ long do_write(int fd, const void *buf, size_t count) {
             if (w <= 0) break;
             pos += (size_t)w;
         }
+        /* Flush VT output for immediate rendering */
         vt_flush(pty_id);
         return (long)pos;
     }
     return -EBADF;
 }
 
+/* ── SYS_writev (20) ────────────────────────────── */
+
 long do_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 16) return -EINVAL;
+    /* Copy iov array to kernel stack to prevent TOCTOU */
     struct iovec k_iov[16];
     { int r = copy_from_user(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;
@@ -181,6 +184,8 @@ long do_writev(int fd, const struct iovec *iov, int iovcnt) {
     return total;
 }
 
+/* ── SYS_read (0) ────────────────────────────────── */
+
 __attribute__((hot))
 long do_read(int fd, void *buf, size_t count) {
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
@@ -190,13 +195,15 @@ long do_read(int fd, void *buf, size_t count) {
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
-        if (devid == DEV_NULL)    return 0;
+        if (devid == DEV_NULL)    return 0; /* EOF */
         if (devid == DEV_ZERO) {
+            /* Fill with zeros */
             size_t actual = count > 0x10000 ? 0x10000 : count;
             kmemset(buf, 0, actual);
             return (long)actual;
         }
         if (devid == DEV_URANDOM) {
+            /* Fill with random bytes */
             extern long do_getrandom(void *buf, size_t buflen, unsigned int flags);
             size_t actual = count > 4096 ? 4096 : count;
             return do_getrandom(buf, actual, 0);
@@ -220,6 +227,7 @@ long do_read(int fd, void *buf, size_t count) {
     if (fde->type == FD_PROCFS) {
         procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
         if (!pf) return -EBADF;
+        /* Read into kernel buffer, then copy to user */
         char kbuf[4096];
         int want = (int)count;
         if (want > (int)sizeof(kbuf)) want = (int)sizeof(kbuf);
@@ -238,6 +246,7 @@ long do_read(int fd, void *buf, size_t count) {
         long r = usock_read(fd, buf, (long)count);
         if (r != -EAGAIN) return r;
         if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        /* Block until peer writes or closes */
         extern long usock_read_blocking(unix_socket_t *s, void *buf, long count);
         unix_socket_t *s = usock_from_fd(fd);
         if (!s) return -EBADF;
@@ -247,9 +256,12 @@ long do_read(int fd, void *buf, size_t count) {
         int is_write = 0;
         struct pipe *pp = pipe_from_fd(fde, &is_write);
         if (!pp || is_write) return -EBADF;
+        /* Try non-blocking read first */
         long r = pipe_read(pp, buf, count);
         if (r != -EAGAIN) return r;
+        /* No data available — check O_NONBLOCK */
         if (fde->flags & O_NONBLOCK) return -EAGAIN;
+        /* Block until data arrives or write end closes */
         return pipe_read_blocking(pp, buf, count);
     }
     if (fde->type == FD_EVENTFD)
@@ -270,11 +282,13 @@ long do_read(int fd, void *buf, size_t count) {
                 vt_flush(pty_id);
                 return (long)got;
             }
+            /* No data — block until pty_master_write event_posts us */
             thread_t *t = thread_current();
             pty_t *pty = pty_get(pty_id);
             if (!t || !pty) return -EAGAIN;
 
-            mutex_lock(&pty->lock);
+            uint64_t irqf;
+            spin_lock_irq(&pty->lock, &irqf);
             int avail = (pty->input_tail - pty->input_head
                          + PTY_BUF_SIZE) % PTY_BUF_SIZE;
             if (avail > 0) {
@@ -283,18 +297,22 @@ long do_read(int fd, void *buf, size_t count) {
                     kbuf[i] = (uint8_t)pty->input_buf[pty->input_head];
                     pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
                 }
-                mutex_unlock(&pty->lock);
+                spin_unlock_irq(&pty->lock, irqf);
                 copy_to_user(buf, kbuf, (size_t)n);
                 extern void vt_flush(int vt_id);
                 vt_flush(pty_id);
                 return (long)n;
             }
             pty->blocked_reader = t;
-            mutex_unlock(&pty->lock);
+            spin_unlock_irq(&pty->lock, irqf);
 
             extern void vt_flush(int vt_id);
             vt_flush(pty_id);
 
+            /* Check for pending signals before blocking (POSIX: blocking
+             * read must return -EINTR when a signal is deliverable).
+             * Without this, signals like SIGCHLD stay pending while the
+             * thread keeps re-blocking in event_wait. */
             if (t->proc) {
                 uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
                 if (deliverable) return -EINTR;
@@ -303,14 +321,19 @@ long do_read(int fd, void *buf, size_t count) {
             event_t ev;
             int _wr = event_wait(&t->eq, &ev, -1);
             if (_wr == -4) return -EINTR;
+            /* If returned, loop re-checks. */
         }
     }
     return -EBADF;
 }
 
+/* ── SYS_readv (19) ──────────────────────────────── */
+
 long do_readv(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
-    if (iovcnt > 64) return -EINVAL;
+    if (iovcnt > 64) return -EINVAL; /* kernel stack limit */
+    /* Copy iovec array to kernel stack to prevent TOCTOU on iov_base/iov_len.
+     * Buffer contents are still user memory — do_read validates via user_ok. */
     struct iovec kiov[64];
     { int r = copy_from_user(kiov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
     long total = 0;
@@ -319,11 +342,14 @@ long do_readv(int fd, const struct iovec *iov, int iovcnt) {
         long r = do_read(fd, (void *)kiov[i].iov_base, kiov[i].iov_len);
         if (r < 0) return total > 0 ? total : r;
         total += r;
-        if ((size_t)r < kiov[i].iov_len) break;
+        if ((size_t)r < kiov[i].iov_len) break; /* short read */
     }
     return total;
 }
 
+/* ── SYS_close (3) ───────────────────────────────── */
+
+/* Forward declarations for advisory file locking (defined below do_fcntl) */
 static uint64_t flock_ino(fd_entry_t *fde);
 void flock_release(uint64_t ino, uint32_t pid);
 
@@ -363,6 +389,8 @@ long do_close(int fd) {
     return fd_close(&p->fds, fd);
 }
 
+/* ── SYS_open (2) / SYS_openat (257) ────────────────── */
+
 long do_open(const char *path, int flags, int mode) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
@@ -379,9 +407,13 @@ long do_openat(int dirfd, const char *path, int flags, int mode) {
     return vfs_open(rpath, flags, mode);
 }
 
+/* ── SYS_lseek (8) ──────────────────────────────── */
+
 long do_lseek(int fd, long offset, int whence) {
     return vfs_lseek(fd, offset, whence);
 }
+
+/* ── SYS_dup3 (292) — primary; dup2 delegates here via dispatch ── */
 
 long do_dup3(int oldfd, int newfd, int flags) {
     if (oldfd == newfd) return -EINVAL;
@@ -391,6 +423,7 @@ long do_dup3(int oldfd, int newfd, int flags) {
     fd_entry_t *old = fd_get(&p->fds, oldfd);
     if (!old) return -EBADF;
 
+    /* Close newfd if open (must match do_close logic) */
     fd_entry_t *cur = fd_get(&p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) {
@@ -406,8 +439,11 @@ long do_dup3(int oldfd, int newfd, int flags) {
         p->fds.entries[newfd].obj = 0;
     }
 
+    /* Copy the fd entry and bump refcount.
+     * dup2 clears O_CLOEXEC on the new fd (POSIX). dup3 sets it only if
+     * O_CLOEXEC is in flags. */
     p->fds.entries[newfd] = *old;
-    p->fds.entries[newfd].flags &= ~O_CLOEXEC;
+    p->fds.entries[newfd].flags &= ~O_CLOEXEC;  /* dup2: always clear */
     fd_mark_used(&p->fds, newfd);
     if (old->type == FD_FILE && old->obj) {
         extern void vfs_file_incref(struct vfs_file *f);
@@ -421,13 +457,15 @@ long do_dup3(int oldfd, int newfd, int flags) {
     return newfd;
 }
 
+/* ── SYS_getcwd (79) / SYS_chdir (80) ──────────── */
+
 long do_getcwd(char *buf, size_t size) {
     if (!buf) return -EFAULT;
     if (size == 0) return -ERANGE;
     if (!user_ok((uint64_t)buf, size)) return -EFAULT;
     int r = vfs_getcwd(buf, size);
     if (r < 0) return r;
-    return (long)(r + 1);
+    return (long)(r + 1); /* Linux returns string length including NUL */
 }
 
 long do_chdir(const char *path) {
@@ -438,19 +476,23 @@ long do_chdir(const char *path) {
     return vfs_chdir(rpath);
 }
 
+/* ── SYS_getdents64 (217) ───────────────────────── */
+
 struct linux_dirent64 {
     uint64_t d_ino;
     int64_t  d_off;
     uint16_t d_reclen;
     uint8_t  d_type;
-    char     d_name[1];
+    char     d_name[1]; /* flexible */
 };
 
+/* Emit one dirent into the output buffer. Returns bytes written or 0 if no space. */
 static size_t emit_dirent(uint8_t *out, size_t remaining,
                           uint64_t ino, uint64_t off, uint8_t d_type,
                           const char *name) {
     int nlen = 0;
     while (name[nlen]) nlen++;
+    /* d_reclen: header (19 bytes) + name + NUL, rounded up to 8 */
     size_t reclen = (19 + (size_t)nlen + 1 + 7) & ~(size_t)7;
     if (reclen > remaining) return 0;
 
@@ -462,36 +504,40 @@ static size_t emit_dirent(uint8_t *out, size_t remaining,
     for (int i = 0; i < nlen; i++)
         ((char *)ent + 19)[i] = name[i];
     ((char *)ent + 19)[nlen] = 0;
+    /* Zero padding */
     for (size_t i = 19 + (size_t)nlen + 1; i < reclen; i++)
         ((uint8_t *)ent)[i] = 0;
     return reclen;
 }
 
+/* Callback context for ext2 getdents64 via ext2_dir_iterate */
 struct getdents_ctx {
     uint8_t *out;
     size_t   count;
     size_t   written;
     uint64_t next_off;
-    int      full;
+    int      full;       /* set when buffer is exhausted */
 };
 
 static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type,
                        uint32_t next_pos, void *arg) {
     struct getdents_ctx *ctx = (struct getdents_ctx *)arg;
-    uint8_t d_type = 0;
-    if (file_type == EXT2_FT_REG_FILE) d_type = 8;
-    else if (file_type == EXT2_FT_DIR) d_type = 4;
-    else if (file_type == EXT2_FT_SYMLINK) d_type = 10;
-    else d_type = 8;
+    /* Map ext2 file_type to DT_* */
+    uint8_t d_type = 0; /* DT_UNKNOWN */
+    if (file_type == EXT2_FT_REG_FILE) d_type = 8; /* DT_REG */
+    else if (file_type == EXT2_FT_DIR) d_type = 4; /* DT_DIR */
+    else if (file_type == EXT2_FT_SYMLINK) d_type = 10; /* DT_LNK */
+    else d_type = 8; /* default to DT_REG */
 
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
                            ino, (uint64_t)next_pos, d_type, name);
-    if (n == 0) { ctx->full = 1; return 1; }
+    if (n == 0) { ctx->full = 1; return 1; /* stop — don't advance offset */ }
     ctx->next_off = (uint64_t)next_pos;
     ctx->written += n;
-    return 0;
+    return 0; /* continue */
 }
 
+/* Callback for procfs directory enumeration */
 struct procfs_getdents_ctx {
     uint8_t *out;
     size_t   count;
@@ -503,8 +549,8 @@ static int procfs_getdents_cb(const char *name, void *arg) {
     struct procfs_getdents_ctx *ctx = (struct procfs_getdents_ctx *)arg;
     uint64_t new_off = ctx->next_off + 1;
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
-                           new_off, new_off, 8 , name);
-    if (n == 0) return 1;
+                           new_off, new_off, 8 /* DT_REG */, name);
+    if (n == 0) return 1; /* stop: buffer full */
     ctx->next_off = new_off;
     ctx->written += n;
     return 0;
@@ -518,10 +564,12 @@ long do_getdents64(int fd, void *buf, size_t count) {
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
 
+    /* /proc directory (FD_PROCFS with handle == -1) */
     if (fde->type == FD_PROCFS) {
         procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
         if (!pf) return -EBADF;
 
+        /* /proc/self/fd directory (handle == -3) */
         if (pf->handle == -3) {
             struct procfs_getdents_ctx ctx = {
                 .out = (uint8_t *)buf,
@@ -540,7 +588,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
                 name[ni] = 0;
                 ctx.next_off = (uint64_t)(i + 1);
                 size_t n = emit_dirent(ctx.out + ctx.written, ctx.count - ctx.written,
-                                       (uint64_t)(i + 1), ctx.next_off, 10 , name);
+                                       (uint64_t)(i + 1), ctx.next_off, 10 /* DT_LNK */, name);
                 if (n == 0) break;
                 ctx.written += n;
             }
@@ -565,6 +613,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
+    /* ext2 directory */
     if (f->backend == VFS_BACKEND_EXT2) {
         if (f->type != VFS_DIR) return -ENOTDIR;
         struct getdents_ctx ctx = {
@@ -579,12 +628,14 @@ long do_getdents64(int fd, void *buf, size_t count) {
         return (long)ctx.written;
     }
 
+    /* ramfs directory */
     if (!f->node || f->node->type != VFS_DIR) return -ENOTDIR;
 
     struct vfs_node *dir = f->node;
     uint8_t *out = (uint8_t *)buf;
     size_t written = 0;
 
+    /* Walk to the child at offset f->offset */
     struct vfs_node *child = dir->children;
     uint64_t idx = 0;
     while (child && idx < f->offset) {
@@ -604,6 +655,8 @@ long do_getdents64(int fd, void *buf, size_t count) {
 
     return (long)written;
 }
+
+/* ── SYS_ioctl (16) / SYS_fcntl (72) ────────────── */
 
 #define TCGETS     0x5401
 #define TCSETS     0x5402
@@ -641,8 +694,11 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     if (!fde) return -EBADF;
 
     if (request == TCGETS) {
+        /* Return current PTY termios state. musl uses kernel struct termios
+         * (36 bytes: 4×uint32 flags + c_line + c_cc[19]). */
         if (fde->type == FD_SERIAL) {
             if (!user_ok(arg, 36)) return -EFAULT;
+            /* Static termios for serial console */
             struct kernel_termios st;
             kmemset(&st, 0, sizeof(st));
             st.c_iflag = ICRNL | IXON;
@@ -703,16 +759,20 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         do_kill(-(int)fg_pgid, SIGWINCH);
         return 0;
     }
+    /* Terminal set: store full termios */
     if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
         if (fde->type == FD_PTY_SLAVE || fde->type == FD_PTY_MASTER) {
             struct kernel_termios kterm;
             if (copy_from_user(&kterm, (const void *)arg, 36) == 0) {
                 pty_t *pt = pty_get((int)(long)fde->obj);
                 if (pt) {
-                    mutex_lock(&pt->lock);
+                    uint64_t irqf;
+                    spin_lock_irq(&pt->lock, &irqf);
                     int was_canon = (pt->termios.c_lflag & ICANON) != 0;
                     int new_canon = (kterm.c_lflag & ICANON) != 0;
+                    /* Store complete termios */
                     kmemcpy(&pt->termios, &kterm, sizeof(struct kernel_termios));
+                    /* Flush line buffer when switching canonical → raw */
                     if (was_canon && !new_canon && pt->line_pos > 0) {
                         for (int li = 0; li < pt->line_pos; li++) {
                             if (((pt->input_tail + 1) % PTY_BUF_SIZE) != pt->input_head)
@@ -721,14 +781,16 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
                         }
                         pt->line_pos = 0;
                     }
-                    mutex_unlock(&pt->lock);
+                    spin_unlock_irq(&pt->lock, irqf);
                 }
             }
         }
         return 0;
     }
+    /* Controlling terminal */
     if (request == TIOCSCTTY || request == TIOCNOTTY)
         return 0;
+    /* Foreground process group: stored per-PTY */
     if (request == TIOCSPGRP) {
         int32_t pgid;
         { int r = copy_from_user(&pgid, (const void *)arg, 4); if (r) return r; }
@@ -747,16 +809,19 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
         }
         return copy_to_user((void *)arg, &pgid, 4);
     }
+    /* TIOCGSID: get session ID */
     if (request == TIOCGSID) {
         int32_t sid = (int32_t)p->sid;
         return copy_to_user((void *)arg, &sid, 4);
     }
+    /* TIOCOUTQ: bytes in output queue (always 0 — we drain immediately) */
     if (request == TIOCOUTQ) {
         if (!user_ok(arg, 4)) return -EFAULT;
         *(int *)arg = 0;
         return 0;
     }
-    if (request == 0x5421) {
+    /* FIONBIO: set/clear O_NONBLOCK */
+    if (request == 0x5421 /* FIONBIO */) {
         if (!user_ok(arg, 4)) return -EFAULT;
         int on = *(int *)arg;
         if (on) fde->flags |= O_NONBLOCK;
@@ -766,18 +831,21 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     return -ENOTTY;
 }
 
+/* ── POSIX Advisory File Locking ─────────────────── */
+
 #define FLOCK_MAX 64
 
 struct flock_entry {
-    uint64_t ino;
-    uint32_t pid;
-    short    type;
+    uint64_t ino;       /* file identity (node ptr or disk_ino) */
+    uint32_t pid;       /* lock owner */
+    short    type;      /* F_RDLCK or F_WRLCK */
     long     start;
-    long     len;
+    long     len;       /* 0 = entire file */
 };
 
 static struct flock_entry flock_table[FLOCK_MAX];
 
+/* Get a stable inode identity from an fd entry (must be FD_FILE) */
 static uint64_t flock_ino(fd_entry_t *fde) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return 0;
@@ -785,18 +853,21 @@ static uint64_t flock_ino(fd_entry_t *fde) {
     return (uint64_t)(uintptr_t)f->node;
 }
 
+/* Check if two lock ranges overlap. len=0 means "to end of file". */
 static int flock_overlap(long s1, long l1, long s2, long l2) {
     long e1 = l1 ? s1 + l1 : __LONG_MAX__;
     long e2 = l2 ? s2 + l2 : __LONG_MAX__;
     return s1 < e2 && s2 < e1;
 }
 
+/* Check for conflict: returns pointer to conflicting entry, or NULL */
 static struct flock_entry *flock_conflict(uint64_t ino, uint32_t pid,
                                            short type, long start, long len) {
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
         if (!e->ino || e->ino != ino || e->pid == pid) continue;
         if (!flock_overlap(e->start, e->len, start, len)) continue;
+        /* Read locks don't conflict with each other */
         if (e->type == F_RDLCK && type == F_RDLCK) continue;
         return e;
     }
@@ -806,6 +877,7 @@ static struct flock_entry *flock_conflict(uint64_t ino, uint32_t pid,
 static long flock_setlk(uint64_t ino, uint32_t pid,
                          short type, long start, long len) {
     if (type == F_UNLCK) {
+        /* Remove matching locks held by this pid on this inode */
         for (int i = 0; i < FLOCK_MAX; i++) {
             struct flock_entry *e = &flock_table[i];
             if (e->ino == ino && e->pid == pid &&
@@ -814,8 +886,10 @@ static long flock_setlk(uint64_t ino, uint32_t pid,
         }
         return 0;
     }
+    /* Check for conflicts */
     if (flock_conflict(ino, pid, type, start, len))
         return -EAGAIN;
+    /* Replace existing lock by this pid on overlapping range, or allocate new */
     int free_slot = -1;
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
@@ -835,6 +909,7 @@ static long flock_setlk(uint64_t ino, uint32_t pid,
     return 0;
 }
 
+/* Remove all locks held by pid on a given inode (called on close) */
 void flock_release(uint64_t ino, uint32_t pid) {
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
@@ -843,6 +918,7 @@ void flock_release(uint64_t ino, uint32_t pid) {
     }
 }
 
+/* Remove all locks held by a process (called on exit) */
 void flock_release_pid(uint32_t pid) {
     for (int i = 0; i < FLOCK_MAX; i++)
         if (flock_table[i].pid == pid)
@@ -856,8 +932,10 @@ long do_fcntl(int fd, int cmd, long arg) {
     if (!fde) return -EBADF;
 
     switch (cmd) {
-    case F_GETFL: return fde->flags & ~O_CLOEXEC;
+    case F_GETFL: return fde->flags & ~O_CLOEXEC; /* CLOEXEC is fd-flag, not file-flag */
     case F_SETFL: {
+        /* Only O_APPEND and O_NONBLOCK are settable via F_SETFL.
+         * Preserve access mode (O_RDONLY/O_WRONLY/O_RDWR) and O_CLOEXEC. */
         int keep = fde->flags & (O_RDONLY | O_WRONLY | O_RDWR | O_CLOEXEC);
         fde->flags = keep | ((int)arg & (O_APPEND | O_NONBLOCK));
         return 0;
@@ -877,7 +955,7 @@ long do_fcntl(int fd, int cmd, long arg) {
                                                 fl->l_type, fl->l_start, fl->l_len);
         if (c) {
             fl->l_type   = c->type;
-            fl->l_whence = 0;
+            fl->l_whence = 0; /* SEEK_SET */
             fl->l_start  = c->start;
             fl->l_len    = c->len;
             fl->l_pid    = (int)c->pid;
@@ -891,27 +969,28 @@ long do_fcntl(int fd, int cmd, long arg) {
         struct k_flock *fl = (struct k_flock *)arg;
         if (!user_ok((uint64_t)fl, sizeof(*fl))) return -EFAULT;
         uint64_t ino = (fde->type == FD_FILE) ? flock_ino(fde) : 0;
-        if (!ino) return 0;
+        if (!ino) return 0; /* non-file fds: no-op */
         return flock_setlk(ino, p->pid, fl->l_type, fl->l_start, fl->l_len);
     }
     case F_GETOWN:
-        return 0;
+        return 0; /* no SIGIO support — always returns 0 */
     case F_SETOWN:
-        return 0;
+        return 0; /* no-op: no SIGIO support */
     case F_GETPIPE_SZ:
-        return 65536;
+        return 65536; /* default pipe buffer size */
     case F_SETPIPE_SZ:
-        return 65536;
+        return 65536; /* accept but return fixed size */
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
         int i = fd_find_free(&p->fds, (int)arg);
         if (i < 0) return -EMFILE;
         p->fds.entries[i] = *fde;
-        p->fds.entries[i].flags &= ~O_CLOEXEC;
+        p->fds.entries[i].flags &= ~O_CLOEXEC; /* F_DUPFD: always clear */
         fd_mark_used(&p->fds, i);
         if (cmd == F_DUPFD_CLOEXEC)
             p->fds.entries[i].flags |= O_CLOEXEC;
         if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
+        /* Increment refcount for vfs_file if needed */
         if (fde->type == FD_FILE && fde->obj) {
             extern void vfs_file_incref(struct vfs_file *f);
             vfs_file_incref((struct vfs_file *)fde->obj);
@@ -921,6 +1000,8 @@ long do_fcntl(int fd, int cmd, long arg) {
     default: return -EINVAL;
     }
 }
+
+/* ── SYS_pread64 (17) ────────────────────────────── */
 
 long do_pread64(int fd, void *buf, size_t count, int64_t offset) {
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
@@ -935,6 +1016,8 @@ long do_pread64(int fd, void *buf, size_t count, int64_t offset) {
     return vfs_pread(f, buf, count, (uint64_t)offset);
 }
 
+/* ── SYS_pwrite64 (18) ───────────────────────────── */
+
 long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     if (offset < 0) return -EINVAL;
@@ -947,6 +1030,8 @@ long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
     return vfs_pwrite(f, buf, count, (uint64_t)offset);
 }
 
+/* ── SYS_fchdir (81) — change CWD by fd ─────────── */
+
 long do_fchdir(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -956,19 +1041,35 @@ long do_fchdir(int fd) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f || f->type != VFS_DIR) return -ENOTDIR;
     if (!f->path[0]) return -EBADF;
+    /* Copy path to process CWD */
     int i = 0;
     while (f->path[i] && i < 255) { p->cwd[i] = f->path[i]; i++; }
     p->cwd[i] = '\0';
     return 0;
 }
 
+/* ── SYS_creat (85) — open(path, O_CREAT|O_WRONLY|O_TRUNC, mode) ── */
+
 long do_creat(const char *path, int mode) {
     return do_open(path, O_CREAT | O_WRONLY | O_TRUNC, mode);
 }
 
+/* ── SYS_getdents (78) — old getdents format ──────── */
+
+/* Linux old getdents uses struct linux_dirent:
+ *   d_ino (8), d_off (8), d_reclen (2), d_name[], d_type (1 byte after name+pad)
+ * Same layout as getdents64 — delegate directly. The struct layouts differ
+ * in theory (getdents has unsigned long d_ino, long d_off vs uint64_t in getdents64)
+ * but on x86_64 they're identical in size. Real difference: d_type is the last
+ * byte of the record in old getdents vs a field in getdents64.
+ * Since our emit_dirent already writes getdents64 format which glibc/musl
+ * handle correctly via getdents64, and callers of old getdents are rare,
+ * delegate to getdents64 — the struct layouts match on x86_64. */
 long do_getdents(int fd, void *buf, size_t count) {
     return do_getdents64(fd, buf, count);
 }
+
+/* ── SYS_close_range (436) — close FDs in range ──── */
 
 long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
     (void)flags;
@@ -978,6 +1079,8 @@ long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
         do_close((int)fd);
     return 0;
 }
+
+/* ── SYS_copy_file_range (326) — read+write between fds ── */
 
 long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
                         size_t len, unsigned int flags) {
@@ -1018,11 +1121,14 @@ long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
     return total ? (long)total : -EIO;
 }
 
+/* ── SYS_memfd_create (319) — anonymous file in memory ── */
+
 long do_memfd_create(const char *uname, unsigned int flags) {
     (void)uname; (void)flags;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
+    /* Create an anonymous ramfs file under /dev/shm/memfd_<pid>_<counter> */
     static int memfd_counter;
     int id = __sync_fetch_and_add(&memfd_counter, 1);
 
@@ -1030,14 +1136,17 @@ long do_memfd_create(const char *uname, unsigned int flags) {
     char *w = path;
     const char *prefix = "/dev/shm/memfd:";
     while (*prefix) *w++ = *prefix++;
+    /* Append counter */
     { int v = id; char t[12]; int ti = 0;
       do { t[ti++] = '0' + (char)(v % 10); v /= 10; } while (v);
       while (ti--) *w++ = t[ti]; }
     *w = '\0';
 
+    /* Create backing file in ramfs */
     struct vfs_node *node = vfs_create(path, VFS_FILE);
     if (!node) return -ENOMEM;
 
+    /* Allocate vfs_file + fd */
     extern struct vfs_file *file_alloc(void);
     struct vfs_file *f = file_alloc();
     if (!f) return -ENOMEM;

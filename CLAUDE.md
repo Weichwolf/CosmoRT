@@ -1,8 +1,6 @@
 # CosmoRT
 
-Fullscreen-Slot Desktop mit Kernel-Audio. 12 Slots, 24-Kanal Mixer,
-MIDI-Router — kein Window-Manager, kein Userspace-Audio-Stack.
-Linux-ABI fuer Alpine Userland. Nativ preemptibel.
+Linux-ABI-kompatibler Realtime-Microkernel
 
 ## Headers
 
@@ -17,7 +15,7 @@ include/kernel/
   proc/       process.h, thread.h, elf.h
   sys/        syscall.h
   ipc/        futex.h, ipc.h
-  fs/         vfs.h, ext4.h, procfs.h, bcache.h
+  fs/         vfs.h, ext2.h, procfs.h, bcache.h
   net/        net.h, socket.h, unix_socket.h, tcp.h, udp.h, arp.h, ip.h, dns.h, dhcp.h, net_port.h, net_util.h
   event/      epoll.h, fd.h
   vt/         vt.h, pty.h, fb.h, input.h
@@ -46,72 +44,6 @@ Kein Consumer braucht mehr als eine Datei:
 
 Linux x86_64 ELF-Binaries (statisch und dynamisch) laufen unveraendert.
 
-## cosmort.h (Treiber)
-
-```
-mmio_map, dma_alloc, irq_register, pci_config_read, fw_load
-nic_driver_t + net_nic_register
-blk_driver_t + blk_register
-```
-
-## cosmoui.h (CosmoUI)
-
-```
-Display    surface_create/present/destroy (VSync, Multi-Monitor)
-Audio      device_open/submit/capture/close (Multi-Channel, Multi-Device)
-Input      device_read (KEY_*, REL_*, ABS_* — <1ms)
-Power      state/suspend/shutdown/reboot (ACPI)
-```
-
-UI-Stack: SDL3 laeuft unmodifiziert ueber Standard Linux Device Nodes.
-Kernel exposed /dev/fb0 (Framebuffer), /dev/input/event0 (evdev),
-/dev/snd/ (ALSA). SDL3's existierende Linux-Backends (fbdev, evdev, ALSA)
-funktionieren direkt. Kein SDL3-Fork, kein Custom-Backend, kein X11/Wayland.
-App → SDL3 → Linux Device Nodes → cosmoui.h intern → Hardware.
-GPU-Beschleunigung ueber /dev/dri/ (KMS/DRM, virtio-gpu) wenn Hardware vorhanden.
-
-USB-Protokoll, Kamera/UVC, Drucker, Bluetooth, WLAN = Userspace.
-USB-Devices durch Klasse geroutet: HID → Input, Audio → Audio, Storage → Block.
-
-## Filesysteme
-
-```
-Kernel:     ext4 (Root, read-write, Journal, Extents), ramfs, procfs
-Userspace:  FAT32, ext4, NTFS, NFS, SMB (Latenz-tolerant, ueber Block-I/O)
-```
-
-ext4 ist der Root-FS-Treiber im Kernel. Externe Medien (USB, Netzwerk)
-werden von Userspace-Daemons gemountet die Block-I/O ueber cosmort.h sprechen.
-
-## RT-Architektur: Nativ Preemptibel
-
-CosmoRT ist von Grund auf als Realtime-Kernel gebaut — kein Retrofit wie
-Linux PREEMPT_RT. Alle Kernel-Pfade sind preemptibel, IRQs werden in
-schedulebare Threads verarbeitet, Locks sind sleeping (PI-Mutexes).
-
-Kern-Prinzipien:
-- Sleeping Locks ueberall (Spinlocks nur fuer HW-Register + IRQ-Handler-Interna)
-- Threaded IRQs: Hard-IRQ-Handler nur ACK + Wake, Verarbeitung im Thread
-- Vollstaendig preemptibles Kernel (kein preempt_disable im normalen Pfad)
-- Bounded WCET auf allen Pfaden (keine unbounded Loops)
-- Ziel: <10µs Worst-Case Scheduling-Latenz
-
-IRQ-Affinity konfigurierbar, per-Queue Balancing wenn Hardware es unterstuetzt.
-Nativ RT braucht keine feste Zuweisung — alle Cores koennen IRQs verarbeiten
-ohne Userspace-Latenz zu brechen.
-
-## Stack
-
-```
-CosmoUI  ~/Git/CosmoUI    UI, WASM-Runtime, Protokoll-Stacks
-CosmoJS  ~/Git/CosmoJS     JS-Engine
-CosmoRT  ~/Git/CosmoRT     Kernel (dieses Repo)
-Alpine   Userland          musl libc, apk, busybox, gcc, Node.js, Claude Code
-```
-
-Userland basiert auf Alpine Linux (musl-nativ). Pakete per apk-tools.
-Kein systemd — OpenRC oder eigener Init. Kernel + Alpine = komplettes System.
-
 ## Verzeichnisse
 
 ```
@@ -124,7 +56,7 @@ src/kernel/
   proc/          process, elf
   sys/           dispatch, sys_{file,fs,mem,proc,sched,signal,time,ipc,net,event,id,cosmo}, stubs
   ipc/           futex, pipe, net_port
-  fs/            vfs, ext4, procfs
+  fs/            vfs, ext2, procfs
   net/           TCP/IP, socket, unix_socket
   event/         epoll, eventfd, timerfd, inotify
   vt/            VT, pty, framebuffer, input
@@ -143,65 +75,11 @@ make                    # Kernel → build/BOOTX64.EFI
 make test-hw            # ktest Unit-Tests in QEMU (eigenes ESP, eigenes init)
 make test-crash         # Crash/Adversarial Tests
 make test-fuzz          # Syscall Fuzzer
-make alpine-image       # ext4 Image aus build/alpine-root/
+make alpine-image       # ext2 Image aus build/alpine-root/
 make alpine-test        # TDD: Boot → musl + LTP Tests → Fail → Stop → Poweroff
 make qemu-alpine        # Normaler Alpine Boot (OpenRC → getty → login)
 make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 ```
-
-## TDD Workflow
-
-```
-1. make alpine-test        → Boot, Tests laufen, stoppt beim ersten Fail
-2. Fehler analysieren       → Serial-Log zeigt Test-Name + Output
-3. Kernel-Fix implementieren
-4. Committen                → jeder Fix ein eigener Commit
-5. make alpine-test        → Kernel neu gebaut (wenn Source geaendert),
-                              Image neu gebaut (~30s), Boot, Tests laufen
-6. Wiederholen bis alle Tests passen
-```
-
-make alpine-test haengt von $(EFI_BIN) ab — Kernel wird nur bei Quellcode-
-Aenderungen neu kompiliert. mkalpine.sh checkt .mkalpine-done — Paket-
-Installation wird uebersprungen wenn schon erledigt, nur ext4 Image wird
-neu gebaut. Nach einem Kernel-Fix: ~30s bis zum naechsten Testlauf.
-
-Testsuites im Alpine Image (build/alpine-root/):
-- musl libc-test: /opt/libc-test/ (vorgebaut, ~479 Binaries)
-- LTP: /opt/ltp/ (vorgebaut, 298 Pflicht-Tests in tools/ltp_required.txt)
-- stress-ng: via apk installiert
-- Test-Script: tools/boot-test.sh → /opt/boot-test.sh im Image
-
-Separate Build-Pfade (kein Konflikt):
-- build/gen/init_bin.h → Kernel init (immer /sbin/init)
-- build/test/hw/gen/init_bin.h → ktest (Unit Tests)
-- make test-hw aendert nie den Kernel-Init
-
-## Vorbilder
-
-Bei jedem Design-Problem: wie machen es BeOS/Haiku, Linux PREEMPT_RT, macOS/XNU?
-Beste Konzepte uebernehmen. Wenn etwas in CosmoRT nicht optimal ist, stoppen und
-Verbesserung vorschlagen statt weiterbauen.
-
-## Kernel-Invarianten
-
-Verletzung ist ein Bug. Keine Ausnahmen.
-
-| MUSS | DARF NICHT |
-|------|------------|
-| Ein Thread, ein Kernel-Stack. Exklusiv bis Thread-Tod. | Stack Aliasing, Stack-Reuse, Trampoline auf fremdem Stack |
-| Ein Context-Switch: context_switch(prev, next). Symmetrisch, atomar. | Mehrere Mechanismen, asymmetrisches Blocking, longjmp |
-| State-Change und Switch in einer Operation. | Fenster zwischen State und Switch (TOCTOU, verlorene Wakeups) |
-| Jede Ressource hat genau einen Owner. | Shared Ownership ohne Lock |
-| Ein Pfad pro Konzept. | Copy-Paste-Varianten |
-| Jeder Kernel-Pfad terminiert in endlicher Zeit. | Unbounded Loops, Spin ohne Timeout |
-| Nur was Userspace nicht kann gehoert in den Kernel. | Userspace-Funktionalitaet im Kernel |
-| Fehler → Panic oder -ERRNO. Nie stille Korruption. | Weiterarbeiten mit inkonsistentem State |
-| Jede Abhaengigkeit ist im Typ oder API sichtbar. | Globals die Reihenfolge voraussetzen |
-| Jeder Code-Punkt ist unterbrechbar oder explizit geschuetzt. | Daten unter RSP, cli/sti als Workaround |
-| Zero-Copy wo moeglich. Pointer statt Daten bewegen. | memcpy zwischen Kernel-Buffern |
-| Kernel, Treiber, Userspace koennen sich nicht korrumpieren. | Kernel-Interna in Treiber-API |
-| Syscall-Restart ist safe. Doppeltes Wake ist No-Op. | State-Mutationen die bei Wiederholung brechen |
 
 ## Regeln
 
@@ -215,11 +93,6 @@ ABI:
 - Jedes Define in linux.h muss im Kernel implementiert UND getestet sein
 - Keine Magic Numbers — benannte Konstanten aus linux.h
 - Keine Stubs (return 0) — korrekt implementieren oder -ENOSYS
-
-Kommentare:
-- Keine. Code der Kommentare braucht ist zu komplex — refactoren statt kommentieren.
-- Kommentare veralten ohne Compiler-Warnung. Technische Schulden.
-- Einzige Ausnahme: Einzeiler am Dateianfang: /* CosmoRT <Subsystem> — <was die Datei ist> */
 
 Code-Organisation:
 - Bottom-Up: Helpers oben, Caller unten. Keine Forward-Declarations
@@ -246,4 +119,3 @@ TODO.md:
 - Erledigte Tasks sofort abhaken oder komprimieren
 - Testcount im Header aktualisieren
 - Alte erledigte Phasen in Zusammenfassung verschieben
-

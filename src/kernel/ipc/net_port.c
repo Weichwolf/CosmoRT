@@ -1,4 +1,9 @@
-/* CosmoRT Network Port — shared-memory ring bridge for userspace NIC drivers. */
+/* CosmoRT Network Port — shared-memory ring bridge for userspace NIC drivers.
+ *
+ * Kernel side of the ring pair. Implements nic_driver_t so the existing
+ * net stack (IP/TCP/DHCP/DNS) works unchanged whether the NIC driver
+ * is in-kernel (e1000) or userspace (via this port).
+ */
 
 #include "net/net_port.h"
 #include "net/net.h"
@@ -9,9 +14,12 @@
 
 static struct net_port port;
 
+/* ── nic_driver_t implementation over ring buffers ── */
+
 static int port_send(const void *data, uint16_t len) {
     if (!port.active || !port.tx_ring) return -1;
     if (ring_free(port.tx_ring) < (size_t)(len + 2)) return -1;
+    /* Length-prefix: [uint16_t len LE][payload] */
     uint8_t hdr[2] = { (uint8_t)(len & 0xFF), (uint8_t)(len >> 8) };
     ring_write(port.tx_ring, hdr, 2);
     ring_write(port.tx_ring, data, len);
@@ -21,10 +29,12 @@ static int port_send(const void *data, uint16_t len) {
 static int port_recv(void *buf, uint16_t bufsize) {
     if (!port.active || !port.rx_ring) return 0;
     if (ring_available(port.rx_ring) < 2) return 0;
+    /* Peek length prefix */
     uint8_t hdr[2];
     ring_read(port.rx_ring, hdr, 2);
     uint16_t pkt_len = (uint16_t)hdr[0] | ((uint16_t)hdr[1] << 8);
     if (pkt_len > bufsize) {
+        /* Oversized — drain and discard */
         uint8_t skip[64];
         size_t rem = pkt_len;
         while (rem > 0) {
@@ -49,6 +59,8 @@ static const nic_driver_t port_driver = {
     .name    = "net_port"
 };
 
+/* ── Public API ── */
+
 void net_port_init(void) {
     port.active = 0;
     port.tx_ring = 0;
@@ -60,10 +72,12 @@ void net_port_init(void) {
 int net_port_attach(uint64_t shm_phys, size_t shm_size, const uint8_t mac[6]) {
     if (shm_size < 2 * NET_PORT_RING_SIZE) return -1;
 
+    /* Map via direct physical map */
     port.shm_virt = (void *)(shm_phys + PHYS_OFFSET);
     port.shm_phys = shm_phys;
     port.shm_size = shm_size;
 
+    /* First half = TX (kernel writes), second half = RX (driver writes) */
     port.tx_ring = ring_on(port.shm_virt, NET_PORT_RING_SIZE);
     port.rx_ring = ring_on((uint8_t *)port.shm_virt + NET_PORT_RING_SIZE,
                            NET_PORT_RING_SIZE);
@@ -95,7 +109,7 @@ void net_port_detach(void) {
     port.active = 0;
     port.tx_ring = 0;
     port.rx_ring = 0;
-    net_nic_register(0);
+    net_nic_register(0);  /* deregister NIC — net.c is now NULL-safe */
     serial_puts("net_port: detached\n");
 }
 
