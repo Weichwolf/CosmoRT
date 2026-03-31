@@ -44,39 +44,23 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     sched_wake(target);
 }
 
-extern uint64_t pml4[];
-extern void save_user_state_for_block(thread_t *t, long return_value);
-extern void thread_return_to_kernel(thread_t *t);
-
-typedef struct {
-    uint64_t r15, r14, r13, r12, rbp, rbx;
-    uint64_t r9, r8, r10, rdx, rsi, rdi;
-    uint64_t rax;
-    uint64_t r11;
-    uint64_t rcx;
-} eq_syscall_frame_t;
+extern void schedule(void);
 
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
-
     thread_t *cur = thread_current();
     if (!cur) return;
-
     percpu_t *cpu = percpu_self();
-    eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
-    uint64_t orig_syscall_nr = frame->rax;
-
-    save_user_state_for_block(cur, 0);
-    cur->rip -= 2;
-    cur->rax = orig_syscall_nr;
-
-    cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
+    uint64_t saved_frame = cpu->syscall_frame;
     cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
-    epoll_sleeper_add_ext(cur);
-    cur->state = THREAD_BLOCKED;
-
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(cur);
+    cur->blocking_info.type = BLOCK_SLEEP;
+    cur->blocking_info.deadline_tsc = cur->wake_at_tsc;
+    schedule();
+    {
+        percpu_t *rcpu = percpu_self();
+        rcpu->syscall_frame = saved_frame;
+        rcpu->fault_recover = 1;
+    }
 }
 
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
@@ -101,30 +85,31 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     }
 
     percpu_t *cpu = percpu_self();
-    eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
-    uint64_t orig_syscall_nr = frame->rax;
+    uint64_t saved_frame = cpu->syscall_frame;
 
-    save_user_state_for_block(cur, 0);
-    cur->rip -= 2;
-    cur->rax = orig_syscall_nr;
+    cur->wake_at_tsc = (timeout_ms > 0) ? timer_deadline_tsc((uint64_t)timeout_ms) : 0;
+    cur->blocking_info.type = BLOCK_EVENT;
+    cur->blocking_info.context = eq;
+    cur->blocking_info.deadline_tsc = cur->wake_at_tsc;
 
-    if (timeout_ms > 0) {
-        cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
-        cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
-    } else {
-        cur->wake_at = 0;
-        cur->wake_at_tsc = 0;
+    schedule();
+    {
+        percpu_t *rcpu = percpu_self();
+        rcpu->syscall_frame = saved_frame;
+        rcpu->fault_recover = 1;
     }
 
-    epoll_sleeper_add_ext(cur);
+    uint32_t h2 = arch_load_acquire(&eq->head);
+    uint32_t t2 = eq->tail;
+    if (h2 != t2) {
+        *out = eq->events[t2 & EQ_MASK];
+        arch_store_release(&eq->tail, t2 + 1);
+        return 0;
+    }
 
-    cur->state = THREAD_BLOCKED;
-
-    __asm__ volatile("mfence" ::: "memory");
-
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(cur);
-    return 0;
+    if (timeout_ms > 0 && timer_tsc_now() >= cur->wake_at_tsc)
+        return -ETIMEDOUT;
+    return -EINTR;
 }
 
 #define SLEEPER_MAX 32

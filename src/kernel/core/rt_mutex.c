@@ -60,6 +60,8 @@ static int waiters_insert(rt_mutex_t *m, thread_t *t) {
 
 int rt_mutex_lock(rt_mutex_t *m) {
     thread_t *cur = thread_current();
+    percpu_t *cpu = percpu_self();
+    uint64_t saved_frame = cpu->syscall_frame;
 
     for (;;) {
         uint64_t flags;
@@ -101,6 +103,7 @@ int rt_mutex_lock(rt_mutex_t *m) {
 
         cur->blocking_info.type = BLOCK_MUTEX;
         schedule();
+        percpu_self()->syscall_frame = saved_frame;
         continue;
     }
 }

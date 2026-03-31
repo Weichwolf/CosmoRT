@@ -5,11 +5,14 @@
 void sched_preempt_voluntary(thread_t *t) {
     extern void schedule(void);
     extern void sched_add(thread_t *t);
+    percpu_t *cpu = percpu_self();
+    uint64_t saved_frame = cpu->syscall_frame;
     if (t->state == THREAD_RUNNING)
         t->state = THREAD_RUNNABLE;
     sched_add(t);
     t->blocking_info.type = BLOCK_YIELD;
     schedule();
+    percpu_self()->syscall_frame = saved_frame;
 }
 
 long do_sched_yield(void) {
@@ -17,14 +20,14 @@ long do_sched_yield(void) {
     extern void sched_add(thread_t *t);
     thread_t *cur = thread_current();
     if (!cur) return 0;
-
+    percpu_t *cpu = percpu_self();
+    uint64_t saved_frame = cpu->syscall_frame;
     if (cur->state == THREAD_RUNNING)
         cur->state = THREAD_RUNNABLE;
     sched_add(cur);
-
     cur->blocking_info.type = BLOCK_YIELD;
     schedule();
-
+    percpu_self()->syscall_frame = saved_frame;
     return 0;
 }
 
