@@ -241,9 +241,10 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
 
     /* Check existence across all filesystems */
     int exists = 0;
+    int vfs_err = 0;
 
     /* ramfs */
-    if (vfs_lookup(kpath)) { exists = 1; goto found; }
+    if (vfs_lookup_err(kpath, &vfs_err)) { exists = 1; goto found; }
     /* procfs entries (/proc/NAME) */
     {
         const char *pname = 0;
@@ -293,7 +294,10 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
     }
 
 found:
-    if (!exists) return -ENOENT;
+    if (!exists) {
+        if (vfs_err && vfs_err != -ENOENT) return vfs_err;
+        return -ENOENT;
+    }
     /* F_OK: existence only — already confirmed.
      * R_OK/W_OK/X_OK: single-user system, all permissions granted if file exists. */
     return 0;
