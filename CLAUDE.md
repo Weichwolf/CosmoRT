@@ -1,6 +1,10 @@
 # CosmoRT
 
-Linux-ABI-kompatibler Realtime-Microkernel
+Nativer Realtime-Microkernel mit Audio-Fokus. Linux-POSIX-kompatibel, ohne Legacy.
+
+Erstes Ziel: 100% Linux/POSIX-Konformitaet (musl, LTP, Alpine).
+Einzige Ausnahme: Single-User — kein Multi-User, kein uid/gid-Enforcement.
+Danach: RT-Guarantees und Audio-Latenz als Differenzierung.
 
 ## Headers
 
@@ -82,6 +86,44 @@ make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 ```
 
 ## Regeln
+
+Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT-Microkernel begruendet.
+
+  ┌──────────────────────────────────────────────────────────────────────┬────────────┬──────────────────────────────────────────────────────┐
+  │ Regel                                                                │ Linux?     │ CosmoRT-Abweichung (RT/Microkernel)                  │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Stack-Ownership: Ein Thread, ein Kernel-Stack, exklusiv.             │ Wie Linux  │ —                                                    │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ context_switch(prev, next): ein Mechanismus, symmetrisch, atomar.    │ Strenger   │ Linux: asymmetrisch (ret_from_fork). CosmoRT:        │
+  │                                                                      │            │ kein Legacy, daher ein symmetrischer Pfad.            │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Atomare Transitions: State-Change und Switch in einer Operation.     │ Wie Linux  │ —                                                    │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Ownership: Ein Owner oder expliziter Refcount. Nie implizit shared.  │ Wie Linux  │ — (Linux: refcount auf file, mm_struct, pages)       │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Ein Pfad pro Konzept: fork/vfork/clone → eine Implementierung.       │ Strenger   │ Linux: 4 Entry-Points → kernel_clone(). CosmoRT:     │
+  │                                                                      │            │ kein Legacy, eine Funktion mit Flags.                 │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Bounded Execution: Jeder Kernel-Pfad terminiert in endlicher Zeit.   │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Minimale Kernel-API: Nur was Userspace nicht kann.                   │ Strenger   │ Microkernel. Linux: monolithisch.                    │
+  │                                                                      │            │ (Aktuell noch monolithisch fuer POSIX-Phase.)         │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.           │
+  │                                                                      │            │ Linux: WARN_ON + Recovery.                            │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Explizite Dependencies: Jede Abhaengigkeit im Typ/API sichtbar.      │ Strenger   │ Kein Legacy. Linux: initcall-Levels, implizite        │
+  │                                                                      │            │ Reihenfolge.                                          │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Interrupt-Transparenz: Jeder Code-Punkt unterbrechbar oder           │ Wie        │ — (konsistent mit PREEMPT_RT)                        │
+  │ explizit geschuetzt.                                                 │ PREEMPT_RT │                                                      │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Zero-Copy wo moeglich: Pointer statt Daten bewegen.                  │ Wie Linux  │ — (splice, sendfile, io_uring)                       │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Isolation: Kernel/Treiber/Userspace koennen sich nicht korrumpieren. │ Strenger   │ Microkernel. Linux: Treiber im Kernel-Adressraum.    │
+  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
+  │ Idempotente Operationen: Syscall-Restart safe, doppeltes Wake No-Op. │ Wie Linux  │ —                                                    │
+  └──────────────────────────────────────────────────────────────────────┴────────────┴──────────────────────────────────────────────────────┘
 
 Build:
 - Warnings = Errors (-Werror)
