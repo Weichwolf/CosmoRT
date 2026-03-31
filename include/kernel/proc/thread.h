@@ -12,6 +12,21 @@
 #define THREAD_DEAD      4
 #define THREAD_STOPPED   5
 
+#define BLOCK_NONE    0
+#define BLOCK_YIELD   1
+#define BLOCK_PREEMPT 2
+#define BLOCK_EVENT   3
+#define BLOCK_SLEEP   4
+#define BLOCK_MUTEX   5
+#define BLOCK_IRQ     6
+#define BLOCK_EXIT    7
+
+typedef struct {
+    int type;
+    void *context;
+    uint64_t deadline_tsc;
+} blocking_info_t;
+
 #define SCHED_OTHER  0
 #define SCHED_FIFO   1
 #define SCHED_RR     2
@@ -99,6 +114,8 @@ typedef struct thread {
 
     void (*kthread_fn)(void *);
     void *kthread_arg;
+
+    blocking_info_t blocking_info;
 } thread_t;
 
 thread_t *thread_alloc(void);

@@ -432,6 +432,7 @@ long do_vfork(unsigned long flags, void *child_stack,
     }
 
     ct->clear_child_tid = 0;
+    ct->blocking_info = (blocking_info_t){0};
     if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
         ct->clear_child_tid = child_tid;
 

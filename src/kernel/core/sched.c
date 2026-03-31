@@ -42,6 +42,7 @@ static struct {
 static thread_t idle_threads[SMP_MAX_CORES];
 static uint8_t idle_stacks[SMP_MAX_CORES][IDLE_STACK_SIZE] __attribute__((aligned(16)));
 static thread_t *preempt_pending[SMP_MAX_CORES];
+static thread_t *prev_thread[SMP_MAX_CORES];
 
 void userspace_entry_trampoline(void);
 void kthread_entry_trampoline(void);
@@ -470,6 +471,21 @@ void sched_preempt(void *frame_ptr) {
     cpu->current_thread = idle;
     idle->state = THREAD_RUNNING;
     context_resume(idle);
+}
+
+__attribute__((used))
+void schedule(void) {
+    thread_t *cur = thread_current();
+    percpu_t *cpu = percpu_self();
+    int core = cpu->core_id;
+
+    prev_thread[core] = cur;
+
+    thread_t *idle = &idle_threads[core];
+    cpu->current_thread = idle;
+    idle->state = THREAD_RUNNING;
+
+    context_switch(cur, idle);
 }
 
 __attribute__((cold))

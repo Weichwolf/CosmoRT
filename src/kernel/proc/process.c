@@ -58,6 +58,7 @@ thread_t *thread_alloc(void) {
         t->kthread_arg = 0;
         t->kstack_rsp = 0;
         t->blocked_in_kernel = 0;
+        t->blocking_info = (blocking_info_t){0};
         event_queue_init(&t->eq);
     }
     return t;
