@@ -235,8 +235,9 @@ long do_fork(void) {
     for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
         child->cmdline[ci] = parent->cmdline[ci];
 
-    /* Inherit signal state */
-    child->sig_pending = 0; /* child starts with no pending signals */
+    /* Inherit signal state — Linux: pending signals + alarms cleared for child */
+    child->sig_pending = 0;
+    child->alarm_deadline_ms = 0;
     for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
@@ -397,6 +398,7 @@ long do_vfork(unsigned long flags, void *child_stack,
     for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
         child->cmdline[ci] = parent->cmdline[ci];
     child->sig_pending = 0;
+    child->alarm_deadline_ms = 0;
     for (int si = 0; si < 64; si++)
         child->sig_actions[si] = parent->sig_actions[si];
 
