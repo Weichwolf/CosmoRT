@@ -33,8 +33,8 @@ void save_user_state_for_block(thread_t *t, long return_value) {
      * if arch_prctl(SET_FS) was called since last context switch */
     t->fs_base = arch_get_fs_base();
 
-    /* Save FPU/SSE state so fork/clone get a consistent snapshot */
-    arch_fxsave(t->fxsave_area);
+    /* Save FPU/SSE/AVX state so fork/clone get a consistent snapshot */
+    arch_fpstate_save(t->xsave_area);
 }
 
 /* ── Cold-path error helpers (keep strings out of hot dispatch) ── */

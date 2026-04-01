@@ -217,8 +217,10 @@ long do_pipe2(int *fds, int flags) {
      * Read end: obj == pp. Write end: obj == pp+1 (non-aligned marker). */
 
     {
+        /* Linux ABI: int[2]. But ktest uses long[2] via raw syscall wrappers.
+         * Write int[2] — matches Linux pipe(2) ABI exactly. */
         int kfds[2] = { rfd, wfd };
-        copy_to_user(fds, kfds, sizeof(kfds)); /* user_ok checked at entry */
+        copy_to_user(fds, kfds, sizeof(kfds));
     }
     return 0;
 }

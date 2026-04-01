@@ -25,6 +25,10 @@ static inline uint64_t ensure_high(uint64_t addr) {
 /* Process */
 #define KSTACK_SIZE      (64 * 1024)
 
+/* XSAVE area: max size for x87+SSE+AVX+AVX-512.
+ * Actual size determined at boot via CPUID.0DH. Fallback = 512 (FXSAVE). */
+#define XSAVE_MAX_SIZE   2688
+
 /* SMP (single-core for POSIX phase) */
 #define SMP_MAX_CORES    1
 
@@ -36,7 +40,10 @@ static inline uint64_t ensure_high(uint64_t addr) {
 
 /* User virtual address layout */
 #define USER_STACK_TOP   0x7FFFFFFFE000ULL
-#define USER_STACK_SIZE  (8 * 1024 * 1024)  /* 8MB */
+#define USER_STACK_INIT  (132 * 1024)       /* initial stack VMA (132KB, like Linux) */
+#define RLIM_STACK_DEFAULT (8UL * 1024 * 1024) /* default RLIMIT_STACK: 8MB */
+#define RLIM_STACK_MAX     (64UL * 1024 * 1024) /* hard limit: 64MB */
+#define STACK_GUARD_GAP  (1UL * 1024 * 1024)    /* 1MB gap between stack and adjacent VMAs */
 #define USER_MMAP_BASE   0x7F0000000000ULL
 #define USER_BRK_BASE    0x600000ULL         /* above typical ELF load */
 

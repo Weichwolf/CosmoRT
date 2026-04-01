@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "config.h"
 
 /* --- TLB / Address Space ------------------------------------------ */
 
@@ -77,14 +78,65 @@ static inline void arch_set_kernel_gs_base(uint64_t val) {
     arch_wrmsr(0xC0000102, val);   /* IA32_KERNEL_GS_BASE */
 }
 
-/* --- FPU / SSE state ---------------------------------------------- */
+/* --- FPU / SSE / AVX state (XSAVE) -------------------------------- */
 
+/* XCR0 component bits */
+#define XSTATE_FP        (1ULL << 0)  /* x87 FPU */
+#define XSTATE_SSE       (1ULL << 1)  /* SSE (XMM) */
+#define XSTATE_AVX       (1ULL << 2)  /* AVX (YMM upper) */
+#define XSTATE_AVX512_OP (1ULL << 5)  /* AVX-512 opmask (k0-k7) */
+#define XSTATE_AVX512_HI (1ULL << 6)  /* AVX-512 upper ZMM (ZMM0-15 hi) */
+#define XSTATE_AVX512_EX (1ULL << 7)  /* AVX-512 ZMM16-31 */
+
+/* Boot-time detected values (defined in main.c) */
+extern uint64_t xsave_xcr0;   /* active XCR0 feature mask */
+extern uint32_t xsave_size;   /* save area size in bytes (512 = FXSAVE fallback) */
+
+static inline uint64_t arch_xgetbv(uint32_t xcr) {
+    uint32_t lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(xcr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void arch_xsetbv(uint32_t xcr, uint64_t val) {
+    __asm__ volatile("xsetbv" :: "c"(xcr),
+                     "a"((uint32_t)val), "d"((uint32_t)(val >> 32)));
+}
+
+/* XSAVE/XRSTOR with full component mask.
+ * area must be 64-byte aligned. */
+static inline void arch_xsave(void *area) {
+    uint32_t lo = (uint32_t)xsave_xcr0;
+    uint32_t hi = (uint32_t)(xsave_xcr0 >> 32);
+    __asm__ volatile("xsave %0" : "=m"(*(char (*)[XSAVE_MAX_SIZE])area)
+                     : "a"(lo), "d"(hi) : "memory");
+}
+
+static inline void arch_xrstor(const void *area) {
+    uint32_t lo = (uint32_t)xsave_xcr0;
+    uint32_t hi = (uint32_t)(xsave_xcr0 >> 32);
+    __asm__ volatile("xrstor %0" :: "m"(*(const char (*)[XSAVE_MAX_SIZE])area),
+                     "a"(lo), "d"(hi) : "memory");
+}
+
+/* Legacy fallback (used only if XSAVE not available) */
 static inline void arch_fxsave(void *area) {
     __asm__ volatile("fxsave %0" : "=m"(*(char (*)[512])area));
 }
 
 static inline void arch_fxrstor(const void *area) {
     __asm__ volatile("fxrstor %0" :: "m"(*(const char (*)[512])area));
+}
+
+/* Dispatch: XSAVE if available, FXSAVE fallback */
+static inline void arch_fpstate_save(void *area) {
+    if (xsave_size > 512) arch_xsave(area);
+    else                   arch_fxsave(area);
+}
+
+static inline void arch_fpstate_restore(const void *area) {
+    if (xsave_size > 512) arch_xrstor(area);
+    else                   arch_fxrstor(area);
 }
 
 /* --- CPU hints / halt --------------------------------------------- */

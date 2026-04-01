@@ -36,7 +36,7 @@
     X(SYS_MADVISE, madvise, do_madvise((unsigned long)a1, (size_t)a2, (int)a3)) \
     /* Process lifecycle */ \
     X(SYS_CLONE, clone, do_clone((unsigned long)a1, (void *)a2, (int *)a3, (int *)a4, (unsigned long)a5)) \
-    X(SYS_FORK, fork, do_fork()) \
+    X(SYS_FORK, fork, do_fork(SIGCHLD, 0, 0, 0, 0)) \
     X(SYS_VFORK, vfork, do_vfork(CLONE_VFORK, 0, 0, 0, 0)) \
     X(SYS_EXECVE, execve, do_execve((const char *)a1, (char *const *)a2, (char *const *)a3)) \
     X(SYS_WAIT4, wait4, do_wait4((int)a1, (int *)a2, (int)a3, (void *)a4)) \
@@ -107,11 +107,11 @@
     /* Stubs for npm/node compatibility */ \
     X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \
-    X(SYS_LCHOWN, lchown, do_lchown()) \
+    X(SYS_LCHOWN, lchown, do_lchown((const char *)a1, (uint32_t)a2, (uint32_t)a3)) \
     X(SYS_SCHED_GET_PRIORITY_MAX, sched_get_priority_max, do_sched_get_priority_max((int)a1)) \
     X(SYS_SCHED_GET_PRIORITY_MIN, sched_get_priority_min, do_sched_get_priority_min((int)a1)) \
     X(SYS_SETRLIMIT, setrlimit, do_setrlimit()) \
-    X(SYS_FADVISE64, fadvise64, do_fadvise64()) \
+    X(SYS_FADVISE64, fadvise64, do_fadvise64((int)a1, (long)a2, (long)a3, (int)a4)) \
     X(SYS_GETCPU, getcpu, do_getcpu((unsigned *)a1, (unsigned *)a2)) \
     X(SYS_GETRUSAGE, getrusage, do_getrusage((int)a1, (void *)a2)) \
     X(SYS_TIMES, times, do_times((void *)a1)) \
@@ -233,15 +233,15 @@
     X(SYS_SYSLOG, syslog, do_syslog_stub()) \
     X(SYS_SCHED_RR_GET_INTERVAL, sched_rr_get_interval, do_sched_rr_get_interval((int)a1, (void *)a2)) \
     X(SYS_VHANGUP, vhangup, do_vhangup()) \
-    X(SYS_ADJTIMEX, adjtimex, do_adjtimex()) \
-    X(SYS_CHROOT, chroot, do_chroot()) \
+    X(SYS_ADJTIMEX, adjtimex, do_adjtimex((void *)a1)) \
+    X(SYS_CHROOT, chroot, do_chroot((const char *)a1)) \
     X(SYS_ACCT, acct, do_acct()) \
     X(SYS_SETTIMEOFDAY, settimeofday, do_settimeofday()) \
     X(SYS_SETDOMAINNAME, setdomainname, do_setdomainname()) \
     X(SYS_READAHEAD, readahead, do_readahead()) \
     X(SYS_RESTART_SYSCALL, restart_syscall, do_restart_syscall()) \
-    X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime()) \
-    X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime()) \
+    X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime((int)a1, (const void *)a2)) \
+    X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime((int)a1, (void *)a2)) \
     X(SYS_UNSHARE, unshare, do_unshare_stub()) \
     X(SYS_UTIMES, utimes, do_utimes((const char *)a1, (const void *)a2)) \
     X(SYS_FUTIMESAT, futimesat, do_futimesat((int)a1, (const char *)a2, (const void *)a3)) \

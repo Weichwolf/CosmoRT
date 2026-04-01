@@ -74,14 +74,24 @@ cleanup:
     sc2(SYS_MUNMAP, (long)shared, 4096);
 }
 
-/* ── clone04: NULL stack returns EINVAL ── */
+/* ── clone04: NULL stack = fork semantics (Linux allows this) ── */
 
 static void test_clone04(void) {
     puts("\n[ltp/clone04]\n");
 
-    long r = sc5(SYS_CLONE, SIGCHLD, 0, 0, 0, 0);
-    /* Linux returns EINVAL for NULL child stack (when not CLONE_VM) */
-    check_val("clone NULL stack EINVAL", r, -EINVAL);
+    /* clone(SIGCHLD, 0) = fork: child gets parent stack via COW */
+    long pid = sc5(SYS_CLONE, SIGCHLD, 0, 0, 0, 0);
+    check("clone(SIGCHLD, 0) succeeds", pid >= 0);
+    if (pid < 0) return;
+
+    if (pid == 0) {
+        sc1(SYS_EXIT_GROUP, 0);
+        __builtin_unreachable();
+    }
+
+    int wstatus = 0;
+    sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+    check("child exited cleanly", WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0);
 }
 
 /* ── clone05: CLONE_VFORK suspends parent until child exits ── */

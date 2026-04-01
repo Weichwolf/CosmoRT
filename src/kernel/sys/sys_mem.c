@@ -298,8 +298,9 @@ long do_brk(unsigned long addr) {
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
     if (addr >= 0x800000000000ULL) return (long)p->brk_current;
-    /* Cap brk growth to 256MB above base to prevent excessive virtual memory use */
-    if (addr > p->brk_base + (256ULL << 20)) return (long)p->brk_current;
+    /* RLIMIT_DATA: cap brk growth (0 = unlimited, like Linux default) */
+    if (p->rlim_data && addr > p->brk_base + p->rlim_data)
+        return (long)p->brk_current;
     /* OOM guard: refuse brk growth when memory is critically low */
     if (addr > p->brk_current) {
         extern uint64_t page_free_count(void);
@@ -920,6 +921,31 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         arch_flush_tlb();
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
+        spin_unlock_irq(&p->lock, irqf);
+        return 0;
+    }
+
+    if (advice == MADV_HUGEPAGE || advice == MADV_NOHUGEPAGE) {
+        /* THP hint: mark/unmark VMAs for transparent huge pages.
+         * MADV_HUGEPAGE: force THP even if VMA < 2MB.
+         * MADV_NOHUGEPAGE: disable THP for this VMA. */
+        uint64_t irqf;
+        spin_lock_irq(&p->lock, &irqf);
+        for (uint64_t va = start; va < end; ) {
+            vma_t *v = vma_find_overlap(p->vma_root, va, end);
+            if (!v) break;
+            if (v->start > va) va = v->start;
+            if (v->flags & MAP_ANONYMOUS) {
+                if (advice == MADV_HUGEPAGE) {
+                    v->flags |= VMA_HUGEPAGE;
+                    v->flags &= ~VMA_NOHUGEPAGE;
+                } else {
+                    v->flags |= VMA_NOHUGEPAGE;
+                    v->flags &= ~VMA_HUGEPAGE;
+                }
+            }
+            va = v->end;
+        }
         spin_unlock_irq(&p->lock, irqf);
         return 0;
     }

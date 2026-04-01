@@ -124,7 +124,7 @@ static void test_accept03_dir(void) {
 /* accept on pipe */
 static void test_accept03_pipe(void) {
     puts("\n[ltp/accept03-pipe]\n");
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

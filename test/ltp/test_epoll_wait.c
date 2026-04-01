@@ -12,7 +12,7 @@
 static void test_epoll_wait01_out(void) {
     puts("\n[ltp/epoll_wait01-out]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -42,7 +42,7 @@ static void test_epoll_wait01_out(void) {
 static void test_epoll_wait01_in(void) {
     puts("\n[ltp/epoll_wait01-in]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -83,7 +83,7 @@ static void test_epoll_wait03_ebadf(void) {
 
 static void test_epoll_wait03_einval_notepoll(void) {
     puts("\n[ltp/epoll_wait03-einval-notepoll]\n");
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
     struct epoll_event ev;
     long r = sc4(SYS_EPOLL_WAIT, pipefd[0], (long)&ev, 1, 0);
@@ -114,7 +114,7 @@ static void test_epoll_wait03_einval_maxevents(void) {
 static void test_epoll_wait04(void) {
     puts("\n[ltp/epoll_wait04]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -141,7 +141,7 @@ static void test_epoll_wait04(void) {
 static void test_epoll_wait06(void) {
     puts("\n[ltp/epoll_wait06]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     /* pipe2 with O_NONBLOCK */
     long r = sc2(SYS_PIPE2, (long)pipefd, O_NONBLOCK);
     check_val("pipe2 nonblock", r, 0);
@@ -186,7 +186,7 @@ static void test_epoll_wait06(void) {
 static void test_epoll_wait07(void) {
     puts("\n[ltp/epoll_wait07]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -229,7 +229,7 @@ static void test_epoll_wait07(void) {
 static void test_epoll_pwait01(void) {
     puts("\n[ltp/epoll_pwait01]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -266,7 +266,7 @@ static void test_epoll_pwait01(void) {
 static void test_epoll_pwait02(void) {
     puts("\n[ltp/epoll_pwait02]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);
@@ -297,7 +297,7 @@ static void test_epoll_pwait02(void) {
 static void test_epoll_pwait05(void) {
     puts("\n[ltp/epoll_pwait05]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     long epfd = sc1(SYS_EPOLL_CREATE1, 0);

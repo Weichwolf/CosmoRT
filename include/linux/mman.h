@@ -28,9 +28,14 @@
 #define MREMAP_FIXED    2
 
 /* madvise advice values */
-#define MADV_NORMAL     0
-#define MADV_DONTNEED   4
-#define MADV_FREE       8
+#define MADV_NORMAL      0
+#define MADV_RANDOM      1
+#define MADV_SEQUENTIAL  2
+#define MADV_WILLNEED    3
+#define MADV_DONTNEED    4
+#define MADV_FREE        8
+#define MADV_HUGEPAGE    14
+#define MADV_NOHUGEPAGE  15
 
 /* mlockall flags */
 #define MCL_CURRENT     1

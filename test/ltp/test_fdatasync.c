@@ -36,7 +36,7 @@ static void test_fdatasync02_ebadf(void) {
 static void test_fdatasync02_einval(void) {
     puts("\n[ltp/fdatasync02-einval]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

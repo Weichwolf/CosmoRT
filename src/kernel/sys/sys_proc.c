@@ -108,12 +108,12 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     vma_free_tree(p->vma_root);
     p->vma_root = 0;
 
-    /* Send SIGCHLD to parent + wake if blocked in wait4 */
+    /* Send exit signal to parent + wake if blocked in wait4 */
     if (p->parent_pid) {
         process_t *parent = proc_find(p->parent_pid);
         if (parent) {
-            /* SIGCHLD delivery (Linux ABI) */
-            __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(SIGCHLD));
+            int nsig = p->notify_signal ? p->notify_signal : SIGCHLD;
+            __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
 
             extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             uint64_t pflags;
@@ -249,28 +249,26 @@ long do_clone(unsigned long flags, void *child_stack,
     thread_t *cur = cpu->current_thread;
     if (!cur || !cur->proc) return -EFAULT;
 
+    /* Exit signal in low byte (Linux ABI: clone flags & 0xFF) */
+    int exit_sig = flags & 0xFF;
+    if (exit_sig > 64) return -EINVAL;
+
     /* Namespace flags: single-user system, no containers */
     if (flags & CLONE_NS_FLAGS) return -EINVAL;
 
-    /* Without CLONE_VM: fork semantics — create a new process (COW).
-     * musl libc's fork() uses clone(SIGCHLD, 0) — no CLONE_VM.
-     * Delegate to do_fork() which handles COW + new process_t. */
-    if (!(flags & CLONE_VM))
-        return do_fork();
+    /* Linux flag combination rules (kernel/fork.c copy_process) */
+    if ((flags & CLONE_THREAD) && !(flags & CLONE_SIGHAND)) return -EINVAL;
+    if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM)) return -EINVAL;
 
-    /* CLONE_VM | CLONE_VFORK without CLONE_THREAD: vfork/posix_spawn semantics.
-     * musl's posix_spawn uses clone(CLONE_VM|CLONE_VFORK|SIGCHLD, child_stack).
-     * Child shares address space temporarily, then does exec (gets own AS).
-     * Must create a proper child process (for waitpid), not a thread.
+    /* Without CLONE_VM: fork semantics (COW).
+     * musl libc's fork() uses clone(SIGCHLD, 0) — no CLONE_VM. */
+    if (!(flags & CLONE_VM))
+        return do_fork(flags, child_stack, parent_tid, child_tid, tls);
+
+    /* CLONE_VM | CLONE_VFORK without CLONE_THREAD: vfork/posix_spawn.
      * Parent blocks until child execs or exits. */
     if ((flags & CLONE_VFORK) && !(flags & CLONE_THREAD))
         return do_vfork(flags, child_stack, parent_tid, child_tid, tls);
-
-    /* CLONE_VM set: in-process thread creation.
-     * CLONE_FS, CLONE_FILES, CLONE_SIGHAND: with CLONE_VM, child shares
-     * the same process_t → CWD, FD table, signal handlers are already
-     * shared implicitly. Accept and document.
-     * CLONE_SYSVSEM: no SysV semaphores in CosmoRT. Accept and ignore. */
 
     /* Read parent's saved user registers from the syscall frame */
     syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
@@ -324,7 +322,7 @@ long do_clone(unsigned long flags, void *child_stack,
     }
 
     /* Copy parent FPU/SSE state to child thread */
-    arch_fxsave(t->fxsave_area);
+    arch_fpstate_save(t->xsave_area);
 
     /* Parent TID (CLONE_PARENT_SETTID) */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
@@ -377,8 +375,8 @@ struct clone_args {
 };
 
 long do_clone3(void *uargs, size_t size) {
-    /* Minimum: must include at least up to exit_signal (first 5 fields = 40 bytes) */
-    if (size < __builtin_offsetof(struct clone_args, stack)) return -EINVAL;
+    /* Linux CLONE_ARGS_SIZE_VER0 = 64 */
+    if (size < 64) return -EINVAL;
     if (size > 256) return -EINVAL;
     if (!user_ok((uint64_t)uargs, size)) return -EFAULT;
 
@@ -388,13 +386,15 @@ long do_clone3(void *uargs, size_t size) {
     int r = copy_from_user(&kargs, uargs, copy);
     if (r) return r;
 
-    /* Validate copied args */
     if (kargs.exit_signal > 64) return -EINVAL;
-    if (kargs.stack && !user_ok(kargs.stack, kargs.stack_size)) return -EFAULT;
-    if (kargs.stack && kargs.stack_size == 0) return -EINVAL;
 
-    /* Map clone3 flags to clone flags */
-    unsigned long cflags = (unsigned long)kargs.flags;
+    /* Stack: both or neither must be set */
+    if (!kargs.stack && kargs.stack_size) return -EINVAL;
+    if (kargs.stack && !kargs.stack_size) return -EINVAL;
+    if (kargs.stack && !user_ok(kargs.stack, kargs.stack_size)) return -EFAULT;
+
+    /* Merge exit_signal into flags low byte (do_clone extracts it) */
+    unsigned long cflags = (unsigned long)kargs.flags | (kargs.exit_signal & 0xFF);
     void *child_stack = kargs.stack ? (void *)(kargs.stack + kargs.stack_size) : 0;
     int *parent_tid = (int *)(uintptr_t)kargs.parent_tid;
     int *child_tid = (int *)(uintptr_t)kargs.child_tid;
@@ -578,6 +578,7 @@ struct k_rlimit {
     unsigned long rlim_max;
 };
 
+#define RLIMIT_DATA    2
 #define RLIMIT_STACK   3
 #define RLIMIT_NOFILE  7
 #define RLIMIT_AS      9
@@ -592,6 +593,8 @@ long do_prlimit64(int pid, int resource,
     process_t *p = proc_current();
     unsigned long nofile_cur = (p && p->rlim_nofile) ? p->rlim_nofile : FD_MAX;
 
+    unsigned long stack_cur = (p && p->rlim_stack) ? p->rlim_stack : RLIM_STACK_DEFAULT;
+
     /* Apply new limit */
     if (new_rlim) {
         struct k_rlimit knew;
@@ -602,14 +605,27 @@ long do_prlimit64(int pid, int resource,
             p->rlim_nofile = knew.rlim_cur;
             nofile_cur = knew.rlim_cur;
         }
+        if (resource == RLIMIT_STACK && p) {
+            if (knew.rlim_cur > RLIM_STACK_MAX) knew.rlim_cur = RLIM_STACK_MAX;
+            p->rlim_stack = knew.rlim_cur;
+            stack_cur = knew.rlim_cur;
+        }
+        if (resource == RLIMIT_DATA && p) {
+            /* 0 or RLIM_INFINITY = unlimited (Linux default) */
+            p->rlim_data = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
+        }
     }
 
     if (old_rlim) {
         struct k_rlimit krl;
         switch (resource) {
+        case RLIMIT_DATA:
+            krl.rlim_cur = (p && p->rlim_data) ? p->rlim_data : RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
         case RLIMIT_STACK:
-            krl.rlim_cur = 8 * 1024 * 1024;
-            krl.rlim_max = 64 * 1024 * 1024;
+            krl.rlim_cur = stack_cur;
+            krl.rlim_max = RLIM_STACK_MAX;
             break;
         case RLIMIT_NOFILE:
             krl.rlim_cur = nofile_cur;

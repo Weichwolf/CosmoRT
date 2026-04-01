@@ -58,7 +58,7 @@ void epoll_init(void) {
 /* ── SYS_EPOLL_CREATE1 (291) ────────────────────── */
 
 long do_epoll_create1(int flags) {
-    (void)flags;
+    if (flags & ~EPOLL_CLOEXEC) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 

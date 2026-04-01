@@ -25,7 +25,7 @@ static void test_close01_file(void) {
 static void test_close01_pipe(void) {
     puts("\n[ltp/close01-pipe]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

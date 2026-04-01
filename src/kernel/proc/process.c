@@ -274,7 +274,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->vma_root = 0;
 
     /* ASLR: randomize stack and mmap base */
-    uint64_t stack_rand = aslr_rand() & 0xFFF000ULL;
+    uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */
     uint64_t mmap_rand  = aslr_rand() & 0xFFFFFFF000ULL;
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
@@ -291,7 +291,10 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->brk_base = brk_end;
     p->brk_current = brk_end;
     p->is_driver = (p->pid == 1) ? 1 : 0;
-    p->pgid = p->pid;  /* initial process is own process group leader */
+    p->notify_signal = SIGCHLD;
+    p->umask_val = 0022;
+    p->pgid = p->pid;
+
     p->sid  = p->pid;  /* initial process is own session leader */
     p->cwd[0] = '/'; p->cwd[1] = '\0';
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }
@@ -299,14 +302,13 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 1023) { p->cmdline[ii] = s[ii]; ii++; } p->cmdline[ii] = 0; p->cmdline_len = ii + 1; }
     fd_table_init(&p->fds);
 
-    /* Create VMA for the stack region with guard page at the bottom.
-     * Guard page is PROT_NONE — access triggers SIGSEGV, not demand-paging. */
-    uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-    uint64_t guard_bottom = stack_bottom - 4096;
-    vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
+    /* Stack: small initial VMA with VMA_GROWSDOWN (expands on page fault).
+     * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand. */
+    uint64_t stack_bottom = stack_top - USER_STACK_INIT;
     vma_insert(&p->vma_root, stack_bottom, stack_top,
-               PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | VMA_GROWSDOWN);
+    p->stack_top = stack_top;
 
     /* brk VMA is created on first brk() call that grows beyond brk_base.
      * Don't insert a zero-length VMA here — it corrupts the AVL tree. */
@@ -354,11 +356,14 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->timeslice = RR_TIMESLICE;
     t->proc = p;
 
-    /* Initialize FPU/SSE state: clean FXSAVE image.
-     * FCW=0x037F: extended precision (64-bit mantissa), all x87 exceptions masked.
-     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest. */
-    *(uint16_t *)(t->fxsave_area + 0) = 0x037F;   /* FCW */
-    *(uint32_t *)(t->fxsave_area + 24) = 0x1F80;  /* MXCSR */
+    /* Initialize FPU/SSE/AVX state: clean XSAVE/FXSAVE image.
+     * FCW=0x037F: extended precision, all x87 exceptions masked.
+     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest.
+     * XSTATE_BV at offset 512 marks which components are valid. */
+    *(uint16_t *)(t->xsave_area + 0) = 0x037F;   /* FCW */
+    *(uint32_t *)(t->xsave_area + 24) = 0x1F80;  /* MXCSR */
+    if (xsave_size > 512)
+        *(uint64_t *)(t->xsave_area + 512) = xsave_xcr0; /* XSTATE_BV */
 
     /* Kernel stack for this thread */
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
@@ -458,8 +463,8 @@ void thread_run(thread_t *t) {
      * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
     arch_set_fs_base(t->fs_base);
 
-    /* Restore FPU/SSE state */
-    arch_fxrstor(t->fxsave_area);
+    /* Restore FPU/SSE/AVX state */
+    arch_fpstate_restore(t->xsave_area);
 
     /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
     proc_enter_ring3(t);

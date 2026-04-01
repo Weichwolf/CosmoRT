@@ -7,6 +7,7 @@
 #define THREAD_H
 
 #include <stdint.h>
+#include "config.h"
 #include "core/event_queue.h"
 
 /* Thread states */
@@ -116,8 +117,8 @@ typedef struct thread {
     /* ── Event Queue (per-thread, for blocking syscalls) ── */
     event_queue_t eq;
 
-    /* ── FPU/SSE state (FXSAVE/FXRSTOR) ── */
-    uint8_t fxsave_area[512] __attribute__((aligned(16)));
+    /* ── FPU/SSE/AVX state (XSAVE/XRSTOR, FXSAVE fallback) ── */
+    uint8_t xsave_area[XSAVE_MAX_SIZE] __attribute__((aligned(64)));
 
     /* ── TSC-based wakeup deadline (after fxsave to avoid offset shifts) ── */
     uint64_t wake_at_tsc;  /* TSC deadline for sub-ms precision; 0 = use wake_at */

@@ -416,6 +416,7 @@ long do_lseek(int fd, long offset, int whence) {
 /* ── SYS_dup3 (292) — primary; dup2 delegates here via dispatch ── */
 
 long do_dup3(int oldfd, int newfd, int flags) {
+    if (flags & ~O_CLOEXEC) return -EINVAL;
     if (oldfd == newfd) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -472,6 +473,12 @@ long do_chdir(const char *path) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
+    /* NAME_MAX check: any component > 255 chars → ENAMETOOLONG */
+    int comp = 0;
+    for (int i = 0; i < len; i++) {
+        if (kpath[i] == '/') comp = 0;
+        else if (++comp > 255) return -ENAMETOOLONG;
+    }
     resolve_path(kpath, rpath, PATH_MAX);
     return vfs_chdir(rpath);
 }
@@ -1071,8 +1078,10 @@ long do_getdents(int fd, void *buf, size_t count) {
 
 /* ── SYS_close_range (436) — close FDs in range ──── */
 
+#define CLOSE_RANGE_UNSHARE 2
+#define CLOSE_RANGE_CLOEXEC 4
 long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
-    (void)flags;
+    if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) return -EINVAL;
     if (first > last) return -EINVAL;
     if (last >= FD_MAX) last = FD_MAX - 1;
     for (unsigned int fd = first; fd <= last; fd++)
@@ -1119,6 +1128,20 @@ long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
     else fout->offset = pos_out;
 
     return total ? (long)total : -EIO;
+}
+
+/* ── SYS_fadvise64 (221) — file access pattern hint ──── */
+
+long do_fadvise64(int fd, long offset, long len, int advice) {
+    (void)offset; (void)len;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    if (advice < 0 || advice > 5) return -EINVAL;
+    if (fde->type == FD_PIPE || fde->type == FD_SOCKET ||
+        fde->type == FD_UNIX_SOCK) return -ESPIPE;
+    return 0; /* hint accepted, no page cache action */
 }
 
 /* ── SYS_memfd_create (319) — anonymous file in memory ── */

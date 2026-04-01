@@ -258,6 +258,31 @@ int vfs_chmod(const char *path, uint32_t mode) {
     return 0;
 }
 
+int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
+    if (!is_ramfs_path(path)) {
+        uint64_t ino64 = ext2_walk(path);
+        uint32_t ino = (uint32_t)ino64;
+        if (ino == 0) return -ENOENT;
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if (uid != (uint32_t)-1) ip.i_uid = (uint16_t)uid;
+        if (gid != (uint32_t)-1) ip.i_gid = (uint16_t)gid;
+        /* Linux: chown clears SUID/SGID bits */
+        ip.i_mode &= ~(uint16_t)(04000 | 02000);
+        ext2_inode_write(ino, &ip);
+        inotify_event(path, IN_ATTRIB);
+        return 0;
+    }
+    int lerr = 0;
+    struct vfs_node *node = vfs_lookup_err(path, &lerr);
+    if (!node) return lerr ? lerr : -ENOENT;
+    if (uid != (uint32_t)-1) node->uid = uid;
+    if (gid != (uint32_t)-1) node->gid = gid;
+    node->mode &= ~(uint32_t)(04000 | 02000); /* clear SUID/SGID */
+    inotify_event(path, IN_ATTRIB);
+    return 0;
+}
+
 int vfs_fchmod(int fd, uint32_t mode) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

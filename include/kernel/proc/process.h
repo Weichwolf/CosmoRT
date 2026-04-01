@@ -88,6 +88,17 @@ typedef struct process {
 
     /* Resource limits (at end to avoid offset shifts) */
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
+    unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
+    unsigned long rlim_data;     /* RLIMIT_DATA cur (0 = unlimited, like Linux) */
+
+    /* Signal to parent on exit (clone exit_signal, 0 = none → fallback SIGCHLD) */
+    int         notify_signal;
+
+    /* Stack growth tracking */
+    uint64_t    stack_top;       /* original stack top (set at exec) */
+
+    /* File creation mask (umask) — default 0022 */
+    uint32_t    umask_val;
 } process_t;
 
 /* PID/TID lookup table sizes */
@@ -128,7 +139,8 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
 int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
 
 /* Process fork/exec */
-long do_fork(void);
+long do_fork(unsigned long flags, void *child_stack,
+             int *parent_tid, int *child_tid, unsigned long tls);
 long do_vfork(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_execve(const char *path, char *const argv[], char *const envp[]);
