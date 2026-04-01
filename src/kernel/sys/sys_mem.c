@@ -298,8 +298,9 @@ long do_brk(unsigned long addr) {
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
     if (addr >= 0x800000000000ULL) return (long)p->brk_current;
-    /* Cap brk growth to 256MB above base to prevent excessive virtual memory use */
-    if (addr > p->brk_base + (256ULL << 20)) return (long)p->brk_current;
+    /* RLIMIT_DATA: cap brk growth (0 = unlimited, like Linux default) */
+    if (p->rlim_data && addr > p->brk_base + p->rlim_data)
+        return (long)p->brk_current;
     /* OOM guard: refuse brk growth when memory is critically low */
     if (addr > p->brk_current) {
         extern uint64_t page_free_count(void);

@@ -89,6 +89,7 @@ typedef struct process {
     /* Resource limits (at end to avoid offset shifts) */
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
     unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
+    unsigned long rlim_data;     /* RLIMIT_DATA cur (0 = unlimited, like Linux) */
 
     /* Signal to parent on exit (clone exit_signal, 0 = none → fallback SIGCHLD) */
     int         notify_signal;

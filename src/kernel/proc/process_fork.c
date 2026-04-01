@@ -228,6 +228,7 @@ long do_fork(unsigned long flags, void *child_stack,
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
     child->rlim_stack = parent->rlim_stack;
+    child->rlim_data = parent->rlim_data;
     child->stack_top = parent->stack_top;
     child->is_driver = 0; /* HW access not inherited — only via proc_create_from_vfs */
     for (int ci = 0; ci < 256; ci++) {
@@ -411,6 +412,7 @@ long do_vfork(unsigned long flags, void *child_stack,
     child->mmap_next = parent->mmap_next;
     child->mlockall_flags = parent->mlockall_flags;
     child->rlim_stack = parent->rlim_stack;
+    child->rlim_data = parent->rlim_data;
     child->stack_top = parent->stack_top;
     child->is_driver = 0;
     for (int ci = 0; ci < 256; ci++) {

@@ -304,14 +304,13 @@ static void test_maps_stack_growth(void) {
     }
     check("parsed start > 0", start1 > 0);
 
-    /* Touch stack deeply to force VMA_GROWSDOWN expansion.
-     * Use inline asm to prevent the compiler from optimizing away the access. */
-    volatile char *deep;
-    __asm__ volatile("sub $0x20000, %%rsp\n\t"
-                     "mov %%rsp, %0"
-                     : "=r"(deep) ::: "memory");
+    /* Touch stack 128KB below current RSP to force VMA_GROWSDOWN expansion.
+     * volatile prevents optimization; negative offset from a stack var
+     * accesses unmapped stack pages. */
+    volatile char anchor = 0;
+    volatile char *deep = &anchor - 0x20000;
     *deep = 42;
-    __asm__ volatile("add $0x20000, %%rsp" ::: "memory");
+    (void)anchor;
 
     /* Re-read maps */
     n = read_maps(buf, sizeof(buf));

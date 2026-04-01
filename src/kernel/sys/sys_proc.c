@@ -578,6 +578,7 @@ struct k_rlimit {
     unsigned long rlim_max;
 };
 
+#define RLIMIT_DATA    2
 #define RLIMIT_STACK   3
 #define RLIMIT_NOFILE  7
 #define RLIMIT_AS      9
@@ -609,11 +610,19 @@ long do_prlimit64(int pid, int resource,
             p->rlim_stack = knew.rlim_cur;
             stack_cur = knew.rlim_cur;
         }
+        if (resource == RLIMIT_DATA && p) {
+            /* 0 or RLIM_INFINITY = unlimited (Linux default) */
+            p->rlim_data = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
+        }
     }
 
     if (old_rlim) {
         struct k_rlimit krl;
         switch (resource) {
+        case RLIMIT_DATA:
+            krl.rlim_cur = (p && p->rlim_data) ? p->rlim_data : RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
         case RLIMIT_STACK:
             krl.rlim_cur = stack_cur;
             krl.rlim_max = RLIM_STACK_MAX;
