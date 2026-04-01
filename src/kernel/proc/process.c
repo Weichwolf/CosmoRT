@@ -458,7 +458,7 @@ void thread_init_kstack(thread_t *t) {
      *   push rdx, push r10, push r8, push r9, push rbx, push rbp,
      *   push r12, push r13, push r14, push r15 */
     *--sp = t->rip;    /* rcx = user RIP (sysret loads RCX → RIP) */
-    *--sp = t->rflags; /* r11 = user RFLAGS (sysret loads R11 → RFLAGS) */
+    *--sp = t->rflags & ~0x100ULL; /* r11 = user RFLAGS, clear TF (trap flag) */
     *--sp = t->rax;    /* rax (return value: 0 for child, pid for parent) */
     *--sp = t->rdi;    /* rdi */
     *--sp = t->rsi;    /* rsi */
