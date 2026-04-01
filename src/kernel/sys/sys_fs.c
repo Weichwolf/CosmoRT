@@ -464,33 +464,24 @@ long do_statx(int dirfd, const char *pathname, int flags,
 /* ── SYS_chown (92) — set file owner (single-user: noop, validate path) ── */
 
 long do_chown(const char *upath, uint32_t uid, uint32_t gid) {
-    (void)uid; (void)gid;
     char kpath[PATH_MAX];
     int len = copy_path_from_user(kpath, upath, PATH_MAX);
     if (len < 0) return len;
-    /* Validate file exists */
     char rpath[PATH_MAX];
     resolve_path(kpath, rpath, PATH_MAX);
-    struct k_stat kst;
-    int r = vfs_stat(rpath, &kst);
-    if (r < 0) return r;
-    return 0;
+    return vfs_chown(rpath, uid, gid);
 }
 
 /* ── SYS_fchownat (260) — chown with dirfd ────────── */
 
 long do_fchownat(int dirfd, const char *upath, uint32_t uid, uint32_t gid, int flags) {
-    (void)uid; (void)gid; (void)flags;
+    (void)flags;
     char kpath[PATH_MAX];
     int len = resolve_at_path(dirfd, upath, kpath, PATH_MAX);
     if (len < 0) return len;
-    /* Validate file exists */
     char rpath[PATH_MAX];
     resolve_path(kpath, rpath, PATH_MAX);
-    struct k_stat kst;
-    int r = vfs_stat(rpath, &kst);
-    if (r < 0) return r;
-    return 0;
+    return vfs_chown(rpath, uid, gid);
 }
 
 /* ── SYS_renameat (264) — delegate to renameat2 ──── */

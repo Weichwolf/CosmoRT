@@ -107,7 +107,7 @@
     /* Stubs for npm/node compatibility */ \
     X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \
-    X(SYS_LCHOWN, lchown, do_lchown()) \
+    X(SYS_LCHOWN, lchown, do_lchown((const char *)a1, (uint32_t)a2, (uint32_t)a3)) \
     X(SYS_SCHED_GET_PRIORITY_MAX, sched_get_priority_max, do_sched_get_priority_max((int)a1)) \
     X(SYS_SCHED_GET_PRIORITY_MIN, sched_get_priority_min, do_sched_get_priority_min((int)a1)) \
     X(SYS_SETRLIMIT, setrlimit, do_setrlimit()) \

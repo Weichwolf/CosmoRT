@@ -199,8 +199,8 @@ struct vfs_node *node_alloc(const char *name, int type) {
     n->capacity = 0;
     n->ino = vfs_next_ino++;
     n->mode = 0755;
-    n->uid = 0;
-    n->gid = 0;
+    n->uid = 1000;
+    n->gid = 1000;
     { extern uint32_t timer_epoch_sec(void);
       uint32_t now = timer_epoch_sec();
       n->atime = now; n->mtime = now; n->ctime = now; }
@@ -278,7 +278,6 @@ void vfs_init(void) {
 /* ── Open/Close ──────────────────────────────────── */
 
 int vfs_open(const char *path, int flags, int mode) {
-    (void)mode;
 
     /* Device files */
     /* /dev/console → PTY slave 0 (VT0) */
@@ -423,7 +422,8 @@ not_pts:
             if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
             uint32_t new_ino;
-            int rc = ext2_create(parent_ino, basename, 0644, &new_ino);
+            int cmode = mode ? (mode & 07777) : 0644;
+            int rc = ext2_create(parent_ino, basename, cmode, &new_ino);
             if (rc < 0) return rc;
             ino = new_ino;
             inotify_event(path, IN_CREATE);
@@ -480,7 +480,10 @@ not_pts:
     if (!node && (flags & O_CREAT)) {
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
-        if (node) inotify_event(path, IN_CREATE);
+        if (node) {
+            node->mode = mode ? (mode & 07777) : 0644;
+            inotify_event(path, IN_CREATE);
+        }
     }
     if (!node) return -ENOENT;
 

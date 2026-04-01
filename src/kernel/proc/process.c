@@ -292,7 +292,9 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->brk_current = brk_end;
     p->is_driver = (p->pid == 1) ? 1 : 0;
     p->notify_signal = SIGCHLD;
-    p->pgid = p->pid;  /* initial process is own process group leader */
+    p->umask_val = 0022;
+    p->pgid = p->pid;
+
     p->sid  = p->pid;  /* initial process is own session leader */
     p->cwd[0] = '/'; p->cwd[1] = '\0';
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }

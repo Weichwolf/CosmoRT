@@ -96,6 +96,9 @@ typedef struct process {
 
     /* Stack growth tracking */
     uint64_t    stack_top;       /* original stack top (set at exec) */
+
+    /* File creation mask (umask) — default 0022 */
+    uint32_t    umask_val;
 } process_t;
 
 /* PID/TID lookup table sizes */

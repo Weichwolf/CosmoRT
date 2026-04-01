@@ -34,8 +34,14 @@ long do_flock(int fd, int operation) {
 /* msync: moved to sys_mem.c (SH-C3: dirty tracking + write-back) */
 /* TODO: implement if needed */
 long do_sendfile(void) { return -ENOSYS; }
-/* single-user: noop */
-long do_lchown(void)   { return 0; }
+/* lchown: like chown but don't follow symlinks */
+long do_lchown(const char *upath, uint32_t uid, uint32_t gid) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, upath, PATH_MAX);
+    if (len < 0) return len;
+    /* No symlink resolution — use path as-is for ramfs lookup */
+    return vfs_chown(kpath, uid, gid);
+}
 
 long do_sched_get_priority_max(int policy) { (void)policy; return 31; }
 long do_sched_get_priority_min(int policy) { (void)policy; return 0; }
@@ -43,8 +49,13 @@ long do_sched_get_priority_min(int policy) { (void)policy; return 0; }
 /* noop: no enforcement */
 long do_setrlimit(void) { return 0; }
 
-/* single-user: return default, ignore new */
-long do_umask(int mask) { (void)mask; return 0022; }
+long do_umask(int mask) {
+    process_t *p = proc_current();
+    if (!p) return 0022;
+    int old = p->umask_val ? (int)p->umask_val : 0022;
+    p->umask_val = mask & 0777;
+    return old;
+}
 
 long do_getgroups(void) { return 0; }
 long do_setgroups(void) { return 0; }

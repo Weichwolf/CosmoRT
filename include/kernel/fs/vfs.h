@@ -108,6 +108,7 @@ int vfs_link(const char *oldpath, const char *newpath);
 
 /* Metadata operations */
 int vfs_chmod(const char *path, uint32_t mode);
+int vfs_chown(const char *path, uint32_t uid, uint32_t gid);
 int vfs_fchmod(int fd, uint32_t mode);
 int vfs_fchown(int fd, uint32_t uid, uint32_t gid);
 int vfs_truncate(const char *path, int64_t length);
