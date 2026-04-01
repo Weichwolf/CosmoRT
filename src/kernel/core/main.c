@@ -222,9 +222,9 @@ void kernel_main(struct boot_info *info) {
     extern void epoll_init(void);
     epoll_init();
 
-    /* SMP — APs enter scheduler loop */
+    /* SMP disabled — single-core for POSIX phase */
     extern void sched_loop(void);
-    smp_start_all(sched_loop);
+    (void)sched_loop;
 
     /* Drivers — probe and self-register with subsystems */
     extern int hyperv_detect(void);

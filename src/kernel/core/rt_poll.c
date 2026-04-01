@@ -1,6 +1,6 @@
-/* CosmoRT RT-Core Prioritised Polling
+/* CosmoRT BSP Prioritised Polling
  *
- * Single-threaded on RT-Core (Core 0). No locks.
+ * Single-threaded on BSP (Core 0). No locks.
  * Static registration: fixed array, no malloc.
  *
  * After each handler that did work, re-scan from highest priority.
@@ -10,7 +10,6 @@
  */
 
 #include "core/rt_poll.h"
-#include "core/rt.h"
 
 /* ── Static handler table ────────────────────────── */
 
@@ -45,7 +44,7 @@ void rt_poll_init(void) {
 #define MAX_RESTARTS 4  /* prevent livelock from continuous high-prio work */
 
 void rt_poll_run(void) {
-    if (!rt_is_current_rt()) return;
+    /* Single-core: no guard needed */
 
     int restarts = 0;
 

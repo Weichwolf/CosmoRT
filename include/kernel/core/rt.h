@@ -1,7 +1,7 @@
-/* CosmoRT RT/Compute Communication Primitives
+/* CosmoRT Communication Primitives
  *
- * RT-Core (Core 0) handles all IRQs and I/O. Compute-Cores (1..N) run userspace.
- * Communication is via lock-free SPSC channels. RT-Core never blocks.
+ * SPSC lock-free channels for cross-core communication.
+ * BSP (Core 0) handles IRQs and I/O polling.
  *
  * rt_channel_t: single-producer single-consumer ringbuffer.
  * Messages are framed: 4-byte little-endian length header + payload.
@@ -14,13 +14,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "arch/arch.h"
-
-/* ── RT-Core identification ──────────────────────── */
-
-#define RT_CORE_COUNT 1
-
-int  rt_core_id(int index);      /* physical core ID of RT-Core N (index 0 -> Core 0) */
-int  rt_is_current_rt(void);     /* 1 if current core is an RT-Core */
 
 /* ── IPI Wake ────────────────────────────────────── */
 

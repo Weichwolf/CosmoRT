@@ -1,24 +1,19 @@
 #include "ktest.h"
 #include "cosmort.h"
 
-static void test_rt_core(void) {
-    puts("\n[RT Core]\n");
+static void test_rt_query(void) {
+    puts("\n[RT Query]\n");
 
-    /* ktest runs on a Compute-Core (not RT-Core 0) */
-    long is_rt = sc2(SYS_COSMO_RT_QUERY, 0, 0);
-    check_val("compute core is not RT", is_rt, 0);
+    /* RT-Core concept removed — subcases 0 and 1 return -EINVAL */
+    long q0 = sc2(SYS_COSMO_RT_QUERY, 0, 0);
+    check_val("subcase 0 returns -EINVAL", q0, -22);
 
-    /* RT-Core 0 has physical core ID 0 */
-    long core0 = sc2(SYS_COSMO_RT_QUERY, 1, 0);
-    check_val("rt_core_id(0) == 0", core0, 0);
+    long q1 = sc2(SYS_COSMO_RT_QUERY, 1, 0);
+    check_val("subcase 1 returns -EINVAL", q1, -22);
 
-    /* Invalid index returns -1 */
-    long bad = sc2(SYS_COSMO_RT_QUERY, 1, 1);
-    check_val("rt_core_id(1) == -1", bad, -1);
-
-    /* Invalid subcommand */
+    /* Invalid subcommand still returns -EINVAL */
     long inval = sc2(SYS_COSMO_RT_QUERY, 99, 0);
     check_val("invalid query returns -EINVAL", inval, -22);
 }
 
-TEST("rt_core", test_rt_core);
+TEST("rt_query", test_rt_query);

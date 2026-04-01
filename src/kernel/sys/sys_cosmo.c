@@ -75,8 +75,6 @@ long do_cosmo_kexec(long a1, long a2) {
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     switch (a1) {
-    case 0: return (long)rt_is_current_rt();
-    case 1: return (long)rt_core_id((int)a2);
     case 2: rt_wake((int)a2); return 0;
     case 3: {
         extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);

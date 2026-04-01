@@ -1,8 +1,8 @@
-/* CosmoRT Timer Wheel — RT-Core owned, no locks.
+/* CosmoRT Timer Wheel — BSP-owned, no locks.
  *
  * 256 slots, 1ms tick. Timers > 256ms use remaining_rounds.
- * Compute-Cores post requests via timer_req_ring (SPSC rt_channel).
- * RT-Core drains requests + advances wheel in timer IRQ handler.
+ * Other cores post requests via timer_req_ring (SPSC rt_channel).
+ * BSP drains requests + advances wheel in timer IRQ handler.
  */
 
 #include "core/timer_wheel.h"
@@ -178,7 +178,7 @@ static void tw_process_slot(int slot) {
 }
 
 void timer_wheel_tick(void) {
-    if (!rt_is_current_rt()) return;
+    /* Single-core: always on Core 0 */
     uint64_t now = timer_ms();
     if (tw_last_ms == 0) { tw_last_ms = now; return; }
 
@@ -201,7 +201,7 @@ void timer_wheel_tick(void) {
 /* ── Drain timer requests from Compute-Cores ─────── */
 
 void timer_wheel_drain_requests(void) {
-    if (!rt_is_current_rt()) return;
+    /* Single-core: always on Core 0 */
     tw_request_t req;
     while (rt_channel_pop(&tw_req_ring, &req, sizeof(req)) == (int)sizeof(req)) {
         if (req.action == RT_TIMER_CANCEL) {

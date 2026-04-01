@@ -1,6 +1,6 @@
-/* CosmoRT RT-Core Prioritised Polling — single-threaded, no locks.
+/* CosmoRT BSP Prioritised Polling — single-threaded on Core 0, no locks.
  *
- * RT-Core iterates priority levels 0 (highest) to RT_PRIO_COUNT-1.
+ * BSP iterates priority levels 0 (highest) to RT_PRIO_COUNT-1.
  * Each handler processes up to max_work items per invocation.
  * After each handler, higher priorities are re-checked (preemption).
  */
@@ -31,7 +31,7 @@ void rt_poll_register(enum rt_prio prio, rt_poll_fn fn, int max_work);
 /* Initialize rt_poll: registers stub handlers for unimplemented subsystems. */
 void rt_poll_init(void);
 
-/* Run one polling cycle. Called from timer IRQ on RT-Core. */
+/* Run one polling cycle. Called from timer IRQ on BSP. */
 void rt_poll_run(void);
 
 #endif
