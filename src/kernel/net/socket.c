@@ -233,10 +233,12 @@ long do_connect(int fd, const void *addr, int addrlen) {
             __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
             int remain = (int)(connect_deadline - timer_ms());
             if (remain <= 0) return -ETIMEDOUT;
+            /* Short poll interval for loopback: packets arrive via q_tcp
+             * which may not wake us directly. 10ms keeps latency low. */
+            int poll_ms = remain > 10 ? 10 : remain;
             event_t ev;
-            int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) return -EINTR; /* signal pending */
-            /* If blocked, syscall restarts. If returned, loop re-checks. */
+            int wr = event_wait(&t->eq, &ev, poll_ms);
+            if (wr == -4) return -EINTR;
             continue;
         }
         return -ETIMEDOUT;
@@ -363,7 +365,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             int remain = (int)(udp_deadline - timer_ms());
             if (remain <= 0) return -EAGAIN;
             event_t ev;
-            { int wr = event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain > 10 ? 10 : remain);
             if (wr == -4) return -EINTR; }
         }
     }
@@ -402,7 +404,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             int remain = (int)(s->recv_deadline - timer_ms());
             if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
-            { int wr = event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain > 10 ? 10 : remain);
             if (wr == -4) return -EINTR; }
         }
     }
@@ -450,7 +452,7 @@ long socket_read(int fd, void *buf, long count) {
             int remain = (int)(s->recv_deadline - timer_ms());
             if (remain <= 0) { s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
-            { int wr = event_wait(&t->eq, &ev, remain);
+            { int wr = event_wait(&t->eq, &ev, remain > 10 ? 10 : remain);
             if (wr == -4) return -EINTR; }
         }
     }
@@ -688,7 +690,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
         int remain = (int)(accept_deadline - timer_ms());
         if (remain <= 0) return -EAGAIN;
         event_t ev;
-        int wr = event_wait(&t->eq, &ev, remain);
+        int wr = event_wait(&t->eq, &ev, remain > 10 ? 10 : remain);
         if (wr == -4) return -EINTR;
     }
 
