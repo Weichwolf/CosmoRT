@@ -14,6 +14,7 @@ default rel
 section .text
 
 global syscall_entry_asm
+global syscall_return
 extern sys_handler
 
 syscall_entry_asm:
@@ -56,7 +57,10 @@ syscall_entry_asm:
     call sys_handler
     add rsp, 8                  ; pop a6
 
-    ; Restore all registers (RAX = return value, skip saved rax)
+    ; ── Syscall return path ─────────────────────────────
+    ; Entry: RSP points to saved [r15..rcx] frame (15 qwords).
+    ; Used by normal syscall return AND ret_from_fork (new threads).
+syscall_return:
     pop r15
     pop r14
     pop r13

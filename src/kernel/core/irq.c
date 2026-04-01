@@ -304,11 +304,11 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
              * point by restoring callee-saved registers and RSP/RIP from the
              * jmpbuf into the IRQ frame. The setjmp will return 1 (via RAX). */
             {
-                percpu_t *kfcpu = percpu_self();
-                if (kfcpu->fault_recover && cr2 < 0x800000000000ULL) {
-                    kfcpu->fault_recover = 0;
+                thread_t *kft = percpu_self()->current_thread;
+                if (kft && kft->fault_recover && cr2 < 0x800000000000ULL) {
+                    kft->fault_recover = 0;
                     /* jmpbuf layout: [rbx, rbp, r12, r13, r14, r15, rsp, rip] */
-                    uint64_t *jb = kfcpu->fault_jmpbuf;
+                    uint64_t *jb = kft->fault_jmpbuf;
                     frame->rbx = jb[0];
                     frame->rbp = jb[1];
                     frame->r12 = jb[2];
@@ -621,9 +621,9 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     /* Kernel-mode exception during syscall with fault_recover armed:
      * the kernel faulted on user-supplied data (e.g. fxrstor with garbage).
      * Recover via longjmp → sys_handler returns -EFAULT. */
-    if (!(frame->cs & 3) && cpu->fault_recover) {
-        cpu->fault_recover = 0;
-        uint64_t *jb = cpu->fault_jmpbuf;
+    if (!(frame->cs & 3) && t && t->fault_recover) {
+        t->fault_recover = 0;
+        uint64_t *jb = t->fault_jmpbuf;
         frame->rbx = jb[0]; frame->rbp = jb[1];
         frame->r12 = jb[2]; frame->r13 = jb[3];
         frame->r14 = jb[4]; frame->r15 = jb[5];

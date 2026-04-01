@@ -48,6 +48,10 @@ int proc_count_alive(void) {
 thread_t *thread_alloc(void) {
     thread_t *t = (thread_t *)slab_alloc(&thread_slab);
     if (t) {
+        /* Zero entire struct: slab may reuse slots with stale data
+         * (e.g. sig_thread_pending from a dead thread → spurious signals). */
+        kmemset(t, 0, sizeof(thread_t));
+
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         /* Find free TID slot (skip collisions from wrapping) */
@@ -82,6 +86,8 @@ void thread_free(thread_t *t) {
 process_t *proc_alloc(void) {
     process_t *p = (process_t *)slab_alloc(&proc_slab);
     if (p) {
+        kmemset(p, 0, sizeof(process_t));
+
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
         /* Find free PID slot (skip collisions from wrapping) */
@@ -369,6 +375,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!t->kstack) goto fail_thread;
     t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
+    thread_init_kstack(t);
 
     p->main_thread = t;
     p->threads = t;
@@ -422,57 +429,60 @@ int proc_create_from_vfs(const char *path) {
 
 /* ── Context switching ──────────────────────────── */
 
-extern int kernel_setjmp(uint64_t buf[8]);
-extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
 extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
 
-__attribute__((noinline, optimize("O0")))
-void thread_run(thread_t *t) {
-    percpu_t *cpu = percpu_self();
+/* ret_from_fork (assembly in context.asm): entered via context_switch's ret.
+ * RSP points to the fake syscall frame. Sets percpu->user_rsp and
+ * percpu->syscall_frame, loads RAX from saved frame, jumps to syscall_return. */
+extern void ret_from_fork(void);
 
-    t->state = THREAD_RUNNING;
-    cpu->current_thread = t;
+/* Set up a new thread's kstack so context_switch "returns" into ret_from_fork,
+ * which then falls through to the syscall return path (sysret to userspace).
+ *
+ * Stack layout (growing down from kstack_top):
+ *   ┌─ syscall_entry_asm compatible frame (15 regs) ─┐
+ *   │  r15, r14, r13, r12, rbp, rbx, r9, r8,         │
+ *   │  r10, rdx, rsi, rdi, rax, r11(RFLAGS), rcx(RIP) │
+ *   └──────────────────────────────────────────────────┘
+ *   ┌─ context_switch frame ─────────────────────────┐
+ *   │  ret_from_fork, RFLAGS, rbp, rbx, r12-r15      │
+ *   └──────────────────────────────────────────────────┘
+ *   ↑ kstack_rsp points here
+ */
+void thread_init_kstack(thread_t *t) {
+    uint64_t *sp = (uint64_t *)(t->kstack + KSTACK_SIZE);
 
-    if (kernel_setjmp(t->jmpbuf) != 0) {
-        /* Returned via longjmp — thread yielded/exited/preempted */
-        arch_set_cr3(virt_to_phys(pml4));
-        cpu->current_thread = 0;
-        return;
-    }
+    /* Syscall frame (matches syscall_entry_asm push order, read by sysret path).
+     * Pushed in reverse order of syscall_entry_asm:
+     *   push rcx(=RIP), push r11(=RFLAGS), push rax, push rdi, push rsi,
+     *   push rdx, push r10, push r8, push r9, push rbx, push rbp,
+     *   push r12, push r13, push r14, push r15 */
+    *--sp = t->rip;    /* rcx = user RIP (sysret loads RCX → RIP) */
+    *--sp = t->rflags; /* r11 = user RFLAGS (sysret loads R11 → RFLAGS) */
+    *--sp = t->rax;    /* rax (return value: 0 for child, pid for parent) */
+    *--sp = t->rdi;    /* rdi */
+    *--sp = t->rsi;    /* rsi */
+    *--sp = t->rdx;    /* rdx */
+    *--sp = t->r10;    /* r10 */
+    *--sp = t->r8;     /* r8 */
+    *--sp = t->r9;     /* r9 */
+    *--sp = t->rbx;    /* rbx */
+    *--sp = t->rbp;    /* rbp */
+    *--sp = t->r12;    /* r12 */
+    *--sp = t->r13;    /* r13 */
+    *--sp = t->r14;    /* r14 */
+    *--sp = t->r15;    /* r15 */
 
-    /* Load process page tables */
-    arch_set_cr3(virt_to_phys(t->proc->pml4));
-
-    /* Set kernel stack for interrupts/syscalls */
-    extern void tss_set_rsp0(uint64_t rsp0);
-    tss_set_rsp0(t->kstack_top);
-    cpu->kernel_rsp = t->kstack_top;
-
-    /* Kernel-level yield resume: thread yielded from inside a syscall
-     * (e.g., net_idle in TCP connect). Kernel call stack is intact on
-     * kstack. longjmp back to the kernel_yield_jmpbuf to resume.
-     * Enable IRQs — kernel_longjmp doesn't restore RFLAGS. */
-    if (t->in_kernel_yield) {
-        t->in_kernel_yield = 0;
-        arch_sti();
-        extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-        kernel_longjmp(t->kernel_yield_jmpbuf, 1);
-    }
-
-    /* Load thread's FS base (TLS) before entering userspace — always,
-     * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
-    arch_set_fs_base(t->fs_base);
-
-    /* Restore FPU/SSE/AVX state */
-    arch_fpstate_restore(t->xsave_area);
-
-    /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
-    proc_enter_ring3(t);
-}
-
-void thread_return_to_kernel(thread_t *t) {
-    arch_sti();
-    kernel_longjmp(t->jmpbuf, 1);
+    /* context_switch frame: pushfq, push rbp..r15, then ret addr */
+    *--sp = (uint64_t)ret_from_fork; /* ret addr */
+    *--sp = 0x002; /* RFLAGS: bit 1 set, IF=0 */
+    *--sp = 0;     /* rbp */
+    *--sp = 0;     /* rbx */
+    *--sp = 0;     /* r12 */
+    *--sp = 0;     /* r13 */
+    *--sp = 0;     /* r14 */
+    *--sp = 0;     /* r15 */
+    t->kstack_rsp = (uint64_t)sp;
 }
 
 process_t *proc_current(void) {

@@ -118,11 +118,12 @@ void proc_init(void);
 /* Create process from ELF binary. Returns PID or -1. */
 int proc_create_elf(const void *elf_data, size_t elf_len);
 
-/* Run a thread (setjmp + IRET to Ring 3). Returns when thread yields/exits. */
-void thread_run(thread_t *t);
+/* Initialize a new thread's kstack with a context_switch frame that
+ * "returns" into the userspace entry trampoline. Call after kstack alloc. */
+void thread_init_kstack(thread_t *t);
 
-/* Return from userspace to kernel main loop (longjmp) */
-void thread_return_to_kernel(thread_t *t);
+/* Yield CPU: pick next thread, context_switch. Returns when rescheduled. */
+void schedule(void);
 
 /* Get current process (via percpu → current thread → process) */
 process_t *proc_current(void);

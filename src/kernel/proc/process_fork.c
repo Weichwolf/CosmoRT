@@ -324,6 +324,7 @@ long do_fork(unsigned long flags, void *child_stack,
         return -ENOMEM;
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
+    thread_init_kstack(ct);
 
     /* CLONE_PARENT_SETTID */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
@@ -527,6 +528,7 @@ long do_vfork(unsigned long flags, void *child_stack,
         return -ENOMEM;
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
+    thread_init_kstack(ct);
 
     child->main_thread = ct;
     child->threads = ct;
@@ -536,18 +538,14 @@ long do_vfork(unsigned long flags, void *child_stack,
     child->vfork_parent_tid = cur->tid;
 
     /* CLONE_VFORK: block parent until child execs or exits.
-     * Cannot use event_wait — it rewinds the syscall on wake (would re-clone).
-     * Instead: save state with return value = child PID, block, let wake re-add
-     * us to the run queue. Scheduler resumes us in userspace with RAX = child PID. */
-    cur->rax = (uint64_t)(long)child->pid; /* clone returns child PID in parent */
+     * Child wakes us via sched_wake; schedule() returns here. */
     cur->state = THREAD_BLOCKED;
 
     /* Schedule child first (it will exec/exit and then wake us) */
     sched_add(ct);
 
-    extern uint64_t pml4[];
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(cur);
-    /* unreachable — scheduler resumes us after child wakes us */
+    extern void schedule(void);
+    schedule();
+    /* Returned: child exec'd or exited, we've been woken */
     return (long)child->pid;
 }

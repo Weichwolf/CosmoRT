@@ -227,15 +227,14 @@ long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6)
      * address during syscall execution, longjmp returns here with val=1
      * and we return -EFAULT instead of panicking. */
     extern int kernel_setjmp(uint64_t buf[8]);
-    percpu_t *cpu = percpu_self();
-    if (kernel_setjmp(cpu->fault_jmpbuf) != 0) {
-        /* Returned from fault recovery — user pointer was bad */
-        cpu->fault_recover = 0;
+    thread_t *ft = percpu_self()->current_thread;
+    if (kernel_setjmp(ft->fault_jmpbuf) != 0) {
+        ft->fault_recover = 0;
         return -EFAULT;
     }
-    cpu->fault_recover = 1;
+    ft->fault_recover = 1;
     long result = sys_dispatch(num, a1, a2, a3, a4, a5, a6);
-    cpu->fault_recover = 0;
+    ft->fault_recover = 0;
     check_signals_syscall_path(&result, num);
     return result;
 }
