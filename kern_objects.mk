@@ -89,6 +89,9 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/fb.o \
             $(BUILD)/kernel/vt/input.o
 
+KERN_HAL  = $(BUILD)/arch/x86_64/hal_cpu.o \
+            $(BUILD)/arch/x86_64/hal_timer.o
+
 KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
@@ -113,7 +116,7 @@ KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
 
 KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
            $(KERN_SYS) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
-           $(KERN_EVENT) $(KERN_VT) $(KERN_HW) $(KERN_DRV)
+           $(KERN_EVENT) $(KERN_VT) $(KERN_HAL) $(KERN_HW) $(KERN_DRV)
 
 # All kernel objects except main.o (for test builds that substitute their own)
 KERN_OBJ_NO_MAIN = $(filter-out $(BUILD)/kernel/core/main.o,$(KERN_OBJ))
