@@ -1010,20 +1010,15 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         if (timeout == 0) return 0;
         if (!infinite && timer_ms() >= deadline) return 0;
 
-        /* Block via event_wait — epoll_wake_all will event_post us.
-         * If event pre-queued, returns immediately → loop re-scans. */
+        /* Block via event_wait — hrtimer handles timeout. */
         {
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
-            t->wake_at = infinite ? 0 : deadline;
-            extern void epoll_sleeper_add_ext(thread_t *t);
-            epoll_sleeper_add_ext(t);
             int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
             if (timeout_ms <= 0 && !infinite) return 0;
             event_t ev;
             { int wr = event_wait(&t->eq, &ev, timeout_ms);
             if (wr == -4) return -EINTR; }
-            /* If blocked, syscall restarts. If returned, loop re-scans. */
         }
     }
 }

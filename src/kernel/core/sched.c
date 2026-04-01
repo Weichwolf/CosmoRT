@@ -166,6 +166,7 @@ void schedule(void) {
 /* ── Timer preemption ────────────────────────────── */
 
 void sched_preempt(void *frame_ptr) {
+    /* timerfd expiry + epoll wakeups (still needed until timerfd uses hrtimer) */
     {
         extern void epoll_check_timeouts(void);
         epoll_check_timeouts();
@@ -297,6 +298,8 @@ void sched_loop(void) {
         idle_thread.state = THREAD_RUNNING;
         cpu->current_thread = &idle_thread;
 
+        {
+        }
         {
             extern void epoll_check_timeouts(void);
             epoll_check_timeouts();
