@@ -74,18 +74,9 @@ long do_cosmo_kexec(long a1, long a2) {
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     switch (a1) {
-    case 3: {
-        extern int timer_wheel_add(uint8_t action, void *ctx, uint32_t timeout_ms);
-        return (long)timer_wheel_add((uint8_t)a2, (void *)a3, (uint32_t)a4);
-    }
-    case 4: {
-        extern int timer_wheel_cancel(void *ctx);
-        return (long)timer_wheel_cancel((void *)a2);
-    }
-    case 5: {
-        extern int timer_wheel_active_count(void);
-        return (long)timer_wheel_active_count();
-    }
+    case 3: (void)a2; (void)a3; (void)a4; return -ENOSYS; /* timer_wheel removed */
+    case 4: return -ENOSYS;
+    case 5: return 0;
     default: return -EINVAL;
     }
 }

@@ -103,6 +103,18 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     }
 
     for (;;) {
+        /* Signal check FIRST — fatal signals (SIGALRM, SIGKILL) must
+         * interrupt even when events are queued, otherwise alarm(5)
+         * never kills a thread stuck in a connect/accept loop. */
+        if (cur->proc) {
+            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+            uint64_t deliverable = all_pending & ~cur->sig_blocked;
+            if (deliverable) {
+                if (has_timer) hrtimer_cancel(&timer);
+                return -4; /* EINTR */
+            }
+        }
+
         /* Fast path: event available */
         uint32_t h = arch_load_acquire(&eq->head);
         uint32_t t = eq->tail;
@@ -117,16 +129,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         /* Queue empty — non-blocking mode */
         if (timeout_ms == 0)
             return -11; /* EAGAIN */
-
-        /* Check for deliverable signals before blocking */
-        if (cur->proc) {
-            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-            uint64_t deliverable = all_pending & ~cur->sig_blocked;
-            if (deliverable) {
-                if (has_timer) hrtimer_cancel(&timer);
-                return -4; /* EINTR */
-            }
-        }
 
         /* Check timeout before blocking */
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {

@@ -125,17 +125,7 @@ static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
     serial_hex64(error);
     serial_puts(" rip=");
     serial_hex64(rip);
-    /* Print stack trace hint for debugging */
-    serial_puts(" rsp="); serial_hex64(0); /* placeholder */
     serial_puts(" KERNEL PANIC\n");
-    /* Try to find where pf_kernel_panic was called from */
-    uint64_t *rbp_ptr;
-    __asm__ volatile("mov %%rbp, %0" : "=r"(rbp_ptr));
-    if (rbp_ptr) {
-        serial_puts("  caller=");
-        serial_hex64(*(rbp_ptr + 1)); /* return address */
-        serial_putchar('\n');
-    }
     arch_cli_halt();
     __builtin_unreachable();
 }
@@ -331,7 +321,6 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     return; /* IRET will resume at setjmp return */
                 }
             }
-            serial_puts("\n[KPF-GUARD]\n");
             /* Kernel fault: kill process if in syscall, skip if in IRQ */
             {
                 thread_t *kft2 = percpu_self()->current_thread;
@@ -356,7 +345,6 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     return;
                 }
             }
-            serial_puts("\nKERNEL-PF-A\n");
             pf_kernel_panic(cr2, error, frame->rip);
         }
 
@@ -624,7 +612,6 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             frame->rsp += 8;
             return;
         }
-        serial_puts("\nKERNEL-PF-B\n");
         pf_kernel_panic(cr2, error, frame->rip);
     }
 
@@ -871,10 +858,8 @@ static void timer_handler(int vector) {
     /* I/O polling: network + timer wheel */
     extern int net_rx_poll(int max_work);
     extern int net_tx_poll(int max_work);
-    extern void timer_wheel_tick(void);
     net_rx_poll(64);
     net_tx_poll(64);
-    timer_wheel_tick();
     /* Fire expired high-resolution timers + reprogram LAPIC one-shot */
     extern void hrtimer_run_expired(void);
     hrtimer_run_expired();
