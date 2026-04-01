@@ -63,30 +63,11 @@ DDIRS = $(BUILD)/drivers/virtio $(BUILD)/drivers/pci $(BUILD)/drivers/hyperv
 $(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS) $(BUILD)/arch/x86_64:
 	mkdir -p $@
 
-# ── AP trampoline (16-bit, flat binary → C header) ──
-$(BUILD)/kernel/ap_trampoline.bin: $(ARCH_DIR)/ap_trampoline.asm | $(BUILD)/kernel
-	$(NASM) -f bin -o $@ $<
-
 $(BUILD)/gen:
 	@mkdir -p $@
 
 $(BUILD)/gen/font_atlas.h: fonts/font_atlas.h | $(BUILD)/gen
 	@cp $< $@
-
-$(BUILD)/gen/ap_trampoline_bin.h: $(BUILD)/kernel/ap_trampoline.bin | $(BUILD)/gen
-	@python3 -c "\
-	data=open('$<','rb').read(); \
-	print('/* Auto-generated AP trampoline (%d bytes) */' % len(data)); \
-	print('static const unsigned char ap_trampoline_bin[] = {'); \
-	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
-	print(',\n'.join('    '+l for l in lines)); \
-	print('};'); \
-	print('static const unsigned long ap_trampoline_bin_size = %d;' % len(data))" > $@
-	@echo "ap_trampoline_bin.h: $$(wc -c < $<) bytes"
-
-# smp.o depends on trampoline header
-$(BUILD)/kernel/core/smp.o: $(SRC)/kernel/core/smp.c $(BUILD)/gen/ap_trampoline_bin.h | $(BUILD)/kernel/core
-	$(CC) $(KCFLAGS) -I$(SRC)/kernel/gen -o $@ $<
 
 # ── kexec trampoline (64-bit, flat binary → C header) ──
 $(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/kexec_tramp.asm | $(BUILD)/kernel

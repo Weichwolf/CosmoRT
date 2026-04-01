@@ -33,9 +33,6 @@ extern percpu_t percpu_data[SMP_MAX_CORES];
 /* Initialize BSP per-CPU data (called once at boot) */
 void percpu_init_bsp(void);
 
-/* Initialize AP per-CPU data (called on each AP startup) */
-void percpu_init_ap(int core_id);
-
 /* Get current core's percpu.
  * In kernel context (after swapgs): reads GS:40 self-pointer (fast, ~3 cycles).
  * Fallback for early boot / IRQ without swapgs: LAPIC ID lookup. */

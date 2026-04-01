@@ -17,10 +17,8 @@ static inline uint64_t ensure_high(uint64_t addr) {
 /* Process */
 #define KSTACK_SIZE      (64 * 1024)
 
-/* SMP */
-#define SMP_MAX_CORES    64
-#define SMP_STACK_SIZE   65536
-#define SMP_AP_TIMEOUT_MS 500
+/* SMP (single-core for POSIX phase) */
+#define SMP_MAX_CORES    1
 
 /* IPC */
 #define IPC_MAX_ENDPOINTS 64

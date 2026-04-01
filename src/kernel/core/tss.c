@@ -93,18 +93,6 @@ void tss_init(void) {
     serial_puts("TSS: loaded (core 0)\n");
 }
 
-/* Called from AP after percpu_init_ap */
-void tss_init_ap(void) {
-    int core = smp_core_id();
-    if (core > 0 && core < TSS_MAX_CORES) {
-        tss_load_for_core(core);
-        serial_puts("TSS: loaded (core ");
-        if (core >= 10) serial_putchar('0' + core / 10);
-        serial_putchar('0' + core % 10);
-        serial_puts(")\n");
-    }
-}
-
 void syscall_init(void) {
     /* IA32_STAR (0xC0000081):
      *   [47:32] = SYSCALL CS/SS base = 0x08 (kernel code)

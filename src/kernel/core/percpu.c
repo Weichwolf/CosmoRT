@@ -31,20 +31,6 @@ void percpu_init_bsp(void) {
     serial_puts("percpu: BSP init\n");
 }
 
-void percpu_init_ap(int core_id) {
-    if (core_id < 0 || core_id >= SMP_MAX_CORES) return;
-    percpu_t *p = &percpu_data[core_id];
-    p->core_id = core_id;
-    p->kernel_rsp = 0;
-    p->user_rsp = 0;
-    p->current_thread = 0;
-    p->in_kernel = 1;
-    p->self = p;
-
-    wrmsr(MSR_KERNEL_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
-    wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
-}
-
 /* Slow path: LAPIC MMIO lookup (early boot before GS is set) */
 percpu_t *percpu_self_slow(void) {
     int id = smp_core_id();
