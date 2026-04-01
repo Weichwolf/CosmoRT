@@ -40,7 +40,10 @@ static inline uint64_t ensure_high(uint64_t addr) {
 
 /* User virtual address layout */
 #define USER_STACK_TOP   0x7FFFFFFFE000ULL
-#define USER_STACK_SIZE  (8 * 1024 * 1024)  /* 8MB */
+#define USER_STACK_INIT  (132 * 1024)       /* initial stack VMA (132KB, like Linux) */
+#define RLIM_STACK_DEFAULT (8UL * 1024 * 1024) /* default RLIMIT_STACK: 8MB */
+#define RLIM_STACK_MAX     (64UL * 1024 * 1024) /* hard limit: 64MB */
+#define STACK_GUARD_GAP  (1UL * 1024 * 1024)    /* 1MB gap between stack and adjacent VMAs */
 #define USER_MMAP_BASE   0x7F0000000000ULL
 #define USER_BRK_BASE    0x600000ULL         /* above typical ELF load */
 

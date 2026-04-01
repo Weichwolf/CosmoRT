@@ -13,6 +13,7 @@
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */
 #define VMA_SHARED    0x200  /* MAP_SHARED: fork shares physical pages */
 #define VMA_HUGEPAGE  0x400  /* eligible for transparent 2MB huge pages */
+#define VMA_GROWSDOWN 0x800  /* stack: auto-expand downward on page fault */
 
 typedef struct vma {
     uint64_t start;      /* page-aligned start address */
@@ -47,6 +48,9 @@ uint64_t vma_find_free(vma_t *root, uint64_t base, uint64_t size);
 
 /* Find first VMA overlapping [start, end). O(log n) AVL search. */
 vma_t *vma_find_overlap(vma_t *root, uint64_t start, uint64_t end);
+
+/* Find the lowest VMA whose start > addr. For VM_GROWSDOWN stack expansion. */
+vma_t *vma_find_above(vma_t *root, uint64_t addr);
 
 /* Free a VMA back to slab (without removing from tree — for internal use). */
 void vma_free(vma_t *v);

@@ -509,12 +509,12 @@ shebang_retry:
     p->brk_current = info.brk;
     entry = info.entry;
 
-    uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-    uint64_t guard_bottom = stack_bottom - 4096;
-    vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
+    /* Stack: small initial VMA with VMA_GROWSDOWN */
+    uint64_t stack_bottom = stack_top - USER_STACK_INIT;
     vma_insert(&p->vma_root, stack_bottom, stack_top,
-               PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | VMA_GROWSDOWN);
+    p->stack_top = stack_top;
     spin_unlock_irq(&p->lock, exec_irqf);
 
     stack_ptr = build_user_stack(p->pml4, stack_top,

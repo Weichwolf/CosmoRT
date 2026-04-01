@@ -592,6 +592,8 @@ long do_prlimit64(int pid, int resource,
     process_t *p = proc_current();
     unsigned long nofile_cur = (p && p->rlim_nofile) ? p->rlim_nofile : FD_MAX;
 
+    unsigned long stack_cur = (p && p->rlim_stack) ? p->rlim_stack : RLIM_STACK_DEFAULT;
+
     /* Apply new limit */
     if (new_rlim) {
         struct k_rlimit knew;
@@ -602,14 +604,19 @@ long do_prlimit64(int pid, int resource,
             p->rlim_nofile = knew.rlim_cur;
             nofile_cur = knew.rlim_cur;
         }
+        if (resource == RLIMIT_STACK && p) {
+            if (knew.rlim_cur > RLIM_STACK_MAX) knew.rlim_cur = RLIM_STACK_MAX;
+            p->rlim_stack = knew.rlim_cur;
+            stack_cur = knew.rlim_cur;
+        }
     }
 
     if (old_rlim) {
         struct k_rlimit krl;
         switch (resource) {
         case RLIMIT_STACK:
-            krl.rlim_cur = 8 * 1024 * 1024;
-            krl.rlim_max = 64 * 1024 * 1024;
+            krl.rlim_cur = stack_cur;
+            krl.rlim_max = RLIM_STACK_MAX;
             break;
         case RLIMIT_NOFILE:
             krl.rlim_cur = nofile_cur;

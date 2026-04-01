@@ -90,6 +90,22 @@ vma_t *vma_find(vma_t *root, uint64_t addr) {
     return 0;
 }
 
+/* ── Find VMA above address ──────────────────────── */
+
+vma_t *vma_find_above(vma_t *root, uint64_t addr) {
+    vma_t *best = 0;
+    vma_t *n = root;
+    while (n) {
+        if (n->start > addr) {
+            best = n; /* candidate — try to find a lower one */
+            n = n->left;
+        } else {
+            n = n->right;
+        }
+    }
+    return best;
+}
+
 /* ── Find overlap ────────────────────────────────── */
 
 /* Find any VMA overlapping [start, end). AVL tree is keyed by vma->start.

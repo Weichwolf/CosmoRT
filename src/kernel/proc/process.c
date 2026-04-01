@@ -300,14 +300,13 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 1023) { p->cmdline[ii] = s[ii]; ii++; } p->cmdline[ii] = 0; p->cmdline_len = ii + 1; }
     fd_table_init(&p->fds);
 
-    /* Create VMA for the stack region with guard page at the bottom.
-     * Guard page is PROT_NONE — access triggers SIGSEGV, not demand-paging. */
-    uint64_t stack_bottom = stack_top - USER_STACK_SIZE;
-    uint64_t guard_bottom = stack_bottom - 4096;
-    vma_insert(&p->vma_root, guard_bottom, stack_bottom,
-               0 /* PROT_NONE */, MAP_PRIVATE | MAP_ANONYMOUS);
+    /* Stack: small initial VMA with VMA_GROWSDOWN (expands on page fault).
+     * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand. */
+    uint64_t stack_bottom = stack_top - USER_STACK_INIT;
     vma_insert(&p->vma_root, stack_bottom, stack_top,
-               PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | VMA_GROWSDOWN);
+    p->stack_top = stack_top;
 
     /* brk VMA is created on first brk() call that grows beyond brk_base.
      * Don't insert a zero-length VMA here — it corrupts the AVL tree. */

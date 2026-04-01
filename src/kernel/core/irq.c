@@ -478,8 +478,60 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     }
                     goto kill_process;
                 }
+            } else {
+                /* No VMA at fault address — check for stack growth.
+                 * If a VMA_GROWSDOWN VMA starts just above cr2,
+                 * expand it downward (like Linux expand_downwards). */
+                vma_t *above = vma_find_above(p->vma_root, cr2);
+                if (above && (above->flags & VMA_GROWSDOWN) && !(error & 1)) {
+                    /* Stack limit: RLIMIT_STACK (default 8MB) minus 1MB guard gap */
+                    unsigned long stack_limit = p->rlim_stack ? p->rlim_stack : RLIM_STACK_DEFAULT;
+                    uint64_t min_addr = p->stack_top - stack_limit;
+                    uint64_t fault_page = cr2 & ~0xFFFULL;
+
+                    /* Check: within stack limit and not colliding with adjacent VMA */
+                    if (fault_page >= min_addr && fault_page < above->start) {
+                        /* Stack gap: ensure at least 1MB between stack and next lower VMA */
+                        vma_t *below = vma_find(p->vma_root, fault_page);
+                        if (!below) {
+                            /* Check for VMA ending just below or overlapping */
+                            vma_t *prev = vma_find_overlap(p->vma_root,
+                                            fault_page > STACK_GUARD_GAP ?
+                                            fault_page - STACK_GUARD_GAP : 0,
+                                            fault_page);
+                            if (prev && prev != above &&
+                                fault_page - prev->end < STACK_GUARD_GAP) {
+                                /* Too close to adjacent VMA — no growth */
+                                spin_unlock_irq(&p->lock, vma_flags);
+                                goto kill_process;
+                            }
+                            /* Expand: move VMA start down to fault page.
+                             * Remove + re-insert to keep AVL tree sorted. */
+                            uint64_t new_start = fault_page;
+                            int sp_prot = above->prot;
+                            int sp_flags = above->flags;
+                            uint64_t sp_end = above->end;
+                            vma_remove(&p->vma_root, above);
+                            vma_t *grown = vma_insert(&p->vma_root,
+                                                      new_start, sp_end,
+                                                      sp_prot, sp_flags);
+                            spin_unlock_irq(&p->lock, vma_flags);
+                            if (grown) {
+                                /* Demand-page the faulting page */
+                                uint64_t *page = alloc_page();
+                                if (page) {
+                                    if (map_user_page(p->pml4, fault_page,
+                                                      virt_to_phys(page), sp_prot) == 0)
+                                        return;
+                                    page_free(page);
+                                }
+                            }
+                            goto kill_process;
+                        }
+                    }
+                }
+                spin_unlock_irq(&p->lock, vma_flags);
             }
-            spin_unlock_irq(&p->lock, vma_flags);
         }
 
     kill_process:
