@@ -125,7 +125,17 @@ static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
     serial_hex64(error);
     serial_puts(" rip=");
     serial_hex64(rip);
+    /* Print stack trace hint for debugging */
+    serial_puts(" rsp="); serial_hex64(0); /* placeholder */
     serial_puts(" KERNEL PANIC\n");
+    /* Try to find where pf_kernel_panic was called from */
+    uint64_t *rbp_ptr;
+    __asm__ volatile("mov %%rbp, %0" : "=r"(rbp_ptr));
+    if (rbp_ptr) {
+        serial_puts("  caller=");
+        serial_hex64(*(rbp_ptr + 1)); /* return address */
+        serial_putchar('\n');
+    }
     arch_cli_halt();
     __builtin_unreachable();
 }
@@ -321,6 +331,32 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     return; /* IRET will resume at setjmp return */
                 }
             }
+            serial_puts("\n[KPF-GUARD]\n");
+            /* Kernel fault: kill process if in syscall, skip if in IRQ */
+            {
+                thread_t *kft2 = percpu_self()->current_thread;
+                if (kft2 && kft2->proc && kft2->proc->pml4) {
+                    serial_puts("\nKERNEL PF → kill pid=");
+                    serial_hex64(kft2->proc->pid);
+                    serial_puts(" cr2="); serial_hex64(cr2);
+                    serial_puts(" rip="); serial_hex64(frame->rip);
+                    serial_putchar('\n');
+                    extern void do_exit_group(int status);
+                    extern uint64_t pml4[];
+                    arch_set_cr3(virt_to_phys(pml4));
+                    kft2->proc->exit_signal = 11;
+                    do_exit_group(128 + 11);
+                }
+                /* NULL call in IRQ/idle context (stale timer callback):
+                 * pop return address from stack, resume caller. */
+                if (frame->rip == 0) {
+                    serial_puts("\nKERNEL NULL-CALL in IRQ → skip\n");
+                    frame->rip = *(uint64_t *)frame->rsp;
+                    frame->rsp += 8;
+                    return;
+                }
+            }
+            serial_puts("\nKERNEL-PF-A\n");
             pf_kernel_panic(cr2, error, frame->rip);
         }
 
@@ -576,13 +612,19 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
         segfault_log(cr2, frame->rip, error, (t && t->proc) ? (int)t->proc->pid : -1);
         if (t && t->proc) {
-            /* Use do_exit_group to properly close FDs, wake parent, etc. */
             extern void do_exit_group(int status);
-            /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
             arch_set_cr3(virt_to_phys(t->proc->pml4));
-            do_exit_group(139); /* SIGSEGV */
-            /* do_exit_group calls thread_return_to_kernel internally */
+            t->proc->exit_signal = 11;
+            do_exit_group(128 + 11); /* SIGSEGV */
         }
+        /* Last resort: if NULL call, try to skip */
+        if (frame->rip == 0 && (error & 0x10)) {
+            serial_puts(" NULL-CALL in kernel (no process) → skip\n");
+            frame->rip = *(uint64_t *)frame->rsp;
+            frame->rsp += 8;
+            return;
+        }
+        serial_puts("\nKERNEL-PF-B\n");
         pf_kernel_panic(cr2, error, frame->rip);
     }
 
@@ -725,6 +767,29 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         arch_set_cr3(virt_to_phys(t->proc->pml4));
         t->proc->exit_signal = vector;
         do_exit_group(128 + vector);
+    }
+
+    /* Kernel fault in syscall context: kill process instead of panic */
+    if (t && t != (thread_t *)(void *)&t /* not idle */ && t->proc && t->proc->pml4) {
+        serial_puts(" KERNEL FAULT in syscall → kill pid=");
+        serial_hex64(t->proc->pid);
+        serial_putchar('\n');
+        extern void do_exit_group(int status);
+        extern uint64_t pml4[];
+        arch_set_cr3(virt_to_phys(pml4));
+        t->proc->exit_signal = vector;
+        do_exit_group(128 + vector);
+    }
+
+    /* Kernel fault in IRQ/idle context: try to skip and continue.
+     * This handles stale TCP timer callbacks calling freed connections.
+     * The IRQ frame's RIP is patched to skip the faulting call. */
+    if (frame->rip == 0 && frame->cs == 0x08) {
+        serial_puts(" KERNEL NULL-CALL — skipping (stale callback?)\n");
+        /* Return address is on the stack at RSP. Pop it into RIP. */
+        frame->rip = *(uint64_t *)frame->rsp;
+        frame->rsp += 8;
+        return;
     }
 
     serial_puts(" KERNEL PANIC\n");

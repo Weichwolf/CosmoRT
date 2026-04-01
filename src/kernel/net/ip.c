@@ -40,7 +40,7 @@ void ip_send_raw(const uint8_t *data, uint16_t len) {
     }
 
     const nic_driver_t *n = net_nic_get();
-    if (n) n->send(data, len);
+    if (n && n->send) n->send(data, len);
 }
 
 /* ── IP Header Build ───────────────────────────────── */
