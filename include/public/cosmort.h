@@ -13,7 +13,7 @@
 #include <stddef.h>
 
 /* ══════════════════════════════════════════════════════════════════
- * Physical ↔ Virtual address translation (higher-half direct map)
+ * Physical offset (used by config.h — do not use directly in drivers)
  * ══════════════════════════════════════════════════════════════════ */
 
 #define COSMO_PHYS_OFFSET    0xFFFF800000000000ULL
@@ -32,13 +32,6 @@
 #define SYS_COSMO_NIC_ATTACH     0x10007
 #define SYS_COSMO_KEXEC          0x10008
 #define SYS_COSMO_RT_QUERY       0x10009
-
-#ifndef phys_to_virt
-#define phys_to_virt(p) ((void *)((uint64_t)(p) + COSMO_PHYS_OFFSET))
-#endif
-#ifndef virt_to_phys
-#define virt_to_phys(v) ((uint64_t)(v) - COSMO_PHYS_OFFSET)
-#endif
 
 /* ══════════════════════════════════════════════════════════════════
  * 5 Core Primitives
@@ -60,6 +53,16 @@ int cosmo_dma_alloc(size_t len, void **virt, uint64_t *phys);
 
 /* Free DMA memory previously allocated with cosmo_dma_alloc. */
 void cosmo_dma_free(void *virt, size_t len);
+
+/* Convert a virtual pointer within a DMA allocation to its physical address.
+ * alloc_virt/alloc_phys: values returned by cosmo_dma_alloc.
+ * ptr: pointer within the allocation (alloc_virt <= ptr < alloc_virt+len). */
+static inline uint64_t cosmo_dma_addr(const volatile void *alloc_virt,
+                                       uint64_t alloc_phys,
+                                       const volatile void *ptr) {
+    return alloc_phys + (uint64_t)((const volatile uint8_t *)ptr
+                                 - (const volatile uint8_t *)alloc_virt);
+}
 
 /* Register an interrupt handler for an IRQ line.
  * irq:     IRQ number (I/O APIC input, typically 0-23).

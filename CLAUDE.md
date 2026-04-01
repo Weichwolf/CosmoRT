@@ -1,6 +1,10 @@
 # CosmoRT
 
-Nativer Realtime-Microkernel mit Audio-Fokus. Linux-POSIX-kompatibel, ohne Legacy.
+Nativer Realtime-Kernel mit Audio-Fokus. Linux-POSIX-kompatibel, ohne Legacy.
+
+Monolithisch wie Linux, aber ohne 30 Jahre Krusten.
+Architektur: Single-Core fuer POSIX-Phase. SMP und RT-Scheduling kommen
+zurueck wenn das POSIX-Fundament steht (PREEMPT_RT-Patterns, nicht Microkernel).
 
 Erstes Ziel: 100% Linux/POSIX-Konformitaet (musl, LTP, Alpine).
 Einzige Ausnahme: Single-User — kein Multi-User, kein uid/gid-Enforcement.
@@ -14,7 +18,7 @@ include/public/
   cosmoui.h   CosmoUI-API: Display, Audio, Input, Power (Stubs).
 
 include/kernel/
-  core/       sched.h, edf.h, percpu.h, smp.h, timer.h, irq.h, rt.h
+  core/       sched.h, percpu.h, smp.h, timer.h, timer_wheel.h, irq.h, event_queue.h
   mm/         vma.h, paging.h, page_alloc.h, slab.h
   proc/       process.h, thread.h, elf.h
   sys/        syscall.h
@@ -55,7 +59,7 @@ include/
   public/        cosmort.h (Treiber-API), cosmoui.h (CosmoUI-API)
   kernel/        Kernel-Interna (Subsystem-Spiegel: core/, mm/, proc/, net/, ...)
 src/kernel/
-  core/          main, irq, sched, timer, smp, tss, percpu
+  core/          main, irq, sched, timer, timer_wheel, smp, tss, percpu, event_queue
   mm/            page_alloc, paging, vma, slab, random
   proc/          process, elf
   sys/           dispatch, sys_{file,fs,mem,proc,sched,signal,time,ipc,net,event,id,cosmo}, stubs
@@ -87,10 +91,10 @@ make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 
 ## Regeln
 
-Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT-Microkernel begruendet.
+Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
 
   ┌──────────────────────────────────────────────────────────────────────┬────────────┬──────────────────────────────────────────────────────┐
-  │ Regel                                                                │ Linux?     │ CosmoRT-Abweichung (RT/Microkernel)                  │
+  │ Regel                                                                │ Linux?     │ CosmoRT-Abweichung                                   │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Stack-Ownership: Ein Thread, ein Kernel-Stack, exklusiv.             │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
@@ -106,9 +110,6 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT-Microkernel 
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Bounded Execution: Jeder Kernel-Pfad terminiert in endlicher Zeit.   │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Minimale Kernel-API: Nur was Userspace nicht kann.                   │ Strenger   │ Microkernel. Linux: monolithisch.                    │
-  │                                                                      │            │ (Aktuell noch monolithisch fuer POSIX-Phase.)         │
-  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.           │
   │                                                                      │            │ Linux: WARN_ON + Recovery.                            │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
@@ -119,8 +120,6 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT-Microkernel 
   │ explizit geschuetzt.                                                 │ PREEMPT_RT │                                                      │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Zero-Copy wo moeglich: Pointer statt Daten bewegen.                  │ Wie Linux  │ — (splice, sendfile, io_uring)                       │
-  ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Isolation: Kernel/Treiber/Userspace koennen sich nicht korrumpieren. │ Strenger   │ Microkernel. Linux: Treiber im Kernel-Adressraum.    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Idempotente Operationen: Syscall-Restart safe, doppeltes Wake No-Op. │ Wie Linux  │ —                                                    │
   └──────────────────────────────────────────────────────────────────────┴────────────┴──────────────────────────────────────────────────────┘

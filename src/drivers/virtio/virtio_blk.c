@@ -24,6 +24,10 @@ static virtqueue_t  blk_vq;
 static uint64_t capacity_sectors;
 static int initialized;
 
+/* DMA region base (for cosmo_dma_addr) */
+static uint8_t *blk_dma_virt;
+static uint64_t blk_dma_phys;
+
 /* Per-request DMA buffers */
 static struct virtio_blk_req *req_hdr;
 static uint8_t *data_buf;      /* 4KB data buffer */
@@ -63,7 +67,9 @@ int virtio_blk_init(void) {
         return -1;
     }
     hw_memset(dma_virt, 0, 8192);
-    uint8_t *p = (uint8_t *)dma_virt;
+    blk_dma_virt = (uint8_t *)dma_virt;
+    blk_dma_phys = dma_phys;
+    uint8_t *p = blk_dma_virt;
     req_hdr     = (struct virtio_blk_req *)p;
     data_buf    = p + 64;  /* aligned, 4KB for block data */
     status_byte = data_buf + BLK_SIZE;
@@ -120,19 +126,19 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
 
     /* Header (device reads) */
     uint16_t d0 = (uint16_t)head;
-    blk_vq.desc[d0].addr  = virt_to_phys(req_hdr);
+    blk_vq.desc[d0].addr  = cosmo_dma_addr(blk_dma_virt, blk_dma_phys,req_hdr);
     blk_vq.desc[d0].len   = sizeof(*req_hdr);
     blk_vq.desc[d0].flags = VIRTQ_DESC_F_NEXT;
     uint16_t d1 = blk_vq.desc[d0].next;
 
     /* Data (device reads for write, writes for read) */
-    blk_vq.desc[d1].addr  = virt_to_phys(data_buf);
+    blk_vq.desc[d1].addr  = cosmo_dma_addr(blk_dma_virt, blk_dma_phys,data_buf);
     blk_vq.desc[d1].len   = len;
     blk_vq.desc[d1].flags = (type == 0 ? VIRTQ_DESC_F_WRITE : 0) | VIRTQ_DESC_F_NEXT;
     uint16_t d2 = blk_vq.desc[d1].next;
 
     /* Status (device writes) */
-    blk_vq.desc[d2].addr  = virt_to_phys(status_byte);
+    blk_vq.desc[d2].addr  = cosmo_dma_addr(blk_dma_virt, blk_dma_phys,status_byte);
     blk_vq.desc[d2].len   = 1;
     blk_vq.desc[d2].flags = VIRTQ_DESC_F_WRITE;
 

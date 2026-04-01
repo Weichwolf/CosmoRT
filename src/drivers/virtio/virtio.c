@@ -326,8 +326,8 @@ int virtqueue_setup(virtio_dev_t *dev, int queue_idx, virtqueue_t *vq) {
         vq->used = (struct virtq_used *)((avail_end + 4095) & ~4095ULL);
 
         uint64_t desc_phys  = dma_phys;
-        uint64_t avail_phys = dma_phys + (uint64_t)((uint8_t *)vq->avail - p);
-        uint64_t used_phys  = dma_phys + (uint64_t)((uint8_t *)vq->used - p);
+        uint64_t avail_phys = cosmo_dma_addr(dma_virt, dma_phys, vq->avail);
+        uint64_t used_phys  = cosmo_dma_addr(dma_virt, dma_phys, vq->used);
 
         vq->desc_phys  = desc_phys;
         vq->size       = qsz;

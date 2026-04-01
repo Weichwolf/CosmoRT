@@ -1,5 +1,5 @@
 /* Intel E1000 (82540EM) NIC Driver for CosmoRT
- * Higher-half kernel: all DMA addrs via virt_to_phys(), MMIO via cosmo_mmio_map().
+ * DMA addrs via cosmo_dma_alloc() offset, MMIO via cosmo_mmio_map().
  * Adapted from llmos/src/drivers/net/e1000.c
  */
 
@@ -92,8 +92,9 @@ static volatile struct e1000_rx_desc *rx_descs;
 static uint8_t (*tx_bufs)[BUF_SIZE];
 static uint8_t (*rx_bufs)[BUF_SIZE];
 
-/* Physical base of DMA region (for descriptor addr fields) */
-static uint64_t dma_phys_base;
+/* DMA region base (for cosmo_dma_addr) */
+static uint8_t *e1000_dma_virt;
+static uint64_t e1000_dma_phys;
 
 static volatile uint32_t *mmio;
 static uint8_t mac_addr[6];
@@ -204,12 +205,13 @@ int e1000_init(void) {
     size_t total = desc_size + 256 + buf_size;  /* 256 alignment slack */
 
     void *dma_virt;
-    if (cosmo_dma_alloc(total, &dma_virt, &dma_phys_base) < 0) {
+    if (cosmo_dma_alloc(total, &dma_virt, &e1000_dma_phys) < 0) {
         serial_puts("e1000: DMA alloc failed\n");
         return -1;
     }
 
-    uint8_t *p = (uint8_t *)dma_virt;
+    e1000_dma_virt = (uint8_t *)dma_virt;
+    uint8_t *p = e1000_dma_virt;
     /* Align to 16 bytes */
     p = (uint8_t *)(((uint64_t)p + 15) & ~15ULL);
     tx_descs = (struct e1000_tx_desc *)p; p += NUM_TX_DESC * sizeof(struct e1000_tx_desc);
@@ -243,10 +245,10 @@ int e1000_init(void) {
 
     /* Setup RX descriptors — device needs PHYSICAL addresses */
     for (int i = 0; i < NUM_RX_DESC; i++) {
-        rx_descs[i].addr = virt_to_phys(&rx_bufs[i]);
+        rx_descs[i].addr = cosmo_dma_addr(e1000_dma_virt, e1000_dma_phys,&rx_bufs[i]);
         rx_descs[i].status = 0;
     }
-    uint64_t rx_desc_phys = virt_to_phys(rx_descs);
+    uint64_t rx_desc_phys = cosmo_dma_addr(e1000_dma_virt, e1000_dma_phys,rx_descs);
     e1000_write(E1000_RDBAL, (uint32_t)rx_desc_phys);
     e1000_write(E1000_RDBAH, (uint32_t)(rx_desc_phys >> 32));
     e1000_write(E1000_RDLEN, NUM_RX_DESC * sizeof(struct e1000_rx_desc));
@@ -260,11 +262,11 @@ int e1000_init(void) {
 
     /* Setup TX descriptors — device needs PHYSICAL addresses */
     for (int i = 0; i < NUM_TX_DESC; i++) {
-        tx_descs[i].addr = virt_to_phys(&tx_bufs[i]);
+        tx_descs[i].addr = cosmo_dma_addr(e1000_dma_virt, e1000_dma_phys,&tx_bufs[i]);
         tx_descs[i].status = E1000_TXD_STAT_DD;
         tx_descs[i].cmd = 0;
     }
-    uint64_t tx_desc_phys = virt_to_phys(tx_descs);
+    uint64_t tx_desc_phys = cosmo_dma_addr(e1000_dma_virt, e1000_dma_phys,tx_descs);
     e1000_write(E1000_TDBAL, (uint32_t)tx_desc_phys);
     e1000_write(E1000_TDBAH, (uint32_t)(tx_desc_phys >> 32));
     e1000_write(E1000_TDLEN, NUM_TX_DESC * sizeof(struct e1000_tx_desc));

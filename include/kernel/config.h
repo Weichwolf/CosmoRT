@@ -8,6 +8,14 @@
 #include "cosmort.h"
 #define PHYS_OFFSET    COSMO_PHYS_OFFSET
 
+/* Physical ↔ Virtual address translation (kernel-internal) */
+#ifndef phys_to_virt
+#define phys_to_virt(p) ((void *)((uint64_t)(p) + PHYS_OFFSET))
+#endif
+#ifndef virt_to_phys
+#define virt_to_phys(v) ((uint64_t)(v) - PHYS_OFFSET)
+#endif
+
 /* Ensure address is in direct map (handles EFI-relocated identity-mapped symbols).
  * Identity-mapped addrs are < 8GB; direct-map addrs are >= PHYS_OFFSET. */
 static inline uint64_t ensure_high(uint64_t addr) {
@@ -41,7 +49,6 @@ static inline uint64_t ensure_high(uint64_t addr) {
 #define NET_MAX_SOCKETS    256     /* slab capacity for inet sockets */
 #define NET_TCP_INIT_RTO_MS 1000   /* initial retransmit timeout */
 #define NET_TCP_MAX_RTO_MS  60000  /* max retransmit timeout */
-#define NET_TX_RING_SIZE   131072  /* TX ring per NIC (128KB, power of 2) */
 #define NET_TCP_KEEPALIVE_INTERVAL_MS 75000  /* keepalive probe interval (75s) */
 #define NET_TCP_KEEPALIVE_MAX_PROBES  9      /* probes before connection dead */
 
