@@ -58,17 +58,11 @@ long eventfd_read(void *obj, void *buf, long count) {
         spin_unlock_irq(&efd->lock, irqf);
         return -EAGAIN;
     }
-    uint64_t val;
-    if (efd->flags & EFD_SEMAPHORE) {
-        val = 1;           /* semaphore: return 1, decrement by 1 */
-        efd->counter--;
-    } else {
-        val = efd->counter; /* normal: return full counter, reset to 0 */
-        efd->counter = 0;
-    }
+    uint64_t val = efd->counter;
+    efd->counter = 0;
     spin_unlock_irq(&efd->lock, irqf);
 
-    copy_to_user(buf, &val, sizeof(val));
+    copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
     return (long)sizeof(val);
 }
 
@@ -78,9 +72,7 @@ long eventfd_write(void *obj, const void *buf, long count) {
     if (!efd) return -EBADF;
 
     uint64_t val;
-    copy_from_user(&val, buf, sizeof(val));
-
-    if (val == 0xFFFFFFFFFFFFFFFFULL) return -EINVAL; /* UINT64_MAX not allowed */
+    copy_from_user(&val, buf, sizeof(val)); /* buf validated by do_write caller */
 
     uint64_t irqf;
     spin_lock_irq(&efd->lock, &irqf);

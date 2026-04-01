@@ -235,7 +235,7 @@
     X(SYS_VHANGUP, vhangup, do_vhangup()) \
     X(SYS_ADJTIMEX, adjtimex, do_adjtimex((void *)a1)) \
     X(SYS_CHROOT, chroot, do_chroot((const char *)a1)) \
-    X(SYS_ACCT, acct, do_acct((const char *)a1)) \
+    X(SYS_ACCT, acct, do_acct()) \
     X(SYS_SETTIMEOFDAY, settimeofday, do_settimeofday()) \
     X(SYS_SETDOMAINNAME, setdomainname, do_setdomainname()) \
     X(SYS_READAHEAD, readahead, do_readahead()) \

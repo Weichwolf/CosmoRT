@@ -16,9 +16,9 @@ void fill_stat(struct vfs_node *node, struct k_stat *buf) {
     buf->st_gid = node->gid;
 
     if (node->type == VFS_DIR)
-        buf->st_mode = S_IFDIR | (node->mode & 07777);
+        buf->st_mode = S_IFDIR | (node->mode ? node->mode : S_IRWXU);
     else if (node->type == VFS_FILE)
-        buf->st_mode = S_IFREG | (node->mode & 07777);
+        buf->st_mode = S_IFREG | (node->mode ? node->mode : (S_IRUSR | S_IWUSR));
     else if (node->type == VFS_PIPE)
         buf->st_mode = S_IFIFO | (S_IRUSR | S_IWUSR);
     else if (node->type == VFS_SYMLINK)
