@@ -15,12 +15,24 @@ extern int  udp_input(const uint8_t *pkt, int len);
 
 /* ── Loopback ──────────────────────────────────────── */
 
+static volatile int loopback_reentrant;
+
 static void loopback_inject(const uint8_t *data, uint16_t len) {
     uint8_t lo[1600];
     if (len > 1600) return;
     for (int i = 0; i < len; i++) lo[i] = data[i];
     uint8_t proto = lo[23];
-    if (proto == 6)       q_push(&q_tcp, lo, len);
+    if (proto == 6) {
+        /* Route through tcp_input for proper demux + wake.
+         * Guard against recursion: tcp_input → send_tcp → loopback → tcp_input */
+        if (__sync_lock_test_and_set(&loopback_reentrant, 1)) {
+            q_push(&q_tcp, lo, len); /* defer if reentrant */
+        } else {
+            extern void tcp_input(const uint8_t *pkt, int len);
+            tcp_input(lo, len);
+            __sync_lock_release(&loopback_reentrant);
+        }
+    }
     else if (proto == 1)  q_push(&q_icmp, lo, len);
     else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(lo + 36);
