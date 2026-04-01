@@ -19,6 +19,7 @@ extern uint16_t dns_local_port;
 static volatile int net_poll_active;
 
 static int net_rx_one(const nic_driver_t *n) {
+    if (!n->recv) return 0;
     uint8_t pkt[Q_PKT];
     int len = n->recv(pkt, sizeof(pkt));
     if (len < 14) return 0;

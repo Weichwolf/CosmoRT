@@ -103,15 +103,26 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     }
 
     for (;;) {
-        /* Signal check FIRST — fatal signals (SIGALRM, SIGKILL) must
-         * interrupt even when events are queued, otherwise alarm(5)
-         * never kills a thread stuck in a connect/accept loop. */
+        /* Signal check — fatal signals (SIGALRM, SIGKILL) must interrupt.
+         * But ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
+         * SIGWINCH=28, SIGIO=29) to avoid spurious EINTR. */
         if (cur->proc) {
             uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
             uint64_t deliverable = all_pending & ~cur->sig_blocked;
             if (deliverable) {
-                if (has_timer) hrtimer_cancel(&timer);
-                return -4; /* EINTR */
+                /* Filter out SIG_DFL-ignored signals */
+                #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
+                uint64_t real = deliverable;
+                for (int s = 1; s < 64 && real; s++) {
+                    if (!(real & (1ULL << (s-1)))) continue;
+                    if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+                        ((1ULL << (s-1)) & SIG_DFL_IGNORE))
+                        real &= ~(1ULL << (s-1)); /* SIG_DFL + ignored class */
+                }
+                if (real) {
+                    if (has_timer) hrtimer_cancel(&timer);
+                    return -4; /* EINTR */
+                }
             }
         }
 
