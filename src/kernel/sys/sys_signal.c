@@ -329,6 +329,8 @@ long kill_one(process_t *target, int sig) {
         if (target->parent_pid) {
             process_t *parent = proc_find(target->parent_pid);
             if (parent) {
+                int nsig = target->notify_signal ? target->notify_signal : SIGCHLD;
+                __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 uint64_t pflags;
                 spin_lock_irq(&parent->lock, &pflags);
