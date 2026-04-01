@@ -86,7 +86,7 @@ static void test_dup03(void) {
 static void test_dup04(void) {
     puts("\n[ltp/dup04]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;
@@ -187,7 +187,7 @@ static void test_dup203_open(void) {
 static void test_dup204(void) {
     puts("\n[ltp/dup204]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

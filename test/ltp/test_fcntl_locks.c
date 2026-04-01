@@ -26,7 +26,7 @@ static void test_fcntl15(void) {
     check_val("parent lock", r, 0);
 
     /* Pipe for synchronization */
-    long pipefd[2];
+    int pipefd[2];
     r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
 

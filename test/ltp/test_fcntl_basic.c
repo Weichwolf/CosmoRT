@@ -237,7 +237,7 @@ static void test_fcntl11(void) {
 static void test_fcntl13(void) {
     puts("\n[ltp/fcntl13]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

@@ -103,7 +103,7 @@ static void test_bind04(void) {
     sc1(SYS_UNLINK, (long)"/tmp/bind04");
 
     /* Pipe */
-    long pipefd[2];
+    int pipefd[2];
     r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r == 0) {

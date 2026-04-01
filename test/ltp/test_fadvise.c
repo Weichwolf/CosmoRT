@@ -73,7 +73,7 @@ static void test_fadvise03(void) {
 static void test_fadvise04(void) {
     puts("\n[ltp/fadvise04]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) return;

@@ -11,7 +11,7 @@ static void test_epoll_ctl01(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     long r = sc1(SYS_PIPE, (long)pipefd);
     check_val("pipe", r, 0);
     if (r != 0) { sc1(SYS_CLOSE, epfd); return; }
@@ -78,7 +78,7 @@ static void test_epoll_ctl02_ebadf(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     struct epoll_event ev;
@@ -105,7 +105,7 @@ static void test_epoll_ctl02_einval(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     struct epoll_event ev;
@@ -154,7 +154,7 @@ static void test_epoll_ctl02_enoent(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     struct epoll_event ev;
@@ -181,7 +181,7 @@ static void test_epoll_ctl02_eexist(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     struct epoll_event ev;
@@ -210,7 +210,7 @@ static void test_epoll_ctl03(void) {
     check("epoll_create1", epfd >= 0);
     if (epfd < 0) return;
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     struct epoll_event ev;
@@ -243,7 +243,7 @@ static void test_epoll_ctl03(void) {
 static void test_epoll_ctl04(void) {
     puts("\n[ltp/epoll_ctl04]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     /* Build chain: pipe -> ep0 -> ep1 -> ep2 -> ep3 -> ep4 */
@@ -286,7 +286,7 @@ cleanup:
 static void test_epoll_ctl05(void) {
     puts("\n[ltp/epoll_ctl05]\n");
 
-    long pipefd[2];
+    int pipefd[2];
     sc1(SYS_PIPE, (long)pipefd);
 
     /* Build chain: pipe -> ep0 -> ep1 -> ep2 -> ep3 -> ep4 */
