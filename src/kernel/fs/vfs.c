@@ -422,7 +422,7 @@ not_pts:
             if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
 
             uint32_t new_ino;
-            int cmode = mode ? (mode & 07777) : 0644;
+            int cmode = mode & 07777;
             int rc = ext2_create(parent_ino, basename, cmode, &new_ino);
             if (rc < 0) return rc;
             ino = new_ino;
@@ -481,7 +481,7 @@ not_pts:
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
         if (node) {
-            node->mode = mode ? (mode & 07777) : 0644;
+            node->mode = mode & 07777;
             inotify_event(path, IN_CREATE);
         }
     }

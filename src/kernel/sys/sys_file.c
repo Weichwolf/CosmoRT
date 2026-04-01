@@ -193,6 +193,7 @@ long do_read(int fd, void *buf, size_t count) {
     if (__builtin_expect(!p, 0)) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
+    if (fde->type == FD_FILE && (fde->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL)    return 0; /* EOF */
@@ -395,6 +396,12 @@ long do_open(const char *path, int flags, int mode) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = copy_path_from_user(kpath, path, PATH_MAX);
     if (len < 0) return len;
+    /* NAME_MAX check: any component > 255 chars → ENAMETOOLONG */
+    int comp = 0;
+    for (int i = 0; i < len; i++) {
+        if (kpath[i] == '/') comp = 0;
+        else if (++comp > 255) return -ENAMETOOLONG;
+    }
     resolve_path(kpath, rpath, PATH_MAX);
     return vfs_open(rpath, flags, mode);
 }

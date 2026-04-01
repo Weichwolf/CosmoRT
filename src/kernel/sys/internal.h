@@ -281,7 +281,7 @@ long do_sched_rr_get_interval(int pid, void *tp);
 long do_vhangup(void);
 long do_adjtimex(void *tx);
 long do_chroot(const char *path);
-long do_acct(void);
+long do_acct(const char *path);
 long do_settimeofday(void);
 long do_setdomainname(void);
 long do_readahead(void);

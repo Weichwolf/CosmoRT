@@ -17,6 +17,7 @@
 #define EPOLL_CTL_DEL   2
 #define EPOLL_CTL_MOD   3
 
+#define EFD_SEMAPHORE   1
 #define EFD_CLOEXEC     02000000
 #define EFD_NONBLOCK    04000
 #define TFD_CLOEXEC     02000000

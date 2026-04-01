@@ -162,8 +162,35 @@ long do_chroot(const char *path) {
     return 0; /* accept but no-op: single-root filesystem */
 }
 
-/* acct: no-op */
-long do_acct(void) { return 0; }
+/* acct: process accounting — validate path, accept but don't record */
+long do_acct(const char *path) {
+    if (!path) return 0; /* NULL = disable accounting */
+    if (!user_ok((uint64_t)path, 1)) return -EFAULT;
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    int comp = 0;
+    for (int i = 0; i < len; i++) {
+        if (kpath[i] == '/') comp = 0;
+        else if (++comp > 255) return -ENAMETOOLONG;
+    }
+    char rpath[PATH_MAX];
+    resolve_path(kpath, rpath, PATH_MAX);
+    extern struct vfs_node *vfs_lookup(const char *path);
+    struct vfs_node *node = vfs_lookup(rpath);
+    if (!node) return -ENOENT;
+    if (node->type == VFS_DIR) return -EISDIR;
+    /* Check path components are dirs (ENOTDIR) */
+    for (int i = 0; rpath[i]; i++) {
+        if (rpath[i] == '/' && i > 0) {
+            char tmp = rpath[i]; rpath[i] = 0;
+            struct vfs_node *pn = vfs_lookup(rpath);
+            rpath[i] = tmp;
+            if (pn && pn->type != VFS_DIR) return -ENOTDIR;
+        }
+    }
+    return 0; /* accept but no-op */
+}
 
 /* settimeofday: no-op */
 long do_settimeofday(void) { return 0; }
