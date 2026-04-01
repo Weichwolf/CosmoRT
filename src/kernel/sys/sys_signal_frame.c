@@ -74,15 +74,23 @@ static const uint8_t sig_trampoline[] = {
     0x0f, 0x05                                   /* syscall */
 };
 
-/* Total signal frame: restorer_addr(8) + siginfo(128) + ucontext(936) + trampoline(9) */
-#define SIG_FRAME_SIZE  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t) + sizeof(sig_trampoline))
-
-/* Offsets from new RSP (bottom of frame):
- *   [RSP+0]    = return address (restorer or trampoline)
- *   [RSP+8]    = siginfo_t  (128 bytes)
- *   [RSP+136]  = ucontext_t (936 bytes)
- *   [RSP+1072] = trampoline bytes (if no sa_restorer)
+/* Signal frame layout (Linux x86_64 ABI):
+ *
+ *   Original RSP
+ *     [128-byte red zone]
+ *     [fpstate: xsave_size bytes, 64-byte aligned]  ← uc_mcontext.fpstate
+ *     [trampoline: 9 bytes]  (if no sa_restorer)
+ *     [ucontext_t: 936 bytes]
+ *     [siginfo_t: 128 bytes]
+ *     [return address: 8 bytes]  ← new RSP (16-byte aligned - 8)
+ *
+ * fpstate is placed above the frame (higher addresses), separately from
+ * ucontext_t.__fpregs_mem, and contains the full XSAVE image.
  */
+
+/* Base frame (without fpstate): retaddr + siginfo + ucontext + trampoline */
+#define SIG_BASE_FRAME  (8 + sizeof(sig_siginfo_t) + sizeof(sig_ucontext_t) + sizeof(sig_trampoline))
+
 #define SIGFRAME_OFF_RETADDR   0
 #define SIGFRAME_OFF_SIGINFO   8
 #define SIGFRAME_OFF_UCONTEXT  (8 + sizeof(sig_siginfo_t))
@@ -139,46 +147,51 @@ void deliver_signal(thread_t *t, int signo) {
         return;
     }
 
-    /* Compute frame location on user stack (or alternate signal stack) */
-    uint64_t frame_size = SIG_FRAME_SIZE;
-    /* Add trampoline only if no sa_restorer */
     int has_restorer = (sa->sa_flags & SA_RESTORER) && sa->sa_restorer;
-    if (has_restorer)
-        frame_size -= sizeof(sig_trampoline);
+
+    /* Save full FPU/SSE/AVX state to thread (consistent snapshot) */
+    arch_fpstate_save(t->xsave_area);
+
+    /* Frame layout: fpstate (64-byte aligned) above base frame.
+     * fpstate_size is the actual XSAVE area size, 64-byte aligned. */
+    uint64_t fpstate_padded = (xsave_size + 63) & ~63ULL;
+    uint64_t base_size = SIG_BASE_FRAME;
+    if (has_restorer) base_size -= sizeof(sig_trampoline);
 
     uint64_t stack_rsp = t->rsp;
-    /* Use alternate signal stack if SA_ONSTACK and altstack is configured */
     if ((sa->sa_flags & SA_ONSTACK) && t->sigalt_sp &&
         !(t->sigalt_flags & SS_DISABLE)) {
-        /* Only switch if not already on the altstack */
         if (t->rsp < t->sigalt_sp || t->rsp >= t->sigalt_sp + t->sigalt_size)
             stack_rsp = t->sigalt_sp + t->sigalt_size;
     }
-    /* Guard against RSP underflow (stack_rsp too small for red zone + frame) */
-    if (stack_rsp < 128 + frame_size + 8) {
+
+    uint64_t total_size = 128 + fpstate_padded + base_size + 64;
+    if (stack_rsp < total_size) {
         p->exit_signal = signo;
         do_exit(128 + signo);
         return;
     }
-    stack_rsp -= 128; /* Skip x86_64 red zone (ABI mandates 128 bytes below RSP) */
-    /* Align RSP for signal handler entry: handler sees RSP with a fake
-     * return address at [RSP], so RSP ≡ 8 (mod 16) — same as after a call.
-     * Linux: round_down(sp - frame_size, 16) - 8 */
-    uint64_t new_rsp = ((stack_rsp - frame_size) & ~0xFULL) - 8;
 
-    /* Verify target stack area is in a writable VMA */
+    /* Allocate fpstate at top (just below red zone), 64-byte aligned */
+    uint64_t sp = stack_rsp - 128;
+    sp = (sp - fpstate_padded) & ~63ULL;
+    uint64_t fpstate_user_addr = sp;
+
+    /* Allocate base frame below fpstate */
+    uint64_t new_rsp = ((sp - base_size) & ~0xFULL) - 8;
+
+    /* Verify entire range [new_rsp .. fpstate + xsave_size) is writable */
+    uint64_t frame_top = fpstate_user_addr + xsave_size;
     vma_t *vma = vma_find(p->vma_root, new_rsp);
-    if (!vma || new_rsp < vma->start || (new_rsp + frame_size) > vma->end
+    if (!vma || new_rsp < vma->start || frame_top > vma->end
         || !(vma->prot & PROT_WRITE)) {
         p->exit_signal = signo;
         do_exit(128 + signo);
         return;
     }
 
-    /* Ensure all pages in the frame are mapped */
-    for (uint64_t addr = new_rsp & ~0xFFFULL; addr < new_rsp + frame_size; addr += 4096) {
+    for (uint64_t addr = new_rsp & ~0xFFFULL; addr < frame_top; addr += 4096) {
         if (ensure_user_page(p, addr) < 0) {
-            /* Can't allocate stack page — kill process */
             p->exit_signal = signo;
             do_exit(128 + signo);
             return;
@@ -204,23 +217,13 @@ void deliver_signal(thread_t *t, int signo) {
     /* Save FS_BASE in _reserved[0] for restoration in rt_sigreturn */
     uc.uc_mcontext._reserved[0] = t->fs_base;
 
-    /* fpstate pointer → inline __fpregs_mem (patched below after frame address known) */
-    /* uc_mcontext.fpstate will be set to point to __fpregs_mem on user stack */
+    /* fpstate pointer → separate area on stack (full XSAVE image) */
+    uc.uc_mcontext.fpstate = fpstate_user_addr;
 
-    /* uc_sigmask: 128 bytes, store blocked mask in first word */
+    /* Legacy 512 bytes in __fpregs_mem for backward compat (musl getcontext) */
+    kmemcpy(&uc.__fpregs_mem, t->xsave_area, sizeof(sig_fpstate_t));
+
     uc.uc_sigmask[0] = t->sig_blocked;
-
-    /* Save FPU/SSE state into inline __fpregs_mem (512 bytes, ABI-fixed).
-     * Full XSAVE state (incl. AVX) is preserved in thread_t.xsave_area
-     * across signal delivery — only the legacy 512-byte FXSAVE region
-     * is exposed to userspace via the signal frame. */
-    {
-        sig_fpstate_t _fxbuf __attribute__((aligned(16)));
-        arch_fxsave(&_fxbuf);
-        kmemcpy(&uc.__fpregs_mem, &_fxbuf, sizeof(sig_fpstate_t));
-    }
-    /* Save full state (incl. AVX) to thread for restore on sigreturn */
-    arch_fpstate_save(t->xsave_area);
 
     /* Build siginfo */
     sig_siginfo_t si;
@@ -228,14 +231,12 @@ void deliver_signal(thread_t *t, int signo) {
     si.si_signo = (int32_t)signo;
     if (signo == SIGSEGV || signo == SIGBUS) {
         si.si_code = 1; /* SEGV_MAPERR */
-        /* si_addr at offset 16 in siginfo_t (after signo, errno, code, pad) */
         uint64_t fault = t->fault_addr;
         kmemcpy(&si._pad[0], &fault, 8);
     } else {
         si.si_code = 0; /* SI_USER */
     }
 
-    /* Write return address */
     uint64_t restorer_addr;
     if (has_restorer) {
         restorer_addr = (uint64_t)sa->sa_restorer;
@@ -243,20 +244,14 @@ void deliver_signal(thread_t *t, int signo) {
         restorer_addr = new_rsp + SIGFRAME_OFF_TRAMPOLINE;
     }
 
-    /* Set fpstate pointer to the inline __fpregs_mem on user stack.
-     * __fpregs_mem is at offset 424 within ucontext_t. */
-    uint64_t uc_user_addr = new_rsp + SIGFRAME_OFF_UCONTEXT;
-    uc.uc_mcontext.fpstate = uc_user_addr + __builtin_offsetof(sig_ucontext_t, __fpregs_mem);
-
-    /* Write signal frame to user stack.
-     * Signal delivery from IRQ context runs with AC=0 (SMAP blocks user access).
-     * STAC/CLAC bracket the write since this code path is NOT via syscall_entry. */
+    /* Write signal frame + fpstate to user stack.
+     * STAC/CLAC bracket for SMAP. */
     arch_stac();
     *(uint64_t *)new_rsp = restorer_addr;
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_SIGINFO), &si, sizeof(si));
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_UCONTEXT), &uc, sizeof(uc));
-
-    /* Write trampoline if no sa_restorer */
+    /* Write full XSAVE image to fpstate area */
+    kmemcpy((void *)fpstate_user_addr, t->xsave_area, xsave_size);
     if (!has_restorer)
         kmemcpy((void *)(new_rsp + SIGFRAME_OFF_TRAMPOLINE), sig_trampoline, sizeof(sig_trampoline));
     arch_clac();
@@ -314,18 +309,18 @@ long do_rt_sigreturn(void) {
     sig_ucontext_t uc;
     { int r = copy_from_user(&uc, (const void *)uc_addr, sizeof(uc)); if (r) return r; }
 
-    /* Restore FPU/SSE state from signal frame (512 bytes, legacy region).
-     * Copy user-modified x87+SSE state back into thread's full xsave area,
-     * then do a full XSAVE restore (preserves AVX state from before signal). */
+    /* Restore full FPU/SSE/AVX state from fpstate on user stack.
+     * fpstate pointer was set by deliver_signal to the separate XSAVE area. */
     {
-        sig_fpstate_t _fxbuf __attribute__((aligned(16)));
-        kmemcpy(&_fxbuf, &uc.__fpregs_mem, sizeof(sig_fpstate_t));
-        uint32_t mxcsr = _fxbuf.mxcsr;
-        uint32_t mxcsr_mask = _fxbuf.mxcsr_mask;
+        uint64_t fp_addr = uc.uc_mcontext.fpstate;
+        if (fp_addr >= 0x800000000000ULL) return -EFAULT;
+        int r = copy_from_user(t->xsave_area, (const void *)fp_addr, xsave_size);
+        if (r) return r;
+        /* Sanitize MXCSR: clear reserved bits, prevent unmasked FP exceptions */
+        uint32_t mxcsr = *(uint32_t *)(t->xsave_area + 24);
+        uint32_t mxcsr_mask = *(uint32_t *)(t->xsave_area + 28);
         if (mxcsr_mask == 0) mxcsr_mask = 0x0000FFBF;
-        _fxbuf.mxcsr = mxcsr & mxcsr_mask;
-        /* Merge legacy region into thread's xsave area, then full restore */
-        kmemcpy(t->xsave_area, &_fxbuf, 512);
+        *(uint32_t *)(t->xsave_area + 24) = mxcsr & mxcsr_mask;
         arch_fpstate_restore(t->xsave_area);
     }
 
