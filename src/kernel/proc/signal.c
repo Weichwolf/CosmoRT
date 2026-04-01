@@ -1,6 +1,6 @@
 /* CosmoRT Syscall Layer — signal delivery, kill, mask operations */
 
-#include "internal.h"
+#include "sys/internal.h"
 #include "core/event_queue.h"
 
 /* ── check_pending_signals — deliver pending signals to current thread ── */

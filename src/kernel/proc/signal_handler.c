@@ -1,6 +1,6 @@
 /* CosmoRT Syscall Layer — sigaction, sigaltstack, signal helpers */
 
-#include "internal.h"
+#include "sys/internal.h"
 #include "core/event_queue.h"
 
 /* sigaltstack flags */

@@ -33,7 +33,10 @@ KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/process_fork.o \
             $(BUILD)/kernel/proc/process_exec.o \
             $(BUILD)/kernel/proc/process_wait.o \
-            $(BUILD)/kernel/proc/elf.o
+            $(BUILD)/kernel/proc/elf.o \
+            $(BUILD)/kernel/proc/signal.o \
+            $(BUILD)/kernel/proc/signal_frame.o \
+            $(BUILD)/kernel/proc/signal_handler.o
 
 KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_file.o \
@@ -41,9 +44,6 @@ KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_mem.o \
              $(BUILD)/kernel/sys/sys_proc.o \
              $(BUILD)/kernel/sys/sys_sched.o \
-             $(BUILD)/kernel/sys/sys_signal.o \
-             $(BUILD)/kernel/sys/sys_signal_frame.o \
-             $(BUILD)/kernel/sys/sys_signal_handler.o \
              $(BUILD)/kernel/sys/sys_time.o \
              $(BUILD)/kernel/sys/sys_ipc.o \
              $(BUILD)/kernel/sys/sys_net.o \
