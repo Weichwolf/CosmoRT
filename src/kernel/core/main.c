@@ -194,7 +194,8 @@ void kernel_main(struct boot_info *info) {
     irq_init();
     timer_init();
     rtc_init();
-    /* timer_wheel removed — TCP keepalive uses hrtimer now */
+    extern void timer_wheel_init(void);
+    timer_wheel_init();
     extern void hrtimer_init_subsystem(void);
     hrtimer_init_subsystem();
     random_init(info);
