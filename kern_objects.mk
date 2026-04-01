@@ -89,15 +89,15 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/fb.o \
             $(BUILD)/kernel/vt/input.o
 
-KERN_HAL  = $(BUILD)/arch/x86_64/hal_cpu.o \
-            $(BUILD)/arch/x86_64/hal_timer.o
+KERN_HAL  = $(BUILD)/arch/x86_64/cpu/hal_cpu.o \
+            $(BUILD)/arch/x86_64/timer/hal_timer.o
 
 KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
-            $(BUILD)/arch/x86_64/hyperv.o \
-            $(BUILD)/arch/x86_64/qemu.o \
+            $(BUILD)/arch/x86_64/hw/hyperv.o \
+            $(BUILD)/arch/x86_64/hw/qemu.o \
             $(BUILD)/arch/x86_64/sha256.o
 
 KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \

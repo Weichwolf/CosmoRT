@@ -60,7 +60,11 @@ KDIRS = $(BUILD)/kernel $(BUILD)/kernel/core $(BUILD)/kernel/mm \
         $(BUILD)/kernel/vt $(BUILD)/kernel/hw $(BUILD)/kernel/sys
 DDIRS = $(BUILD)/drivers/virtio $(BUILD)/drivers/pci $(BUILD)/drivers/hyperv
 
-$(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS) $(BUILD)/arch/x86_64:
+ADIRS = $(BUILD)/arch/x86_64 $(BUILD)/arch/x86_64/boot $(BUILD)/arch/x86_64/cpu \
+        $(BUILD)/arch/x86_64/irq $(BUILD)/arch/x86_64/syscall \
+        $(BUILD)/arch/x86_64/timer $(BUILD)/arch/x86_64/hw
+
+$(BUILD)/boot $(KDIRS) $(BUILD)/user $(DDIRS) $(ADIRS):
 	mkdir -p $@
 
 $(BUILD)/gen:
@@ -70,7 +74,7 @@ $(BUILD)/gen/font_atlas.h: fonts/font_atlas.h | $(BUILD)/gen
 	@cp $< $@
 
 # ── kexec trampoline (64-bit, flat binary → C header) ──
-$(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/kexec_tramp.S | $(BUILD)/kernel
+$(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/hw/kexec_tramp.S | $(BUILD)/kernel
 	$(CC) -c -nostdlib -ffreestanding -mno-red-zone -o $(BUILD)/kernel/kexec_tramp_tmp.o $<
 	$(OBJCOPY) -O binary -j .text $(BUILD)/kernel/kexec_tramp_tmp.o $@
 
@@ -136,29 +140,29 @@ UCFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
 	$(CC) $(EFI_CFLAGS) -o $@ $<
 
-# ── Architecture ASM (src/arch/x86_64/) ──────────
+# ── Architecture ASM (src/arch/x86_64/{boot,cpu,irq,syscall}/) ──
 ASFLAGS = -c -ffreestanding -mno-red-zone -nostdlib
 
-$(BUILD)/kernel/entry.o: $(ARCH_DIR)/entry.S | $(BUILD)/kernel
+$(BUILD)/kernel/entry.o: $(ARCH_DIR)/boot/entry.S | $(BUILD)/kernel
 	$(CC) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/kernel/irq_asm.o: $(ARCH_DIR)/irq_asm.S | $(BUILD)/kernel
+$(BUILD)/kernel/irq_asm.o: $(ARCH_DIR)/irq/irq_asm.S | $(BUILD)/kernel
 	$(CC) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/kernel/context.o: $(ARCH_DIR)/context.S | $(BUILD)/kernel
+$(BUILD)/kernel/context.o: $(ARCH_DIR)/cpu/context.S | $(BUILD)/kernel
 	$(CC) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.S | $(BUILD)/kernel
+$(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall/syscall_entry.S | $(BUILD)/kernel
 	$(CC) $(ASFLAGS) -o $@ $<
 
 # ── Architecture C (src/arch/x86_64/) ─────────────
 
 # SHA-256: compiled without -mno-sse (RT-Core has no user FPU state to protect)
 SHA256_CFLAGS = $(subst -mno-sse,,$(subst -mno-sse2,,$(subst -mno-mmx,,$(subst -mgeneral-regs-only,,$(KCFLAGS)))))
-$(BUILD)/arch/x86_64/sha256.o: $(ARCH_DIR)/sha256.c | $(BUILD)/arch/x86_64
+$(BUILD)/arch/x86_64/sha256.o: $(ARCH_DIR)/hw/sha256.c | $(ADIRS)
 	$(CC) $(SHA256_CFLAGS) -o $@ $<
 
-$(BUILD)/arch/x86_64/%.o: $(ARCH_DIR)/%.c | $(BUILD)/arch/x86_64
+$(BUILD)/arch/x86_64/%.o: $(ARCH_DIR)/%.c | $(ADIRS)
 	$(CC) $(KCFLAGS) -o $@ $<
 
 $(BUILD)/kernel/memops.o: $(SRC)/kernel/mm/memops.c | $(BUILD)/kernel
