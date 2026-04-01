@@ -15,24 +15,12 @@ extern int  udp_input(const uint8_t *pkt, int len);
 
 /* ── Loopback ──────────────────────────────────────── */
 
-static volatile int loopback_reentrant;
-
 static void loopback_inject(const uint8_t *data, uint16_t len) {
     uint8_t lo[1600];
     if (len > 1600) return;
     for (int i = 0; i < len; i++) lo[i] = data[i];
     uint8_t proto = lo[23];
-    if (proto == 6) {
-        q_push(&q_tcp, lo, len);
-        /* Wake TCP waiter so loopback packets get processed promptly */
-        { extern struct thread *q_tcp_wait_thread;
-          struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
-          if (wt) {
-              extern void event_post(struct thread *t, uint32_t type, uint64_t data);
-              event_post(wt, 9, 0);
-          }
-        }
-    }
+    if (proto == 6)       q_push(&q_tcp, lo, len);
     else if (proto == 1)  q_push(&q_icmp, lo, len);
     else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(lo + 36);
