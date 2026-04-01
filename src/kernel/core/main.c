@@ -196,6 +196,8 @@ void kernel_main(struct boot_info *info) {
     rtc_init();
     extern void timer_wheel_init(void);
     timer_wheel_init();
+    extern void hrtimer_init_subsystem(void);
+    hrtimer_init_subsystem();
     random_init(info);
 
     /* TSS + SYSCALL */

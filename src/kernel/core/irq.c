@@ -810,6 +810,9 @@ static void timer_handler(int vector) {
     net_rx_poll(64);
     net_tx_poll(64);
     timer_wheel_tick();
+    /* Fire expired high-resolution timers + reprogram LAPIC one-shot */
+    extern void hrtimer_run_expired(void);
+    hrtimer_run_expired();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }
