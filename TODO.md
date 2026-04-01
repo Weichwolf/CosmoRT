@@ -1,37 +1,8 @@
 # CosmoRT — TODO
 
-Stand: ktest 2076/193, musl 452/20, LTP 11/87
+Stand: ktest 2090/182, musl 452/20, LTP 11/87
 
 ## ktest Failures (193) — nach Root Cause
-
-### A. VFS Path-Resolution — 17 Failures
-
-vfs_lookup gibt ENOENT statt spezifischen Fehler.
-Rewrite nach Linux `fs/namei.c:link_path_walk`.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 1 | access ENOTDIR | -2 | -20 | Non-Dir Component → ENOTDIR fehlt |
-| 2 | access ELOOP | -2 | -40 | Symlink depth >40 → ELOOP fehlt |
-| 3 | chmod through file ENOTDIR | -2 | -20 | (gleich) |
-| 4 | chmod ELOOP | -2 | -40 | (gleich) |
-| 5 | chown through file ENOTDIR | -2 | -20 | (gleich) |
-| 6 | chown ELOOP | -2 | -40 | (gleich) |
-| 7 | chdir ENAMETOOLONG | -2 | -36 | Component >255 nicht geprueft |
-| 8 | creat ENAMETOOLONG | 3 | -36 | (gleich) |
-| 9 | creat ENOENT | 3 | -2 | creat in non-existent dir erstellt |
-| 10 | utime ENOTDIR | -2 | -20 | (gleich) |
-| 11 | fchmodat empty ENOENT | 0 | -2 | Leerer Pfad akzeptiert |
-| 12 | fchownat ELOOP | -2 | -40 | (gleich) |
-| 13 | ENAMETOOLONG | -2 | -36 | (gleich) |
-| 14 | ENOTDIR | -2 | -20 | (gleich) |
-| 15 | circular ELOOP | 0 | -40 | Symlink-Zirkel nicht erkannt |
-| 16 | nesting > 5 fails | | | Symlink-Nesting falsch limitiert |
-| 17 | slash paths all resolve to / | 4 | 0 | chroot Pfad-Resolution |
-
-- [ ] ENOTDIR: nach jeder Component pruefen ob Node ein Directory ist
-- [ ] ELOOP: Symlink-Zaehler >40 → ELOOP
-- [ ] ENAMETOOLONG: Component >255 oder Pfad >4096
 
 ### B. FD-Typ-Dispatch — 13 Failures
 
