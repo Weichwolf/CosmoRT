@@ -210,13 +210,17 @@ void deliver_signal(thread_t *t, int signo) {
     /* uc_sigmask: 128 bytes, store blocked mask in first word */
     uc.uc_sigmask[0] = t->sig_blocked;
 
-    /* Save FPU/SSE state into inline __fpregs_mem.
-     * FXSAVE requires 16-byte aligned operand, so use a temp buffer. */
+    /* Save FPU/SSE state into inline __fpregs_mem (512 bytes, ABI-fixed).
+     * Full XSAVE state (incl. AVX) is preserved in thread_t.xsave_area
+     * across signal delivery — only the legacy 512-byte FXSAVE region
+     * is exposed to userspace via the signal frame. */
     {
         sig_fpstate_t _fxbuf __attribute__((aligned(16)));
         arch_fxsave(&_fxbuf);
         kmemcpy(&uc.__fpregs_mem, &_fxbuf, sizeof(sig_fpstate_t));
     }
+    /* Save full state (incl. AVX) to thread for restore on sigreturn */
+    arch_fpstate_save(t->xsave_area);
 
     /* Build siginfo */
     sig_siginfo_t si;
@@ -310,21 +314,19 @@ long do_rt_sigreturn(void) {
     sig_ucontext_t uc;
     { int r = copy_from_user(&uc, (const void *)uc_addr, sizeof(uc)); if (r) return r; }
 
-    /* Restore FPU/SSE state from inline __fpregs_mem via FXRSTOR.
-     * FXRSTOR requires 16-byte aligned operand, so use a temp buffer.
-     * Validate MXCSR first: reserved bits (31:16) must be zero, and
-     * each mask bit must cover the corresponding exception-enable bit
-     * (otherwise FXRSTOR raises #GP in kernel mode — fatal). */
+    /* Restore FPU/SSE state from signal frame (512 bytes, legacy region).
+     * Copy user-modified x87+SSE state back into thread's full xsave area,
+     * then do a full XSAVE restore (preserves AVX state from before signal). */
     {
         sig_fpstate_t _fxbuf __attribute__((aligned(16)));
         kmemcpy(&_fxbuf, &uc.__fpregs_mem, sizeof(sig_fpstate_t));
-        /* Sanitize MXCSR: clear reserved bits, force mask bits on to
-         * prevent unmasked FP exceptions in kernel context */
         uint32_t mxcsr = _fxbuf.mxcsr;
         uint32_t mxcsr_mask = _fxbuf.mxcsr_mask;
-        if (mxcsr_mask == 0) mxcsr_mask = 0x0000FFBF; /* default if unsupported */
+        if (mxcsr_mask == 0) mxcsr_mask = 0x0000FFBF;
         _fxbuf.mxcsr = mxcsr & mxcsr_mask;
-        arch_fxrstor(&_fxbuf);
+        /* Merge legacy region into thread's xsave area, then full restore */
+        kmemcpy(t->xsave_area, &_fxbuf, 512);
+        arch_fpstate_restore(t->xsave_area);
     }
 
     /* Restore registers from ucontext gregset into syscall frame.

@@ -355,11 +355,14 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->timeslice = RR_TIMESLICE;
     t->proc = p;
 
-    /* Initialize FPU/SSE state: clean FXSAVE image.
-     * FCW=0x037F: extended precision (64-bit mantissa), all x87 exceptions masked.
-     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest. */
-    *(uint16_t *)(t->fxsave_area + 0) = 0x037F;   /* FCW */
-    *(uint32_t *)(t->fxsave_area + 24) = 0x1F80;  /* MXCSR */
+    /* Initialize FPU/SSE/AVX state: clean XSAVE/FXSAVE image.
+     * FCW=0x037F: extended precision, all x87 exceptions masked.
+     * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest.
+     * XSTATE_BV at offset 512 marks which components are valid. */
+    *(uint16_t *)(t->xsave_area + 0) = 0x037F;   /* FCW */
+    *(uint32_t *)(t->xsave_area + 24) = 0x1F80;  /* MXCSR */
+    if (xsave_size > 512)
+        *(uint64_t *)(t->xsave_area + 512) = xsave_xcr0; /* XSTATE_BV */
 
     /* Kernel stack for this thread */
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
@@ -459,8 +462,8 @@ void thread_run(thread_t *t) {
      * even when fs_base == 0 (after execve, before arch_prctl SET_FS) */
     arch_set_fs_base(t->fs_base);
 
-    /* Restore FPU/SSE state */
-    arch_fxrstor(t->fxsave_area);
+    /* Restore FPU/SSE/AVX state */
+    arch_fpstate_restore(t->xsave_area);
 
     /* IRET to Ring 3 (proc_enter_ring3 reads thread_t by offsets) */
     proc_enter_ring3(t);

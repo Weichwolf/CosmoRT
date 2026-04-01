@@ -322,7 +322,7 @@ long do_clone(unsigned long flags, void *child_stack,
     }
 
     /* Copy parent FPU/SSE state to child thread */
-    arch_fxsave(t->fxsave_area);
+    arch_fpstate_save(t->xsave_area);
 
     /* Parent TID (CLONE_PARENT_SETTID) */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid) {

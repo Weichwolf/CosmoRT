@@ -25,6 +25,10 @@ static inline uint64_t ensure_high(uint64_t addr) {
 /* Process */
 #define KSTACK_SIZE      (64 * 1024)
 
+/* XSAVE area: max size for x87+SSE+AVX+AVX-512.
+ * Actual size determined at boot via CPUID.0DH. Fallback = 512 (FXSAVE). */
+#define XSAVE_MAX_SIZE   2688
+
 /* SMP (single-core for POSIX phase) */
 #define SMP_MAX_CORES    1
 

@@ -616,12 +616,14 @@ shebang_retry:
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
 
-    /* Reset FPU/SSE state for new executable.
-     * FCW=0x037F: extended precision (64-bit mantissa), all exceptions masked.
+    /* Reset FPU/SSE/AVX state for new executable.
+     * FCW=0x037F: extended precision, all exceptions masked.
      * MXCSR=0x1F80: all SSE exceptions masked, round-to-nearest. */
-    kmemset(cur->fxsave_area, 0, 512);
-    *(uint16_t *)(cur->fxsave_area + 0) = 0x037F;  /* FCW */
-    *(uint32_t *)(cur->fxsave_area + 24) = 0x1F80;  /* MXCSR */
+    kmemset(cur->xsave_area, 0, xsave_size);
+    *(uint16_t *)(cur->xsave_area + 0) = 0x037F;  /* FCW */
+    *(uint32_t *)(cur->xsave_area + 24) = 0x1F80;  /* MXCSR */
+    if (xsave_size > 512)
+        *(uint64_t *)(cur->xsave_area + 512) = xsave_xcr0; /* XSTATE_BV */
 
     /* Load new page tables and jump to userspace */
     arch_set_cr3(virt_to_phys(p->pml4));
@@ -634,7 +636,7 @@ shebang_retry:
     arch_set_fs_base(0);
 
     /* Restore clean FPU state */
-    arch_fxrstor(cur->fxsave_area);
+    arch_fpstate_restore(cur->xsave_area);
 
     proc_enter_ring3(cur);
     /* unreachable */

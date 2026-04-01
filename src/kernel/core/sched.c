@@ -172,7 +172,7 @@ void sched_preempt(void *frame_ptr) {
     cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
 
     cur->fs_base = arch_get_fs_base();
-    arch_fxsave(cur->fxsave_area);
+    arch_fpstate_save(cur->xsave_area);
 
     if (cur->state == THREAD_RUNNING)
         cur->state = THREAD_RUNNABLE;

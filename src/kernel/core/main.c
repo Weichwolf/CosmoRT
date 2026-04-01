@@ -30,6 +30,10 @@
 
 
 
+/* XSAVE state — set at boot, read everywhere */
+uint64_t xsave_xcr0 = XSTATE_FP | XSTATE_SSE;  /* default: x87+SSE */
+uint32_t xsave_size = 512;                       /* default: FXSAVE */
+
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
 /* ── EFI Relocation Fixup ─────────────────────────────
@@ -114,7 +118,7 @@ void kernel_main(struct boot_info *info) {
         info->mmap_size,
         info->mmap_desc_size);
 
-    /* Enable SSE/SSE2 on BSP (user code uses SSE for string ops) */
+    /* Enable SSE/SSE2 + detect XSAVE for AVX/AVX-512 */
     {
         uint64_t cr0 = arch_get_cr0();
         cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
@@ -137,7 +141,50 @@ void kernel_main(struct boot_info *info) {
             serial_puts("sec: SMAP enabled\n");
         }
 
-        arch_set_cr4(cr4);
+        /* XSAVE: detect via CPUID.01H:ECX bit 26 (OSXSAVE-capable).
+         * If present: enable CR4.OSXSAVE, query supported components via
+         * CPUID.0DH, configure XCR0, read save area size.
+         * Like Linux: eager FPU, XSAVE on every context switch. */
+        arch_cpuid(1, &eax, &ebx, &ecx, &edx);
+        if (ecx & (1U << 26)) { /* XSAVE supported */
+            cr4 |= (1ULL << 18);  /* CR4.OSXSAVE */
+            arch_set_cr4(cr4);
+
+            /* Query max supported XCR0 from CPUID.0DH:EAX (subleaf 0) */
+            uint32_t x_eax, x_ebx, x_ecx, x_edx;
+            arch_cpuid_count(0x0D, 0, &x_eax, &x_ebx, &x_ecx, &x_edx);
+            uint64_t hw_xcr0 = ((uint64_t)x_edx << 32) | x_eax;
+
+            /* Enable components we support: x87 + SSE always,
+             * plus AVX and AVX-512 if hardware supports them */
+            uint64_t want = XSTATE_FP | XSTATE_SSE;
+            if (hw_xcr0 & XSTATE_AVX)       want |= XSTATE_AVX;
+            if ((hw_xcr0 & XSTATE_AVX512_OP) &&
+                (hw_xcr0 & XSTATE_AVX512_HI) &&
+                (hw_xcr0 & XSTATE_AVX512_EX))
+                want |= XSTATE_AVX512_OP | XSTATE_AVX512_HI | XSTATE_AVX512_EX;
+
+            arch_xsetbv(0, want);
+            xsave_xcr0 = want;
+
+            /* Re-query with our XCR0 to get actual save area size */
+            arch_cpuid_count(0x0D, 0, &x_eax, &x_ebx, &x_ecx, &x_edx);
+            xsave_size = x_ebx; /* EBX = size required for enabled components */
+            if (xsave_size > XSAVE_MAX_SIZE) xsave_size = XSAVE_MAX_SIZE;
+            if (xsave_size < 512) xsave_size = 512;
+
+            serial_puts("xsave: enabled (");
+            if (want & XSTATE_AVX512_OP) serial_puts("AVX-512");
+            else if (want & XSTATE_AVX)  serial_puts("AVX");
+            else                         serial_puts("SSE");
+            serial_puts(")\n");
+        } else {
+            /* No XSAVE — FXSAVE fallback (512 bytes, x87+SSE only) */
+            xsave_xcr0 = XSTATE_FP | XSTATE_SSE;
+            xsave_size = 512;
+            arch_set_cr4(cr4);
+            serial_puts("fpu: FXSAVE (no XSAVE)\n");
+        }
 
         /* Ensure AC flag is clear (CLAC) — default kernel state */
         arch_clac();

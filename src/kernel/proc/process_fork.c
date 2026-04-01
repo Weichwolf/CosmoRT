@@ -300,7 +300,7 @@ long do_fork(unsigned long flags, void *child_stack,
         ct->fs_base = tls;
     else
         ct->fs_base = cur->fs_base;
-    kmemcpy(ct->fxsave_area, cur->fxsave_area, 512);
+    kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
@@ -483,7 +483,7 @@ long do_vfork(unsigned long flags, void *child_stack,
     else
         ct->fs_base = cur->fs_base;
 
-    kmemcpy(ct->fxsave_area, cur->fxsave_area, 512);
+    kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
