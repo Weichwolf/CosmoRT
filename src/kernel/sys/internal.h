@@ -261,7 +261,7 @@ long do_lchown(void);
 long do_sched_get_priority_max(int policy);
 long do_sched_get_priority_min(int policy);
 long do_setrlimit(void);
-long do_fadvise64(void);
+long do_fadvise64(int fd, long offset, long len, int advice);
 long do_umask(int mask);
 long do_getgroups(void);
 long do_setgroups(void);

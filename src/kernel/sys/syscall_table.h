@@ -111,7 +111,7 @@
     X(SYS_SCHED_GET_PRIORITY_MAX, sched_get_priority_max, do_sched_get_priority_max((int)a1)) \
     X(SYS_SCHED_GET_PRIORITY_MIN, sched_get_priority_min, do_sched_get_priority_min((int)a1)) \
     X(SYS_SETRLIMIT, setrlimit, do_setrlimit()) \
-    X(SYS_FADVISE64, fadvise64, do_fadvise64()) \
+    X(SYS_FADVISE64, fadvise64, do_fadvise64((int)a1, (long)a2, (long)a3, (int)a4)) \
     X(SYS_GETCPU, getcpu, do_getcpu((unsigned *)a1, (unsigned *)a2)) \
     X(SYS_GETRUSAGE, getrusage, do_getrusage((int)a1, (void *)a2)) \
     X(SYS_TIMES, times, do_times((void *)a1)) \

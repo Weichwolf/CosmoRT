@@ -1121,6 +1121,20 @@ long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
     return total ? (long)total : -EIO;
 }
 
+/* ── SYS_fadvise64 (221) — file access pattern hint ──── */
+
+long do_fadvise64(int fd, long offset, long len, int advice) {
+    (void)offset; (void)len;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    if (advice < 0 || advice > 5) return -EINVAL;
+    if (fde->type == FD_PIPE || fde->type == FD_SOCKET ||
+        fde->type == FD_UNIX_SOCK) return -ESPIPE;
+    return 0; /* hint accepted, no page cache action */
+}
+
 /* ── SYS_memfd_create (319) — anonymous file in memory ── */
 
 long do_memfd_create(const char *uname, unsigned int flags) {

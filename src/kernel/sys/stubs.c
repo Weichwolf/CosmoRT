@@ -42,8 +42,6 @@ long do_sched_get_priority_min(int policy) { (void)policy; return 0; }
 
 /* noop: no enforcement */
 long do_setrlimit(void) { return 0; }
-/* no-op: no page cache hints */
-long do_fadvise64(void) { return 0; }
 
 /* single-user: return default, ignore new */
 long do_umask(int mask) { (void)mask; return 0022; }
