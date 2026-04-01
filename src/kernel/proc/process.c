@@ -291,6 +291,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     p->brk_base = brk_end;
     p->brk_current = brk_end;
     p->is_driver = (p->pid == 1) ? 1 : 0;
+    p->notify_signal = SIGCHLD;
     p->pgid = p->pid;  /* initial process is own process group leader */
     p->sid  = p->pid;  /* initial process is own session leader */
     p->cwd[0] = '/'; p->cwd[1] = '\0';

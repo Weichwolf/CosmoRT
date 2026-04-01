@@ -158,7 +158,9 @@ int copy_address_space(process_t *child, process_t *parent) {
 
 extern void sched_add(thread_t *t);
 
-long do_fork(void) {
+long do_fork(unsigned long flags, void *child_stack,
+             int *parent_tid, int *child_tid, unsigned long tls) {
+    (void)child_stack; /* fork: child inherits parent stack via COW */
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
     if (!cur || !cur->proc) return -EFAULT;
@@ -170,6 +172,7 @@ long do_fork(void) {
     child->parent_pid = parent->pid;
     child->pgid = parent->pgid;  /* inherit process group */
     child->sid  = parent->sid;   /* inherit session */
+    child->notify_signal = flags & 0xFF;
     child->vma_root = 0;
 
     /* Stop other parent threads during page copy to prevent stale data.
@@ -293,7 +296,10 @@ long do_fork(void) {
     ct->r13 = cur->r13;
     ct->r14 = cur->r14;
     ct->r15 = cur->r15;
-    ct->fs_base = cur->fs_base;
+    if (flags & CLONE_SETTLS)
+        ct->fs_base = tls;
+    else
+        ct->fs_base = cur->fs_base;
     kmemcpy(ct->fxsave_area, cur->fxsave_area, 512);
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
@@ -302,7 +308,7 @@ long do_fork(void) {
     ct->timeslice = RR_TIMESLICE;
     ct->proc = child;
     ct->state = THREAD_RUNNABLE;
-    ct->sig_blocked = cur->sig_blocked; /* inherit parent thread's signal mask */
+    ct->sig_blocked = cur->sig_blocked;
 
     /* Kernel stack */
     ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
@@ -317,11 +323,25 @@ long do_fork(void) {
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
 
+    /* CLONE_PARENT_SETTID */
+    if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
+        if (user_ok((uint64_t)parent_tid, 4))
+            *parent_tid = ct->tid;
+    }
+    /* CLONE_CHILD_SETTID */
+    if ((flags & CLONE_CHILD_SETTID) && child_tid) {
+        if (user_ok((uint64_t)child_tid, 4))
+            *child_tid = ct->tid;
+    }
+    /* CLONE_CHILD_CLEARTID */
+    ct->clear_child_tid = 0;
+    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
+        ct->clear_child_tid = child_tid;
+
     child->main_thread = ct;
     child->threads = ct;
     child->thread_count = 1;
 
-    /* Add child thread to scheduler */
     sched_add(ct);
 
     return (long)child->pid;
@@ -345,6 +365,7 @@ long do_vfork(unsigned long flags, void *child_stack,
     child->parent_pid = parent->pid;
     child->pgid = parent->pgid;
     child->sid  = parent->sid;
+    child->notify_signal = flags & 0xFF;
     child->vma_root = 0;
 
     /* Stop other parent threads during page copy */

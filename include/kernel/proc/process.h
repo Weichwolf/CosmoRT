@@ -88,6 +88,9 @@ typedef struct process {
 
     /* Resource limits (at end to avoid offset shifts) */
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
+
+    /* Signal to parent on exit (clone exit_signal, 0 = none → fallback SIGCHLD) */
+    int         notify_signal;
 } process_t;
 
 /* PID/TID lookup table sizes */
@@ -128,7 +131,8 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
 int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot);
 
 /* Process fork/exec */
-long do_fork(void);
+long do_fork(unsigned long flags, void *child_stack,
+             int *parent_tid, int *child_tid, unsigned long tls);
 long do_vfork(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_execve(const char *path, char *const argv[], char *const envp[]);
