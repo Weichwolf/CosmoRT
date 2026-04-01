@@ -150,6 +150,24 @@ kernel/
 │   ├── netif.c / netif.h             # network interface abstraction
 │   └── lo.c                          # loopback
 │
+├── ipc/
+│   ├── futex.c / futex.h             # FUTEX_WAIT/WAKE/REQUEUE (pthreads)
+│   ├── pipe.c / pipe.h               # pipe2, splice
+│   └── sysv_ipc.c                    # shmget/semget stubs → -ENOSYS
+│
+├── event/
+│   ├── epoll.c / epoll.h             # epoll_create/ctl/wait
+│   ├── eventfd.c / eventfd.h         # eventfd2
+│   ├── timerfd.c / timerfd.h         # timerfd_create/settime
+│   ├── signalfd.c / signalfd.h       # signalfd4
+│   └── inotify.c / inotify.h         # inotify_init/add_watch
+│
+├── vt/
+│   ├── vt.c / vt.h                   # virtual terminal, VT100 emulation
+│   ├── pty.c / pty.h                 # pseudo-terminal pairs
+│   ├── fb.c / fb.h                   # framebuffer console
+│   └── input.c / input.h             # keyboard/mouse → VT input queue
+│
 ├── drivers/
 │   ├── tty/
 │   │   ├── tty.c / tty.h
@@ -161,8 +179,19 @@ kernel/
 │   ├── net/
 │   │   ├── virtio_net.c
 │   │   └── e1000.c
-│   └── input/
-│       └── ps2kbd.c                  # x86 only
+│   ├── input/
+│   │   └── ps2kbd.c                  # x86 only
+│   ├── audio/
+│   │   ├── audio.c / audio.h         # audio device interface, ring buffer
+│   │   ├── hda.c                     # Intel HD Audio
+│   │   └── virtio_snd.c             # virtio-sound (QEMU)
+│   └── gpu/
+│       ├── gpu.c / gpu.h             # display/render interface
+│       └── virtio_gpu.c              # virtio-gpu (QEMU)
+│
+├── devfs/
+│   └── devfs.c / devfs.h             # /dev/null, /dev/zero, /dev/urandom,
+│                                      # /dev/fb0, /dev/snd/*, /dev/tty
 │
 └── include/
     ├── kernel/

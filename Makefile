@@ -70,8 +70,9 @@ $(BUILD)/gen/font_atlas.h: fonts/font_atlas.h | $(BUILD)/gen
 	@cp $< $@
 
 # ── kexec trampoline (64-bit, flat binary → C header) ──
-$(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/kexec_tramp.asm | $(BUILD)/kernel
-	$(NASM) -f bin -o $@ $<
+$(BUILD)/kernel/kexec_tramp.bin: $(ARCH_DIR)/kexec_tramp.S | $(BUILD)/kernel
+	$(CC) -c -nostdlib -ffreestanding -mno-red-zone -o $(BUILD)/kernel/kexec_tramp_tmp.o $<
+	$(OBJCOPY) -O binary -j .text $(BUILD)/kernel/kexec_tramp_tmp.o $@
 
 $(BUILD)/gen/kexec_tramp_bin.h: $(BUILD)/kernel/kexec_tramp.bin | $(BUILD)/gen
 	@python3 -c "\
@@ -136,17 +137,19 @@ $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
 	$(CC) $(EFI_CFLAGS) -o $@ $<
 
 # ── Architecture ASM (src/arch/x86_64/) ──────────
-$(BUILD)/kernel/entry.o: $(ARCH_DIR)/entry.asm | $(BUILD)/kernel
-	$(NASM) -f elf64 -o $@ $<
+ASFLAGS = -c -ffreestanding -mno-red-zone -nostdlib
 
-$(BUILD)/kernel/irq_asm.o: $(ARCH_DIR)/irq_asm.asm | $(BUILD)/kernel
-	$(NASM) -f elf64 -o $@ $<
+$(BUILD)/kernel/entry.o: $(ARCH_DIR)/entry.S | $(BUILD)/kernel
+	$(CC) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/kernel/context.o: $(ARCH_DIR)/context.asm | $(BUILD)/kernel
-	$(NASM) -f elf64 -o $@ $<
+$(BUILD)/kernel/irq_asm.o: $(ARCH_DIR)/irq_asm.S | $(BUILD)/kernel
+	$(CC) $(ASFLAGS) -o $@ $<
 
-$(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.asm | $(BUILD)/kernel
-	$(NASM) -f elf64 -o $@ $<
+$(BUILD)/kernel/context.o: $(ARCH_DIR)/context.S | $(BUILD)/kernel
+	$(CC) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/kernel/syscall_entry.o: $(ARCH_DIR)/syscall_entry.S | $(BUILD)/kernel
+	$(CC) $(ASFLAGS) -o $@ $<
 
 # ── Architecture C (src/arch/x86_64/) ─────────────
 
