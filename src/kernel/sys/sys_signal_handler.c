@@ -136,10 +136,17 @@ void check_alarm_timers(void) {
         if (!p || p->state != PROC_ALIVE) continue;
         if (p->alarm_deadline_ms == 0 || now < p->alarm_deadline_ms) continue;
         p->alarm_deadline_ms = 0;
-        /* Deliver via kill_one — handles SIG_DFL (terminate + wake threads
-         * + notify parent) and user handlers (set pending + wake) correctly. */
-        extern long kill_one(process_t *target, int sig);
-        kill_one(p, SIGALRM);
+        /* Set SIGALRM pending and wake blocked threads.
+         * Actual delivery happens in event_wait signal check or
+         * check_signals_syscall_path on next syscall return. */
+        p->sig_pending |= SIG_BIT(SIGALRM);
+        extern void sched_wake(thread_t *t);
+        thread_t *t = p->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED)
+                sched_wake(t);
+            t = t->proc_next;
+        }
     }
 }
 
