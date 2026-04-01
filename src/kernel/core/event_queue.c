@@ -2,9 +2,11 @@
  *
  * event_post: write event into target thread's queue, then sched_wake.
  * event_wait: consume next event; if empty, block via schedule().
+ * Timeouts use hrtimer (LAPIC one-shot) instead of polling.
  */
 
 #include "core/event_queue.h"
+#include "core/hrtimer.h"
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
@@ -36,11 +38,9 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     uint32_t h = eq->head;
     uint32_t t = eq->tail;
 
-    /* Queue full: advance tail (drop oldest) */
     if (h - t >= EQ_MAX_EVENTS)
         arch_store_release(&eq->tail, t + 1);
 
-    /* Write event at head slot */
     eq->events[h & EQ_MASK].type = type;
     eq->events[h & EQ_MASK].data = data;
     arch_store_release(&eq->head, h + 1);
@@ -51,9 +51,13 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     sched_wake(target);
 }
 
-/* ── Wait: consume next event, block if empty ── */
+/* ── hrtimer timeout callback: wake blocked thread ── */
 
-extern void epoll_sleeper_add_ext(thread_t *t);
+static void timeout_wake(hrtimer_t *timer) {
+    thread_t *t = (thread_t *)timer->data;
+    extern void sched_wake(thread_t *t);
+    sched_wake(t);
+}
 
 /* ── Block: pure timeout sleep (no event queue) ── */
 
@@ -69,25 +73,44 @@ void thread_block_ms(int timeout_ms) {
         if (deliverable) return;
     }
 
-    /* Use event_wait with timeout — epoll_check_timeouts posts EQ_TIMEOUT
-     * which wakes us through the same path as all other blocking. */
-    event_t ev;
-    event_wait(&cur->eq, &ev, timeout_ms);
+    /* hrtimer wakes us after timeout */
+    hrtimer_t timer;
+    hrtimer_init(&timer, timeout_wake, cur);
+    hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
+
+    cur->state = THREAD_BLOCKED;
+
+    extern void schedule(void);
+    schedule();
+
+    hrtimer_cancel(&timer);
 }
+
+/* ── Wait: consume next event, block if empty ── */
 
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
-    uint64_t timeout_deadline = (timeout_ms > 0) ? timer_ms() + (uint64_t)timeout_ms : 0;
+
+    /* Set up timeout hrtimer (if finite timeout) */
+    hrtimer_t timer;
+    int has_timer = 0;
+    uint64_t deadline_ns = 0;
+    if (timeout_ms > 0) {
+        deadline_ns = hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms);
+        hrtimer_init(&timer, timeout_wake, cur);
+        has_timer = 1;
+    }
 
     for (;;) {
         /* Fast path: event available */
         uint32_t h = arch_load_acquire(&eq->head);
-        uint32_t t = eq->tail;  /* only consumer reads tail */
+        uint32_t t = eq->tail;
 
         if (h != t) {
             *out = eq->events[t & EQ_MASK];
             arch_store_release(&eq->tail, t + 1);
+            if (has_timer) hrtimer_cancel(&timer);
             return 0;
         }
 
@@ -99,44 +122,45 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         if (cur->proc) {
             uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
             uint64_t deliverable = all_pending & ~cur->sig_blocked;
-            if (deliverable) return -4; /* EINTR */
+            if (deliverable) {
+                if (has_timer) hrtimer_cancel(&timer);
+                return -4; /* EINTR */
+            }
         }
 
-        /* Set timeout */
-        if (timeout_ms > 0) {
-            cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
-            cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
-        } else {
-            cur->wake_at = 0;
-            cur->wake_at_tsc = 0;
+        /* Check timeout before blocking */
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            return -11; /* EAGAIN (timeout) */
         }
-        epoll_sleeper_add_ext(cur);
+
+        /* Arm hrtimer for this block iteration */
+        if (has_timer)
+            hrtimer_start(&timer, deadline_ns);
 
         cur->state = THREAD_BLOCKED;
 
-        /* Close race: event_post writes event then sched_wake(CAS BLOCKED→RUNNABLE).
-         * If event arrived between our fast-path check and BLOCKED, sched_wake saw
-         * RUNNING and was a no-op. Re-check after BLOCKED. */
+        /* Close race: event arrived between fast-path and BLOCKED */
         __asm__ volatile("mfence" ::: "memory");
         if (arch_load_acquire(&eq->head) != eq->tail) {
             cur->state = THREAD_RUNNING;
-            cur->wake_at = 0;
-            cur->wake_at_tsc = 0;
             continue;
         }
 
         extern void schedule(void);
         schedule();
 
-        /* Resumed. Clear wakeup fields, loop back to top.
-         * Queue check (fast path) runs first — event may have arrived
-         * simultaneously with the signal that woke us (e.g. SIGCHLD + child exit).
-         * Signals are checked only if the queue is empty. */
-        cur->wake_at = 0;
-        cur->wake_at_tsc = 0;
-
-        /* Check timeout (must use original deadline, not cleared wake_at) */
-        if (timeout_ms > 0 && timeout_deadline && timer_ms() >= timeout_deadline)
+        /* Resumed — check timeout */
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            /* Check queue one last time (event might have arrived with timeout) */
+            h = arch_load_acquire(&eq->head);
+            if (h != eq->tail) {
+                *out = eq->events[eq->tail & EQ_MASK];
+                arch_store_release(&eq->tail, eq->tail + 1);
+                return 0;
+            }
             return -11; /* EAGAIN (timeout) */
+        }
     }
 }

@@ -65,6 +65,7 @@ static void lapic_arm_ns(uint64_t delta_ns) {
     lapic_write(LAPIC_TIMER_INIT, (uint32_t)ticks);
 }
 
+__attribute__((unused))
 static void lapic_disarm(void) {
     lapic_write(LAPIC_TIMER_LVT, LVT_MASKED);
     lapic_write(LAPIC_TIMER_INIT, 0);
@@ -140,9 +141,13 @@ void hrtimer_init_subsystem(void) {
       while (i--) serial_putchar(b[i]); }
     serial_puts(" ticks/ms, one-shot mode\n");
 
-    /* Arm LAPIC in one-shot mode, initially masked until first timer */
+    /* Restore periodic LAPIC timer (1000Hz) for legacy compatibility.
+     * sched_preempt, net_poll, timer_wheel still depend on periodic ticks.
+     * hrtimer_run_expired runs alongside in timer_handler.
+     * TODO: remove periodic tick once all callers use hrtimer. */
     lapic_write(LAPIC_TIMER_DIV, 0x03);
-    lapic_disarm();
+    lapic_write(LAPIC_TIMER_LVT, 0x20000 | LAPIC_TIMER_VECTOR); /* periodic, vector 32 */
+    lapic_write(LAPIC_TIMER_INIT, (uint32_t)lapic_ticks_per_ms); /* 1000Hz */
 }
 
 void hrtimer_init(hrtimer_t *t, void (*fn)(hrtimer_t *), void *data) {
@@ -216,21 +221,9 @@ void hrtimer_run_expired(void) {
 }
 
 void hrtimer_reprogram(void) {
-    uint64_t flags;
-    spin_lock_irq(&base.lock, &flags);
-
-    rb_node_t *leftmost = base.tree.leftmost;
-    if (!leftmost) {
-        lapic_disarm();
-        spin_unlock_irq(&base.lock, flags);
-        return;
-    }
-
-    hrtimer_t *next = rb_entry(leftmost, hrtimer_t, node);
-    uint64_t now = hrtimer_now_ns();
-    uint64_t delta = (next->deadline_ns > now) ? next->deadline_ns - now : 1;
-
-    spin_unlock_irq(&base.lock, flags);
-
-    lapic_arm_ns(delta);
+    /* While periodic LAPIC is still active, hrtimer piggybacks on the
+     * 1000Hz tick via hrtimer_run_expired() in timer_handler.
+     * No LAPIC reprogramming needed — just let the next tick fire it.
+     * TODO: switch to pure one-shot once periodic tick is removed. */
+    (void)lapic_arm_ns;
 }
