@@ -32,7 +32,15 @@ long do_clock_gettime(int clk_id, struct k_timespec *tp) {
 }
 
 long do_clock_getres(int clk_id, struct k_timespec *tp) {
-    (void)clk_id;
+    /* Validate clock ID — same set as clock_gettime */
+    switch (clk_id) {
+    case CLOCK_REALTIME: case CLOCK_REALTIME_COARSE:
+    case CLOCK_MONOTONIC: case CLOCK_MONOTONIC_RAW:
+    case CLOCK_MONOTONIC_COARSE: case CLOCK_BOOTTIME:
+        break;
+    default:
+        return -EINVAL;
+    }
     if (tp) {
         struct k_timespec kts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1ms */
         int r = copy_to_user(tp, &kts, sizeof(kts));

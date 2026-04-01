@@ -233,15 +233,15 @@
     X(SYS_SYSLOG, syslog, do_syslog_stub()) \
     X(SYS_SCHED_RR_GET_INTERVAL, sched_rr_get_interval, do_sched_rr_get_interval((int)a1, (void *)a2)) \
     X(SYS_VHANGUP, vhangup, do_vhangup()) \
-    X(SYS_ADJTIMEX, adjtimex, do_adjtimex()) \
-    X(SYS_CHROOT, chroot, do_chroot()) \
+    X(SYS_ADJTIMEX, adjtimex, do_adjtimex((void *)a1)) \
+    X(SYS_CHROOT, chroot, do_chroot((const char *)a1)) \
     X(SYS_ACCT, acct, do_acct()) \
     X(SYS_SETTIMEOFDAY, settimeofday, do_settimeofday()) \
     X(SYS_SETDOMAINNAME, setdomainname, do_setdomainname()) \
     X(SYS_READAHEAD, readahead, do_readahead()) \
     X(SYS_RESTART_SYSCALL, restart_syscall, do_restart_syscall()) \
-    X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime()) \
-    X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime()) \
+    X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime((int)a1, (const void *)a2)) \
+    X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime((int)a1, (void *)a2)) \
     X(SYS_UNSHARE, unshare, do_unshare_stub()) \
     X(SYS_UTIMES, utimes, do_utimes((const char *)a1, (const void *)a2)) \
     X(SYS_FUTIMESAT, futimesat, do_futimesat((int)a1, (const char *)a2, (const void *)a3)) \

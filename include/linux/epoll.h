@@ -11,6 +11,8 @@
 #define EPOLLRDHUP      0x2000
 #define EPOLLET         (1U << 31)
 
+#define EPOLL_CLOEXEC   02000000
+
 #define EPOLL_CTL_ADD   1
 #define EPOLL_CTL_DEL   2
 #define EPOLL_CTL_MOD   3

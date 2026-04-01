@@ -142,12 +142,13 @@ long do_socket(int domain, int type, int protocol) {
 /* ── SYS_CONNECT (42) ────────────────────────────── */
 
 long do_connect(int fd, const void *addr, int addrlen) {
-    /* Check if AF_UNIX */
     process_t *cp = proc_current();
     if (cp) {
         fd_entry_t *fde = fd_get(&cp->fds, fd);
-        if (fde && fde->type == FD_UNIX_SOCK)
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type == FD_UNIX_SOCK)
             return usock_connect(fd, (const struct k_sockaddr_un *)addr, addrlen);
+        if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
     if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
@@ -503,12 +504,13 @@ long socket_close(int fd) {
 /* ── SYS_BIND (49) ───────────────────────────────── */
 
 long do_bind(int fd, const void *addr, int addrlen) {
-    /* Check if AF_UNIX */
     process_t *p = proc_current();
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
-        if (fde && fde->type == FD_UNIX_SOCK)
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type == FD_UNIX_SOCK)
             return usock_bind(fd, (const struct k_sockaddr_un *)addr, addrlen);
+        if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
     if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
@@ -608,8 +610,10 @@ long do_accept(int fd, void *addr, int *addrlen) {
     process_t *p = proc_current();
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
-        if (fde && fde->type == FD_UNIX_SOCK)
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type == FD_UNIX_SOCK)
             return usock_accept4(fd, addr, addrlen, 0);
+        if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
     socket_t *ls = sock_from_fd(fd);

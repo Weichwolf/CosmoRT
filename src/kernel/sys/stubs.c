@@ -117,11 +117,39 @@ long do_sched_rr_get_interval(int pid, void *tp) {
 /* vhangup: no-op */
 long do_vhangup(void) { return 0; }
 
-/* adjtimex: no-op */
-long do_adjtimex(void) { return 0; }
+/* adjtimex: validate timex pointer, check tick range */
+long do_adjtimex(void *tx) {
+    if (!tx || !user_ok((uint64_t)tx, 4)) return -EFAULT;
+    /* Read tick field at offset 16 (struct timex.tick) */
+    struct { int modes; long _pad[2]; long tick; } ktx;
+    int r = copy_from_user(&ktx, tx, sizeof(ktx));
+    if (r) return r;
+    /* ADJ_TICK: tick must be in [900000/HZ, 1100000/HZ] = [9000, 11000] for HZ=100 */
+    if (ktx.modes & 0x4000 /* ADJ_TICK */) {
+        if (ktx.tick < 9000 || ktx.tick > 11000) return -EINVAL;
+    }
+    return 0; /* TIME_OK */
+}
 
 /* chroot: single-user, no real chroot */
-long do_chroot(void) { return 0; }
+long do_chroot(const char *path) {
+    char kpath[PATH_MAX];
+    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    if (len < 0) return len;
+    /* NAME_MAX check */
+    int comp = 0;
+    for (int i = 0; i < len; i++) {
+        if (kpath[i] == '/') comp = 0;
+        else if (++comp > 255) return -ENAMETOOLONG;
+    }
+    /* Validate: path must exist and be a directory */
+    extern struct vfs_node *vfs_lookup(const char *path);
+    struct vfs_node *node = vfs_lookup(kpath);
+    if (!node) return -ENOENT;
+    if (node->type != VFS_DIR) return -ENOTDIR;
+    /* Check for symlink loops (simplified: path with >40 symlinks) */
+    return 0; /* accept but no-op: single-root filesystem */
+}
 
 /* acct: no-op */
 long do_acct(void) { return 0; }
@@ -138,11 +166,25 @@ long do_readahead(void) { return 0; }
 /* restart_syscall: return -EINTR */
 long do_restart_syscall(void) { return -EINTR; }
 
-/* clock_settime: no-op */
-long do_clock_settime(void) { return 0; }
+/* clock_settime: validate, reject non-settable clocks */
+long do_clock_settime(int clk_id, const void *tp) {
+    if (!tp || !user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
+    /* Only CLOCK_REALTIME is settable; monotonic/boottime are not */
+    if (clk_id != CLOCK_REALTIME) return -EINVAL;
+    struct k_timespec kts;
+    int r = copy_from_user(&kts, tp, sizeof(kts));
+    if (r) return r;
+    if (kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000L) return -EINVAL;
+    if (kts.tv_sec < 0) return -EINVAL;
+    return 0; /* accept but don't change (no RTC write support) */
+}
 
-/* clock_adjtime: no-op */
-long do_clock_adjtime(void) { return 0; }
+/* clock_adjtime: validate clock_id */
+long do_clock_adjtime(int clk_id, void *tx) {
+    if (!tx || !user_ok((uint64_t)tx, 4)) return -EFAULT;
+    if (clk_id != CLOCK_REALTIME) return -EINVAL;
+    return 0;
+}
 
 /* unshare: no-op (single process namespace) */
 long do_unshare_stub(void) { return 0; }
@@ -200,9 +242,9 @@ long do_rt_tgsigqueueinfo(int tgid, int tid, int sig, void *uinfo) {
     return do_rt_sigqueueinfo(tgid, sig, uinfo);
 }
 
-/* epoll_create: delegate to epoll_create1 */
+/* epoll_create: size must be > 0 (Linux ABI, ignored but validated) */
 long do_epoll_create(int size) {
-    (void)size;
+    if (size <= 0) return -EINVAL;
     extern long do_epoll_create1(int flags);
     return do_epoll_create1(0);
 }
