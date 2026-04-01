@@ -445,7 +445,7 @@ shebang_retry:
     }
 
     /* ASLR */
-    uint64_t stack_rand = aslr_rand() & 0xFFF000ULL;
+    uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */
     uint64_t mmap_rand  = aslr_rand() & 0xFFFFFFF000ULL;
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     p->mmap_next = USER_MMAP_BASE - mmap_rand;
