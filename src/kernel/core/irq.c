@@ -408,7 +408,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                  * PROT_NONE VMAs must NOT be demand-paged — access = SIGSEGV. */
                 if (!(error & 1) && (vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) {
                     int dp_prot = vma->prot;
-                    int dp_huge = (vma->flags & VMA_HUGEPAGE);
+                    int dp_huge = (vma->flags & VMA_HUGEPAGE) && !(vma->flags & VMA_NOHUGEPAGE);
                     uint64_t vma_start = vma->start;
                     uint64_t vma_end = vma->end;
                     uint64_t dp_file_ino = vma->file_ino;

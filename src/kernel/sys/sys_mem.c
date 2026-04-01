@@ -925,6 +925,31 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
         return 0;
     }
 
+    if (advice == MADV_HUGEPAGE || advice == MADV_NOHUGEPAGE) {
+        /* THP hint: mark/unmark VMAs for transparent huge pages.
+         * MADV_HUGEPAGE: force THP even if VMA < 2MB.
+         * MADV_NOHUGEPAGE: disable THP for this VMA. */
+        uint64_t irqf;
+        spin_lock_irq(&p->lock, &irqf);
+        for (uint64_t va = start; va < end; ) {
+            vma_t *v = vma_find_overlap(p->vma_root, va, end);
+            if (!v) break;
+            if (v->start > va) va = v->start;
+            if (v->flags & MAP_ANONYMOUS) {
+                if (advice == MADV_HUGEPAGE) {
+                    v->flags |= VMA_HUGEPAGE;
+                    v->flags &= ~VMA_NOHUGEPAGE;
+                } else {
+                    v->flags |= VMA_NOHUGEPAGE;
+                    v->flags &= ~VMA_HUGEPAGE;
+                }
+            }
+            va = v->end;
+        }
+        spin_unlock_irq(&p->lock, irqf);
+        return 0;
+    }
+
     /* All other advice: accept but ignore */
     return 0;
 }

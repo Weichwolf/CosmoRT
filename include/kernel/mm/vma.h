@@ -12,8 +12,9 @@
 /* VMA flags (internal, stored in vma_t.flags upper bits) */
 #define VMA_LOCKED    0x100  /* pages pre-faulted, no demand paging */
 #define VMA_SHARED    0x200  /* MAP_SHARED: fork shares physical pages */
-#define VMA_HUGEPAGE  0x400  /* eligible for transparent 2MB huge pages */
-#define VMA_GROWSDOWN 0x800  /* stack: auto-expand downward on page fault */
+#define VMA_HUGEPAGE   0x400  /* eligible for transparent 2MB huge pages */
+#define VMA_NOHUGEPAGE 0x1000 /* explicitly disable THP for this VMA */
+#define VMA_GROWSDOWN  0x800  /* stack: auto-expand downward on page fault */
 
 typedef struct vma {
     uint64_t start;      /* page-aligned start address */
