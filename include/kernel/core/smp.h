@@ -7,6 +7,5 @@
 int smp_num_cores(void);
 int smp_core_running(int core);
 int smp_core_id(void);
-void rt_wake(int core_id);
 
 #endif

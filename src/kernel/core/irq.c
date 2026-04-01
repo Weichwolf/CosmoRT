@@ -751,9 +751,13 @@ static void timer_handler(int vector) {
     /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
-    /* Prioritised I/O polling: net, timers, audio, input, vsync */
-    extern void rt_poll_run(void);
-    rt_poll_run();
+    /* I/O polling: network + timer wheel */
+    extern int net_rx_poll(int max_work);
+    extern int net_tx_poll(int max_work);
+    extern void timer_wheel_tick(void);
+    net_rx_poll(64);
+    net_tx_poll(64);
+    timer_wheel_tick();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

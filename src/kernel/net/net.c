@@ -4,8 +4,6 @@
 
 #include "net/net.h"
 #include "net/net_util.h"
-#include "core/rt.h"
-#include "core/rt_poll.h"
 #include "hw/serial.h"
 
 /* ── NIC Registration ──────────────────────────────── */
@@ -36,7 +34,6 @@ pkt_queue_t q_udp_dns  = PKT_QUEUE_INIT;
 pkt_queue_t q_arp      = PKT_QUEUE_INIT;
 pkt_queue_t q_icmp     = PKT_QUEUE_INIT;
 
-/* Thread blocked on q_tcp (accept/connect handshake), or NULL */
 struct thread *q_tcp_wait_thread;
 
 void q_push(pkt_queue_t *q, const uint8_t *pkt, int len) {
@@ -68,28 +65,10 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
     return l;
 }
 
-/* ── TX Ring (Compute→RT) ──────────────────────────── */
-
-static uint8_t tx_ring_buf[NET_TX_RING_SIZE]
-    __attribute__((aligned(64)));
-static rt_channel_t tx_ring;
-static int tx_ring_ready;
-
-rt_channel_t *net_tx_channel(void) {
-    return tx_ring_ready ? &tx_ring : 0;
-}
-
 /* ── Init ──────────────────────────────────────────── */
 
 int net_init(void) {
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
-    rt_channel_init(&tx_ring, tx_ring_buf, NET_TX_RING_SIZE);
-    tx_ring_ready = 1;
-
-    extern int net_rx_poll(int max_work);
-    extern int net_tx_poll(int max_work);
-    rt_poll_register(RT_PRIO_NET_RX, net_rx_poll, 64);
-    rt_poll_register(RT_PRIO_NET_TX, net_tx_poll, 64);
     return 0;
 }

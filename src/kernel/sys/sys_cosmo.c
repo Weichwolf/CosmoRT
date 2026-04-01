@@ -2,7 +2,6 @@
  * Separate dispatch from Linux syscalls for clean jump-table generation. */
 
 #include "internal.h"
-#include "core/rt.h"
 
 #define HW_CAP_CHECK() do { \
     process_t *_p = proc_current(); \
@@ -75,10 +74,9 @@ long do_cosmo_kexec(long a1, long a2) {
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     switch (a1) {
-    case 2: rt_wake((int)a2); return 0;
     case 3: {
-        extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
-        return (long)rt_timer_request((uint8_t)a2, (void *)a3, (uint32_t)a4);
+        extern int timer_wheel_add(uint8_t action, void *ctx, uint32_t timeout_ms);
+        return (long)timer_wheel_add((uint8_t)a2, (void *)a3, (uint32_t)a4);
     }
     case 4: {
         extern int timer_wheel_cancel(void *ctx);
@@ -87,18 +85,6 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 5: {
         extern int timer_wheel_active_count(void);
         return (long)timer_wheel_active_count();
-    }
-    case 6: {
-        extern int rt_poll_test_install(void);
-        return (long)rt_poll_test_install();
-    }
-    case 7: {
-        extern int rt_poll_test_restore(void);
-        return (long)rt_poll_test_restore();
-    }
-    case 8: {
-        extern int rt_poll_test_query(int sub, int prio);
-        return (long)rt_poll_test_query((int)a2, (int)a3);
     }
     default: return -EINVAL;
     }

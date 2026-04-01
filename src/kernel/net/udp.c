@@ -9,7 +9,6 @@
 #include "hw/serial.h"
 #include "core/timer.h"
 #include "core/event_queue.h"
-#include "core/rt.h"
 #include "mm/slab.h"
 
 /* ── Slab Pool ───────────────────────────────────────── */

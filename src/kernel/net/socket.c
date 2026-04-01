@@ -17,7 +17,6 @@
 
 extern long send_sigpipe(void);
 #include "arch/arch.h"
-#include "core/rt.h"
 #include "core/timer_wheel.h"
 
 /* sock_block_thread eliminated — all blocking uses event_wait now */
@@ -752,8 +751,8 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
                 s->tcp.keepalive_probes = 0;
                 /* Schedule first keepalive probe via timer wheel */
                 if (s->tcp.state == TCP_ESTABLISHED) {
-                    extern int rt_timer_request(uint8_t action, void *ctx, uint32_t timeout_ms);
-                    rt_timer_request(RT_TIMER_TCP_KEEPALIVE, &s->tcp,
+                    extern int timer_wheel_add(uint8_t action, void *ctx, uint32_t timeout_ms);
+                    timer_wheel_add(RT_TIMER_TCP_KEEPALIVE, &s->tcp,
                                      NET_TCP_KEEPALIVE_INTERVAL_MS);
                     extern uint64_t timer_ms(void);
                     s->tcp.keepalive_next = timer_ms() + NET_TCP_KEEPALIVE_INTERVAL_MS;

@@ -14,7 +14,6 @@
 #include "proc/process.h"
 #include "core/percpu.h"
 #include "core/timer.h"
-#include "core/rt.h"
 #include "arch/arch.h"
 #include "spinlock.h"
 
@@ -56,6 +55,7 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     /* Wake target — sched_wake is atomic CAS (BLOCKED->RUNNABLE).
      * If target isn't blocked yet, this is a no-op. The event is
      * already in the queue, so next event_wait will find it. */
+    extern void sched_wake(struct thread *t);
     sched_wake(target);
 }
 

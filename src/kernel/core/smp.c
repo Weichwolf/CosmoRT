@@ -1,5 +1,5 @@
 /* SMP — stub for single-core phase.
- * Provides smp_num_cores(), smp_core_id(), rt_wake() as safe no-ops.
+ * Provides smp_num_cores(), smp_core_id() as safe stubs.
  */
 
 #include "config.h"
@@ -19,6 +19,3 @@ int smp_core_id(void) {
     return (int)((*lapic_id >> 24) & 0xFF);
 }
 
-void rt_wake(int core_id) {
-    (void)core_id; /* single-core: no other cores to wake */
-}

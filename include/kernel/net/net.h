@@ -30,10 +30,6 @@ const nic_driver_t *net_nic_get(void);
 /* Polling — call from idle loop and timer interrupt */
 void net_poll(void);
 
-/* TX ring channel (Compute→RT). Returns NULL if no NIC registered. */
-#include "core/rt.h"
-rt_channel_t *net_tx_channel(void);
-
 /* Raw send — compat wrapper, prefer ip_send_raw() */
 void net_send_raw(const uint8_t *data, uint16_t len);
 

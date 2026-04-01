@@ -17,7 +17,6 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/tss.o \
             $(BUILD)/kernel/core/percpu.o \
             $(BUILD)/kernel/core/timer_wheel.o \
-            $(BUILD)/kernel/core/rt_poll.o \
             $(BUILD)/kernel/core/event_queue.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \

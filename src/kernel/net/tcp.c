@@ -7,7 +7,6 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
-#include "core/rt.h"
 #include "mm/page_alloc.h"
 #include "core/event_queue.h"
 
