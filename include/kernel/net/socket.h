@@ -75,7 +75,7 @@ long do_socket(int domain, int type, int protocol);
 long do_connect(int fd, const void *addr, int addrlen);
 long do_bind(int fd, const void *addr, int addrlen);
 long do_listen(int fd, int backlog);
-long do_accept(int fd, void *addr, int *addrlen);
+long do_accept4(int fd, void *addr, int *addrlen, int acc_flags);
 long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen);
 long do_recvfrom(int fd, void *buf, long len, int flags,

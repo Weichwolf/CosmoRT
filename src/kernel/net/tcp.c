@@ -881,13 +881,21 @@ void tcp_input(const uint8_t *pkt, int len) {
 int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     (void)timeout_ms;
     if (c->state == TCP_SYN_RCVD) {
+        /* Scan q_tcp for ACK matching our connection */
         uint8_t pkt[Q_PKT];
-        int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) return -11;
-        if (get16(pkt + 36) != c->local_port ||
-            get16(pkt + 34) != c->remote_port) {
+        int len = 0, found = 0, qn = q_count(&q_tcp);
+        for (int qi = 0; qi < qn; qi++) {
+            len = q_pop(&q_tcp, pkt, sizeof(pkt));
+            if (len >= 54 &&
+                get16(pkt + 36) == c->local_port &&
+                get16(pkt + 34) == c->remote_port) {
+                found = 1;
+                break;
+            }
             q_push(&q_tcp, pkt, len);
-            return -11;
+        }
+        if (!found) return -11;
+        if (0) { /* dead code — replaced by scan above */
         }
         uint8_t fl = pkt[47];
         if (fl & 0x04) { c->state = TCP_CLOSED; return -1; }
@@ -904,13 +912,24 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
         return -11;
     }
 
+    /* Scan q_tcp for a SYN matching our port (skip others) */
     uint8_t pkt[Q_PKT];
-    int len = q_pop(&q_tcp, pkt, sizeof(pkt));
-    if (len < 54) return -11;
-    uint16_t dport = get16(pkt + 36);
-    if (dport != local_port) { q_push(&q_tcp, pkt, len); return -11; }
+    int len = 0;
+    int qn = q_count(&q_tcp);
+    int found = 0;
+    for (int qi = 0; qi < qn; qi++) {
+        len = q_pop(&q_tcp, pkt, sizeof(pkt));
+        if (len < 54) { q_push(&q_tcp, pkt, len); continue; }
+        uint16_t dport = get16(pkt + 36);
+        uint8_t fl = pkt[47];
+        if (dport == local_port && (fl & 0x02) && !(fl & 0x10)) {
+            found = 1;
+            break;
+        }
+        q_push(&q_tcp, pkt, len); /* not ours, put back */
+    }
+    if (!found) return -11;
     uint8_t fl = pkt[47];
-    if (!((fl & 0x02) && !(fl & 0x10))) { q_push(&q_tcp, pkt, len); return -11; }
 
     mzero(c, sizeof(*c));
     rxring_init(&c->rx);

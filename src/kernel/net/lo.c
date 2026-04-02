@@ -21,9 +21,10 @@ static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
 
     uint8_t proto = buf[23];
     if (proto == 6) {
-        q_push(&q_tcp, buf, len);
-        struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) sched_wake(wt);
+        /* Try tcp_input first for established connections.
+         * tcp_input pushes unmatched packets (SYNs) to q_tcp internally.
+         * This handles SYN-ACK/ACK/data on loopback correctly. */
+        tcp_input(buf, len);
     } else if (proto == 1) {
         q_push(&q_icmp, buf, len);
     } else if (proto == 17 && len >= 42) {

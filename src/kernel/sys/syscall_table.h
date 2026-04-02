@@ -145,7 +145,8 @@
     X(SYS_CONNECT, connect, do_connect((int)a1, (const void *)a2, (int)a3)) \
     X(SYS_BIND, bind, do_bind((int)a1, (const void *)a2, (int)a3)) \
     X(SYS_LISTEN, listen, do_listen((int)a1, (int)a2)) \
-    X(SYS_ACCEPT, accept, do_accept((int)a1, (void *)a2, (int *)a3)) \
+    X(SYS_ACCEPT, accept, do_accept4((int)a1, (void *)a2, (int *)a3, 0)) \
+    X(SYS_ACCEPT4, accept4, do_accept4((int)a1, (void *)a2, (int *)a3, (int)a4)) \
     X(SYS_SENDTO, sendto, do_sendto((int)a1, (const void *)a2, a3, (int)a4, (const void *)a5, (int)a6)) \
     X(SYS_RECVFROM, recvfrom, do_recvfrom((int)a1, (void *)a2, a3, (int)a4, (void *)a5, (int *)a6)) \
     X(SYS_SETSOCKOPT, setsockopt, do_setsockopt((int)a1, (int)a2, (int)a3, (const void *)a4, (int)a5)) \

@@ -16,7 +16,9 @@ void ip_build_header_tos(uint8_t *pkt, const uint8_t *dst_mac,
     pkt[14] = 0x45; pkt[15] = tos; put16(pkt + 16, 20 + plen);
     put16(pkt + 18, 0); put16(pkt + 20, 0x4000);
     pkt[22] = 64; pkt[23] = proto; pkt[24] = 0; pkt[25] = 0;
-    mcpy(pkt + 26, net_my_ip, 4); mcpy(pkt + 30, dst_ip, 4);
+    /* Loopback: src_ip = dst_ip (both 127.x.x.x), not net_my_ip */
+    const uint8_t *src_ip = (dst_ip[0] == 127) ? dst_ip : net_my_ip;
+    mcpy(pkt + 26, src_ip, 4); mcpy(pkt + 30, dst_ip, 4);
     uint16_t ic = ip_cksum(pkt + 14, 20);
     pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
 }

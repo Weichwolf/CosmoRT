@@ -199,9 +199,10 @@ long do_connect(int fd, const void *addr, int addrlen) {
         for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
             ((uint8_t *)&s->tcp)[i] = 0;
 
-    /* No gateway configured → network unreachable */
+    /* No gateway configured and not loopback → network unreachable */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
-        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0 &&
+        dst_ip[0] != 127)
         return -ENETUNREACH;
 
     /* Loopback (127.x.x.x): ip_send_raw() intercepts and injects into q_tcp.
@@ -606,7 +607,7 @@ long do_listen(int fd, int backlog) {
 
 /* ── SYS_ACCEPT (43) / SYS_ACCEPT4 (288) ─────────── */
 
-long do_accept(int fd, void *addr, int *addrlen) {
+long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     process_t *p = proc_current();
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
@@ -659,6 +660,13 @@ long do_accept(int fd, void *addr, int *addrlen) {
             int len = (int)sizeof(struct k_sockaddr_in);
             copy_to_user(addrlen, &len, sizeof(int));
         }
+        if (acc_flags) {
+            fd_entry_t *nfde = fd_get(&p->fds, newfd);
+            if (nfde) {
+                if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
+                if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
+            }
+        }
         return newfd;
     }
     spin_unlock_irq(&sock_lock, flags);
@@ -669,10 +677,14 @@ long do_accept(int fd, void *addr, int *addrlen) {
       if (fde && (fde->flags & O_NONBLOCK)) nonblock = 1; }
     if (nonblock) return -EAGAIN;
 
-    /* No gateway → can only accept on loopback (not wired yet) → EAGAIN */
+    /* No gateway and not loopback → can't accept from WAN → EAGAIN */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
-        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
-        return -EAGAIN;
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0) {
+        uint32_t lip = ls->local_ip;
+        uint8_t lip0 = (uint8_t)lip;
+        if (lip0 != 127 && lip != 0) /* not loopback and not INADDR_ANY */
+            return -EAGAIN;
+    }
 
     /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state. */
     uint16_t host_port = bswap16(ls->local_port);
@@ -736,6 +748,15 @@ long do_accept(int fd, void *addr, int *addrlen) {
         copy_to_user(addr, &sa, sizeof(sa));
         int len = (int)sizeof(struct k_sockaddr_in);
         copy_to_user(addrlen, &len, sizeof(int));
+    }
+
+    /* accept4 flags: SOCK_NONBLOCK (0x800) → O_NONBLOCK, SOCK_CLOEXEC (0x80000) → O_CLOEXEC */
+    if (acc_flags) {
+        fd_entry_t *nfde = fd_get(&p->fds, newfd);
+        if (nfde) {
+            if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
+            if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
+        }
     }
 
     return newfd;
