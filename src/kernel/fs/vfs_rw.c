@@ -4,8 +4,8 @@
 
 /* ── File growth ─────────────────────────────────── */
 
-int grow_file(struct vfs_node *node, size_t needed) {
-    if (needed <= node->capacity) return 0;
+int grow_file(struct vfs_inode *inode, size_t needed) {
+    if (needed <= inode->capacity) return 0;
 
     /* Round up to page boundary */
     size_t new_cap = (needed + 4095) & ~4095ULL;
@@ -15,17 +15,17 @@ int grow_file(struct vfs_node *node, size_t needed) {
     uint8_t *new_data = (uint8_t *)pages_alloc(new_pages);
     if (!new_data) return -ENOMEM;
 
-    if (node->data && node->size > 0) {
-        kmemcpy(new_data, node->data, node->size);
+    if (inode->data && inode->size > 0) {
+        kmemcpy(new_data, inode->data, inode->size);
     }
 
-    if (node->data) {
-        int old_pages = (int)((node->capacity + 4095) / 4096);
-        if (old_pages > 0) pages_free(node->data, old_pages);
+    if (inode->data) {
+        int old_pages = (int)((inode->capacity + 4095) / 4096);
+        if (old_pages > 0) pages_free(inode->data, old_pages);
     }
 
-    node->data = new_data;
-    node->capacity = new_cap;
+    inode->data = new_data;
+    inode->capacity = new_cap;
     return 0;
 }
 
@@ -63,23 +63,23 @@ long vfs_read(int fd, void *buf, size_t count) {
     }
 
     /* ramfs */
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
-    if (node->type != VFS_FILE) return -EISDIR;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
 
-    if (f->offset >= node->size) return 0;
+    if (f->offset >= inode->size) return 0;
 
-    size_t avail = node->size - (size_t)f->offset;
+    size_t avail = inode->size - (size_t)f->offset;
     if (count > avail) count = avail;
 
     /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
-    if (node->data) {
+    if (inode->data) {
         uint8_t kbuf[4096];
         size_t done = 0;
         while (done < count) {
             size_t chunk = count - done;
             if (chunk > 4096) chunk = 4096;
-            kmemcpy(kbuf, node->data + f->offset + done, chunk);
+            kmemcpy(kbuf, inode->data + f->offset + done, chunk);
             kmemcpy((uint8_t *)buf + done, kbuf, chunk);
             done += chunk;
         }
@@ -100,17 +100,17 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
     }
 
     /* ramfs */
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
-    if (node->type != VFS_FILE) return -EISDIR;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
 
-    if (offset >= node->size) return 0;
+    if (offset >= inode->size) return 0;
 
-    size_t avail = node->size - (size_t)offset;
+    size_t avail = inode->size - (size_t)offset;
     if (count > avail) count = avail;
 
-    if (node->data)
-        kmemcpy(buf, node->data + offset, count);
+    if (inode->data)
+        kmemcpy(buf, inode->data + offset, count);
 
     return (long)count;
 }
@@ -138,13 +138,13 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
     }
 
     /* ramfs */
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
-    if (node->type != VFS_FILE) return -EISDIR;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
 
     size_t end = (size_t)offset + count;
-    if (end > node->capacity) {
-        if (grow_file(node, end) < 0) return -ENOMEM;
+    if (end > inode->capacity) {
+        if (grow_file(inode, end) < 0) return -ENOMEM;
     }
 
     uint8_t kbuf[4096];
@@ -153,13 +153,14 @@ long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offs
         size_t chunk = count - done;
         if (chunk > 4096) chunk = 4096;
         kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
-        kmemcpy(node->data + offset + done, kbuf, chunk);
+        kmemcpy(inode->data + offset + done, kbuf, chunk);
         done += chunk;
     }
-    if (end > node->size) node->size = end;
-    { extern uint32_t timer_epoch_sec(void); node->mtime = timer_epoch_sec(); }
+    if (end > inode->size) inode->size = end;
+    { extern uint32_t timer_epoch_sec(void); inode->mtime = timer_epoch_sec(); }
 
-    vfs_notify_modify(node);
+    if (f->path[0])
+        inotify_event(f->path, IN_MODIFY);
     return (long)count;
 }
 
@@ -205,16 +206,16 @@ long vfs_write(int fd, const void *buf, size_t count) {
     }
 
     /* ramfs */
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
-    if (node->type != VFS_FILE) return -EISDIR;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
 
     if (f->flags & O_APPEND)
-        f->offset = node->size;
+        f->offset = inode->size;
 
     size_t end = (size_t)f->offset + count;
-    if (end > node->capacity) {
-        if (grow_file(node, end) < 0) return -ENOMEM;
+    if (end > inode->capacity) {
+        if (grow_file(inode, end) < 0) return -ENOMEM;
     }
 
     /* TOCTOU fix: bounce through kernel buffer in 4KB chunks */
@@ -225,27 +226,28 @@ long vfs_write(int fd, const void *buf, size_t count) {
             size_t chunk = count - done;
             if (chunk > 4096) chunk = 4096;
             kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
-            kmemcpy(node->data + f->offset + done, kbuf, chunk);
+            kmemcpy(inode->data + f->offset + done, kbuf, chunk);
             done += chunk;
         }
     }
     f->offset = end;
-    if (end > node->size) node->size = end;
+    if (end > inode->size) inode->size = end;
 
-    vfs_notify_modify(node);
+    if (f->path[0])
+        inotify_event(f->path, IN_MODIFY);
     /* Invalidate page cache — demand-paged readers must see new data */
     extern void page_cache_invalidate_ino(uint64_t ino);
-    page_cache_invalidate_ino(node->ino);
+    page_cache_invalidate_ino(inode->ino);
     return (long)count;
 }
 
 /* ── Read by inode (for demand paging in page fault handler) ── */
 
-static struct vfs_node *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) {
-    if (!node) return 0;
-    if (node->ino == ino) return node;
-    for (struct vfs_node *c = node->children; c; c = c->next) {
-        struct vfs_node *r = ramfs_find_by_ino(c, ino);
+static struct vfs_inode *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) {
+    if (!node || !node->inode) return 0;
+    if (node->inode->ino == ino) return node->inode;
+    for (struct vfs_node *c = node->inode->children; c; c = c->next) {
+        struct vfs_inode *r = ramfs_find_by_ino(c, ino);
         if (r) return r;
     }
     return 0;
@@ -255,15 +257,15 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
     if (backend == VFS_BACKEND_EXT2) {
         return (long)ext2_read((uint32_t)ino, buf, offset, len);
     }
-    /* ramfs: find node by inode, read from its data buffer */
+    /* ramfs: find inode, read from its data buffer */
     extern struct vfs_node *vfs_root_node;
-    struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
-    if (!node || node->type != VFS_FILE) return -ENOENT;
-    if (offset >= node->size) return 0;
-    size_t avail = node->size - offset;
+    struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
+    if (!inode || inode->type != VFS_FILE) return -ENOENT;
+    if (offset >= inode->size) return 0;
+    size_t avail = inode->size - offset;
     if (len > avail) len = avail;
-    if (node->data)
-        kmemcpy(buf, node->data + offset, len);
+    if (inode->data)
+        kmemcpy(buf, inode->data + offset, len);
     return (long)len;
 }
 
@@ -273,17 +275,17 @@ long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset
     if (backend == VFS_BACKEND_EXT2) {
         return (long)ext2_write((uint32_t)ino, buf, offset, len);
     }
-    /* ramfs: find node by inode, write to its data buffer */
+    /* ramfs: find inode, write to its data buffer */
     extern struct vfs_node *vfs_root_node;
-    struct vfs_node *node = ramfs_find_by_ino(vfs_root_node, ino);
-    if (!node || node->type != VFS_FILE) return -ENOENT;
+    struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
+    if (!inode || inode->type != VFS_FILE) return -ENOENT;
     size_t end = offset + len;
-    if (end > node->capacity) {
-        if (grow_file(node, end) < 0) return -ENOMEM;
+    if (end > inode->capacity) {
+        if (grow_file(inode, end) < 0) return -ENOMEM;
     }
-    if (node->data)
-        kmemcpy(node->data + offset, buf, len);
-    if (end > node->size) node->size = end;
+    if (inode->data)
+        kmemcpy(inode->data + offset, buf, len);
+    if (end > inode->size) inode->size = end;
     return (long)len;
 }
 
@@ -310,11 +312,11 @@ long vfs_lseek(int fd, long offset, int whence) {
         default: return -EINVAL;
         }
     } else {
-        if (!f->node) return -EBADF;
+        if (!f->inode) return -EBADF;
         switch (whence) {
         case SEEK_SET: new_off = offset; break;
         case SEEK_CUR: new_off = (long)f->offset + offset; break;
-        case SEEK_END: new_off = (long)f->node->size + offset; break;
+        case SEEK_END: new_off = (long)f->inode->size + offset; break;
         default: return -EINVAL;
         }
     }

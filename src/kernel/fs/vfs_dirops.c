@@ -38,9 +38,9 @@ int vfs_mkdir(const char *path) {
     return 0;
 }
 
-/* Remove child from parent's linked list */
+/* Remove child from parent's children list (on inode) */
 int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
-    struct vfs_node **pp = &parent->children;
+    struct vfs_node **pp = &parent->inode->children;
     while (*pp) {
         if (*pp == child) {
             *pp = child->next;
@@ -85,11 +85,12 @@ int vfs_rmdir(const char *path) {
 
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
-    if (node->type != VFS_DIR) return -ENOTDIR;
-    if (node->children) return -ENOTEMPTY;
+    if (node->inode->type != VFS_DIR) return -ENOTDIR;
+    if (node->inode->children) return -ENOTEMPTY;
     if (node == vfs_root_node) return -EINVAL;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
+    inode_decref(node->inode);
     slab_free(&node_slab, node);
     return 0;
 }
@@ -108,12 +109,10 @@ int vfs_unlink(const char *path) {
         int rc = ext2_dir_remove(parent_ino, basename);
         if (rc == 0) {
             if (ip.i_links_count > 0) ip.i_links_count--;
-            if (ip.i_links_count == 0) {
-                ext2_inode_write(child_ino, &ip);
+            ext2_inode_write(child_ino, &ip);
+            if (ip.i_links_count == 0 && ext2_open_count(child_ino) == 0) {
                 ext2_truncate(child_ino, 0);
                 ext2_inode_free(child_ino);
-            } else {
-                ext2_inode_write(child_ino, &ip);
             }
             inotify_event(path, IN_DELETE);
         }
@@ -124,13 +123,10 @@ int vfs_unlink(const char *path) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    if (node->type == VFS_DIR) return -EISDIR;
+    if (node->inode->type == VFS_DIR) return -EISDIR;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
-    if (node->data && node->capacity > 0) {
-        int npages = (int)((node->capacity + 4095) / 4096);
-        if (npages > 0) pages_free(node->data, npages);
-    }
+    inode_decref(node->inode);
     slab_free(&node_slab, node);
     inotify_event(path, IN_DELETE);
     return 0;
@@ -163,25 +159,22 @@ int vfs_rename(const char *oldpath, const char *newpath) {
 
     struct vfs_node *dst = vfs_lookup(newpath);
     if (dst) {
-        if (dst->type == VFS_DIR && dst->children) return -ENOTEMPTY;
+        if (dst->inode->type == VFS_DIR && dst->inode->children) return -ENOTEMPTY;
         if (dst->parent) unlink_child(dst->parent, dst);
-        if (dst->type == VFS_FILE && dst->data && dst->capacity > 0) {
-            int np = (int)((dst->capacity + 4095) / 4096);
-            if (np > 0) pages_free(dst->data, np);
-        }
+        inode_decref(dst->inode);
         slab_free(&node_slab, dst);
     }
 
     const char *basename;
     struct vfs_node *new_parent = lookup_parent(newpath, &basename);
-    if (!new_parent || new_parent->type != VFS_DIR) return -ENOENT;
+    if (!new_parent || new_parent->inode->type != VFS_DIR) return -ENOENT;
 
     if (node->parent) unlink_child(node->parent, node);
 
     kstrncpy(node->name, basename, 256);
     node->parent = new_parent;
-    node->next = new_parent->children;
-    new_parent->children = node;
+    node->next = new_parent->inode->children;
+    new_parent->inode->children = node;
 
     inotify_event(oldpath, IN_MOVED_FROM);
     inotify_event(newpath, IN_MOVED_TO);
@@ -191,53 +184,26 @@ int vfs_rename(const char *oldpath, const char *newpath) {
 /* ── Hard link ───────────────────────────────────── */
 
 int vfs_link(const char *oldpath, const char *newpath) {
-    /* ramfs hard links: create new directory entry pointing to same node */
     struct vfs_node *old_node = vfs_lookup(oldpath);
     if (!old_node) return -ENOENT;
-    if (old_node->type == VFS_DIR) return -EPERM; /* no hardlinks to directories */
+    if (old_node->inode->type == VFS_DIR) return -EPERM;
 
-    /* Check new path doesn't exist */
     struct vfs_node *existing = vfs_lookup(newpath);
     if (existing) return -EEXIST;
 
-    /* Find parent directory and new name */
-    char parent_path[256], new_name[256];
-    int plen = kstrlen(newpath);
-    /* Find last '/' */
-    int slash = plen - 1;
-    while (slash > 0 && newpath[slash] != '/') slash--;
-    if (slash <= 0) {
-        parent_path[0] = '/'; parent_path[1] = 0;
-    } else {
-        for (int i = 0; i < slash && i < 255; i++) parent_path[i] = newpath[i];
-        parent_path[slash] = 0;
-    }
-    int nstart = slash + 1;
-    int nlen = plen - nstart;
-    if (nlen <= 0 || nlen >= 256) return -EINVAL;
-    for (int i = 0; i < nlen; i++) new_name[i] = newpath[nstart + i];
-    new_name[nlen] = 0;
+    const char *new_name;
+    struct vfs_node *parent = lookup_parent(newpath, &new_name);
+    if (!parent || parent->inode->type != VFS_DIR) return -ENOENT;
 
-    struct vfs_node *parent = vfs_lookup(parent_path);
-    if (!parent || parent->type != VFS_DIR) return -ENOENT;
-
-    /* Create a new node that shares data with the old node */
-    extern struct vfs_node *node_alloc(const char *name, int type);
-    struct vfs_node *link = node_alloc(new_name, old_node->type);
+    /* Allocate new dentry, share the same inode */
+    struct vfs_node *link = (struct vfs_node *)slab_alloc(&node_slab);
     if (!link) return -ENOMEM;
-    link->data = old_node->data;
-    link->size = old_node->size;
-    link->capacity = old_node->capacity;
-    link->ino = old_node->ino; /* same inode = hard link */
-    link->mode = old_node->mode;
-    link->uid = old_node->uid;
-    link->gid = old_node->gid;
-    link->atime = old_node->atime;
-    link->mtime = old_node->mtime;
-    link->ctime = old_node->ctime;
+    kstrncpy(link->name, new_name, 256);
+    link->inode = old_node->inode;
+    __sync_fetch_and_add(&old_node->inode->refcount, 1);
     link->parent = parent;
-    link->next = parent->children;
-    parent->children = link;
+    link->next = parent->inode->children;
+    parent->inode->children = link;
 
     inotify_event(oldpath, IN_CREATE);
     return 0;

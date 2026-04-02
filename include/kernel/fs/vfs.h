@@ -5,7 +5,10 @@
  *   VFS_BACKEND_EXT2 — persistent ext2 on virtio-blk
  *
  * Path routing: ext2 is root "/" when mounted. /dev/shm always ramfs.
- * Slab-allocated vfs_node pool, linked-list directories (ramfs only).
+ *
+ * Dentry/Inode separation (like Linux):
+ *   vfs_inode — data, metadata, refcount. Shared by hard links.
+ *   vfs_node  — dentry: name, parent/sibling tree links, inode pointer.
  */
 #ifndef VFS_H
 #define VFS_H
@@ -33,9 +36,8 @@
 #define S_IROTH  0004
 #define S_IWOTH  0002
 
-/* Filesystem node (inode equivalent) */
-struct vfs_node {
-    char name[256];
+/* Inode — data + metadata. Shared by hard links. Refcounted. */
+struct vfs_inode {
     int type;               /* VFS_FILE, VFS_DIR, VFS_SYMLINK */
     uint8_t *data;          /* file content (page-allocated) */
     size_t size;            /* current file size */
@@ -45,9 +47,16 @@ struct vfs_node {
     uint32_t uid, gid;      /* owner (single-user: always 0) */
     uint32_t atime, mtime, ctime; /* Unix epoch seconds */
     char symlink_target[256]; /* symlink target (VFS_SYMLINK only) */
-    struct vfs_node *children;  /* linked list (for directories) */
+    int refcount;           /* nlink + open files. Free at 0. */
+    struct vfs_node *children; /* directory entries (dirs only) */
+};
+
+/* Dentry — directory entry. Name + tree links + inode pointer. */
+struct vfs_node {
+    char name[256];
+    struct vfs_inode *inode;    /* shared with hard links */
     struct vfs_node *next;      /* sibling link */
-    struct vfs_node *parent;    /* parent directory */
+    struct vfs_node *parent;    /* parent dentry */
 };
 
 /* Filesystem backend */
@@ -61,7 +70,7 @@ struct vfs_file {
     int refcount;           /* reference count (fork shares vfs_file) */
     int backend;            /* VFS_BACKEND_RAM or VFS_BACKEND_EXT2 */
     uint64_t offset;        /* current read/write position */
-    struct vfs_node *node;  /* ramfs node (NULL for ext2) */
+    struct vfs_inode *inode; /* ramfs inode (NULL for ext2) */
     uint64_t disk_ino;      /* ext2 inode number (0 for ramfs) */
     uint64_t disk_size;     /* cached size for ext2 files */
     uint64_t disk_dir_ino;  /* parent dir inode for ext2 getdents */

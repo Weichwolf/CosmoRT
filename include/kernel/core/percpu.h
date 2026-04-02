@@ -24,6 +24,7 @@ typedef struct percpu {
     struct percpu *self;            /* offset 40: self-pointer for GS-relative access */
     volatile int   need_resched;    /* set by reschedule IPI, checked by sched_loop */
     int            in_preempt;      /* 1 inside sched_preempt signal delivery */
+    struct thread *switch_prev;     /* prev thread across context_switch (finish_switch enqueues) */
 } percpu_t;
 
 extern percpu_t percpu_data[SMP_MAX_CORES];

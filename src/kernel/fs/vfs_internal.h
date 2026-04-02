@@ -20,6 +20,7 @@
 /* ── Slab pools (defined in vfs.c) ── */
 
 extern slab_t node_slab;
+extern slab_t inode_slab;
 extern slab_t file_slab;
 extern struct vfs_node *vfs_root_node;
 extern uint64_t vfs_next_ino;
@@ -41,8 +42,12 @@ char *vfs_get_cwd(void);
 /* ── Node/file allocation (defined in vfs.c) ── */
 
 struct vfs_node *node_alloc(const char *name, int type);
+void node_destroy(struct vfs_node *node);
+void inode_destroy(struct vfs_inode *ino);
+void inode_decref(struct vfs_inode *ino);
 struct vfs_file *file_alloc(void);
 void file_free(struct vfs_file *f);
+int ext2_open_count(uint32_t ino);
 
 /* ── Path operations (defined in vfs_lookup.c) ── */
 
@@ -52,7 +57,7 @@ struct vfs_node *ensure_dirs(const char *path);
 
 /* ── File growth (defined in vfs_rw.c) ── */
 
-int grow_file(struct vfs_node *node, size_t needed);
+int grow_file(struct vfs_inode *inode, size_t needed);
 
 /* ── Inotify helper (defined in vfs.c) ── */
 
@@ -64,7 +69,7 @@ int unlink_child(struct vfs_node *parent, struct vfs_node *child);
 
 /* ── Stat helpers (defined in vfs_ioctls.c) ── */
 
-void fill_stat(struct vfs_node *node, struct k_stat *buf);
+void fill_stat(struct vfs_inode *inode, struct k_stat *buf);
 void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf);
 
 /* ── Device file IDs ── */

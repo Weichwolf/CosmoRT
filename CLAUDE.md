@@ -452,6 +452,9 @@ smp_init(): PSCI CPU_ON statt trampoline unter 1MB
 
 ## Build
 
+WICHTIG: Immer `make` VOR `make test-hw/alpine-test/qemu-alpine` ausfuehren.
+Makefile trackt keine Header-Dependencies — nach Struct-Aenderungen sonst stale .o Files.
+
 ```sh
 make                    # Kernel → build/BOOTX64.EFI
 make test-hw            # ktest Unit-Tests in QEMU (eigenes ESP, eigenes init)
@@ -472,8 +475,8 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Stack-Ownership: Ein Thread, ein Kernel-Stack, exklusiv.             │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ context_switch(prev, next): ein Mechanismus, symmetrisch, atomar.    │ Strenger   │ Linux: asymmetrisch (ret_from_fork). CosmoRT:        │
-  │                                                                      │            │ kein Legacy, daher ein symmetrischer Pfad.            │
+  │ context_switch(prev, next): ein Mechanismus, ein Callsite, atomar.   │ Wie Linux  │ ret_from_fork als Resume-Target fuer neue Threads     │
+  │                                                                      │            │ ist inherente fork()-Asymmetrie, kein Legacy.         │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Atomare Transitions: State-Change und Switch in einer Operation.     │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
@@ -482,7 +485,7 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
   │ Ein Pfad pro Konzept: fork/vfork/clone → eine Implementierung.       │ Strenger   │ Linux: 4 Entry-Points → kernel_clone(). CosmoRT:     │
   │                                                                      │            │ kein Legacy, eine Funktion mit Flags.                 │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Bounded Execution: Jeder Kernel-Pfad terminiert in endlicher Zeit.   │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
+  │ Bounded Execution: Core-Pfade bounded, I/O timeout-guarded.          │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.           │
   │                                                                      │            │ Linux: WARN_ON + Recovery.                            │

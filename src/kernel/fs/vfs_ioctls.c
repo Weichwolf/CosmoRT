@@ -5,28 +5,28 @@
 
 /* ── Stat helpers ────────────────────────────────── */
 
-void fill_stat(struct vfs_node *node, struct k_stat *buf) {
+void fill_stat(struct vfs_inode *inode, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
-    buf->st_ino = node->ino;
+    buf->st_ino = inode->ino;
     buf->st_nlink = 1;
-    buf->st_size = (int64_t)node->size;
+    buf->st_size = (int64_t)inode->size;
     buf->st_blksize = 4096;
-    buf->st_blocks = (int64_t)((node->size + 511) / 512);
-    buf->st_uid = node->uid;
-    buf->st_gid = node->gid;
+    buf->st_blocks = (int64_t)((inode->size + 511) / 512);
+    buf->st_uid = inode->uid;
+    buf->st_gid = inode->gid;
 
-    if (node->type == VFS_DIR)
-        buf->st_mode = S_IFDIR | (node->mode ? node->mode : S_IRWXU);
-    else if (node->type == VFS_FILE)
-        buf->st_mode = S_IFREG | (node->mode ? node->mode : (S_IRUSR | S_IWUSR));
-    else if (node->type == VFS_PIPE)
+    if (inode->type == VFS_DIR)
+        buf->st_mode = S_IFDIR | (inode->mode ? inode->mode : S_IRWXU);
+    else if (inode->type == VFS_FILE)
+        buf->st_mode = S_IFREG | (inode->mode ? inode->mode : (S_IRUSR | S_IWUSR));
+    else if (inode->type == VFS_PIPE)
         buf->st_mode = S_IFIFO | (S_IRUSR | S_IWUSR);
-    else if (node->type == VFS_SYMLINK)
+    else if (inode->type == VFS_SYMLINK)
         buf->st_mode = S_IFLNK | 0777;
 
-    buf->st_atime_sec = node->atime;
-    buf->st_mtime_sec = node->mtime;
-    buf->st_ctime_sec = node->ctime;
+    buf->st_atime_sec = inode->atime;
+    buf->st_mtime_sec = inode->mtime;
+    buf->st_ctime_sec = inode->ctime;
 }
 
 void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
@@ -143,7 +143,7 @@ int vfs_stat(const char *path, struct k_stat *buf) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_err(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    fill_stat(node, buf);
+    fill_stat(node->inode, buf);
     return 0;
 }
 
@@ -231,8 +231,8 @@ int vfs_fstat(int fd, struct k_stat *buf) {
         return 0;
     }
 
-    if (!f->node) return -EBADF;
-    fill_stat(f->node, buf);
+    if (!f->inode) return -EBADF;
+    fill_stat(f->inode, buf);
     return 0;
 }
 
@@ -253,7 +253,7 @@ int vfs_chmod(const char *path, uint32_t mode) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_err(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    node->mode = mode & 07777;
+    node->inode->mode = mode & 07777;
     inotify_event(path, IN_ATTRIB);
     return 0;
 }
@@ -276,9 +276,9 @@ int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_err(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    if (uid != (uint32_t)-1) node->uid = uid;
-    if (gid != (uint32_t)-1) node->gid = gid;
-    node->mode &= ~(uint32_t)(04000 | 02000); /* clear SUID/SGID */
+    if (uid != (uint32_t)-1) node->inode->uid = uid;
+    if (gid != (uint32_t)-1) node->inode->gid = gid;
+    node->inode->mode &= ~(uint32_t)(04000 | 02000); /* clear SUID/SGID */
     inotify_event(path, IN_ATTRIB);
     return 0;
 }
@@ -298,7 +298,7 @@ int vfs_fchmod(int fd, uint32_t mode) {
         ext2_inode_write((uint32_t)f->disk_ino, &ip);
         return 0;
     }
-    if (f->node) f->node->mode = mode & 07777;
+    if (f->inode) f->inode->mode = mode & 07777;
     return 0;
 }
 
@@ -318,9 +318,9 @@ int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
         ext2_inode_write((uint32_t)f->disk_ino, &ip);
         return 0;
     }
-    if (f->node) {
-        if (uid != (uint32_t)-1) f->node->uid = uid;
-        if (gid != (uint32_t)-1) f->node->gid = gid;
+    if (f->inode) {
+        if (uid != (uint32_t)-1) f->inode->uid = uid;
+        if (gid != (uint32_t)-1) f->inode->gid = gid;
     }
     return 0;
 }
@@ -341,14 +341,15 @@ int vfs_truncate(const char *path, int64_t length) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_err(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    if (node->type == VFS_DIR) return -EISDIR;
+    struct vfs_inode *inode = node->inode;
+    if (inode->type == VFS_DIR) return -EISDIR;
 
     size_t new_size = (size_t)length;
-    if (new_size > node->size) {
-        if (grow_file(node, new_size) < 0) return -ENOMEM;
-        kmemset(node->data + node->size, 0, new_size - node->size);
+    if (new_size > inode->size) {
+        if (grow_file(inode, new_size) < 0) return -ENOMEM;
+        kmemset(inode->data + inode->size, 0, new_size - inode->size);
     }
-    node->size = new_size;
+    inode->size = new_size;
     return 0;
 }
 
@@ -365,14 +366,14 @@ int vfs_ftruncate(int fd, int64_t length) {
         return ext2_truncate((uint32_t)f->disk_ino, (size_t)length);
     }
 
-    if (!f->node) return -EBADF;
-    struct vfs_node *node = f->node;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
     size_t new_size = (size_t)length;
-    if (new_size > node->size) {
-        if (grow_file(node, new_size) < 0) return -ENOMEM;
-        kmemset(node->data + node->size, 0, new_size - node->size);
+    if (new_size > inode->size) {
+        if (grow_file(inode, new_size) < 0) return -ENOMEM;
+        kmemset(inode->data + inode->size, 0, new_size - inode->size);
     }
-    node->size = new_size;
+    inode->size = new_size;
     return 0;
 }
 
@@ -412,20 +413,21 @@ try_ramfs:;
     extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
     struct vfs_node *node = vfs_lookup_err(path, &lookup_err);
     if (!node) return lookup_err ? lookup_err : -ENOENT;
+    struct vfs_inode *inode = node->inode;
     if (times) {
         #define UTIME_NOW  ((1L << 30) - 1L)
         #define UTIME_OMIT ((1L << 30) - 2L)
         uint32_t now = timer_epoch_sec();
         int64_t atime_nsec = times[1], mtime_nsec = times[3];
         if (atime_nsec != UTIME_OMIT)
-            node->atime = (atime_nsec == UTIME_NOW) ? now : (uint32_t)times[0];
+            inode->atime = (atime_nsec == UTIME_NOW) ? now : (uint32_t)times[0];
         if (mtime_nsec != UTIME_OMIT)
-            node->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint32_t)times[2];
+            inode->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint32_t)times[2];
     } else {
         /* NULL times = set both to current time */
         uint32_t now = timer_epoch_sec();
-        node->atime = now;
-        node->mtime = now;
+        inode->atime = now;
+        inode->mtime = now;
     }
     return 0;
 }
