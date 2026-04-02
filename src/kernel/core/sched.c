@@ -13,6 +13,7 @@
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
+#include "core/rcu.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "config.h"
@@ -167,6 +168,11 @@ void schedule(void) {
         cpu->kernel_rsp = idle_top;
     }
 
+    /* RCU quiescent state: prev is leaving the CPU.
+     * If prev has rcu_read_nesting > 0, it's a preempted reader → blocked list.
+     * If prev has rcu_read_nesting == 0, this CPU passed a quiescent state. */
+    rcu_note_context_switch(prev);
+
     cpu->switch_prev = prev;
     cpu->current_thread = next;
     context_switch(prev, next);
@@ -244,6 +250,9 @@ void sched_preempt(void *frame_ptr) {
             cpu->in_preempt = 0;
         }
     }
+
+    /* RCU: check if grace period needs advancing */
+    rcu_check_callbacks();
 
     /* SCHED_FIFO: never preempt (runs until yield/block) */
     if (cur->sched_policy == SCHED_FIFO) return;

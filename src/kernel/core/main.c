@@ -213,6 +213,10 @@ void kernel_main(struct boot_info *info) {
     extern void sched_init(void);
     sched_init();
 
+    /* RCU (preemptible) — after sched, before proc (fdtable needs RCU) */
+    extern void rcu_init(void);
+    rcu_init();
+
     /* Process subsystem (slab pools) */
     proc_init();
     vma_init();

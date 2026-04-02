@@ -128,6 +128,12 @@ typedef struct thread {
 
     /* ── Robust Mutex List (at end to avoid shifting fxsave alignment) ── */
     void *robust_list;     /* userspace robust_list_head pointer */
+
+    /* ── RCU (Preemptible) — read-side critical section tracking ── */
+    int             rcu_read_nesting;  /* >0 = inside rcu_read_lock section */
+    void           *rcu_blocked_node;  /* rcu_node_t* if preempted during CS, else NULL */
+    struct thread  *rcu_next;          /* blocked reader list: forward link */
+    struct thread  *rcu_prev;          /* blocked reader list: back link (O(1) removal) */
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */
