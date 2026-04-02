@@ -154,343 +154,141 @@ int copy_address_space(process_t *child, process_t *parent) {
     return ctx.err ? -1 : 0;
 }
 
-/* ── fork (2.2) ──────────────────────────────────── */
+/* ── kernel_clone — ONE implementation for fork/vfork/clone ── */
 
 extern void sched_add(thread_t *t);
 
-long do_fork(unsigned long flags, void *child_stack,
-             int *parent_tid, int *child_tid, unsigned long tls) {
-    (void)child_stack; /* fork: child inherits parent stack via COW */
-    percpu_t *cpu = percpu_self();
-    thread_t *cur = cpu->current_thread;
-    if (!cur || !cur->proc) return -EFAULT;
-    process_t *parent = cur->proc;
-
-    /* Allocate child process */
-    process_t *child = proc_alloc();
-    if (!child) return -ENOMEM;
-    child->parent_pid = parent->pid;
-    child->pgid = parent->pgid;  /* inherit process group */
-    child->sid  = parent->sid;   /* inherit session */
-    child->notify_signal = flags & 0xFF;
-    child->vma_root = 0;
-
-    /* Stop other parent threads during page copy to prevent stale data.
-     * Use saved_priority as a marker: set to -2 for threads we suspend.
-     * Suspend RUNNABLE threads directly. For RUNNING threads on other cores,
-     * mark them and send IPI to force them off-CPU before copying. */
-    int need_ipi = 0;
-    for (thread_t *t = parent->threads; t; t = t->proc_next) {
-        if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
-            t->state = THREAD_BLOCKED;
-            t->saved_priority = -2; /* mark: we stopped this one */
-            if (t->cpu_affinity >= 0) need_ipi = 1;
-            else need_ipi = 1; /* any RUNNING thread may be on another core */
-        }
-    }
-    if (need_ipi) {
-        /* Send IPI to all other cores and wait for them to deschedule.
-         * The TLB shootdown vector (0xFE) forces CR3 reload.
-         * After IPI + pause loop, suspended threads are no longer executing. */
-        extern void tlb_shootdown(uint64_t pml4_phys);
-        tlb_shootdown(virt_to_phys(parent->pml4));
-    }
-
-    /* Deep-copy address space (hold parent VMA lock to prevent concurrent modification) */
-    uint64_t fork_irqf;
-    spin_lock_irq(&parent->lock, &fork_irqf);
-    int copy_err = copy_address_space(child, parent);
-    spin_unlock_irq(&parent->lock, fork_irqf);
-
-    /* Resume only threads we stopped (saved_priority == -2) */
-    for (thread_t *t = parent->threads; t; t = t->proc_next) {
-        if (t != cur && t->saved_priority == -2) {
-            t->saved_priority = -1;
-            sched_add(t); /* sets THREAD_RUNNABLE and enqueues */
-        }
-    }
-
-    if (copy_err < 0) {
-        if (child->pml4) {
-            free_address_space(child->pml4);
-            child->pml4 = 0;
-        }
-        vma_free_tree(child->vma_root);
-        child->vma_root = 0;
-        if (child->pid < PID_TABLE_MAX)
-            pid_table[child->pid] = 0;
-        slab_free(&proc_slab, child);
-        return -ENOMEM;
-    }
-
-    child->brk_base = parent->brk_base;
-    child->brk_current = parent->brk_current;
-    child->mmap_next = parent->mmap_next;
-    child->mlockall_flags = parent->mlockall_flags;
-    child->rlim_stack = parent->rlim_stack;
-    child->rlim_data = parent->rlim_data;
-    child->umask_val = parent->umask_val;
-    child->stack_top = parent->stack_top;
-    child->is_driver = 0; /* HW access not inherited — only via proc_create_from_vfs */
-    for (int ci = 0; ci < 256; ci++) {
-        child->cwd[ci] = parent->cwd[ci];
-        if (!parent->cwd[ci]) break;
-    }
-
-    child->cmdline_len = parent->cmdline_len;
-    for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
-        child->cmdline[ci] = parent->cmdline[ci];
-
-    child->sig_pending = 0;
-    child->alarm_deadline_ms = 0;
-    for (int si = 0; si < 64; si++)
-        child->sig_actions[si] = parent->sig_actions[si];
-
-    /* Duplicate fd_table — increment refcount on all shared FD objects */
-    for (int i = 0; i < FD_MAX; i++) {
-        child->fds.entries[i] = parent->fds.entries[i];
-        if (parent->fds.entries[i].obj) {
-            int ftype = parent->fds.entries[i].type;
-            if (ftype == FD_FILE)
-                vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
-            else if (ftype == FD_PIPE)
-                fd_obj_incref(ftype, parent->fds.entries[i].obj);
-            else if (ftype == FD_SOCKET || ftype == FD_EPOLL ||
-                     ftype == FD_EVENTFD || ftype == FD_TIMERFD ||
-                     ftype == FD_INOTIFY || ftype == FD_UNIX_SOCK)
-                fd_obj_incref(ftype, parent->fds.entries[i].obj);
-        }
-    }
-    child->fds.max_fd = parent->fds.max_fd;
-    for (int w = 0; w < FD_BITMAP_WORDS; w++)
-        child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
-
-    /* Create child thread with parent's saved registers */
-    thread_t *ct = thread_alloc();
-    if (!ct) {
-        free_address_space(child->pml4);
-        child->pml4 = 0;
-        vma_free_tree(child->vma_root);
-        child->vma_root = 0;
-        slab_free(&proc_slab, child);
-        return -ENOMEM;
-    }
-
-    /* Save parent's user state */
-    save_user_state_for_block(cur, 0);
-
-    /* Copy register state — child gets RAX=0 (fork returns 0 in child) */
-    ct->rip = cur->rip;
-    ct->rsp = cur->rsp;
-    ct->rflags = cur->rflags;
-    ct->rax = 0;
-    ct->rbx = cur->rbx;
-    ct->rcx = cur->rcx;
-    ct->rdx = cur->rdx;
-    ct->rsi = cur->rsi;
-    ct->rdi = cur->rdi;
-    ct->rbp = cur->rbp;
-    ct->r8  = cur->r8;
-    ct->r9  = cur->r9;
-    ct->r10 = cur->r10;
-    ct->r11 = cur->r11;
-    ct->r12 = cur->r12;
-    ct->r13 = cur->r13;
-    ct->r14 = cur->r14;
-    ct->r15 = cur->r15;
-    if (flags & CLONE_SETTLS)
-        ct->fs_base = tls;
-    else
-        ct->fs_base = cur->fs_base;
-    kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
-    ct->sched_policy = cur->sched_policy;
-    ct->priority = cur->priority;
-    ct->saved_priority = -1;
-    ct->cpu_affinity = -1;
-    ct->timeslice = RR_TIMESLICE;
-    ct->proc = child;
-    ct->state = THREAD_RUNNABLE;
-    ct->sig_blocked = cur->sig_blocked;
-
-    /* Kernel stack */
-    ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
-    if (!ct->kstack) {
-        thread_free(ct);
-        free_address_space(child->pml4);
-        child->pml4 = 0;
-        vma_free_tree(child->vma_root);
-        child->vma_root = 0;
-        slab_free(&proc_slab, child);
-        return -ENOMEM;
-    }
-    ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
-    thread_init_kstack(ct);
-
-    /* CLONE_PARENT_SETTID */
-    if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
-        if (user_ok((uint64_t)parent_tid, 4))
-            *parent_tid = ct->tid;
-    }
-    /* CLONE_CHILD_SETTID */
-    if ((flags & CLONE_CHILD_SETTID) && child_tid) {
-        if (user_ok((uint64_t)child_tid, 4))
-            *child_tid = ct->tid;
-    }
-    /* CLONE_CHILD_CLEARTID */
-    ct->clear_child_tid = 0;
-    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
-        ct->clear_child_tid = child_tid;
-
-    child->main_thread = ct;
-    child->threads = ct;
-    child->thread_count = 1;
-
-    sched_add(ct);
-
-    return (long)child->pid;
+static void free_child_proc(process_t *child) {
+    if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
+    vma_free_tree(child->vma_root); child->vma_root = 0;
+    if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
+    slab_free(&proc_slab, child);
 }
 
-/* ── vfork (CLONE_VM|CLONE_VFORK) ────────────────── */
-
-/* Used by musl's posix_spawn: clone(CLONE_VM|CLONE_VFORK|SIGCHLD, child_stack).
- * Creates a real child process (COW fork) with the specified child stack.
- * Parent blocks until child calls exec or exit. */
-long do_vfork(unsigned long flags, void *child_stack,
-              int *parent_tid, int *child_tid, unsigned long tls) {
-    percpu_t *cpu = percpu_self();
-    thread_t *cur = cpu->current_thread;
-    if (!cur || !cur->proc) return -EFAULT;
-    process_t *parent = cur->proc;
-
-    /* Reuse do_fork logic: allocate child process + COW address space */
-    process_t *child = proc_alloc();
-    if (!child) return -ENOMEM;
-    child->parent_pid = parent->pid;
-    child->pgid = parent->pgid;
-    child->sid  = parent->sid;
-    child->notify_signal = flags & 0xFF;
-    child->vma_root = 0;
-
-    /* Stop other parent threads during page copy */
-    int need_ipi = 0;
-    for (thread_t *t = parent->threads; t; t = t->proc_next) {
-        if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
-            t->state = THREAD_BLOCKED;
-            t->saved_priority = -2;
-            need_ipi = 1;
-        }
-    }
-    if (need_ipi) {
-        extern void tlb_shootdown(uint64_t pml4_phys);
-        tlb_shootdown(virt_to_phys(parent->pml4));
-    }
-
-    /* COW address space copy */
-    uint64_t fork_irqf;
-    spin_lock_irq(&parent->lock, &fork_irqf);
-    int copy_err = copy_address_space(child, parent);
-    spin_unlock_irq(&parent->lock, fork_irqf);
-
-    /* Resume suspended threads */
-    for (thread_t *t = parent->threads; t; t = t->proc_next) {
-        if (t != cur && t->saved_priority == -2) {
-            t->saved_priority = -1;
-            sched_add(t);
-        }
-    }
-
-    if (copy_err < 0) {
-        if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
-        vma_free_tree(child->vma_root);
-        child->vma_root = 0;
-        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
-        slab_free(&proc_slab, child);
-        return -ENOMEM;
-    }
-
-    /* Copy process metadata (same as do_fork) */
-    child->brk_base = parent->brk_base;
-    child->brk_current = parent->brk_current;
-    child->mmap_next = parent->mmap_next;
-    child->mlockall_flags = parent->mlockall_flags;
-    child->rlim_stack = parent->rlim_stack;
-    child->rlim_data = parent->rlim_data;
-    child->umask_val = parent->umask_val;
-    child->stack_top = parent->stack_top;
-    child->is_driver = 0;
-    for (int ci = 0; ci < 256; ci++) {
-        child->cwd[ci] = parent->cwd[ci];
-        if (!parent->cwd[ci]) break;
-    }
-    child->cmdline_len = parent->cmdline_len;
-    for (int ci = 0; ci < parent->cmdline_len && ci < 1024; ci++)
-        child->cmdline[ci] = parent->cmdline[ci];
-    child->sig_pending = 0;
-    child->alarm_deadline_ms = 0;
-    for (int si = 0; si < 64; si++)
-        child->sig_actions[si] = parent->sig_actions[si];
-
-    /* Duplicate fd_table */
+static void dup_fd_table(process_t *child, process_t *parent) {
     for (int i = 0; i < FD_MAX; i++) {
         child->fds.entries[i] = parent->fds.entries[i];
         if (parent->fds.entries[i].obj) {
-            int ftype = parent->fds.entries[i].type;
-            if (ftype == FD_FILE)
+            int ft = parent->fds.entries[i].type;
+            if (ft == FD_FILE)
                 vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
-            else if (ftype == FD_PIPE)
-                fd_obj_incref(ftype, parent->fds.entries[i].obj);
-            else if (ftype == FD_SOCKET || ftype == FD_EPOLL ||
-                     ftype == FD_EVENTFD || ftype == FD_TIMERFD ||
-                     ftype == FD_INOTIFY || ftype == FD_UNIX_SOCK)
-                fd_obj_incref(ftype, parent->fds.entries[i].obj);
+            else if (ft == FD_PIPE || ft == FD_SOCKET || ft == FD_EPOLL ||
+                     ft == FD_EVENTFD || ft == FD_TIMERFD ||
+                     ft == FD_INOTIFY || ft == FD_UNIX_SOCK)
+                fd_obj_incref(ft, parent->fds.entries[i].obj);
         }
     }
     child->fds.max_fd = parent->fds.max_fd;
     for (int w = 0; w < FD_BITMAP_WORDS; w++)
         child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
+}
 
-    /* Create child thread */
+long kernel_clone(unsigned long flags, void *child_stack,
+                  int *parent_tid, int *child_tid, unsigned long tls) {
+    int exit_sig = flags & 0xFF;
+    if (exit_sig > 64) return -EINVAL;
+    if (flags & CLONE_NS_FLAGS) return -EINVAL;
+    if ((flags & CLONE_THREAD) && !(flags & CLONE_SIGHAND)) return -EINVAL;
+    if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM)) return -EINVAL;
+
+    percpu_t *cpu = percpu_self();
+    thread_t *cur = cpu->current_thread;
+    if (!cur || !cur->proc) return -EFAULT;
+    process_t *parent = cur->proc;
+
+    int is_thread = !!(flags & CLONE_THREAD);
+    int is_vfork  = (flags & CLONE_VFORK) && !is_thread;
+    process_t *child;
+
+    /* ── New process (fork/vfork) vs shared process (thread) ── */
+
+    if (is_thread) {
+        child = parent;
+    } else {
+        child = proc_alloc();
+        if (!child) return -ENOMEM;
+        child->parent_pid = parent->pid;
+        child->pgid = parent->pgid;
+        child->sid  = parent->sid;
+        child->notify_signal = exit_sig;
+        child->vma_root = 0;
+
+        /* Freeze sibling threads for COW page-table copy */
+        int need_ipi = 0;
+        for (thread_t *t = parent->threads; t; t = t->proc_next) {
+            if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
+                t->state = THREAD_BLOCKED;
+                t->saved_priority = -2;
+                need_ipi = 1;
+            }
+        }
+        if (need_ipi) {
+            extern void tlb_shootdown(uint64_t pml4_phys);
+            tlb_shootdown(virt_to_phys(parent->pml4));
+        }
+
+        uint64_t irqf;
+        spin_lock_irq(&parent->lock, &irqf);
+        int err = copy_address_space(child, parent);
+        spin_unlock_irq(&parent->lock, irqf);
+
+        for (thread_t *t = parent->threads; t; t = t->proc_next) {
+            if (t != cur && t->saved_priority == -2) {
+                t->saved_priority = -1;
+                sched_add(t);
+            }
+        }
+
+        if (err < 0) { free_child_proc(child); return -ENOMEM; }
+
+        /* Copy metadata */
+        child->brk_base = parent->brk_base;
+        child->brk_current = parent->brk_current;
+        child->mmap_next = parent->mmap_next;
+        child->mlockall_flags = parent->mlockall_flags;
+        child->rlim_stack = parent->rlim_stack;
+        child->rlim_data = parent->rlim_data;
+        child->umask_val = parent->umask_val;
+        child->stack_top = parent->stack_top;
+        child->is_driver = 0;
+        for (int i = 0; i < 256; i++) {
+            child->cwd[i] = parent->cwd[i];
+            if (!parent->cwd[i]) break;
+        }
+        child->cmdline_len = parent->cmdline_len;
+        for (int i = 0; i < parent->cmdline_len && i < 1024; i++)
+            child->cmdline[i] = parent->cmdline[i];
+        child->sig_pending = 0;
+        child->alarm_deadline_ms = 0;
+        for (int i = 0; i < 64; i++)
+            child->sig_actions[i] = parent->sig_actions[i];
+
+        dup_fd_table(child, parent);
+    }
+
+    /* ── Create child thread ── */
+
     thread_t *ct = thread_alloc();
     if (!ct) {
-        free_address_space(child->pml4); child->pml4 = 0;
-        vma_free_tree(child->vma_root); child->vma_root = 0;
-        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
-        slab_free(&proc_slab, child);
+        if (!is_thread) free_child_proc(child);
         return -ENOMEM;
     }
 
-    /* Save parent user state (populates cur->rip, rsp, etc. from syscall frame) */
     save_user_state_for_block(cur, 0);
 
-    /* Copy register state from parent — child gets RAX=0 */
     ct->rip = cur->rip;
     ct->rflags = cur->rflags;
     ct->rax = 0;
-    ct->rbx = cur->rbx;
-    ct->rcx = cur->rcx;
-    ct->rdx = cur->rdx;
-    ct->rsi = cur->rsi;
-    ct->rdi = cur->rdi;
-    ct->rbp = cur->rbp;
-    ct->r8  = cur->r8;
-    ct->r9  = cur->r9;
-    ct->r10 = cur->r10;
-    ct->r11 = cur->r11;
-    ct->r12 = cur->r12;
-    ct->r13 = cur->r13;
-    ct->r14 = cur->r14;
-    ct->r15 = cur->r15;
+    ct->rbx = cur->rbx; ct->rcx = cur->rcx; ct->rdx = cur->rdx;
+    ct->rsi = cur->rsi; ct->rdi = cur->rdi; ct->rbp = cur->rbp;
+    ct->r8  = cur->r8;  ct->r9  = cur->r9;  ct->r10 = cur->r10;
+    ct->r11 = cur->r11; ct->r12 = cur->r12; ct->r13 = cur->r13;
+    ct->r14 = cur->r14; ct->r15 = cur->r15;
 
-    /* Child uses the provided stack (clone semantics, not fork) */
     ct->rsp = child_stack ? (uint64_t)child_stack : cur->rsp;
-
-    /* TLS */
-    if (flags & CLONE_SETTLS)
-        ct->fs_base = tls;
-    else
-        ct->fs_base = cur->fs_base;
-
+    ct->fs_base = (flags & CLONE_SETTLS) ? tls : cur->fs_base;
     kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
+
     ct->sched_policy = cur->sched_policy;
     ct->priority = cur->priority;
     ct->saved_priority = -1;
@@ -500,52 +298,64 @@ long do_vfork(unsigned long flags, void *child_stack,
     ct->state = THREAD_RUNNABLE;
     ct->sig_blocked = cur->sig_blocked;
 
-    /* CLONE_PARENT_SETTID */
-    if ((flags & CLONE_PARENT_SETTID) && parent_tid) {
-        if (user_ok((uint64_t)parent_tid, 4))
-            *parent_tid = ct->tid;
-    }
-
-    /* CLONE_CHILD_SETTID */
-    if ((flags & CLONE_CHILD_SETTID) && child_tid) {
-        if (user_ok((uint64_t)child_tid, 4))
-            *child_tid = ct->tid;
-    }
-
-    /* CLONE_CHILD_CLEARTID */
-    ct->clear_child_tid = 0;
-    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
-        ct->clear_child_tid = child_tid;
-
-    /* Kernel stack */
     ct->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!ct->kstack) {
         thread_free(ct);
-        free_address_space(child->pml4); child->pml4 = 0;
-        vma_free_tree(child->vma_root); child->vma_root = 0;
-        if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
-        slab_free(&proc_slab, child);
+        if (!is_thread) free_child_proc(child);
         return -ENOMEM;
     }
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
     thread_init_kstack(ct);
 
-    child->main_thread = ct;
-    child->threads = ct;
-    child->thread_count = 1;
+    /* CLONE_*_SETTID / CLEARTID */
+    if ((flags & CLONE_PARENT_SETTID) && parent_tid && user_ok((uint64_t)parent_tid, 4))
+        *parent_tid = ct->tid;
+    if ((flags & CLONE_CHILD_SETTID) && child_tid && user_ok((uint64_t)child_tid, 4))
+        *child_tid = ct->tid;
+    ct->clear_child_tid = 0;
+    if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
+        ct->clear_child_tid = child_tid;
 
-    /* Record parent thread TID so exec/exit can wake us */
-    child->vfork_parent_tid = cur->tid;
+    /* ── Linkage ── */
 
-    /* CLONE_VFORK: block parent until child execs or exits.
-     * Child wakes us via sched_wake; schedule() returns here. */
-    cur->state = THREAD_BLOCKED;
+    if (is_thread) {
+        uint64_t lf;
+        spin_lock_irq(&child->lock, &lf);
+        ct->proc_next = child->threads;
+        child->threads = ct;
+        child->thread_count++;
+        spin_unlock_irq(&child->lock, lf);
+    } else {
+        child->main_thread = ct;
+        child->threads = ct;
+        child->thread_count = 1;
+    }
 
-    /* Schedule child first (it will exec/exit and then wake us) */
+    /* ── vfork: block parent until child exec/exit ── */
+
+    if (is_vfork) {
+        child->vfork_parent_tid = cur->tid;
+        cur->state = THREAD_BLOCKED;
+    }
+
     sched_add(ct);
 
-    extern void schedule(void);
-    schedule();
-    /* Returned: child exec'd or exited, we've been woken */
-    return (long)child->pid;
+    if (is_vfork) {
+        extern void schedule(void);
+        schedule();
+    }
+
+    return is_thread ? (long)ct->tid : (long)child->pid;
+}
+
+/* ── Thin wrappers (syscall entry points) ──────── */
+
+long do_fork(unsigned long flags, void *child_stack,
+             int *parent_tid, int *child_tid, unsigned long tls) {
+    return kernel_clone(flags, child_stack, parent_tid, child_tid, tls);
+}
+
+long do_vfork(unsigned long flags, void *child_stack,
+              int *parent_tid, int *child_tid, unsigned long tls) {
+    return kernel_clone(flags, child_stack, parent_tid, child_tid, tls);
 }
