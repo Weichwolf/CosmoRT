@@ -1,52 +1,11 @@
-/* CosmoRT IP — Header build, checksum, send (incl. loopback)
- * Extracted from net.c (Phase C).
+/* CosmoRT IP — Header build, checksum, send.
+ * Routing via netif_tx() (loopback handled by netif layer).
  */
 
 #include "net/ip.h"
 #include "net/net.h"
+#include "net/netif.h"
 #include "net/net_util.h"
-
-/* NIC driver access (defined in net.c) */
-extern const nic_driver_t *net_nic_get(void);
-
-/* Forward declarations for loopback dispatch */
-extern void tcp_input(const uint8_t *pkt, int len);
-extern int  udp_input(const uint8_t *pkt, int len);
-
-/* ── Loopback ──────────────────────────────────────── */
-
-static void loopback_inject(const uint8_t *data, uint16_t len) {
-    uint8_t lo[1600];
-    if (len > 1600) return;
-    for (int i = 0; i < len; i++) lo[i] = data[i];
-    uint8_t proto = lo[23];
-    if (proto == 6) {
-        q_push(&q_tcp, lo, len);
-        extern struct thread *q_tcp_wait_thread;
-        struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) { extern void sched_wake(struct thread *t); sched_wake(wt); }
-    }
-    else if (proto == 1)  q_push(&q_icmp, lo, len);
-    else if (proto == 17 && len >= 42) {
-        uint16_t dport = get16(lo + 36);
-        if (dport == 68) q_push(&q_udp_dhcp, lo, len);
-        else if (!udp_input(lo, len))
-            q_push(&q_udp_dns, lo, len);
-    }
-}
-
-/* ── NIC Send (with Loopback) ──────────────────────── */
-
-void ip_send_raw(const uint8_t *data, uint16_t len) {
-    /* Loopback: dst IP 127.x.x.x → feed directly into RX path */
-    if (len >= 34 && data[12] == 0x08 && data[13] == 0x00 && data[30] == 127) {
-        loopback_inject(data, len);
-        return;
-    }
-
-    const nic_driver_t *n = net_nic_get();
-    if (n && n->send) n->send(data, len);
-}
 
 /* ── IP Header Build ───────────────────────────────── */
 
@@ -67,7 +26,13 @@ void ip_build_header(uint8_t *pkt, const uint8_t *dst_mac,
     ip_build_header_tos(pkt, dst_mac, dst_ip, proto, plen, 0);
 }
 
-/* ── Compat wrappers (old API used by tcp.c, udp.c, net.c) ── */
+/* ── IP Send ───────────────────────────────────────── */
+
+void ip_send_raw(const uint8_t *data, uint16_t len) {
+    netif_tx(data, len);
+}
+
+/* ── Compat wrappers (used by tcp.c, udp.c, arp.c) ── */
 
 void net_send_raw(const uint8_t *data, uint16_t len) { ip_send_raw(data, len); }
 
