@@ -157,7 +157,7 @@ long do_chroot(const char *path) {
     extern struct vfs_node *vfs_lookup(const char *path);
     struct vfs_node *node = vfs_lookup(kpath);
     if (!node) return -ENOENT;
-    if (node->type != VFS_DIR) return -ENOTDIR;
+    if (node->inode->type != VFS_DIR) return -ENOTDIR;
     /* Check for symlink loops (simplified: path with >40 symlinks) */
     return 0; /* accept but no-op: single-root filesystem */
 }

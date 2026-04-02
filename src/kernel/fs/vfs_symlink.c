@@ -35,8 +35,8 @@ int vfs_symlink(const char *target, const char *linkpath) {
     if (!n) return -ENOMEM;
 
     /* vfs_create may return existing node with wrong type */
-    n->type = VFS_SYMLINK;
-    kstrncpy(n->symlink_target, target, 256);
+    n->inode->type = VFS_SYMLINK;
+    kstrncpy(n->inode->symlink_target, target, 256);
     return 0;
 }
 
@@ -83,11 +83,11 @@ int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     int lookup_err = 0;
     struct vfs_node *node = vfs_lookup_nofollow(path, &lookup_err);
     if (!node) return lookup_err ? lookup_err : -ENOENT;
-    if (node->type != VFS_SYMLINK) return -EINVAL;
+    if (node->inode->type != VFS_SYMLINK) return -EINVAL;
 
-    int tlen = kstrlen(node->symlink_target);
+    int tlen = kstrlen(node->inode->symlink_target);
     if ((size_t)tlen > bufsiz) tlen = (int)bufsiz;
-    kmemcpy(buf, node->symlink_target, (size_t)tlen);
+    kmemcpy(buf, node->inode->symlink_target, (size_t)tlen);
     return tlen;
 }
 
@@ -95,9 +95,9 @@ int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
 
 static void fill_symlink_stat(struct vfs_node *node, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
-    buf->st_ino = node->ino;
+    buf->st_ino = node->inode->ino;
     buf->st_nlink = 1;
-    int tlen = kstrlen(node->symlink_target);
+    int tlen = kstrlen(node->inode->symlink_target);
     buf->st_size = (int64_t)tlen;
     buf->st_blksize = 4096;
     buf->st_blocks = (int64_t)((tlen + 511) / 512);
@@ -154,10 +154,10 @@ int vfs_lstat(const char *path, struct k_stat *buf) {
     int lerr = 0;
     struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
     if (!node) return lerr ? lerr : -ENOENT;
-    if (node->type == VFS_SYMLINK) {
+    if (node->inode->type == VFS_SYMLINK) {
         fill_symlink_stat(node, buf);
         return 0;
     }
-    fill_stat(node, buf);
+    fill_stat(node->inode, buf);
     return 0;
 }

@@ -163,9 +163,9 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
         extern uint32_t timer_epoch_sec(void);
         if (fde->type == FD_FILE && fde->obj) {
             struct vfs_file *vf = (struct vfs_file *)fde->obj;
-            if (vf->node) {
+            if (vf->inode) {
                 /* ramfs file */
-                struct vfs_node *node = vf->node;
+                struct vfs_inode *node = vf->inode;
                 if (utimes) {
                     uint32_t now = timer_epoch_sec();
                     int64_t a_ns = ktimes[1], m_ns = ktimes[3];

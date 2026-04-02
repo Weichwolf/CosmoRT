@@ -48,9 +48,9 @@ restart:
         while (*rest == '/') rest++;
         int is_last = (*rest == 0);
 
-        if (cur->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
+        if (cur->inode->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
 
-        struct vfs_node *child = cur->children;
+        struct vfs_node *child = cur->inode->children;
         struct vfs_node *found = 0;
         while (child) {
             int nlen = kstrlen(child->name);
@@ -66,8 +66,8 @@ restart:
         if (!found) { if (err) *err = -ENOENT; return 0; }
 
         /* Follow symlinks transparently (skip last component if !follow_last) */
-        if (found->type == VFS_SYMLINK && (follow_last || !is_last)) {
-            const char *target = found->symlink_target;
+        if (found->inode->type == VFS_SYMLINK && (follow_last || !is_last)) {
+            const char *target = found->inode->symlink_target;
             if (!target[0]) { if (err) *err = -ENOENT; return 0; }
             depth++;
 
@@ -154,7 +154,7 @@ struct vfs_node *lookup_parent(const char *path, const char **basename) {
 struct vfs_node *vfs_create(const char *path, int type) {
     const char *basename;
     struct vfs_node *parent = lookup_parent(path, &basename);
-    if (!parent || parent->type != VFS_DIR) return 0;
+    if (!parent || parent->inode->type != VFS_DIR) return 0;
 
     /* Check if already exists */
     struct vfs_node *existing = vfs_lookup(path);
@@ -164,8 +164,8 @@ struct vfs_node *vfs_create(const char *path, int type) {
     if (!n) return 0;
 
     n->parent = parent;
-    n->next = parent->children;
-    parent->children = n;
+    n->next = parent->inode->children;
+    parent->inode->children = n;
     return n;
 }
 
@@ -187,7 +187,7 @@ struct vfs_node *ensure_dirs(const char *path) {
         if (!*p) break; /* last component = the file, don't create as dir */
 
         /* Search for existing child */
-        struct vfs_node *child = cur->children;
+        struct vfs_node *child = cur->inode->children;
         struct vfs_node *found = 0;
         while (child) {
             int nlen = kstrlen(child->name);
@@ -213,8 +213,8 @@ struct vfs_node *ensure_dirs(const char *path) {
             struct vfs_node *n = node_alloc(name, VFS_DIR);
             if (!n) return 0;
             n->parent = cur;
-            n->next = cur->children;
-            cur->children = n;
+            n->next = cur->inode->children;
+            cur->inode->children = n;
             cur = n;
         }
     }

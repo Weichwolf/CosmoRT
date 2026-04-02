@@ -221,10 +221,10 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Identify file source: ext2 inode or ramfs node */
+    /* Identify file source: ext2 inode or ramfs inode */
     extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
     uint64_t ext2_ino;
-    struct vfs_node *ramfs_node;
+    struct vfs_inode *ramfs_node;
     size_t elf_len;
 
     /* Macro to free string buffer on early exit */
@@ -244,8 +244,9 @@ shebang_retry:
             EXECVE_FAIL(-ENOEXEC);
         elf_len = ip.i_size;
     } else {
-        ramfs_node = vfs_lookup(kpath);
-        if (!ramfs_node) EXECVE_FAIL(-ENOENT);
+        { struct vfs_node *dentry = vfs_lookup(kpath);
+        if (!dentry || !dentry->inode) EXECVE_FAIL(-ENOENT);
+        ramfs_node = dentry->inode; }
         if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
         if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;
@@ -380,7 +381,7 @@ shebang_retry:
     interp_path[0] = '\0';
     /* Track interpreter source for streaming load */
     uint64_t interp_ext2_ino = 0;
-    struct vfs_node *interp_ramfs = 0;
+    struct vfs_inode *interp_ramfs = 0;
     size_t interp_len = 0;
 
     if (peek_eh->e_type == ET_DYN || peek_eh->e_type == ET_EXEC) {
@@ -404,10 +405,11 @@ shebang_retry:
                 while (iplen > 0 && interp_path[iplen - 1] == '\0') iplen--;
 
                 /* Locate interpreter: try ramfs first, then ext2 */
-                struct vfs_node *inode = vfs_lookup(interp_path);
-                if (inode && inode->type == VFS_FILE && inode->data && inode->size > 0) {
-                    interp_ramfs = inode;
-                    interp_len = inode->size;
+                struct vfs_node *interp_dentry = vfs_lookup(interp_path);
+                struct vfs_inode *interp_ino = interp_dentry ? interp_dentry->inode : 0;
+                if (interp_ino && interp_ino->type == VFS_FILE && interp_ino->data && interp_ino->size > 0) {
+                    interp_ramfs = interp_ino;
+                    interp_len = interp_ino->size;
                 } else {
                     interp_ext2_ino = vfs_ext2_lookup(interp_path);
                     if (interp_ext2_ino) {

@@ -4,13 +4,16 @@
 
 /* ── Slab pools ──────────────────────────────────── */
 
-#define VFS_NODE_MAX 256
-#define VFS_FILE_MAX 512
+#define VFS_NODE_MAX  256
+#define VFS_FILE_MAX  512
+#define VFS_INODE_MAX 256
 
-static struct vfs_node node_pool[VFS_NODE_MAX];
-static struct vfs_file file_pool[VFS_FILE_MAX];
+static struct vfs_node  node_pool[VFS_NODE_MAX];
+static struct vfs_file  file_pool[VFS_FILE_MAX];
+static struct vfs_inode inode_pool[VFS_INODE_MAX];
 slab_t node_slab;
 slab_t file_slab;
+slab_t inode_slab;
 
 struct vfs_node *vfs_root_node;
 uint64_t vfs_next_ino = 1;
@@ -187,45 +190,58 @@ uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
     return ext2_walk(parent_path);
 }
 
-/* ── Node allocation ─────────────────────────────── */
+/* ── Node/Inode allocation ───────────────────────── */
 
 struct vfs_node *node_alloc(const char *name, int type) {
     struct vfs_node *n = (struct vfs_node *)slab_alloc(&node_slab);
     if (!n) return 0;
-    kstrncpy(n->name, name, 256);
-    n->type = type;
-    n->data = 0;
-    n->size = 0;
-    n->capacity = 0;
-    n->ino = vfs_next_ino++;
-    n->mode = 0755;
-    n->uid = 1000;
-    n->gid = 1000;
+
+    struct vfs_inode *ino = (struct vfs_inode *)slab_alloc(&inode_slab);
+    if (!ino) { slab_free(&node_slab, n); return 0; }
+
+    /* Inode */
+    ino->type = type;
+    ino->data = 0;
+    ino->size = 0;
+    ino->capacity = 0;
+    ino->ino = vfs_next_ino++;
+    ino->mode = 0755;
+    ino->uid = 1000;
+    ino->gid = 1000;
     { extern uint32_t timer_epoch_sec(void);
       uint32_t now = timer_epoch_sec();
-      n->atime = now; n->mtime = now; n->ctime = now; }
-    n->symlink_target[0] = 0;
-    n->refcount = 1;    /* 1 = directory entry (nlink). open adds more. */
-    n->children = 0;
+      ino->atime = now; ino->mtime = now; ino->ctime = now; }
+    ino->symlink_target[0] = 0;
+    ino->refcount = 1;    /* 1 = directory entry (nlink). open adds more. */
+    ino->children = 0;
+
+    /* Dentry */
+    kstrncpy(n->name, name, 256);
+    n->inode = ino;
     n->next = 0;
     n->parent = 0;
     return n;
 }
 
-/* Destroy a ramfs node: free data pages + return to slab */
-void node_destroy(struct vfs_node *node) {
-    if (node->data && node->capacity > 0) {
-        int npages = (int)((node->capacity + 4095) / 4096);
-        if (npages > 0) pages_free(node->data, npages);
+/* Destroy inode: free data pages + return to slab */
+void inode_destroy(struct vfs_inode *ino) {
+    if (ino->data && ino->capacity > 0) {
+        int npages = (int)((ino->capacity + 4095) / 4096);
+        if (npages > 0) pages_free(ino->data, npages);
     }
-    slab_free(&node_slab, node);
+    slab_free(&inode_slab, ino);
 }
 
-/* Decrement vfs_node refcount. Destroys node at 0. */
-void node_decref(struct vfs_node *node) {
-    if (!node) return;
-    if (__sync_sub_and_fetch(&node->refcount, 1) <= 0)
-        node_destroy(node);
+/* Decrement inode refcount. Destroys at 0. */
+void inode_decref(struct vfs_inode *ino) {
+    if (!ino) return;
+    if (__sync_sub_and_fetch(&ino->refcount, 1) <= 0)
+        inode_destroy(ino);
+}
+
+/* Destroy dentry: slab_free only, does NOT touch inode. */
+void node_destroy(struct vfs_node *node) {
+    slab_free(&node_slab, node);
 }
 
 /* ── ext2 open inode tracking ────────────────────── */
@@ -300,11 +316,11 @@ void vfs_file_incref(struct vfs_file *f) {
     if (f) __sync_fetch_and_add(&f->refcount, 1);
 }
 
-/* Release inode/node reference when last vfs_file refcount drops */
+/* Release inode reference when last vfs_file refcount drops */
 static void vfs_file_release(struct vfs_file *f) {
-    if (f->backend == VFS_BACKEND_RAM && f->node) {
-        node_decref(f->node);
-        f->node = 0;
+    if (f->backend == VFS_BACKEND_RAM && f->inode) {
+        inode_decref(f->inode);
+        f->inode = 0;
     } else if (f->backend == VFS_BACKEND_EXT2 && f->disk_ino) {
         uint32_t ino = (uint32_t)f->disk_ino;
         if (ext2_open_dec(ino) <= 0) {
@@ -367,6 +383,7 @@ void vfs_notify_modify(struct vfs_node *node) {
 void vfs_init(void) {
     slab_init(&node_slab, node_pool, (int)sizeof(struct vfs_node), VFS_NODE_MAX);
     slab_init(&file_slab, file_pool, (int)sizeof(struct vfs_file), VFS_FILE_MAX);
+    slab_init(&inode_slab, inode_pool, (int)sizeof(struct vfs_inode), VFS_INODE_MAX);
     vfs_root_node = node_alloc("/", VFS_DIR);
     serial_puts("vfs: init (ramfs)\n");
 }
@@ -543,7 +560,7 @@ not_pts:
         f->refcount = 1;
         f->backend = VFS_BACKEND_EXT2;
         f->offset = 0;
-        f->node = 0;
+        f->inode = 0;
         f->disk_ino = ino;
         f->disk_size = ip.i_size;
         f->disk_dir_ino = 0;
@@ -568,7 +585,7 @@ not_pts:
     if (node && (flags & O_NOFOLLOW)) {
         int lerr = 0;
         struct vfs_node *raw = vfs_lookup_nofollow(path, &lerr);
-        if (raw && raw->type == VFS_SYMLINK) return -ELOOP;
+        if (raw && raw->inode->type == VFS_SYMLINK) return -ELOOP;
     }
 
     if (node && (flags & O_CREAT) && (flags & O_EXCL))
@@ -578,31 +595,31 @@ not_pts:
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
         if (node) {
-            node->mode = mode ? (mode & 07777) : 0644;
+            node->inode->mode = mode ? (mode & 07777) : 0644;
             inotify_event(path, IN_CREATE);
         }
     }
     if (!node) return -ENOENT;
 
-    if ((flags & O_DIRECTORY) && node->type != VFS_DIR)
+    if ((flags & O_DIRECTORY) && node->inode->type != VFS_DIR)
         return -ENOTDIR;
 
     struct vfs_file *f = file_alloc();
     if (!f) return -ENOMEM;
 
-    f->type = node->type;
+    f->type = node->inode->type;
     f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
-    f->node = node;
+    f->inode = node->inode;
     f->disk_ino = 0;
     f->disk_size = 0;
     f->disk_dir_ino = 0;
     kstrncpy(f->path, path, 256);
 
-    if ((flags & O_TRUNC) && node->type == VFS_FILE) {
-        node->size = 0;
+    if ((flags & O_TRUNC) && node->inode->type == VFS_FILE) {
+        node->inode->size = 0;
     }
 
     process_t *p = proc_current();
@@ -610,7 +627,7 @@ not_pts:
 
     int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
     if (fd < 0) { file_free(f); return -EMFILE; }
-    __sync_fetch_and_add(&node->refcount, 1);
+    __sync_fetch_and_add(&node->inode->refcount, 1);
 
     return fd;
 }
@@ -666,7 +683,7 @@ int vfs_chdir(const char *path) {
 
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
-    if (node->type != VFS_DIR) return -ENOTDIR;
+    if (node->inode->type != VFS_DIR) return -ENOTDIR;
 
     char *cwd = vfs_get_cwd();
     if (!cwd) return -EFAULT;
@@ -684,9 +701,9 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
     if (!node) return -ENOMEM;
 
     if (len > 0) {
-        if (grow_file(node, len) < 0) return -ENOMEM;
-        kmemcpy(node->data, data, len);
-        node->size = len;
+        if (grow_file(node->inode, len) < 0) return -ENOMEM;
+        kmemcpy(node->inode->data, data, len);
+        node->inode->size = len;
     }
 
     serial_puts("vfs: added ");
@@ -715,12 +732,12 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
             node = vfs_create(path, VFS_FILE);
             if (!node) return -ENOMEM;
         }
-        size_t end = node->size + len;
-        if (end > node->capacity) {
-            if (grow_file(node, end) < 0) return -ENOMEM;
+        size_t end = node->inode->size + len;
+        if (end > node->inode->capacity) {
+            if (grow_file(node->inode, end) < 0) return -ENOMEM;
         }
-        kmemcpy(node->data + node->size, buf, len);
-        node->size = end;
+        kmemcpy(node->inode->data + node->inode->size, buf, len);
+        node->inode->size = end;
         return (long)len;
     }
 
@@ -768,12 +785,12 @@ uint64_t vfs_ext2_lookup(const char *path) {
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
     /* Try ramfs first (for embedded binaries like /lib/ld-musl-x86_64.so.1) */
     struct vfs_node *node = vfs_lookup(path);
-    if (node && node->type == VFS_FILE && node->data && node->size > 0) {
-        size_t sz = node->size;
+    if (node && node->inode->type == VFS_FILE && node->inode->data && node->inode->size > 0) {
+        size_t sz = node->inode->size;
         int npages = (int)((sz + 4095) / 4096);
         uint8_t *buf = (uint8_t *)pages_alloc(npages);
         if (!buf) return -ENOMEM;
-        kmemcpy(buf, node->data, sz);
+        kmemcpy(buf, node->inode->data, sz);
         *out_data = buf;
         *out_size = sz;
         return 0;

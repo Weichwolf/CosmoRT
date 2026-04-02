@@ -636,14 +636,14 @@ long do_getdents64(int fd, void *buf, size_t count) {
     }
 
     /* ramfs directory */
-    if (!f->node || f->node->type != VFS_DIR) return -ENOTDIR;
+    if (!f->inode || f->inode->type != VFS_DIR) return -ENOTDIR;
 
-    struct vfs_node *dir = f->node;
+    struct vfs_inode *dir_ino = f->inode;
     uint8_t *out = (uint8_t *)buf;
     size_t written = 0;
 
     /* Walk to the child at offset f->offset */
-    struct vfs_node *child = dir->children;
+    struct vfs_node *child = dir_ino->children;
     uint64_t idx = 0;
     while (child && idx < f->offset) {
         child = child->next;
@@ -651,9 +651,9 @@ long do_getdents64(int fd, void *buf, size_t count) {
     }
 
     while (child) {
-        uint8_t d_type = (child->type == VFS_DIR) ? 4 : 8;
+        uint8_t d_type = (child->inode->type == VFS_DIR) ? 4 : 8;
         size_t n = emit_dirent(out + written, count - written,
-                               child->ino, f->offset + 1, d_type, child->name);
+                               child->inode->ino, f->offset + 1, d_type, child->name);
         if (n == 0) break;
         written += n;
         f->offset++;
@@ -857,7 +857,7 @@ static uint64_t flock_ino(fd_entry_t *fde) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return 0;
     if (f->disk_ino) return f->disk_ino;
-    return (uint64_t)(uintptr_t)f->node;
+    return (uint64_t)(uintptr_t)f->inode;
 }
 
 /* Check if two lock ranges overlap. len=0 means "to end of file". */
@@ -1178,7 +1178,7 @@ long do_memfd_create(const char *uname, unsigned int flags) {
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
     f->offset = 0;
-    f->node = node;
+    f->inode = node->inode;
     { int i = 0; while (path[i] && i < 255) { f->path[i] = path[i]; i++; } f->path[i] = '\0'; }
 
     int fd = fd_alloc(&p->fds, FD_FILE, f, O_RDWR);
