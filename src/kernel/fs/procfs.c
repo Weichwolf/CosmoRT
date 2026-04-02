@@ -9,6 +9,7 @@
 #include "mm/page_alloc.h"
 #include "core/smp.h"
 #include "core/timer.h"
+#include "memops.h"
 
 /* ── Entry table ─────────────────────────────────── */
 
@@ -773,3 +774,43 @@ void procfs_init(void) {
     procfs_register("self/environ", procfs_pid_environ, 0);
     serial_puts("procfs: init (21 entries)\n");
 }
+
+/* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */
+
+#include "fs/vfs.h"
+
+static int procfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *buf) {
+    (void)mnt;
+    const char *pn = relpath;
+    if (pn[0] == '/') pn++;
+    if (*pn == '\0') {
+        /* /proc root directory */
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_mode = S_IFDIR | 0555;
+        buf->st_ino = 0xFFFF0000;
+        buf->st_nlink = 2;
+        buf->st_blksize = 4096;
+        return 0;
+    }
+    int dummy;
+    int pid_type = procfs_pid_exists(pn);
+    if (procfs_stat(pn, &dummy) < 0 && !pid_type) return -ENOENT;
+    kmemset(buf, 0, sizeof(struct k_stat));
+    buf->st_mode = (pid_type == 2) ? (S_IFLNK | 0777) :
+                   (pid_type == 3) ? (S_IFDIR | 0555) :
+                                     (S_IFREG | S_IRUSR);
+    buf->st_ino = 0xFFFF0001;
+    buf->st_blksize = 4096;
+    return 0;
+}
+
+struct inode_ops procfs_inode_ops = {
+    .stat = procfs_op_stat,
+    .lstat = procfs_op_stat,
+};
+
+struct file_ops procfs_file_ops = {
+    .read = 0, .write = 0, .lseek = 0, .pread = 0, .pwrite = 0,
+    .close = 0, .fstat = 0, .ftruncate = 0, .fchmod = 0,
+    .fchown = 0, .fsync = 0,
+};

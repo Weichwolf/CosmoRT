@@ -146,9 +146,10 @@ long do_chroot(const char *path) {
         else if (++comp > 255) return -ENAMETOOLONG;
     }
     /* Validate: path must exist and be a directory */
-    extern struct vfs_node *vfs_lookup(const char *path);
-    struct vfs_node *node = vfs_lookup(kpath);
-    if (!node) return -ENOENT;
+    extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
+    int lerr = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
+    if (!node) return lerr;
     if (node->inode->type != VFS_DIR) return -ENOTDIR;
     /* Check for symlink loops (simplified: path with >40 symlinks) */
     return 0; /* accept but no-op: single-root filesystem */

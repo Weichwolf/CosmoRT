@@ -1,0 +1,418 @@
+/* CosmoRT tmpfs — in-memory filesystem
+ *
+ * Mounted at /dev/shm, /tmp, and as fallback root when no ext2.
+ * Uses vfs_node/vfs_inode dentry tree from the VFS layer.
+ */
+
+#include "fs/vfs_internal.h"
+
+/* ── inode_ops ──────────────────────────────────── */
+
+static int tmpfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *buf) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    fill_stat(node->inode, buf);
+    return 0;
+}
+
+static int tmpfs_op_lstat(struct mount *mnt, const char *relpath, struct k_stat *buf) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
+    if (!node) return err;
+    if (node->inode->type == VFS_SYMLINK) {
+        kmemset(buf, 0, sizeof(struct k_stat));
+        buf->st_ino = node->inode->ino;
+        buf->st_nlink = 1;
+        buf->st_uid = node->inode->uid;
+        buf->st_gid = node->inode->gid;
+        int tlen = kstrlen(node->inode->symlink_target);
+        buf->st_size = (int64_t)tlen;
+        buf->st_blksize = 4096;
+        buf->st_blocks = (int64_t)((tlen + 511) / 512);
+        buf->st_mode = S_IFLNK | 0777;
+        buf->st_atime_sec = (int64_t)node->inode->atime;
+        buf->st_mtime_sec = (int64_t)node->inode->mtime;
+        buf->st_ctime_sec = (int64_t)node->inode->ctime;
+        return 0;
+    }
+    fill_stat(node->inode, buf);
+    return 0;
+}
+
+static int tmpfs_op_mkdir(struct mount *mnt, const char *relpath, int mode) {
+    (void)mnt; (void)mode;
+    struct vfs_node *existing = vfs_lookup(relpath);
+    if (existing) return -EEXIST;
+    struct vfs_node *n = vfs_create(relpath, VFS_DIR);
+    if (!n) return -ENOENT;
+    return 0;
+}
+
+static int tmpfs_op_rmdir(struct mount *mnt, const char *relpath) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    if (node->inode->type != VFS_DIR) return -ENOTDIR;
+    if (node->inode->children) return -ENOTEMPTY;
+    if (node == vfs_root_node) return -EINVAL;
+    if (!node->parent) return -EINVAL;
+    unlink_child(node->parent, node);
+    inode_decref(node->inode);
+    slab_free(&node_slab, node);
+    return 0;
+}
+
+static int tmpfs_op_unlink(struct mount *mnt, const char *relpath) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
+    if (!node) return err;
+    if (node->inode->type == VFS_DIR) return -EISDIR;
+    if (!node->parent) return -EINVAL;
+    unlink_child(node->parent, node);
+    inode_decref(node->inode);
+    slab_free(&node_slab, node);
+    inotify_event(relpath, IN_DELETE);
+    return 0;
+}
+
+static int tmpfs_op_rename(struct mount *mnt, const char *oldrel, const char *newrel) {
+    (void)mnt;
+    struct vfs_node *node = vfs_lookup(oldrel);
+    if (!node) return -ENOENT;
+    struct vfs_node *dst = vfs_lookup(newrel);
+    if (dst && dst != node) {
+        if (dst->inode->type == VFS_DIR && dst->inode->children) return -ENOTEMPTY;
+        if (dst->parent) unlink_child(dst->parent, dst);
+        inode_decref(dst->inode);
+        slab_free(&node_slab, dst);
+    }
+    /* Move node: detach from old parent */
+    if (node->parent) unlink_child(node->parent, node);
+
+    /* Re-attach under new parent */
+    const char *basename;
+    struct vfs_node *new_parent = lookup_parent(newrel, &basename);
+    if (!new_parent) return -ENOENT;
+    /* Update name */
+    kstrncpy(node->name, basename, 256);
+    node->parent = new_parent;
+    node->next = new_parent->inode->children;
+    new_parent->inode->children = node;
+    inotify_event(oldrel, IN_MOVED_FROM);
+    inotify_event(newrel, IN_MOVED_TO);
+    return 0;
+}
+
+static int tmpfs_op_symlink(struct mount *mnt, const char *target, const char *relpath) {
+    (void)mnt;
+    struct vfs_node *existing = vfs_lookup(relpath);
+    if (existing) return -EEXIST;
+    ensure_dirs(relpath);
+    struct vfs_node *n = vfs_create(relpath, VFS_SYMLINK);
+    if (!n) return -ENOMEM;
+    n->inode->type = VFS_SYMLINK;
+    kstrncpy(n->inode->symlink_target, target, 256);
+    return 0;
+}
+
+static int tmpfs_op_readlink(struct mount *mnt, const char *relpath,
+                             char *buf, size_t bufsiz) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
+    if (!node) return err;
+    if (node->inode->type != VFS_SYMLINK) return -EINVAL;
+    int tlen = kstrlen(node->inode->symlink_target);
+    if ((size_t)tlen > bufsiz) tlen = (int)bufsiz;
+    kmemcpy(buf, node->inode->symlink_target, (size_t)tlen);
+    return tlen;
+}
+
+static int tmpfs_op_link(struct mount *mnt, const char *oldrel, const char *newrel) {
+    (void)mnt;
+    struct vfs_node *old_node = vfs_lookup(oldrel);
+    if (!old_node) return -ENOENT;
+    if (old_node->inode->type == VFS_DIR) return -EPERM;
+
+    struct vfs_node *existing = vfs_lookup(newrel);
+    if (existing) return -EEXIST;
+
+    const char *basename;
+    struct vfs_node *parent = lookup_parent(newrel, &basename);
+    if (!parent || parent->inode->type != VFS_DIR) return -ENOENT;
+
+    struct vfs_node *n = node_alloc(basename, old_node->inode->type);
+    if (!n) return -ENOMEM;
+    /* Share inode */
+    inode_decref(n->inode); /* free the one node_alloc created */
+    n->inode = old_node->inode;
+    n->inode->refcount++;
+    n->parent = parent;
+    n->next = parent->inode->children;
+    parent->inode->children = n;
+    return 0;
+}
+
+static int tmpfs_op_chmod(struct mount *mnt, const char *relpath, uint32_t mode) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    node->inode->mode = mode & 07777;
+    inotify_event(relpath, IN_ATTRIB);
+    return 0;
+}
+
+static int tmpfs_op_chown(struct mount *mnt, const char *relpath,
+                          uint32_t uid, uint32_t gid) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    if (uid != (uint32_t)-1) node->inode->uid = uid;
+    if (gid != (uint32_t)-1) node->inode->gid = gid;
+    node->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inotify_event(relpath, IN_ATTRIB);
+    return 0;
+}
+
+static int tmpfs_op_lchown(struct mount *mnt, const char *relpath,
+                           uint32_t uid, uint32_t gid) {
+    (void)mnt;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
+    if (!node) return err;
+    if (uid != (uint32_t)-1) node->inode->uid = uid;
+    if (gid != (uint32_t)-1) node->inode->gid = gid;
+    node->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inotify_event(relpath, IN_ATTRIB);
+    return 0;
+}
+
+static int tmpfs_op_truncate(struct mount *mnt, const char *relpath, int64_t length) {
+    (void)mnt;
+    if (length < 0) return -EINVAL;
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    struct vfs_inode *inode = node->inode;
+    if (inode->type == VFS_DIR) return -EISDIR;
+    size_t new_size = (size_t)length;
+    if (new_size > inode->size) {
+        if (grow_file(inode, new_size) < 0) return -ENOMEM;
+        kmemset(inode->data + inode->size, 0, new_size - inode->size);
+    }
+    inode->size = new_size;
+    return 0;
+}
+
+static int tmpfs_op_utimensat(struct mount *mnt, const char *relpath,
+                              const int64_t times[4], int flags) {
+    (void)mnt; (void)flags;
+    #define UTIME_NOW  ((1L << 30) - 1L)
+    #define UTIME_OMIT ((1L << 30) - 2L)
+
+    int err = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(relpath, &err);
+    if (!node) return err;
+    struct vfs_inode *inode = node->inode;
+    extern uint32_t timer_epoch_sec(void);
+    if (times) {
+        uint32_t now = timer_epoch_sec();
+        int64_t atime_nsec = times[1], mtime_nsec = times[3];
+        if (atime_nsec != UTIME_OMIT)
+            inode->atime = (atime_nsec == UTIME_NOW) ? now : (uint32_t)times[0];
+        if (mtime_nsec != UTIME_OMIT)
+            inode->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint32_t)times[2];
+    } else {
+        uint32_t now = timer_epoch_sec();
+        inode->atime = now;
+        inode->mtime = now;
+    }
+    return 0;
+}
+
+/* ── file_ops ───────────────────────────────────── */
+
+static long tmpfs_op_read(struct vfs_file *f, void *buf, size_t count) {
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
+    if (f->offset >= inode->size) return 0;
+
+    size_t avail = inode->size - (size_t)f->offset;
+    if (count > avail) count = avail;
+
+    if (inode->data) {
+        uint8_t kbuf[4096];
+        size_t done = 0;
+        while (done < count) {
+            size_t chunk = count - done;
+            if (chunk > 4096) chunk = 4096;
+            kmemcpy(kbuf, inode->data + f->offset + done, chunk);
+            kmemcpy((uint8_t *)buf + done, kbuf, chunk);
+            done += chunk;
+        }
+    }
+    f->offset += count;
+    return (long)count;
+}
+
+static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
+
+    if (f->flags & O_APPEND)
+        f->offset = inode->size;
+
+    size_t end = (size_t)f->offset + count;
+    if (end > inode->capacity) {
+        if (grow_file(inode, end) < 0) return -ENOMEM;
+    }
+
+    uint8_t kbuf[4096];
+    size_t done = 0;
+    while (done < count) {
+        size_t chunk = count - done;
+        if (chunk > 4096) chunk = 4096;
+        kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
+        kmemcpy(inode->data + f->offset + done, kbuf, chunk);
+        done += chunk;
+    }
+    f->offset = end;
+    if (end > inode->size) inode->size = end;
+
+    if (f->path[0])
+        inotify_event(f->path, IN_MODIFY);
+    extern void page_cache_invalidate_ino(uint64_t ino);
+    page_cache_invalidate_ino(inode->ino);
+    return (long)count;
+}
+
+static long tmpfs_op_lseek(struct vfs_file *f, long offset, int whence) {
+    if (!f->inode) return -EBADF;
+    long new_off;
+    switch (whence) {
+    case SEEK_SET: new_off = offset; break;
+    case SEEK_CUR: new_off = (long)f->offset + offset; break;
+    case SEEK_END: new_off = (long)f->inode->size + offset; break;
+    default: return -EINVAL;
+    }
+    if (new_off < 0) return -EINVAL;
+    f->offset = (uint64_t)new_off;
+    return new_off;
+}
+
+static long tmpfs_op_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
+    if (offset >= inode->size) return 0;
+    size_t avail = inode->size - (size_t)offset;
+    if (count > avail) count = avail;
+    if (inode->data)
+        kmemcpy(buf, inode->data + offset, count);
+    return (long)count;
+}
+
+static long tmpfs_op_pwrite(struct vfs_file *f, const void *buf,
+                            size_t count, uint64_t offset) {
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    if (inode->type != VFS_FILE) return -EISDIR;
+    size_t end = (size_t)offset + count;
+    if (end > inode->capacity) {
+        if (grow_file(inode, end) < 0) return -ENOMEM;
+    }
+    if (inode->data)
+        kmemcpy(inode->data + offset, buf, count);
+    if (end > inode->size) inode->size = end;
+    if (f->path[0])
+        inotify_event(f->path, IN_MODIFY);
+    return (long)count;
+}
+
+static int tmpfs_op_close(struct vfs_file *f) {
+    if (f->inode) {
+        inode_decref(f->inode);
+        f->inode = 0;
+    }
+    return 0;
+}
+
+static int tmpfs_op_fstat(struct vfs_file *f, struct k_stat *buf) {
+    if (!f->inode) return -EBADF;
+    fill_stat(f->inode, buf);
+    return 0;
+}
+
+static int tmpfs_op_ftruncate(struct vfs_file *f, int64_t length) {
+    if (length < 0) return -EINVAL;
+    if (!f->inode) return -EBADF;
+    struct vfs_inode *inode = f->inode;
+    size_t new_size = (size_t)length;
+    if (new_size > inode->size) {
+        if (grow_file(inode, new_size) < 0) return -ENOMEM;
+        kmemset(inode->data + inode->size, 0, new_size - inode->size);
+    }
+    inode->size = new_size;
+    return 0;
+}
+
+static int tmpfs_op_fchmod(struct vfs_file *f, uint32_t mode) {
+    if (!f->inode) return -EBADF;
+    f->inode->mode = mode & 07777;
+    return 0;
+}
+
+static int tmpfs_op_fchown(struct vfs_file *f, uint32_t uid, uint32_t gid) {
+    if (!f->inode) return -EBADF;
+    if (uid != (uint32_t)-1) f->inode->uid = uid;
+    if (gid != (uint32_t)-1) f->inode->gid = gid;
+    f->inode->mode &= ~(uint32_t)(04000 | 02000);
+    return 0;
+}
+
+static int tmpfs_op_fsync(struct vfs_file *f) {
+    (void)f;
+    return 0; /* in-memory, nothing to sync */
+}
+
+/* ── Exported ops tables ────────────────────────── */
+
+struct inode_ops tmpfs_inode_ops = {
+    .stat      = tmpfs_op_stat,
+    .lstat     = tmpfs_op_lstat,
+    .mkdir     = tmpfs_op_mkdir,
+    .rmdir     = tmpfs_op_rmdir,
+    .unlink    = tmpfs_op_unlink,
+    .rename    = tmpfs_op_rename,
+    .symlink   = tmpfs_op_symlink,
+    .readlink  = tmpfs_op_readlink,
+    .link      = tmpfs_op_link,
+    .chmod     = tmpfs_op_chmod,
+    .chown     = tmpfs_op_chown,
+    .lchown    = tmpfs_op_lchown,
+    .truncate  = tmpfs_op_truncate,
+    .utimensat = tmpfs_op_utimensat,
+};
+
+struct file_ops tmpfs_file_ops = {
+    .read      = tmpfs_op_read,
+    .write     = tmpfs_op_write,
+    .lseek     = tmpfs_op_lseek,
+    .pread     = tmpfs_op_pread,
+    .pwrite    = tmpfs_op_pwrite,
+    .close     = tmpfs_op_close,
+    .fstat     = tmpfs_op_fstat,
+    .ftruncate = tmpfs_op_ftruncate,
+    .fchmod    = tmpfs_op_fchmod,
+    .fchown    = tmpfs_op_fchown,
+    .fsync     = tmpfs_op_fsync,
+};

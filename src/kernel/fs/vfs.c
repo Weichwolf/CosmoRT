@@ -7,6 +7,7 @@
 #define VFS_NODE_MAX  256
 #define VFS_FILE_MAX  512
 #define VFS_INODE_MAX 256
+#define NAME_MAX      255
 
 static struct vfs_node  node_pool[VFS_NODE_MAX];
 static struct vfs_file  file_pool[VFS_FILE_MAX];
@@ -73,20 +74,20 @@ int is_ramfs_path(const char *path) {
 
 /* Walk an ext2 path component-by-component, following symlinks.
  * Returns final inode number, or 0 on failure. */
-uint64_t ext2_walk(const char *path) {
-    if (!path || path[0] != '/') return 0;
+uint64_t ext2_walk_err(const char *path, int *err) {
+    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
     if (path[0] == '/' && path[1] == 0) return EXT2_ROOT_INO;
 
     /* Mutable copy for symlink restart */
     char buf[512];
     int blen = kstrlen(path);
-    if (blen >= (int)sizeof(buf)) return 0;
+    if (blen >= (int)sizeof(buf)) { if (err) *err = -ENAMETOOLONG; return 0; }
     for (int i = 0; i <= blen; i++) buf[i] = path[i];
 
     int symloop = 0;
 
 restart:
-    if (symloop > 8) return 0;  /* ELOOP */
+    if (symloop > 8) { if (err) *err = -ELOOP; return 0; }
 
     uint32_t cur = EXT2_ROOT_INO;
     char *p = buf + 1;
@@ -100,14 +101,27 @@ restart:
         while (*p && *p != '/') p++;
         int len = (int)(p - start);
 
+        if (len > NAME_MAX) { if (err) *err = -ENAMETOOLONG; return 0; }
+
         char name[256];
-        int cplen = len < 255 ? len : 255;
-        for (int i = 0; i < cplen; i++) name[i] = start[i];
-        name[cplen] = 0;
+        for (int i = 0; i < len; i++) name[i] = start[i];
+        name[len] = 0;
+
+        /* Intermediate component must be a directory */
+        struct ext2_inode cur_ip;
+        if (cur != EXT2_ROOT_INO) {
+            if (ext2_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
+            if ((cur_ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) {
+                if (err) *err = -ENOTDIR;
+                return 0;
+            }
+        }
 
         uint32_t child;
-        if (ext2_dir_lookup(cur, name, &child) < 0)
+        if (ext2_dir_lookup(cur, name, &child) < 0) {
+            if (err) *err = -ENOENT;
             return 0;
+        }
 
         /* Check if child is a symlink — resolve transparently */
         struct ext2_inode ip;
@@ -116,7 +130,7 @@ restart:
             symloop++;
             char target[256];
             int tlen = ext2_readlink(child, target, sizeof(target) - 1);
-            if (tlen <= 0) return 0;
+            if (tlen <= 0) { if (err) *err = -ENOENT; return 0; }
             target[tlen] = 0;
 
             /* Remaining path after this component */
@@ -124,7 +138,10 @@ restart:
             int ttlen = tlen;
             if (target[0] == '/') {
                 /* Absolute symlink: target + "/" + remaining */
-                if (ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
+                if (ttlen + 1 + rlen >= (int)sizeof(buf)) {
+                    if (err) *err = -ENAMETOOLONG;
+                    return 0;
+                }
                 for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
                 for (int i = 0; i < ttlen; i++) buf[i] = target[i];
                 int off = ttlen;
@@ -134,7 +151,10 @@ restart:
             } else {
                 /* Relative symlink: resolve from parent of current component */
                 int prefix_len = (int)(start - buf);
-                if (prefix_len + ttlen + 1 + rlen >= (int)sizeof(buf)) return 0;
+                if (prefix_len + ttlen + 1 + rlen >= (int)sizeof(buf)) {
+                    if (err) *err = -ENAMETOOLONG;
+                    return 0;
+                }
                 for (int i = rlen; i >= 0; i--) buf[sizeof(buf) - 1 - rlen + i] = p[i];
                 for (int i = 0; i < ttlen; i++) buf[prefix_len + i] = target[i];
                 int off = prefix_len + ttlen;
@@ -148,6 +168,10 @@ restart:
         cur = child;
     }
     return cur;
+}
+
+uint64_t ext2_walk(const char *path) {
+    return ext2_walk_err(path, 0);
 }
 
 /* Public accessor for execve — walk ext2 path to inode */
@@ -168,8 +192,8 @@ uint64_t ext2_file_size(uint64_t ino) {
 }
 
 /* Walk to parent directory, extract basename. Returns parent inode or 0. */
-uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
-    if (!path || path[0] != '/') return 0;
+uint64_t ext2_walk_parent_err(const char *path, const char **basename_out, int *err) {
+    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
 
     int len = kstrlen(path);
     int last_slash = 0;
@@ -177,7 +201,9 @@ uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
         if (path[i] == '/') { last_slash = i; break; }
     }
     *basename_out = path + last_slash + 1;
-    if (!**basename_out) return 0;
+    int blen = len - last_slash - 1;
+    if (blen == 0) { if (err) *err = -ENOENT; return 0; }
+    if (blen > NAME_MAX) { if (err) *err = -ENAMETOOLONG; return 0; }
 
     if (last_slash == 0) return EXT2_ROOT_INO;
 
@@ -187,7 +213,11 @@ uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
     for (int i = 0; i < plen; i++) parent_path[i] = path[i];
     parent_path[plen] = 0;
 
-    return ext2_walk(parent_path);
+    return ext2_walk_err(parent_path, err);
+}
+
+uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
+    return ext2_walk_parent_err(path, basename_out, 0);
 }
 
 /* ── Node/Inode allocation ───────────────────────── */
@@ -316,22 +346,10 @@ void vfs_file_incref(struct vfs_file *f) {
     if (f) __sync_fetch_and_add(&f->refcount, 1);
 }
 
-/* Release inode reference when last vfs_file refcount drops */
+/* Release file resources when last refcount drops */
 static void vfs_file_release(struct vfs_file *f) {
-    if (f->backend == VFS_BACKEND_RAM && f->inode) {
-        inode_decref(f->inode);
-        f->inode = 0;
-    } else if (f->backend == VFS_BACKEND_EXT2 && f->disk_ino) {
-        uint32_t ino = (uint32_t)f->disk_ino;
-        if (ext2_open_dec(ino) <= 0) {
-            struct ext2_inode ip;
-            if (ext2_inode_read(ino, &ip) == 0 && ip.i_links_count == 0) {
-                ext2_truncate(ino, 0);
-                ext2_inode_free(ino);
-            }
-        }
-        f->disk_ino = 0;
-    }
+    if (f->f_ops && f->f_ops->close)
+        f->f_ops->close(f);
 }
 
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
@@ -385,7 +403,13 @@ void vfs_init(void) {
     slab_init(&file_slab, file_pool, (int)sizeof(struct vfs_file), VFS_FILE_MAX);
     slab_init(&inode_slab, inode_pool, (int)sizeof(struct vfs_inode), VFS_INODE_MAX);
     vfs_root_node = node_alloc("/", VFS_DIR);
-    serial_puts("vfs: init (ramfs)\n");
+
+    /* Register mount points — tmpfs as initial root (ext2 overwrites in vfs_mount_ext2) */
+    vfs_mount("/",        0, &tmpfs_inode_ops,  &tmpfs_file_ops,  0);
+    vfs_mount("/proc",    0, &procfs_inode_ops, &procfs_file_ops, 0);
+    vfs_mount("/dev",     0, &devfs_inode_ops,  &devfs_file_ops,  0);
+    vfs_mount("/dev/shm", 0, &tmpfs_inode_ops,  &tmpfs_file_ops,  0);
+    serial_puts("vfs: init\n");
 }
 
 /* ── Open/Close ──────────────────────────────────── */
@@ -514,26 +538,28 @@ not_pts:
         return fd;
     }
 
+    /* Resolve mount for path */
+    const char *relpath;
+    struct mount *mnt = vfs_resolve_mount(path, &relpath);
+
     /* ext2 path? */
-    if (!is_ramfs_path(path)) {
-        uint64_t ino64 = ext2_walk(path);
+    if (mnt && mnt->f_ops == &ext2_file_ops) {
+        int werr = -ENOENT;
+        uint64_t ino64 = ext2_walk_err(path, &werr);
         uint32_t ino = (uint32_t)ino64;
 
         if (ino != 0 && (flags & O_CREAT) && (flags & O_EXCL))
             return -EEXIST;
 
         if (ino == 0 && (flags & O_CREAT)) {
-            /* Create file on ext2 */
             const char *basename;
-            uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+            int perr = -ENOENT;
+            uint64_t parent_ino64 = ext2_walk_parent_err(path, &basename, &perr);
             uint32_t parent_ino = (uint32_t)parent_ino64;
-            if (parent_ino == 0) return -ENOENT;
-
-            /* Ensure parent is a directory */
+            if (parent_ino == 0) return perr;
             struct ext2_inode pip;
             if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
             if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
-
             uint32_t new_ino;
             int cmode = mode ? (mode & 07777) : 0644;
             int rc = ext2_create(parent_ino, basename, cmode, &new_ino);
@@ -542,54 +568,48 @@ not_pts:
             inotify_event(path, IN_CREATE);
         }
 
-        if (ino == 0) return -ENOENT;
+        if (ino == 0) return werr;
 
         struct ext2_inode ip;
         if (ext2_inode_read(ino, &ip) < 0) return -EIO;
-
         int is_dir = ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR);
-
-        if ((flags & O_DIRECTORY) && !is_dir)
-            return -ENOTDIR;
+        if ((flags & O_DIRECTORY) && !is_dir) return -ENOTDIR;
 
         struct vfs_file *f = file_alloc();
         if (!f) return -ENOMEM;
-
         f->type = is_dir ? VFS_DIR : VFS_FILE;
         f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
         f->refcount = 1;
         f->backend = VFS_BACKEND_EXT2;
+        f->f_ops = &ext2_file_ops;
+        f->mnt = mnt;
         f->offset = 0;
         f->inode = 0;
         f->disk_ino = ino;
         f->disk_size = ip.i_size;
         f->disk_dir_ino = 0;
         kstrncpy(f->path, path, 256);
-
-        if ((flags & O_TRUNC) && !is_dir)
-            ext2_truncate(ino, 0);
+        if ((flags & O_TRUNC) && !is_dir) ext2_truncate(ino, 0);
 
         process_t *p = proc_current();
         if (!p) { file_free(f); return -EFAULT; }
-
         int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
         if (fd < 0) { file_free(f); return -EMFILE; }
         ext2_open_inc(ino);
         return fd;
     }
 
-    /* ramfs path */
-    struct vfs_node *node = vfs_lookup(path);
+    /* tmpfs path (ramfs) */
+    int verr = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(path, &verr);
 
-    /* O_NOFOLLOW: reject if final component is a symlink */
     if (node && (flags & O_NOFOLLOW)) {
         int lerr = 0;
         struct vfs_node *raw = vfs_lookup_nofollow(path, &lerr);
         if (raw && raw->inode->type == VFS_SYMLINK) return -ELOOP;
     }
 
-    if (node && (flags & O_CREAT) && (flags & O_EXCL))
-        return -EEXIST;
+    if (node && (flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
 
     if (!node && (flags & O_CREAT)) {
         ensure_dirs(path);
@@ -599,36 +619,31 @@ not_pts:
             inotify_event(path, IN_CREATE);
         }
     }
-    if (!node) return -ENOENT;
+    if (!node) return verr;
 
-    if ((flags & O_DIRECTORY) && node->inode->type != VFS_DIR)
-        return -ENOTDIR;
+    if ((flags & O_DIRECTORY) && node->inode->type != VFS_DIR) return -ENOTDIR;
 
     struct vfs_file *f = file_alloc();
     if (!f) return -ENOMEM;
-
     f->type = node->inode->type;
     f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
+    f->f_ops = &tmpfs_file_ops;
+    f->mnt = mnt;
     f->offset = 0;
     f->inode = node->inode;
     f->disk_ino = 0;
     f->disk_size = 0;
     f->disk_dir_ino = 0;
     kstrncpy(f->path, path, 256);
-
-    if ((flags & O_TRUNC) && node->inode->type == VFS_FILE) {
-        node->inode->size = 0;
-    }
+    if ((flags & O_TRUNC) && node->inode->type == VFS_FILE) node->inode->size = 0;
 
     process_t *p = proc_current();
     if (!p) { file_free(f); return -EFAULT; }
-
     int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
     if (fd < 0) { file_free(f); return -EMFILE; }
     __sync_fetch_and_add(&node->inode->refcount, 1);
-
     return fd;
 }
 
@@ -668,22 +683,11 @@ int vfs_getcwd(char *buf, size_t size) {
 }
 
 int vfs_chdir(const char *path) {
-    if (!is_ramfs_path(path)) {
-        uint64_t ino64 = ext2_walk(path);
-        uint32_t ino = (uint32_t)ino64;
-        if (ino == 0) return -ENOENT;
-        struct ext2_inode ip;
-        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
-        if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
-        char *cwd = vfs_get_cwd();
-        if (!cwd) return -EFAULT;
-        kstrncpy(cwd, path, 256);
-        return 0;
-    }
-
-    struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
-    if (node->inode->type != VFS_DIR) return -ENOTDIR;
+    /* Verify path exists and is a directory via stat */
+    struct k_stat st;
+    int rc = vfs_stat(path, &st);
+    if (rc < 0) return rc;
+    if ((st.st_mode & S_IFMT) != S_IFDIR) return -ENOTDIR;
 
     char *cwd = vfs_get_cwd();
     if (!cwd) return -EFAULT;
@@ -771,10 +775,13 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
 /* ── Mount ext2 ───────────────────────────────────── */
 
 void vfs_mount_ext2(void) {
-    if (ext2_mount() == 0)
+    if (ext2_mount() == 0) {
+        /* Replace tmpfs root mount with ext2 */
+        vfs_mount("/", &ext2_super_ops, &ext2_inode_ops, &ext2_file_ops, 0);
         serial_puts("vfs: ext2 mounted as /\n");
-    else
+    } else {
         serial_puts("vfs: ext2 mount failed, using ramfs\n");
+    }
 }
 
 uint64_t vfs_ext2_lookup(const char *path) {

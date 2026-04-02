@@ -16,6 +16,8 @@
 #define EACCES          13
 #define EFAULT          14
 #define EEXIST          17
+#define EXDEV           18
+#define ENODEV          19
 #define ENOTDIR         20
 #define EISDIR          21
 #define EINVAL          22
