@@ -45,6 +45,7 @@ struct vfs_node {
     uint32_t uid, gid;      /* owner (single-user: always 0) */
     uint32_t atime, mtime, ctime; /* Unix epoch seconds */
     char symlink_target[256]; /* symlink target (VFS_SYMLINK only) */
+    int refcount;               /* nlink + open files. Free at 0. */
     struct vfs_node *children;  /* linked list (for directories) */
     struct vfs_node *next;      /* sibling link */
     struct vfs_node *parent;    /* parent directory */

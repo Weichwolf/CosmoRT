@@ -90,7 +90,7 @@ int vfs_rmdir(const char *path) {
     if (node == vfs_root_node) return -EINVAL;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
-    slab_free(&node_slab, node);
+    node_decref(node);
     return 0;
 }
 
@@ -108,12 +108,10 @@ int vfs_unlink(const char *path) {
         int rc = ext2_dir_remove(parent_ino, basename);
         if (rc == 0) {
             if (ip.i_links_count > 0) ip.i_links_count--;
-            if (ip.i_links_count == 0) {
-                ext2_inode_write(child_ino, &ip);
+            ext2_inode_write(child_ino, &ip);
+            if (ip.i_links_count == 0 && ext2_open_count(child_ino) == 0) {
                 ext2_truncate(child_ino, 0);
                 ext2_inode_free(child_ino);
-            } else {
-                ext2_inode_write(child_ino, &ip);
             }
             inotify_event(path, IN_DELETE);
         }
@@ -127,11 +125,7 @@ int vfs_unlink(const char *path) {
     if (node->type == VFS_DIR) return -EISDIR;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
-    if (node->data && node->capacity > 0) {
-        int npages = (int)((node->capacity + 4095) / 4096);
-        if (npages > 0) pages_free(node->data, npages);
-    }
-    slab_free(&node_slab, node);
+    node_decref(node);
     inotify_event(path, IN_DELETE);
     return 0;
 }
@@ -165,11 +159,7 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     if (dst) {
         if (dst->type == VFS_DIR && dst->children) return -ENOTEMPTY;
         if (dst->parent) unlink_child(dst->parent, dst);
-        if (dst->type == VFS_FILE && dst->data && dst->capacity > 0) {
-            int np = (int)((dst->capacity + 4095) / 4096);
-            if (np > 0) pages_free(dst->data, np);
-        }
-        slab_free(&node_slab, dst);
+        node_decref(dst);
     }
 
     const char *basename;

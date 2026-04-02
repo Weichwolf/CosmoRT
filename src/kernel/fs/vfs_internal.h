@@ -41,8 +41,11 @@ char *vfs_get_cwd(void);
 /* ── Node/file allocation (defined in vfs.c) ── */
 
 struct vfs_node *node_alloc(const char *name, int type);
+void node_destroy(struct vfs_node *node);
+void node_decref(struct vfs_node *node);
 struct vfs_file *file_alloc(void);
 void file_free(struct vfs_file *f);
+int ext2_open_count(uint32_t ino);
 
 /* ── Path operations (defined in vfs_lookup.c) ── */
 

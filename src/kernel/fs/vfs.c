@@ -205,11 +205,87 @@ struct vfs_node *node_alloc(const char *name, int type) {
       uint32_t now = timer_epoch_sec();
       n->atime = now; n->mtime = now; n->ctime = now; }
     n->symlink_target[0] = 0;
+    n->refcount = 1;    /* 1 = directory entry (nlink). open adds more. */
     n->children = 0;
     n->next = 0;
     n->parent = 0;
     return n;
 }
+
+/* Destroy a ramfs node: free data pages + return to slab */
+void node_destroy(struct vfs_node *node) {
+    if (node->data && node->capacity > 0) {
+        int npages = (int)((node->capacity + 4095) / 4096);
+        if (npages > 0) pages_free(node->data, npages);
+    }
+    slab_free(&node_slab, node);
+}
+
+/* Decrement vfs_node refcount. Destroys node at 0. */
+void node_decref(struct vfs_node *node) {
+    if (!node) return;
+    if (__sync_sub_and_fetch(&node->refcount, 1) <= 0)
+        node_destroy(node);
+}
+
+/* ── ext2 open inode tracking ────────────────────── */
+
+#define EXT2_OPEN_MAX 256
+static struct { uint32_t ino; int count; } ext2_open_tab[EXT2_OPEN_MAX];
+static spinlock_t ext2_open_lock = SPINLOCK_INIT;
+
+void ext2_open_inc(uint32_t ino) {
+    uint64_t flags;
+    spin_lock_irq(&ext2_open_lock, &flags);
+    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
+        if (ext2_open_tab[i].ino == ino) {
+            ext2_open_tab[i].count++;
+            spin_unlock_irq(&ext2_open_lock, flags);
+            return;
+        }
+    }
+    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
+        if (ext2_open_tab[i].ino == 0) {
+            ext2_open_tab[i].ino = ino;
+            ext2_open_tab[i].count = 1;
+            spin_unlock_irq(&ext2_open_lock, flags);
+            return;
+        }
+    }
+    spin_unlock_irq(&ext2_open_lock, flags);
+}
+
+/* Returns open count AFTER decrement. Clears slot at 0. */
+int ext2_open_dec(uint32_t ino) {
+    uint64_t flags;
+    spin_lock_irq(&ext2_open_lock, &flags);
+    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
+        if (ext2_open_tab[i].ino == ino) {
+            int n = --ext2_open_tab[i].count;
+            if (n <= 0) ext2_open_tab[i].ino = 0;
+            spin_unlock_irq(&ext2_open_lock, flags);
+            return n;
+        }
+    }
+    spin_unlock_irq(&ext2_open_lock, flags);
+    return 0;
+}
+
+int ext2_open_count(uint32_t ino) {
+    uint64_t flags;
+    spin_lock_irq(&ext2_open_lock, &flags);
+    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
+        if (ext2_open_tab[i].ino == ino) {
+            int n = ext2_open_tab[i].count;
+            spin_unlock_irq(&ext2_open_lock, flags);
+            return n;
+        }
+    }
+    spin_unlock_irq(&ext2_open_lock, flags);
+    return 0;
+}
+
+/* ── File alloc/free ─────────────────────────────── */
 
 struct vfs_file *file_alloc(void) {
     return (struct vfs_file *)slab_alloc(&file_slab);
@@ -224,12 +300,32 @@ void vfs_file_incref(struct vfs_file *f) {
     if (f) __sync_fetch_and_add(&f->refcount, 1);
 }
 
+/* Release inode/node reference when last vfs_file refcount drops */
+static void vfs_file_release(struct vfs_file *f) {
+    if (f->backend == VFS_BACKEND_RAM && f->node) {
+        node_decref(f->node);
+        f->node = 0;
+    } else if (f->backend == VFS_BACKEND_EXT2 && f->disk_ino) {
+        uint32_t ino = (uint32_t)f->disk_ino;
+        if (ext2_open_dec(ino) <= 0) {
+            struct ext2_inode ip;
+            if (ext2_inode_read(ino, &ip) == 0 && ip.i_links_count == 0) {
+                ext2_truncate(ino, 0);
+                ext2_inode_free(ino);
+            }
+        }
+        f->disk_ino = 0;
+    }
+}
+
 /* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj) {
     if (!obj) return;
     struct vfs_file *f = (struct vfs_file *)obj;
-    if (__sync_sub_and_fetch(&f->refcount, 1) <= 0)
+    if (__sync_sub_and_fetch(&f->refcount, 1) <= 0) {
+        vfs_file_release(f);
         file_free(f);
+    }
 }
 
 /* ── Inotify path helper ─────────────────────────── */
@@ -461,6 +557,7 @@ not_pts:
 
         int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
         if (fd < 0) { file_free(f); return -EMFILE; }
+        ext2_open_inc(ino);
         return fd;
     }
 
@@ -513,6 +610,7 @@ not_pts:
 
     int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
     if (fd < 0) { file_free(f); return -EMFILE; }
+    __sync_fetch_and_add(&node->refcount, 1);
 
     return fd;
 }
@@ -531,8 +629,10 @@ int vfs_close(int fd) {
             int writable = (f->flags & (O_WRONLY | O_RDWR));
             inotify_event(f->path, writable ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
         }
-        if (__sync_sub_and_fetch(&f->refcount, 1) <= 0)
+        if (__sync_sub_and_fetch(&f->refcount, 1) <= 0) {
+            vfs_file_release(f);
             file_free(f);
+        }
     }
 
     fd_close(&p->fds, fd);

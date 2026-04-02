@@ -452,6 +452,9 @@ smp_init(): PSCI CPU_ON statt trampoline unter 1MB
 
 ## Build
 
+WICHTIG: Immer `make` VOR `make test-hw/alpine-test/qemu-alpine` ausfuehren.
+Makefile trackt keine Header-Dependencies — nach Struct-Aenderungen sonst stale .o Files.
+
 ```sh
 make                    # Kernel → build/BOOTX64.EFI
 make test-hw            # ktest Unit-Tests in QEMU (eigenes ESP, eigenes init)
