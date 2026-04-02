@@ -352,13 +352,9 @@ int e1000_send(const void *data, uint16_t len) {
     tx_cur = (tx_cur + 1) % NUM_TX_DESC;
     e1000_write(E1000_TDT, tx_cur);
 
-    /* Wait for completion (timeout after ~1000 iterations) */
-    for (int w = 0; w < 1000; w++) {
-        if (tx_descs[old].status & E1000_TXD_STAT_DD) break;
-        __asm__ volatile("pause");
-        if (w == 999) { serial_puts("e1000: TX completion timeout\n"); return -1; }
-    }
-
+    /* Fire-and-forget — previous-TX check at entry ensures the ring
+     * has space. No synchronous completion wait needed. */
+    (void)old;
     return 0;
 }
 

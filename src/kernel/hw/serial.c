@@ -37,7 +37,7 @@ void serial_init(void) {
 
 void serial_putchar(char c) {
     while (!(port_in8(COM1 + 5) & 0x20))
-        ;
+        __asm__ volatile("pause");
     port_out8(COM1, c);
 
     /* Append to ring buffer (multi-core safe) */
@@ -51,7 +51,7 @@ void serial_putchar(char c) {
 
 void serial_putchar_raw(char c) {
     while (!(port_in8(COM1 + 5) & 0x20))
-        ;
+        __asm__ volatile("pause");
     port_out8(COM1, c);
 }
 

@@ -683,14 +683,23 @@ long do_accept(int fd, void *addr, int *addrlen) {
             if (r < 0) { ls->tcp.state = TCP_CLOSED; return -EAGAIN; }
             break;
         }
-        if (timer_ms() >= accept_deadline) return -EAGAIN;
+        if (timer_ms() >= accept_deadline) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EAGAIN;
+        }
         thread_t *t = thread_current();
         __atomic_store_n(&q_tcp_wait_thread, t, __ATOMIC_RELEASE);
         int remain = (int)(accept_deadline - timer_ms());
-        if (remain <= 0) return -EAGAIN;
+        if (remain <= 0) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EAGAIN;
+        }
         event_t ev;
         int wr = event_wait(&t->eq, &ev, remain);
-        if (wr == -4) return -EINTR;
+        if (wr == -4) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EINTR;
+        }
     }
 
     /* Handshake complete — allocate new socket */

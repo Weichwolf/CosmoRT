@@ -99,12 +99,14 @@ int virtio_blk_init(void) {
     return 0;
 }
 
-/* IRQ handler — acknowledge interrupt, hlt in blk_io wakes */
+static volatile int blk_irq_fired;
+
+/* IRQ handler — acknowledge + set completion flag */
 static void blk_irq_handler(void *ctx) {
     (void)ctx;
-    /* Read ISR status register to acknowledge (legacy: io_base + 19) */
     if (blk_dev.io_base)
         __asm__ volatile("inb %w1, %0" : "=a"((uint8_t){0}) : "Nd"((uint16_t)(blk_dev.io_base + 19)));
+    __atomic_store_n(&blk_irq_fired, 1, __ATOMIC_RELEASE);
 }
 
 /* ── Single block I/O ─────────────────────────────── */
@@ -145,7 +147,8 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
     virtqueue_submit(&blk_vq, (uint16_t)head);
     virtqueue_kick(&blk_dev, 0);
 
-    /* Wait for completion — busy-poll with pause for low latency */
+    /* Wait for completion — HLT until IRQ fires (no busy-polling) */
+    __atomic_store_n(&blk_irq_fired, 0, __ATOMIC_RELEASE);
     uint64_t deadline = hw_ms() + 2000;
     while (virtqueue_get_used(&blk_vq, 0) < 0) {
         if (hw_ms() > deadline) {
@@ -153,7 +156,8 @@ static int do_request(uint32_t type, uint64_t sector, void *buf, uint32_t len) {
             virtqueue_free_chain(&blk_vq, (uint16_t)head);
             return -1;
         }
-        __asm__ volatile("pause");
+        if (!__atomic_load_n(&blk_irq_fired, __ATOMIC_ACQUIRE))
+            __asm__ volatile("sti; hlt; cli");
     }
     virtqueue_free_chain(&blk_vq, (uint16_t)head);
 
