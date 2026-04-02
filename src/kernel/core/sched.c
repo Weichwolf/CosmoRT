@@ -97,6 +97,18 @@ thread_t *sched_pick(void) {
     return t;
 }
 
+/* ── finish_switch — enqueue prev AFTER context_switch ─
+ * Linux: finish_task_switch(). Runs on next's stack, prev's stack is free.
+ * Called from schedule() after context_switch, and from ret_from_fork. */
+
+void finish_switch(void) {
+    percpu_t *cpu = percpu_self();
+    thread_t *prev = cpu->switch_prev;
+    cpu->switch_prev = 0;
+    if (prev && prev != &idle_thread && prev->state == THREAD_RUNNING)
+        sched_add(prev);
+}
+
 /* ── schedule() — THE one switch point ──────────── */
 
 extern void tss_set_rsp0(uint64_t rsp0);
@@ -106,17 +118,17 @@ void schedule(void) {
     percpu_t *cpu = percpu_self();
     thread_t *prev = cpu->current_thread;
 
-    /* Re-enqueue prev if still RUNNING (preemption / yield) */
-    if (prev && prev != &idle_thread && prev->state == THREAD_RUNNING) {
-        prev->state = THREAD_RUNNABLE;
-        sched_add(prev);
-    }
-
-    /* Pick next runnable thread, skip dead/invalid */
+    /* Pick next runnable thread, skip dead/invalid.
+     * prev is NOT enqueued yet — finish_switch does it after the switch. */
     thread_t *next;
     for (;;) {
         next = sched_pick();
-        if (!next) { next = &idle_thread; break; }
+        if (!next) {
+            if (prev && prev != &idle_thread && prev->state == THREAD_RUNNING)
+                return;
+            next = &idle_thread;
+            break;
+        }
         if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
             !next->proc || !next->proc->pml4) {
             if (next->state == THREAD_DEAD && !next->proc)
@@ -144,9 +156,6 @@ void schedule(void) {
         arch_set_cr3(virt_to_phys(next->proc->pml4));
         tss_set_rsp0(next->kstack_top);
         cpu->kernel_rsp = next->kstack_top;
-        /* Restore per-CPU state that syscall_entry_asm writes per-thread:
-         * user_rsp (sysret reads it), syscall_frame (signal delivery reads it).
-         * For new threads (ret_from_fork), these are set by ret_from_fork itself. */
         cpu->user_rsp = next->saved_user_rsp;
         cpu->syscall_frame = next->kstack_top - 15 * 8;
         arch_set_fs_base(next->fs_base);
@@ -158,9 +167,11 @@ void schedule(void) {
         cpu->kernel_rsp = idle_top;
     }
 
+    cpu->switch_prev = prev;
     cpu->current_thread = next;
     context_switch(prev, next);
-    /* Returns here when WE are switched back to */
+    /* Now on next's stack. Enqueue prev (SMP-safe: prev's stack is free). */
+    finish_switch();
 }
 
 /* ── Timer preemption ────────────────────────────── */

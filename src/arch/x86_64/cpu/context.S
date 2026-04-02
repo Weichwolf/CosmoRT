@@ -73,6 +73,7 @@ kernel_longjmp:
  * Frame: [r15..rdi,rax,r11,rcx] — rax at offset 96 */
 .globl ret_from_fork
 ret_from_fork:
+    call finish_switch            /* enqueue prev (SMP-safe: prev's stack is free) */
     mov gs:[32], rsp              /* percpu->syscall_frame */
     mov rax, gs:[16]              /* percpu->current_thread */
     mov rax, [rax + 8]            /* thread->rsp (user RSP) */

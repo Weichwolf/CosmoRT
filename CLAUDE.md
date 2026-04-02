@@ -472,8 +472,8 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Stack-Ownership: Ein Thread, ein Kernel-Stack, exklusiv.             │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ context_switch(prev, next): ein Mechanismus, symmetrisch, atomar.    │ Strenger   │ Linux: asymmetrisch (ret_from_fork). CosmoRT:        │
-  │                                                                      │            │ kein Legacy, daher ein symmetrischer Pfad.            │
+  │ context_switch(prev, next): ein Mechanismus, ein Callsite, atomar.   │ Wie Linux  │ ret_from_fork als Resume-Target fuer neue Threads     │
+  │                                                                      │            │ ist inherente fork()-Asymmetrie, kein Legacy.         │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Atomare Transitions: State-Change und Switch in einer Operation.     │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
