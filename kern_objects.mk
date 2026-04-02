@@ -64,8 +64,8 @@ KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/vfs_dirops.o \
             $(BUILD)/kernel/fs/vfs_ioctls.o \
             $(BUILD)/kernel/fs/vfs_symlink.o \
-            $(BUILD)/kernel/fs/ext2.o \
-            $(BUILD)/kernel/fs/ext2_vfs.o \
+            $(BUILD)/kernel/fs/ext4.o \
+            $(BUILD)/kernel/fs/ext4_vfs.o \
             $(BUILD)/kernel/fs/tmpfs.o \
             $(BUILD)/kernel/fs/devfs.o \
             $(BUILD)/kernel/fs/bcache.o \

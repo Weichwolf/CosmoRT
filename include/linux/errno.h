@@ -39,6 +39,7 @@
 #define EDESTADDRREQ    89
 #define EMSGSIZE        90
 #define EPROTONOSUPPORT 93
+#define ENOTSUP         95
 #define EOPNOTSUPP      95
 #define EAFNOSUPPORT    97
 #define EADDRINUSE      98

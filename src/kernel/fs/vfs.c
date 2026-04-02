@@ -59,11 +59,11 @@ const char *procfs_name(const char *path) {
     return 0;
 }
 
-/* ── ext2 routing ─────────────────────────────────── */
+/* ── ext4 routing ─────────────────────────────────── */
 
-/* Returns 1 if path should use ramfs (not ext2) */
+/* Returns 1 if path should use ramfs (not ext4) */
 int is_ramfs_path(const char *path) {
-    if (!ext2_mounted()) return 1;
+    if (!ext4_mounted()) return 1;
     /* /dev/shm always ramfs */
     if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
         path[4]=='/' && path[5]=='s' && path[6]=='h' && path[7]=='m' &&
@@ -72,11 +72,11 @@ int is_ramfs_path(const char *path) {
     return 0;
 }
 
-/* Walk an ext2 path component-by-component, following symlinks.
+/* Walk an ext4 path component-by-component, following symlinks.
  * Returns final inode number, or 0 on failure. */
-uint64_t ext2_walk_err(const char *path, int *err) {
+uint64_t ext4_walk_err(const char *path, int *err) {
     if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
-    if (path[0] == '/' && path[1] == 0) return EXT2_ROOT_INO;
+    if (path[0] == '/' && path[1] == 0) return EXT4_ROOT_INO;
 
     /* Mutable copy for symlink restart */
     char buf[512];
@@ -89,7 +89,7 @@ uint64_t ext2_walk_err(const char *path, int *err) {
 restart:
     if (symloop > 8) { if (err) *err = -ELOOP; return 0; }
 
-    uint32_t cur = EXT2_ROOT_INO;
+    uint32_t cur = EXT4_ROOT_INO;
     char *p = buf + 1;
 
     while (*p) {
@@ -108,28 +108,28 @@ restart:
         name[len] = 0;
 
         /* Intermediate component must be a directory */
-        struct ext2_inode cur_ip;
-        if (cur != EXT2_ROOT_INO) {
-            if (ext2_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
-            if ((cur_ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) {
+        struct ext4_inode cur_ip;
+        if (cur != EXT4_ROOT_INO) {
+            if (ext4_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
+            if ((cur_ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) {
                 if (err) *err = -ENOTDIR;
                 return 0;
             }
         }
 
         uint32_t child;
-        if (ext2_dir_lookup(cur, name, &child) < 0) {
+        if (ext4_dir_lookup(cur, name, &child) < 0) {
             if (err) *err = -ENOENT;
             return 0;
         }
 
         /* Check if child is a symlink — resolve transparently */
-        struct ext2_inode ip;
-        if (ext2_inode_read(child, &ip) == 0 &&
-            (ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFLNK && ip.i_size > 0) {
+        struct ext4_inode ip;
+        if (ext4_inode_read(child, &ip) == 0 &&
+            (ip.i_mode & EXT4_S_IFMT) == EXT4_S_IFLNK && ip.i_size > 0) {
             symloop++;
             char target[256];
-            int tlen = ext2_readlink(child, target, sizeof(target) - 1);
+            int tlen = ext4_readlink(child, target, sizeof(target) - 1);
             if (tlen <= 0) { if (err) *err = -ENOENT; return 0; }
             target[tlen] = 0;
 
@@ -170,20 +170,20 @@ restart:
     return cur;
 }
 
-uint64_t ext2_walk(const char *path) {
-    return ext2_walk_err(path, 0);
+uint64_t ext4_walk(const char *path) {
+    return ext4_walk_err(path, 0);
 }
 
-/* Public accessor for execve — walk ext2 path to inode */
-uint64_t ext2_walk_path(const char *path) {
-    return ext2_walk(path);
+/* Public accessor for execve — walk ext4 path to inode */
+uint64_t ext4_walk_path(const char *path) {
+    return ext4_walk(path);
 }
 
-/* Public accessor for execve — get file size from ext2 inode */
-uint64_t ext2_file_size(uint64_t ino) {
-    struct ext2_inode ip;
-    if (ext2_inode_read((uint32_t)ino, &ip) < 0) return 0;
-    if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return 0;
+/* Public accessor for execve — get file size from ext4 inode */
+uint64_t ext4_file_size(uint64_t ino) {
+    struct ext4_inode ip;
+    if (ext4_inode_read((uint32_t)ino, &ip) < 0) return 0;
+    if ((ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFREG) return 0;
     /* i_size holds lower 32 bits; i_dir_acl holds upper 32 bits for regular files */
     uint64_t sz = ip.i_size;
     /* Conservative: only use high bits if the FS actually uses them */
@@ -192,7 +192,7 @@ uint64_t ext2_file_size(uint64_t ino) {
 }
 
 /* Walk to parent directory, extract basename. Returns parent inode or 0. */
-uint64_t ext2_walk_parent_err(const char *path, const char **basename_out, int *err) {
+uint64_t ext4_walk_parent_err(const char *path, const char **basename_out, int *err) {
     if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
 
     int len = kstrlen(path);
@@ -205,7 +205,7 @@ uint64_t ext2_walk_parent_err(const char *path, const char **basename_out, int *
     if (blen == 0) { if (err) *err = -ENOENT; return 0; }
     if (blen > NAME_MAX) { if (err) *err = -ENAMETOOLONG; return 0; }
 
-    if (last_slash == 0) return EXT2_ROOT_INO;
+    if (last_slash == 0) return EXT4_ROOT_INO;
 
     /* Build parent path */
     char parent_path[256];
@@ -213,11 +213,11 @@ uint64_t ext2_walk_parent_err(const char *path, const char **basename_out, int *
     for (int i = 0; i < plen; i++) parent_path[i] = path[i];
     parent_path[plen] = 0;
 
-    return ext2_walk_err(parent_path, err);
+    return ext4_walk_err(parent_path, err);
 }
 
-uint64_t ext2_walk_parent(const char *path, const char **basename_out) {
-    return ext2_walk_parent_err(path, basename_out, 0);
+uint64_t ext4_walk_parent(const char *path, const char **basename_out) {
+    return ext4_walk_parent_err(path, basename_out, 0);
 }
 
 /* ── Node/Inode allocation ───────────────────────── */
@@ -274,60 +274,60 @@ void node_destroy(struct vfs_node *node) {
     slab_free(&node_slab, node);
 }
 
-/* ── ext2 open inode tracking ────────────────────── */
+/* ── ext4 open inode tracking ────────────────────── */
 
-#define EXT2_OPEN_MAX 256
-static struct { uint32_t ino; int count; } ext2_open_tab[EXT2_OPEN_MAX];
-static spinlock_t ext2_open_lock = SPINLOCK_INIT;
+#define EXT4_OPEN_MAX 256
+static struct { uint32_t ino; int count; } ext4_open_tab[EXT4_OPEN_MAX];
+static spinlock_t ext4_open_lock = SPINLOCK_INIT;
 
-void ext2_open_inc(uint32_t ino) {
+void ext4_open_inc(uint32_t ino) {
     uint64_t flags;
-    spin_lock_irq(&ext2_open_lock, &flags);
-    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
-        if (ext2_open_tab[i].ino == ino) {
-            ext2_open_tab[i].count++;
-            spin_unlock_irq(&ext2_open_lock, flags);
+    spin_lock_irq(&ext4_open_lock, &flags);
+    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
+        if (ext4_open_tab[i].ino == ino) {
+            ext4_open_tab[i].count++;
+            spin_unlock_irq(&ext4_open_lock, flags);
             return;
         }
     }
-    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
-        if (ext2_open_tab[i].ino == 0) {
-            ext2_open_tab[i].ino = ino;
-            ext2_open_tab[i].count = 1;
-            spin_unlock_irq(&ext2_open_lock, flags);
+    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
+        if (ext4_open_tab[i].ino == 0) {
+            ext4_open_tab[i].ino = ino;
+            ext4_open_tab[i].count = 1;
+            spin_unlock_irq(&ext4_open_lock, flags);
             return;
         }
     }
-    spin_unlock_irq(&ext2_open_lock, flags);
+    spin_unlock_irq(&ext4_open_lock, flags);
 }
 
 /* Returns open count AFTER decrement. Clears slot at 0. */
-int ext2_open_dec(uint32_t ino) {
+int ext4_open_dec(uint32_t ino) {
     uint64_t flags;
-    spin_lock_irq(&ext2_open_lock, &flags);
-    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
-        if (ext2_open_tab[i].ino == ino) {
-            int n = --ext2_open_tab[i].count;
-            if (n <= 0) ext2_open_tab[i].ino = 0;
-            spin_unlock_irq(&ext2_open_lock, flags);
+    spin_lock_irq(&ext4_open_lock, &flags);
+    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
+        if (ext4_open_tab[i].ino == ino) {
+            int n = --ext4_open_tab[i].count;
+            if (n <= 0) ext4_open_tab[i].ino = 0;
+            spin_unlock_irq(&ext4_open_lock, flags);
             return n;
         }
     }
-    spin_unlock_irq(&ext2_open_lock, flags);
+    spin_unlock_irq(&ext4_open_lock, flags);
     return 0;
 }
 
-int ext2_open_count(uint32_t ino) {
+int ext4_open_count(uint32_t ino) {
     uint64_t flags;
-    spin_lock_irq(&ext2_open_lock, &flags);
-    for (int i = 0; i < EXT2_OPEN_MAX; i++) {
-        if (ext2_open_tab[i].ino == ino) {
-            int n = ext2_open_tab[i].count;
-            spin_unlock_irq(&ext2_open_lock, flags);
+    spin_lock_irq(&ext4_open_lock, &flags);
+    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
+        if (ext4_open_tab[i].ino == ino) {
+            int n = ext4_open_tab[i].count;
+            spin_unlock_irq(&ext4_open_lock, flags);
             return n;
         }
     }
-    spin_unlock_irq(&ext2_open_lock, flags);
+    spin_unlock_irq(&ext4_open_lock, flags);
     return 0;
 }
 
@@ -404,7 +404,7 @@ void vfs_init(void) {
     slab_init(&inode_slab, inode_pool, (int)sizeof(struct vfs_inode), VFS_INODE_MAX);
     vfs_root_node = node_alloc("/", VFS_DIR);
 
-    /* Register mount points — tmpfs as initial root (ext2 overwrites in vfs_mount_ext2) */
+    /* Register mount points — tmpfs as initial root (ext4 overwrites in vfs_mount_ext4) */
     vfs_mount("/",        0, &tmpfs_inode_ops,  &tmpfs_file_ops,  0);
     vfs_mount("/proc",    0, &procfs_inode_ops, &procfs_file_ops, 0);
     vfs_mount("/dev",     0, &devfs_inode_ops,  &devfs_file_ops,  0);
@@ -542,10 +542,10 @@ not_pts:
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
 
-    /* ext2 path? */
-    if (mnt && mnt->f_ops == &ext2_file_ops) {
+    /* ext4 path? */
+    if (mnt && mnt->f_ops == &ext4_file_ops) {
         int werr = -ENOENT;
-        uint64_t ino64 = ext2_walk_err(path, &werr);
+        uint64_t ino64 = ext4_walk_err(path, &werr);
         uint32_t ino = (uint32_t)ino64;
 
         if (ino != 0 && (flags & O_CREAT) && (flags & O_EXCL))
@@ -554,15 +554,15 @@ not_pts:
         if (ino == 0 && (flags & O_CREAT) && werr == -ENOENT) {
             const char *basename;
             int perr = -ENOENT;
-            uint64_t parent_ino64 = ext2_walk_parent_err(path, &basename, &perr);
+            uint64_t parent_ino64 = ext4_walk_parent_err(path, &basename, &perr);
             uint32_t parent_ino = (uint32_t)parent_ino64;
             if (parent_ino == 0) return perr;
-            struct ext2_inode pip;
-            if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
-            if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
+            struct ext4_inode pip;
+            if (ext4_inode_read(parent_ino, &pip) < 0) return -EIO;
+            if ((pip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return -ENOTDIR;
             uint32_t new_ino;
             int cmode = mode ? (mode & 07777) : 0644;
-            int rc = ext2_create(parent_ino, basename, cmode, &new_ino);
+            int rc = ext4_create(parent_ino, basename, cmode, &new_ino);
             if (rc < 0) return rc;
             ino = new_ino;
             inotify_event(path, IN_CREATE);
@@ -570,9 +570,9 @@ not_pts:
 
         if (ino == 0) return werr;
 
-        struct ext2_inode ip;
-        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
-        int is_dir = ((ip.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR);
+        struct ext4_inode ip;
+        if (ext4_inode_read(ino, &ip) < 0) return -EIO;
+        int is_dir = ((ip.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR);
         if ((flags & O_DIRECTORY) && !is_dir) return -ENOTDIR;
 
         struct vfs_file *f = file_alloc();
@@ -580,8 +580,8 @@ not_pts:
         f->type = is_dir ? VFS_DIR : VFS_FILE;
         f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
         f->refcount = 1;
-        f->backend = VFS_BACKEND_EXT2;
-        f->f_ops = &ext2_file_ops;
+        f->backend = VFS_BACKEND_EXT4;
+        f->f_ops = &ext4_file_ops;
         f->mnt = mnt;
         f->offset = 0;
         f->inode = 0;
@@ -589,13 +589,13 @@ not_pts:
         f->disk_size = ip.i_size;
         f->disk_dir_ino = 0;
         kstrncpy(f->path, path, 256);
-        if ((flags & O_TRUNC) && !is_dir) ext2_truncate(ino, 0);
+        if ((flags & O_TRUNC) && !is_dir) ext4_truncate(ino, 0);
 
         process_t *p = proc_current();
         if (!p) { file_free(f); return -EFAULT; }
         int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
         if (fd < 0) { file_free(f); return -EMFILE; }
-        ext2_open_inc(ino);
+        ext4_open_inc(ino);
         return fd;
     }
 
@@ -745,48 +745,48 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
         return (long)len;
     }
 
-    /* ext2: walk path, create if missing, append via ext2_write */
-    uint64_t ino64 = ext2_walk(path);
+    /* ext4: walk path, create if missing, append via ext4_write */
+    uint64_t ino64 = ext4_walk(path);
     uint32_t ino = (uint32_t)ino64;
     if (ino == 0) {
         const char *basename;
-        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint64_t parent_ino64 = ext4_walk_parent(path, &basename);
         uint32_t parent_ino = (uint32_t)parent_ino64;
         if (parent_ino == 0) return -ENOENT;
 
-        struct ext2_inode pip;
-        if (ext2_inode_read(parent_ino, &pip) < 0) return -EIO;
-        if ((pip.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
+        struct ext4_inode pip;
+        if (ext4_inode_read(parent_ino, &pip) < 0) return -EIO;
+        if ((pip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return -ENOTDIR;
 
         uint32_t new_ino;
-        int rc = ext2_create(parent_ino, basename, 0644, &new_ino);
+        int rc = ext4_create(parent_ino, basename, 0644, &new_ino);
         if (rc < 0) return rc;
         ino = new_ino;
     }
 
-    struct ext2_inode ip;
-    if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+    struct ext4_inode ip;
+    if (ext4_inode_read(ino, &ip) < 0) return -EIO;
     size_t off = ip.i_size;
 
-    int rc = ext2_write(ino, buf, off, len);
+    int rc = ext4_write(ino, buf, off, len);
     return (long)rc;
 }
 
-/* ── Mount ext2 ───────────────────────────────────── */
+/* ── Mount ext4 ───────────────────────────────────── */
 
-void vfs_mount_ext2(void) {
-    if (ext2_mount() == 0) {
-        /* Replace tmpfs root mount with ext2 */
-        vfs_mount("/", &ext2_super_ops, &ext2_inode_ops, &ext2_file_ops, 0);
-        serial_puts("vfs: ext2 mounted as /\n");
+void vfs_mount_ext4(void) {
+    if (ext4_mount() == 0) {
+        /* Replace tmpfs root mount with ext4 */
+        vfs_mount("/", &ext4_super_ops, &ext4_inode_ops, &ext4_file_ops, 0);
+        serial_puts("vfs: ext4 mounted as /\n");
     } else {
-        serial_puts("vfs: ext2 mount failed, using ramfs\n");
+        serial_puts("vfs: ext4 mount failed, using ramfs\n");
     }
 }
 
-uint64_t vfs_ext2_lookup(const char *path) {
-    if (!ext2_mounted()) return 0;
-    return ext2_walk(path);
+uint64_t vfs_ext4_lookup(const char *path) {
+    if (!ext4_mounted()) return 0;
+    return ext4_walk(path);
 }
 
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
@@ -803,15 +803,15 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
         return 0;
     }
 
-    /* Try ext2 */
-    if (ext2_mounted()) {
-        uint64_t ino64 = ext2_walk(path);
+    /* Try ext4 */
+    if (ext4_mounted()) {
+        uint64_t ino64 = ext4_walk(path);
         uint32_t ino = (uint32_t)ino64;
         if (ino == 0) return -ENOENT;
 
-        struct ext2_inode ip;
-        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
-        if ((ip.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return -EACCES;
+        struct ext4_inode ip;
+        if (ext4_inode_read(ino, &ip) < 0) return -EIO;
+        if ((ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFREG) return -EACCES;
         if (ip.i_size == 0) return -ENOEXEC;
 
         size_t sz = ip.i_size;
@@ -824,7 +824,7 @@ int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
         while (off < sz) {
             size_t chunk = sz - off;
             if (chunk > 65536) chunk = 65536;
-            int r = ext2_read(ino, buf + off, off, chunk);
+            int r = ext4_read(ino, buf + off, off, chunk);
             if (r < 0) {
                 pages_free(buf, npages);
                 return r;

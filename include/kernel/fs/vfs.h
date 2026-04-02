@@ -14,7 +14,7 @@
  * mount boundary switches to the mounted FS's root.
  *
  * Mount table:
- *   /         ext2
+ *   /         ext4
  *   /dev      devfs
  *   /dev/shm  tmpfs
  *   /proc     procfs
@@ -55,7 +55,7 @@ struct vfs_inode {
     uint64_t ino;
     uint32_t mode;
     uint32_t uid, gid;
-    uint32_t atime, mtime, ctime;
+    uint64_t atime, mtime, ctime;
     char symlink_target[256];
     int refcount;
     struct vfs_node *children;  /* tmpfs dir entries */
@@ -72,7 +72,7 @@ struct vfs_node {
 
 /* Legacy backend IDs — will be removed after full fs_ops migration */
 #define VFS_BACKEND_RAM     0
-#define VFS_BACKEND_EXT2    1
+#define VFS_BACKEND_EXT4    1
 
 /* ── Forward declarations ───────────────────────── */
 
@@ -89,7 +89,7 @@ struct super_ops {
 
 struct inode_ops {
     /* Resolve full relative path within this FS.
-     * Returns fs-specific handle (ext2: ino, tmpfs: vfs_node*) via out param.
+     * Returns fs-specific handle (ext4: ino, tmpfs: vfs_node*) via out param.
      * Sets *err to specific errno on failure.
      * follow: 1=follow final symlink, 0=nofollow (lstat/readlink). */
     int (*lookup)(struct mount *mnt, const char *relpath, int follow,
@@ -161,9 +161,9 @@ struct vfs_file {
     int backend;
     /* Backend-specific storage */
     struct vfs_inode *inode;    /* tmpfs */
-    uint64_t disk_ino;          /* ext2 */
-    uint64_t disk_size;         /* ext2 cached size */
-    uint64_t disk_dir_ino;      /* ext2 dir iteration */
+    uint64_t disk_ino;          /* ext4 */
+    uint64_t disk_size;         /* ext4 cached size */
+    uint64_t disk_dir_ino;      /* ext4 dir iteration */
 };
 
 /* ── Mount table API ────────────────────────────── */
@@ -218,19 +218,19 @@ int vfs_utimensat(const char *path, const int64_t times[4], int flags);
 /* ── Utility ────────────────────────────────────── */
 
 int  vfs_add_file(const char *path, const void *data, size_t len);
-void vfs_mount_ext2(void);
+void vfs_mount_ext4(void);
 int  vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size);
 long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len);
 long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len);
 void vfs_file_incref(struct vfs_file *f);
 void vfs_file_free_obj(void *obj);
-uint64_t vfs_ext2_lookup(const char *path);
+uint64_t vfs_ext4_lookup(const char *path);
 
 /* ── Filesystem registrations ───────────────────── */
 
-extern struct inode_ops ext2_inode_ops;
-extern struct file_ops  ext2_file_ops;
-extern struct super_ops ext2_super_ops;
+extern struct inode_ops ext4_inode_ops;
+extern struct file_ops  ext4_file_ops;
+extern struct super_ops ext4_super_ops;
 
 extern struct inode_ops tmpfs_inode_ops;
 extern struct file_ops  tmpfs_file_ops;

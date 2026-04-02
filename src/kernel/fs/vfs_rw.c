@@ -90,8 +90,8 @@ static struct vfs_inode *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) 
 }
 
 long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len) {
-    if (backend == VFS_BACKEND_EXT2)
-        return (long)ext2_read((uint32_t)ino, buf, offset, len);
+    if (backend == VFS_BACKEND_EXT4)
+        return (long)ext4_read((uint32_t)ino, buf, offset, len);
     /* tmpfs: find inode, read from its data buffer */
     struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
     if (!inode || inode->type != VFS_FILE) return -ENOENT;
@@ -104,8 +104,8 @@ long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_
 }
 
 long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len) {
-    if (backend == VFS_BACKEND_EXT2)
-        return (long)ext2_write((uint32_t)ino, buf, offset, len);
+    if (backend == VFS_BACKEND_EXT4)
+        return (long)ext4_write((uint32_t)ino, buf, offset, len);
     struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
     if (!inode || inode->type != VFS_FILE) return -ENOENT;
     size_t end = offset + len;

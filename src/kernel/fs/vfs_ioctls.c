@@ -7,7 +7,7 @@
 #include "fs/vfs_internal.h"
 #include "core/timer.h"
 
-/* ── Stat helpers (used by tmpfs + ext2_vfs) ────── */
+/* ── Stat helpers (used by tmpfs + ext4_vfs) ────── */
 
 void fill_stat(struct vfs_inode *inode, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
@@ -33,7 +33,7 @@ void fill_stat(struct vfs_inode *inode, struct k_stat *buf) {
     buf->st_ctime_sec = inode->ctime;
 }
 
-void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
+void fill_ext4_stat(uint32_t ino, struct ext4_inode *ip, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
     buf->st_ino = ino;
     buf->st_dev = 1;
@@ -41,12 +41,21 @@ void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
     buf->st_size = (int64_t)ip->i_size;
     buf->st_blksize = 4096;
     buf->st_blocks = (int64_t)ip->i_blocks;
-    buf->st_atime_sec = (int64_t)ip->i_atime;
-    buf->st_mtime_sec = (int64_t)ip->i_mtime;
-    buf->st_ctime_sec = (int64_t)ip->i_ctime;
     buf->st_uid = ip->i_uid;
     buf->st_gid = ip->i_gid;
     buf->st_mode = ip->i_mode;
+
+    /* 64-bit timestamps: base + extra fields (if 256-byte inodes) */
+    struct ext4_inode_extra extra;
+    if (ext4_read_extra(ino, &extra) == 0) {
+        buf->st_atime_sec = (int64_t)ext4_decode_ts(ip->i_atime, extra.i_atime_extra);
+        buf->st_mtime_sec = (int64_t)ext4_decode_ts(ip->i_mtime, extra.i_mtime_extra);
+        buf->st_ctime_sec = (int64_t)ext4_decode_ts(ip->i_ctime, extra.i_ctime_extra);
+    } else {
+        buf->st_atime_sec = (int64_t)ip->i_atime;
+        buf->st_mtime_sec = (int64_t)ip->i_mtime;
+        buf->st_ctime_sec = (int64_t)ip->i_ctime;
+    }
 }
 
 /* Fallback: use stat to get the correct path error code when

@@ -60,8 +60,8 @@ long do_renameat2(int olddirfd, const char *oldpath,
 
     if (flags & RENAME_NOREPLACE) {
         /* Target must not exist */
-        extern uint64_t ext2_walk_path(const char *);
-        if (vfs_lookup(knew) || ext2_walk_path(knew))
+        extern uint64_t ext4_walk_path(const char *);
+        if (vfs_lookup(knew) || ext4_walk_path(knew))
             return -EEXIST;
     }
     return vfs_rename(kold, knew);
@@ -170,9 +170,9 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
                     uint32_t now = timer_epoch_sec();
                     int64_t a_ns = ktimes[1], m_ns = ktimes[3];
                     if (a_ns != UTIME_OMIT_FD)
-                        node->atime = (a_ns == UTIME_NOW_FD) ? now : (uint32_t)ktimes[0];
+                        node->atime = (a_ns == UTIME_NOW_FD) ? now : (uint64_t)ktimes[0];
                     if (m_ns != UTIME_OMIT_FD)
-                        node->mtime = (m_ns == UTIME_NOW_FD) ? now : (uint32_t)ktimes[2];
+                        node->mtime = (m_ns == UTIME_NOW_FD) ? now : (uint64_t)ktimes[2];
                 } else {
                     uint32_t now = timer_epoch_sec();
                     node->atime = now;
@@ -181,9 +181,9 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
                 return 0;
             }
             if (vf->disk_ino) {
-                /* ext2 file */
-                extern int vfs_futimensat_ext2(uint64_t ino, const int64_t times[4]);
-                return vfs_futimensat_ext2(vf->disk_ino, utimes ? ktimes : 0);
+                /* ext4 file */
+                extern int vfs_futimensat_ext4(uint64_t ino, const int64_t times[4]);
+                return vfs_futimensat_ext4(vf->disk_ino, utimes ? ktimes : 0);
             }
         }
         return 0; /* no-op for special fds (pipes, sockets) */
@@ -287,10 +287,10 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
             }
         }
     }
-    /* ext2 on disk */
+    /* ext4 on disk */
     {
-        extern uint64_t ext2_walk_path(const char *);
-        if (ext2_walk_path(kpath)) { exists = 1; goto found; }
+        extern uint64_t ext4_walk_path(const char *);
+        if (ext4_walk_path(kpath)) { exists = 1; goto found; }
     }
 
 found:

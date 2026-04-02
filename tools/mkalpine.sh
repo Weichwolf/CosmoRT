@@ -1,9 +1,9 @@
 #!/bin/sh
-# Build ext2 image containing Alpine Linux with bash, gcc, Node.js, and test suites.
+# Build ext4 image containing Alpine Linux with bash, gcc, Node.js, and test suites.
 # Usage: sh tools/mkalpine.sh [ALPINE_ROOT]
 #
 # First run: downloads Alpine minirootfs, installs packages, builds test suites.
-# Subsequent runs: reuses existing ALPINE_ROOT (fast — only mkfs.ext2).
+# Subsequent runs: reuses existing ALPINE_ROOT (fast — only mkfs.ext4).
 #
 # Boot chain: kernel init.c → /sbin/init → getty → login → bash (.bashrc)
 # .bashrc runs test suites on first boot.
@@ -15,7 +15,7 @@ ALPINE_ROOT="${1:-build/alpine-root}"
 IMG=build/disk.img
 ESP_MB=64
 FS_MB=2048
-EXT2_TMP=build/alpine.img
+EXT4_TMP=build/alpine.img
 EFI_BIN=build/BOOTX64.EFI
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
 
@@ -117,14 +117,14 @@ cp tools/boot-test.sh "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 chmod +x "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 cp tools/ltp_required.txt "$ALPINE_ROOT/opt/ltp_required.txt" 2>/dev/null || true
 
-# ── Step 2: Create ext2 image ────────────────────────
-echo "mkalpine: creating ext2 ($FS_MB MB) from $ALPINE_ROOT"
-dd if=/dev/zero of="$EXT2_TMP" bs=1M count="$FS_MB" 2>/dev/null
-mkfs.ext2 -q -N 65536 -d "$ALPINE_ROOT" "$EXT2_TMP"
+# ── Step 2: Create ext4 image ────────────────────────
+echo "mkalpine: creating ext4 ($FS_MB MB) from $ALPINE_ROOT"
+dd if=/dev/zero of="$EXT4_TMP" bs=1M count="$FS_MB" 2>/dev/null
+mkfs.ext4 -q -I 256 -N 65536 -d "$ALPINE_ROOT" "$EXT4_TMP"
 
 # Inject resolv.conf for QEMU SLIRP
 if command -v debugfs >/dev/null 2>&1; then
-    echo "nameserver 10.0.2.3" | debugfs -w -R "write /dev/stdin /etc/resolv.conf" "$EXT2_TMP" 2>/dev/null || true
+    echo "nameserver 10.0.2.3" | debugfs -w -R "write /dev/stdin /etc/resolv.conf" "$EXT4_TMP" 2>/dev/null || true
 fi
 
 # ── Step 3: Build GPT disk image ────────────────────
@@ -139,13 +139,13 @@ dd if=/dev/zero of="$IMG" bs=512 count="$TOTAL_SECTORS" 2>/dev/null
 if command -v sgdisk >/dev/null 2>&1; then
     sgdisk --clear \
            --new=1:${ESP_START}:+${ESP_SECTORS} --typecode=1:EF00 --change-name=1:ESP \
-           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:ext2 \
+           --new=2:${FS_START}:+${FS_SECTORS} --typecode=2:8300 --change-name=2:ext4 \
            "$IMG" >/dev/null
 elif command -v parted >/dev/null 2>&1; then
     parted -s "$IMG" mklabel gpt
     parted -s "$IMG" mkpart ESP fat32 "${ESP_START}s" "$((ESP_START + ESP_SECTORS - 1))s"
     parted -s "$IMG" set 1 esp on
-    parted -s "$IMG" mkpart ext2 "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
+    parted -s "$IMG" mkpart ext4 "$((FS_START))s" "$((FS_START + FS_SECTORS - 1))s"
 else
     echo "ERROR: need sgdisk or parted for GPT" >&2
     rm -f "$IMG"
@@ -167,8 +167,8 @@ fi
 dd if=.esp.tmp of="$IMG" bs=512 seek="$ESP_START" conv=notrunc 2>/dev/null
 rm -f .esp.tmp
 
-# ── Step 5: Write ext2 into GPT ────────────────────
-dd if="$EXT2_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
+# ── Step 5: Write ext4 into GPT ────────────────────
+dd if="$EXT4_TMP" of="$IMG" bs=512 seek="$FS_START" conv=notrunc 2>/dev/null
 
-echo "alpine.img: $(du -h "$EXT2_TMP" | cut -f1) ext2"
-echo "disk.img:   $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB ext2)"
+echo "alpine.img: $(du -h "$EXT4_TMP" | cut -f1) ext4"
+echo "disk.img:   $(du -h "$IMG" | cut -f1) (GPT: ${ESP_MB}MB ESP + ${FS_MB}MB ext4)"

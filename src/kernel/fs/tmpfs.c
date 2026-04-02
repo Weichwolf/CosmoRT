@@ -1,6 +1,6 @@
 /* CosmoRT tmpfs — in-memory filesystem
  *
- * Mounted at /dev/shm, /tmp, and as fallback root when no ext2.
+ * Mounted at /dev/shm, /tmp, and as fallback root when no ext4.
  * Uses vfs_node/vfs_inode dentry tree from the VFS layer.
  */
 
@@ -226,9 +226,9 @@ static int tmpfs_op_utimensat(struct mount *mnt, const char *relpath,
         uint32_t now = timer_epoch_sec();
         int64_t atime_nsec = times[1], mtime_nsec = times[3];
         if (atime_nsec != UTIME_OMIT)
-            inode->atime = (atime_nsec == UTIME_NOW) ? now : (uint32_t)times[0];
+            inode->atime = (atime_nsec == UTIME_NOW) ? now : (uint64_t)times[0];
         if (mtime_nsec != UTIME_OMIT)
-            inode->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint32_t)times[2];
+            inode->mtime = (mtime_nsec == UTIME_NOW) ? now : (uint64_t)times[2];
     } else {
         uint32_t now = timer_epoch_sec();
         inode->atime = now;

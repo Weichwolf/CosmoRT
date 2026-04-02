@@ -13,7 +13,7 @@
 #include "config.h"
 #include "mm/vma.h"
 #include "fs/vfs.h"
-#include "fs/ext2.h"
+#include "fs/ext4.h"
 #include "memops.h"
 #include "uaccess.h"
 #include "sys/syscall.h"

@@ -568,7 +568,7 @@ static int procfs_pci_devices(char *buf, int size, int offset, void *ctx) {
 
 static int procfs_filesystems(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
-    const char *s = "\text2\n\tramfs\n\tprocfs\n";
+    const char *s = "\text4\n\tramfs\n\tprocfs\n";
     int len = 0; while (s[len]) len++;
     int out = 0;
     for (int i = offset; i < len && out < size; i++)

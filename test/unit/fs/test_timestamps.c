@@ -1,12 +1,12 @@
-/* test: Timestamps — ext2 and ramfs mtime */
+/* test: Timestamps — ext4 and ramfs mtime */
 #include "ktest.h"
 
 /* 2020-01-01 00:00:00 UTC = 1577836800 */
 #define TS_2020 1577836800L
 
-/* Create file on ext2 (root fs), stat → mtime > 2020 */
-static void test_ext2_timestamp(void) {
-    puts("\n[timestamps: ext2 create]\n");
+/* Create file on ext4 (root fs), stat → mtime > 2020 */
+static void test_ext4_timestamp(void) {
+    puts("\n[timestamps: ext4 create]\n");
 
     long fd = sc3(SYS_OPEN, (long)"/_ts_test", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     check("create /_ts_test", fd >= 0);
@@ -22,9 +22,9 @@ static void test_ext2_timestamp(void) {
     sc3(SYS_UNLINKAT, AT_FDCWD, (long)"/_ts_test", 0);
 }
 
-/* Write to ext2 file, stat → mtime is current (not 0) */
-static void test_ext2_write_updates_mtime(void) {
-    puts("\n[timestamps: ext2 write mtime]\n");
+/* Write to ext4 file, stat → mtime is current (not 0) */
+static void test_ext4_write_updates_mtime(void) {
+    puts("\n[timestamps: ext4 write mtime]\n");
 
     long fd = sc3(SYS_OPEN, (long)"/_ts_wr", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     check("create", fd >= 0);
@@ -96,7 +96,7 @@ static void test_ramfs_write_mtime(void) {
     sc3(SYS_UNLINKAT, AT_FDCWD, (long)"/tmp/_ts_ram2", 0);
 }
 
-TEST("ts/ext2-create", test_ext2_timestamp);
-TEST("ts/ext2-write-mtime", test_ext2_write_updates_mtime);
+TEST("ts/ext4-create", test_ext4_timestamp);
+TEST("ts/ext4-write-mtime", test_ext4_write_updates_mtime);
 TEST("ts/ramfs-create", test_ramfs_timestamp);
 TEST("ts/ramfs-write-mtime", test_ramfs_write_mtime);

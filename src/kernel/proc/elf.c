@@ -170,16 +170,16 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
     return 0;
 }
 
-/* ── Streaming ELF loader — reads from ext2/ramfs page-by-page ── */
+/* ── Streaming ELF loader — reads from ext4/ramfs page-by-page ── */
 
 /* Reader abstraction: read `len` bytes at `offset` into `buf`.
  * Returns bytes read (>= 0) or negative errno. */
 typedef int (*elf_reader_fn)(void *ctx, void *buf, size_t offset, size_t len);
 
-static int elf_read_ext2(void *ctx, void *buf, size_t offset, size_t len) {
+static int elf_read_ext4(void *ctx, void *buf, size_t offset, size_t len) {
     uint32_t ino = (uint32_t)(uintptr_t)ctx;
-    extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-    return ext2_read(ino, buf, offset, len);
+    extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+    return ext4_read(ino, buf, offset, len);
 }
 
 static int elf_read_ramfs(void *ctx, void *buf, size_t offset, size_t len) {
@@ -386,9 +386,9 @@ int elf_load_ex_stream(elf_reader_fn reader, void *ctx, size_t file_size,
 
 /* Public wrappers for streaming loader */
 
-int elf_load_ext2(uint32_t ino, size_t file_size, uint64_t *pml4,
+int elf_load_ext4(uint32_t ino, size_t file_size, uint64_t *pml4,
                   uint64_t base_hint, elf_info_t *info) {
-    return elf_load_ex_stream(elf_read_ext2, (void *)(uintptr_t)ino,
+    return elf_load_ex_stream(elf_read_ext4, (void *)(uintptr_t)ino,
                               file_size, pml4, base_hint, info);
 }
 

@@ -53,7 +53,7 @@ int vfs_mount(const char *path, struct super_ops *s_ops,
  * path="/tmp/foo", mount="/tmp" (tmpfs)
  *   → relpath="/foo"
  *
- * path="/bin/sh", mount="/" (ext2)
+ * path="/bin/sh", mount="/" (ext4)
  *   → relpath="/bin/sh"
  */
 struct mount *vfs_resolve_mount(const char *abspath, const char **relpath) {
