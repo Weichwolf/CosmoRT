@@ -206,8 +206,8 @@ struct vfs_node *node_alloc(const char *name, int type) {
     ino->capacity = 0;
     ino->ino = vfs_next_ino++;
     ino->mode = 0755;
-    ino->uid = 1000;
-    ino->gid = 1000;
+    ino->uid = 0;
+    ino->gid = 0;
     { extern uint32_t timer_epoch_sec(void);
       uint32_t now = timer_epoch_sec();
       ino->atime = now; ino->mtime = now; ino->ctime = now; }

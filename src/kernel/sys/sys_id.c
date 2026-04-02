@@ -1,11 +1,11 @@
 /* CosmoRT — Identity syscalls
- * Single-user system: uid/gid = 1000 (normal user with full capabilities).
+ * Single-user system: uid/gid = 0 (root, full capabilities).
  * No permission enforcement, but correct metadata for POSIX conformance. */
 
 #include "internal.h"
 
-#define DEFAULT_UID 1000
-#define DEFAULT_GID 1000
+#define DEFAULT_UID 0
+#define DEFAULT_GID 0
 
 long do_getuid(void)  { return DEFAULT_UID; }
 long do_getgid(void)  { return DEFAULT_GID; }
