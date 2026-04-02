@@ -7,6 +7,7 @@
  * Returns string length (excluding NUL) or negative errno. */
 int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
     if (__builtin_expect(!user_ok((uint64_t)upath, max), 0)) return -EFAULT;
+    if (__builtin_expect(upath[0] == '\0', 0)) { kbuf[0] = '\0'; return -ENOENT; }
     for (size_t i = 0; i < max; i++) {
         kbuf[i] = upath[i];
         if (kbuf[i] == '\0') return (int)i;
