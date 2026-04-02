@@ -97,11 +97,16 @@ static void fill_symlink_stat(struct vfs_node *node, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
     buf->st_ino = node->inode->ino;
     buf->st_nlink = 1;
+    buf->st_uid = node->inode->uid;
+    buf->st_gid = node->inode->gid;
     int tlen = kstrlen(node->inode->symlink_target);
     buf->st_size = (int64_t)tlen;
     buf->st_blksize = 4096;
     buf->st_blocks = (int64_t)((tlen + 511) / 512);
     buf->st_mode = S_IFLNK | 0777;
+    buf->st_atime_sec = (int64_t)node->inode->atime;
+    buf->st_mtime_sec = (int64_t)node->inode->mtime;
+    buf->st_ctime_sec = (int64_t)node->inode->ctime;
 }
 
 static void fill_ext2_symlink_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
