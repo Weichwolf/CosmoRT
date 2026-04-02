@@ -1,0 +1,7128 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+[2J[01;01HCOSMO OS Bootloader
+
+GOP: 1280x800 @ 0xC0000000
+
+Memory map: 120 entries
+
+Calling ExitBootServices...
+
+K
+
+CosmoRT v0.1
+Paging: 5120 MB phys, 8 GB direct map, 4320 MB mapped
+buddy: 1032814 pages (4034 MB), bitmap 680 pages
+sec: SMEP enabled
+sec: SMAP enabled
+fpu: FXSAVE (no XSAVE)
+IRQ: IDT loaded
+IRQ: LAPIC enabled
+IRQ: Timer 1000Hz (RT-Core)
+Timer: 2413786 TSC/ms
+RTC: 1775112518 epoch sec
+hrtimer: LAPIC 62561 ticks/ms, one-shot mode
+random: CSPRNG init (ChaCha20)
+TSS: loaded (core 0)
+syscall: LSTAR mode
+percpu: BSP init
+sched: single-core init (32 prio levels)
+proc: init (dynamic slab)
+vma: init (slab)
+IPC: init
+hw: 5 primitives ready
+virtio-blk: not found
+vfs: init (ramfs)
+procfs: init (21 entries)
+futex: init (64 buckets, 256 waiters)
+epoll: init
+e1000: found on PCI
+e1000: MAC=52:54:00:12:34:56
+net: NIC registered: e1000
+hw: IRQ 11 → vector 43
+e1000: IRQ 11 (interrupt-driven)
+virtio-net: not found
+virtio-gpu: not found
+virtio-input: not found
+fb: 1280x800 glyph 10x21
+pty: < slots
+vt: < terminals, 128x38 chars
+serial: bridge attached to VT0
+net: DHCP...ok 10.0.2.15 gw 10.0.2.2 dns 10.0.2.3
+
+--- Loading init ---
+--- Entering userspace ---
+
+
+
+=== CosmoRT Hardware Test ===
+
+
+
+[COW multi-fork]
+
+  PASS  mmap
+
+  PASS  child1 ok
+
+  PASS  parent after child1
+
+  PASS  child2 ok
+
+  PASS  parent still 0xAAAA
+
+
+
+[COW exit refcount]
+
+  PASS  mmap
+
+  PASS  child exited
+
+  PASS  parent write ok
+
+
+
+[COW no-write]
+
+  PASS  mmap
+
+  PASS  child read-only ok
+
+
+
+[COW fork write]
+
+  PASS  mmap
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited 0
+
+  PASS  parent unchanged
+
+
+
+[COW basic]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited 0
+
+
+
+[THP alignment]
+
+  PASS  mmap odd size
+
+  PASS  first ok
+
+  PASS  past 2MB ok
+
+
+
+[THP stress]
+
+  PASS  all allocs succeeded
+
+  PASS  all patterns correct
+
+
+
+[THP mprotect]
+
+  PASS  mmap 2MB
+
+  PASS  mprotect first 4KB
+
+  PASS  second page write ok
+
+  PASS  first page read ok
+
+
+
+[THP partial munmap]
+
+  PASS  mmap 2MB
+
+  PASS  partial munmap
+
+  PASS  first ok
+
+  PASS  last ok
+
+
+
+[THP COW split]
+
+  PASS  mmap 2MB
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited 0
+
+  PASS  parent first unchanged
+
+  PASS  parent mid unchanged
+
+
+
+[THP fallback small]
+
+  PASS  mmap 4KB
+
+  PASS  4KB write ok
+
+
+
+[THP 4MB]
+
+  PASS  mmap 4MB
+
+  PASS  all pages correct
+
+
+
+[THP basic]
+
+  PASS  mmap 2MB
+
+  PASS  first page
+
+  PASS  last page
+
+
+
+[MADV_FREE]
+
+  PASS  madv_free: mmap
+
+  PASS  madv_free: returns 0
+
+  PASS  madv_free: data[0] preserved
+
+  PASS  madv_free: data[100] preserved
+
+  PASS  madv_free rewrite: advise ok
+
+  PASS  madv_free rewrite: data[0]
+
+  PASS  madv_free rewrite: data[4095]
+
+  PASS  madv_free multi: rewritten
+
+  PASS  madv_free multi: untouched
+
+  PASS  madv_free large: advise ok
+
+  PASS  madv_free large: page 0
+
+  PASS  madv_free large: page 100
+
+  PASS  madv_free double: first
+
+  PASS  madv_free double: second
+
+  PASS  madv_free overlap: first
+
+  PASS  madv_free overlap: second
+
+  PASS  madv_free overlap: p0
+
+  PASS  madv_free overlap: p1
+
+  PASS  madv_free overlap: p2
+
+  PASS  madv_free mprotect: no crash
+
+  PASS  madv_free invalid addr: ENOMEM
+
+  PASS  madv_free stress: advise ok
+
+  PASS  madv_free stress: unaffected[32]
+
+  PASS  madv_free stress: unaffected[63]
+
+  PASS  madv_free fork: child saw data
+
+
+
+[MAP_SHARED]
+
+  PASS  mmap MAP_SHARED succeeds
+
+  PASS  MAP_SHARED page writable
+
+
+
+[Memory]
+
+  PASS  mmap anon succeeds
+
+  PASS  mmap page writable
+
+  PASS  mmap page zeroed
+
+  PASS  munmap returns 0
+
+  PASS  mmap 1MB succeeds
+
+  PASS  demand page first
+
+  PASS  demand page last
+
+  PASS  brk(0) returns current
+
+  PASS  brk grow
+
+  PASS  brk shrink
+
+  PASS  brk re-grow
+
+  PASS  brk shrink+grow zeroed[0]
+
+  PASS  brk shrink+grow zeroed[4095]
+
+
+
+[mremap]
+
+  PASS  mremap: initial mmap
+
+  PASS  mremap: grow 4K->8K
+
+  PASS  mremap: data[0] preserved
+
+  PASS  mremap: data[4095] preserved
+
+  PASS  mremap: shrink returns same addr
+
+  PASS  mremap: shrink data[0]
+
+  PASS  mremap: shrink data[4095]
+
+  PASS  mremap: no MAYMOVE blocked -> ENOMEM
+
+  PASS  mremap: same size noop
+
+
+
+[munmap_implicit_writeback]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap shared
+
+  PASS  read
+
+  PASS  implicit writeback
+
+
+
+[dirty_tracking]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap 3 pages
+
+  PASS  msync
+
+  PASS  page0 unchanged
+
+  PASS  page1 written
+
+  PASS  page2 unchanged
+
+
+
+[msync write_back]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap shared
+
+  PASS  msync
+
+  PASS  read
+
+  PASS  data written back
+
+  PASS  other data intact
+
+
+
+[demand_paging fixed_replace]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap page0
+
+  PASS  before: page0
+
+  PASS  remap fixed
+
+  PASS  after: page1[0]
+
+  PASS  after: page1[1]
+
+
+
+[demand_paging offset]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  reserve
+
+  PASS  map text
+
+  PASS  map data
+
+  PASS  page0[0]
+
+  PASS  page0[1]
+
+  PASS  page2[0]
+
+  PASS  page2[1]
+
+  PASS  page3[0]
+
+  PASS  page3[1]
+
+
+
+[demand_paging shared]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap shared 1
+
+  PASS  shared data
+
+  PASS  mmap shared 2
+
+  PASS  shared map2 data
+
+  PASS  shared write visible
+
+
+
+[demand_paging sparse]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap 8 pages
+
+  PASS  page0[0]
+
+  PASS  page0[1]
+
+  PASS  page7[0]
+
+  PASS  page7[1]
+
+
+
+[demand_paging file]
+
+  PASS  create file
+
+  PASS  reopen
+
+  PASS  mmap file
+
+  PASS  demand data[0]
+
+  PASS  demand data[1]
+
+
+
+[shared_mmap two maps]
+
+  PASS  create file
+
+  PASS  mmap 1
+
+  PASS  mmap 2
+
+  PASS  map1 data
+
+  PASS  map2 data
+
+  PASS  map2 sees write
+
+
+
+[shared_mmap fork]
+
+  PASS  create file
+
+  PASS  mmap shared
+
+  PASS  parent sees data
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited 0
+
+
+
+[shared_mmap basic]
+
+  PASS  create file
+
+  PASS  mmap shared
+
+  PASS  data correct
+
+
+
+[thp/fork]
+
+  PASS  mmap shared
+
+  PASS  mmap 8MB
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child saw parent data
+
+  PASS  parent data unchanged (COW)
+
+
+
+[thp/madvise-einval]
+
+  PASS  unaligned EINVAL
+
+  PASS  unmapped ENOMEM
+
+
+
+[thp/file-noop]
+
+  FAIL  mmap file
+
+
+
+[thp/madvise-disable]
+
+  PASS  mmap 8MB
+
+  PASS  madvise NOHUGEPAGE
+
+  PASS  page 0
+
+  PASS  page 2MB
+
+
+
+[thp/madvise-enable]
+
+  PASS  mmap 64KB
+
+  PASS  madvise HUGEPAGE
+
+  PASS  first byte
+
+  PASS  last byte
+
+
+
+[thp/default]
+
+  PASS  mmap 8MB
+
+  PASS  page 0
+
+  PASS  page 2MB
+
+  PASS  page 4MB
+
+  PASS  page 6MB
+
+
+
+[VM Patterns]
+
+  PASS  mmap 128MB PROT_NONE
+
+  PASS  mprotect 64KB RW
+
+  PASS  write to mprotect'd region
+
+  PASS  munmap 128MB
+
+  PASS  mmap 256MB for trim
+
+  PASS  mprotect aligned region
+
+  PASS  write to aligned region
+
+  PASS  mmap code page RW
+
+  PASS  mprotect RW→RX
+
+  PASS  JIT exec returns 42
+
+  PASS  mmap base for NOREPLACE
+
+  PASS  MAP_FIXED_NOREPLACE → EEXIST
+
+  PASS  kill(self, 0) succeeds
+
+
+
+[Access]
+
+  PASS  access /proc/dmesg
+
+  PASS  access /nonexistent → -ENOENT
+
+  PASS  access /dev/null
+
+  PASS  access /dev
+
+
+
+[dirfd]
+
+  PASS  openat AT_FDCWD /proc/dmesg
+
+  PASS  faccessat AT_FDCWD F_OK /proc/dmesg
+
+  PASS  faccessat AT_FDCWD R_OK /proc/dmesg
+
+  PASS  faccessat AT_FDCWD /nonexistent → -ENOENT
+
+  PASS  access /dev/null R_OK|W_OK
+
+  PASS  openat file-dirfd relative → -ENOTDIR
+
+  PASS  open /tmp O_DIRECTORY
+
+  PASS  openat dirfd create _dirfd_test
+
+  PASS  openat dirfd read _dirfd_test
+
+  PASS  renameat2 NOREPLACE exists → -EEXIST
+
+  PASS  renameat2 EXCHANGE → -EINVAL
+
+  PASS  renameat2 bad flags → -EINVAL
+
+  PASS  linkat AT_EMPTY_PATH → -ENOSYS
+
+  PASS  linkat bad flags → -EINVAL
+
+
+
+[dup2: clears cloexec]
+
+  PASS  open
+
+  PASS  source has CLOEXEC
+
+  PASS  dup2 returns target
+
+  PASS  dup2 clears CLOEXEC
+
+
+
+[dup: clears cloexec]
+
+  PASS  open
+
+  PASS  source has CLOEXEC
+
+  PASS  dup succeeds
+
+  PASS  dup clears CLOEXEC
+
+
+
+[dup refcount]
+
+  PASS  eventfd2 >= 0
+
+  PASS  dup3(eventfd) returns newfd
+
+  PASS  write(dup'd eventfd) = 8
+
+  PASS  read(dup'd eventfd) = 8
+
+  PASS  eventfd counter = 1
+
+  PASS  pipe2 returns 0
+
+  PASS  dup3(pipe read) returns newfd
+
+  PASS  write(pipe) = 3
+
+  PASS  read(dup'd pipe) = 3
+
+  PASS  pipe dup data 'd'
+
+  PASS  socketpair returns 0
+
+  PASS  dup3(unix sock) returns newfd
+
+  PASS  write(dup'd unix sock) = 5
+
+  PASS  read(peer) = 5
+
+  PASS  usock dup data 'u'
+
+
+
+[ELOOP]
+
+  PASS  symlink /tmp/loop_a → /tmp/loop_b
+
+  PASS  symlink /tmp/loop_b → /tmp/loop_a
+
+  PASS  open symlink loop → error
+
+  PASS  symlink /tmp/link_ok
+
+  PASS  readlink /tmp/link_ok succeeds
+
+
+
+[Fcntl]
+
+  PASS  open for fcntl test
+
+  PASS  F_DUPFD_CLOEXEC newfd >= 10
+
+  PASS  F_GETFD has FD_CLOEXEC
+
+  PASS  F_DUPFD newfd >= 20
+
+  PASS  F_DUPFD no CLOEXEC
+
+  PASS  F_SETFD/F_GETFD roundtrip
+
+  PASS  F_SETLK write lock
+
+  PASS  F_GETLK returns 0
+
+  PASS  F_GETLK l_type = F_UNLCK
+
+  PASS  F_SETLKW read lock
+
+
+
+[FD_CLOEXEC]
+
+  PASS  open /dev/null >= 0
+
+  PASS  default: F_GETFD = 0
+
+  PASS  F_SETFD(FD_CLOEXEC) = 0
+
+  PASS  after set: F_GETFD = 1
+
+  PASS  F_SETFD(0) = 0
+
+  PASS  after clear: F_GETFD = 0
+
+  PASS  F_SETFL preserves CLOEXEC
+
+  PASS  F_GETFL excludes O_CLOEXEC
+
+  PASS  F_GETFL includes O_NONBLOCK
+
+
+
+[FD_EMFILE]
+
+  PASS  dup fails with EMFILE
+
+  PASS  all fds < FD_MAX
+
+  PASS  opened near FD_MAX fds
+
+
+
+[FD_LOWEST_FREE]
+
+  PASS  re-alloc returns closed fd
+
+
+
+[FD_SCALE_512]
+
+  PASS  512+ FDs opened
+
+
+
+[getdents64]
+
+  PASS  open / for getdents
+
+  PASS  getdents64 / > 0
+
+  PASS  root has home
+
+  PASS  root has tmp
+
+  PASS  open /proc for getdents
+
+  PASS  getdents64 /proc > 0
+
+  PASS  /proc has dmesg
+
+  PASS  /proc has meminfo
+
+  PASS  getdents on file = ENOTDIR
+
+  PASS  getdents64 EOF returns 0
+
+  PASS  open /tmp/dirtest
+
+  PASS  getdents64 dirtest > 0
+
+  PASS  dirtest entry count
+
+  PASS  alpha
+
+  PASS  bravo
+
+  PASS  charlie
+
+  PASS  delta
+
+  PASS  echo
+
+  PASS  foxtrot
+
+  PASS  golf
+
+  PASS  hotel
+
+  PASS  india
+
+  PASS  juliet
+
+  PASS  multi-call getdents > 0
+
+  PASS  multi-call entry count
+
+  PASS  alpha
+
+  PASS  bravo
+
+  PASS  charlie
+
+  PASS  delta
+
+  PASS  echo
+
+  PASS  foxtrot
+
+  PASS  golf
+
+  PASS  hotel
+
+  PASS  india
+
+  PASS  juliet
+
+  PASS  d_off monotonically increasing
+
+
+
+[unlink-cwd] unlink relative paths after chdir
+
+  PASS  mkdir /tmp/cwdtest
+
+  PASS  created 3 files
+
+  PASS  chdir /tmp/cwdtest
+
+  PASS  unlink relative paths after chdir
+
+
+
+[rm-multi] create+unlink 10 files in /tmp/rmtest
+
+  PASS  mkdir /tmp/rmtest
+
+  PASS  created 10 files
+
+  PASS  all 10 unlinks succeeded
+
+  PASS  all 10 files gone after unlink
+
+
+
+[statfs]
+
+  PASS  statfs / returns 0
+
+  PASS  statfs / bsize=4096
+
+  PASS  statfs / blocks > 0
+
+  PASS  statfs / namelen=255
+
+  PASS  statfs /proc returns 0
+
+  PASS  statfs /proc type
+
+  PASS  statfs /tmp returns 0
+
+  PASS  statfs /tmp type
+
+  PASS  fstatfs fd=1 returns 0
+
+  PASS  fstatfs bsize=4096
+
+  PASS  fstatfs bad fd → error
+
+
+
+[SYMLINK]
+
+  PASS  create /tmp/sym_target
+
+  PASS  symlink /tmp/sym_link -> /tmp/sym_target
+
+  PASS  open via symlink
+
+  PASS  read 7 bytes via symlink
+
+  PASS  data matches
+
+  PASS  readlink length
+
+  PASS  readlink target
+
+  PASS  create chain_file
+
+  PASS  symlink chain_a -> chain_file
+
+  PASS  symlink chain_b -> chain_a
+
+  PASS  symlink chain_c -> chain_b
+
+  PASS  open through 3-level chain
+
+  PASS  read 5 bytes through chain
+
+  PASS  chain data matches
+
+  PASS  symlink cloop_a -> cloop_b
+
+  PASS  symlink cloop_b -> cloop_a
+
+  PASS  open circular -> error
+
+  PASS  lstat symlink ok
+
+  PASS  lstat mode S_IFLNK
+
+  PASS  stat symlink ok
+
+  PASS  stat mode S_IFREG (followed)
+
+  PASS  unlink symlink
+
+  PASS  target still exists after unlink symlink
+
+  PASS  symlink gone after unlink
+
+  PASS  symlink for O_NOFOLLOW test
+
+  PASS  O_NOFOLLOW on symlink -> ELOOP
+
+
+
+[timestamps: ramfs write mtime]
+
+  PASS  create
+
+  PASS  open for write
+
+  mtime_s=1775112524
+
+  PASS  mtime after write > 2020
+
+  PASS  size = 4
+
+
+
+[timestamps: ramfs create]
+
+  PASS  create /tmp/_ts_ram
+
+  PASS  stat returns 0
+
+  mtime_s=1775112524
+
+  PASS  mtime > 2020
+
+
+
+[timestamps: ext2 write mtime]
+
+  PASS  create
+
+  PASS  open for write
+
+  mtime_s=1775112524
+
+  PASS  mtime after write > 2020
+
+  PASS  size = 4
+
+
+
+[timestamps: ext2 create]
+
+  PASS  create /_ts_test
+
+  PASS  stat returns 0
+
+  mtime_s=1775112524
+
+  PASS  mtime > 2020
+
+
+
+[xattr-enodata]
+
+  PASS  getxattr → -ENODATA
+
+
+
+[unlink-space]
+
+  PASS  statfs /tmp before
+
+  PASS  statfs /tmp after
+
+  PASS  no space leak (bfree after >= before)
+
+
+
+[unlink-basic]
+
+  PASS  create /tmp/ul_test
+
+  PASS  unlink returns 0
+
+  PASS  open after unlink → ENOENT
+
+
+
+[VFS]
+
+  PASS  open /test.txt for write
+
+  PASS  write 17 bytes
+
+  PASS  open /test.txt for read
+
+  PASS  read 17 bytes
+
+  PASS  read data matches
+
+  PASS  getcwd succeeds
+
+  PASS  cwd is /
+
+  PASS  fstat on closed fd fails
+
+
+
+[EPOLLET]
+
+  PASS  eventfd2
+
+  PASS  epoll_create1
+
+  PASS  epoll_ctl ADD ET
+
+  PASS  epoll_wait ET first
+
+  PASS  epoll_wait ET second = 0
+
+
+
+[eventfd flags]
+
+  PASS  eventfd2(EFD_CLOEXEC) >= 0
+
+  PASS  eventfd CLOEXEC: F_GETFD = 1
+
+  PASS  eventfd2(EFD_NONBLOCK) >= 0
+
+  PASS  eventfd NONBLOCK: O_NONBLOCK set
+
+  PASS  eventfd2(CLOEXEC|NONBLOCK) >= 0
+
+  PASS  eventfd both: F_GETFD = 1
+
+  PASS  eventfd both: O_NONBLOCK set
+
+  PASS  eventfd: F_GETFL excludes CLOEXEC
+
+  PASS  eventfd2(0) >= 0
+
+  PASS  eventfd(0): F_GETFD = 0
+
+
+
+[Event Queue]
+
+  PASS  init: pending=0
+
+  PASS  push: pending=1
+
+  PASS  pop: return 0
+
+  PASS  pop: type=CHILD_EXITED
+
+  PASS  pop: data=42
+
+  PASS  pop: pending=0
+
+  PASS  pop empty: return -1
+
+  PASS  2 push: pending=2
+
+  PASS  fifo pop 1: return 0
+
+  PASS  fifo pop 1: type=PIPE_DATA
+
+  PASS  fifo pop 1: data=100
+
+  PASS  fifo pop 2: return 0
+
+  PASS  fifo pop 2: type=FUTEX_WAKE
+
+  PASS  fifo pop 2: data=200
+
+  PASS  8 push: pending=8
+
+  PASS  8 events FIFO order
+
+  PASS  overflow: pending=16
+
+  PASS  overflow: first pop data=4
+
+  PASS  drain PIPE_DATA: count=3
+
+  PASS  drain[0].data=10
+
+  PASS  drain[1].data=30
+
+  PASS  drain[2].data=50
+
+  PASS  after drain: pending=2
+
+  PASS  after drain: first=CHILD_EXITED
+
+  PASS  after drain: first.data=20
+
+  PASS  after drain: second=FUTEX_WAKE
+
+  PASS  after drain: second.data=40
+
+  PASS  drain max=2: count=2
+
+  PASS  drain max=2: [0].data=1
+
+  PASS  drain max=2: [1].data=2
+
+  PASS  drain max=2: remaining=4
+
+  PASS  fork succeeded
+
+  PASS  wait4 returns child pid
+
+  PASS  wait4 exit code 7
+
+  PASS  nanosleep 10ms elapsed >= 5ms
+
+  FAIL  WAIT timeout = -ETIMEDOUT (got=0 expected=-110)
+
+  PASS  timeout elapsed >= 5ms
+
+  PASS  timeout elapsed < 200ms
+
+  PASS  spawn waiter thread
+
+  PASS  worker started
+
+  PASS  WAKE returns >= 1
+
+  PASS  worker got -EAGAIN or 0
+
+  PASS  WAKE no waiters = 0
+
+
+
+[futex]
+
+  PASS  WAIT wrong val = -EAGAIN
+
+  PASS  CMP_REQUEUE wrong val3 = -EAGAIN
+
+  PASS  spawn waiter
+
+  PASS  CMP_REQUEUE moved 1
+
+  PASS  WAKE addr2 >= 1
+
+  PASS  worker woken
+
+
+
+[futex_requeue]
+
+  PASS  spawn waiter
+
+  PASS  REQUEUE moved 1
+
+  PASS  WAKE addr2 >= 1
+
+  PASS  worker woken
+
+
+
+[inotify: attrib]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  read > 0
+
+  PASS  mask has IN_ATTRIB
+
+
+
+[inotify: overflow]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  got events or overflow
+
+  PASS  overflow detected
+
+
+
+[inotify: rm_watch]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  rm_watch == 0
+
+  PASS  no events after rm_watch
+
+
+
+[inotify: nonblock]
+
+  PASS  inotify_init >= 0
+
+  PASS  read empty = -EAGAIN
+
+
+
+[inotify: poll/epoll]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  epoll_create1 >= 0
+
+  PASS  epoll_ctl(ADD) == 0
+
+  PASS  epoll_wait(0) = 0 (no events)
+
+  PASS  epoll_wait = 1 (events ready)
+
+  PASS  EPOLLIN set
+
+  PASS  data == 42
+
+
+
+[inotify: multiple watches]
+
+  PASS  inotify_init >= 0
+
+  PASS  wd1 >= 1
+
+  PASS  wd2 >= 1
+
+  PASS  wd1 != wd2
+
+  PASS  read > 0
+
+  PASS  event wd == wd2
+
+
+
+[inotify: mask filter]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  no events for unwatched mask
+
+  PASS  got event after delete
+
+  PASS  event is IN_DELETE
+
+
+
+[inotify: close_write]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  read > 0
+
+  PASS  got IN_CLOSE_WRITE
+
+
+
+[inotify: move]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  read > 0
+
+  PASS  got IN_MOVED_FROM
+
+  PASS  got IN_MOVED_TO
+
+
+
+[inotify: delete]
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  unlink == 0
+
+  PASS  read > 0
+
+  PASS  mask == IN_DELETE
+
+  PASS  name == victim
+
+
+
+[inotify: modify]
+
+  PASS  create file >= 0
+
+  PASS  inotify_init >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  open(WRONLY) >= 0
+
+  PASS  read > 0
+
+  PASS  mask has IN_MODIFY
+
+
+
+[inotify: create]
+
+  PASS  inotify_init1 >= 0
+
+  PASS  add_watch >= 1
+
+  PASS  open(O_CREAT) >= 0
+
+  PASS  read > 0
+
+  PASS  wd matches
+
+  PASS  mask == IN_CREATE
+
+  PASS  name present
+
+  PASS  name == newfile
+
+
+
+[pipe2 flags]
+
+  PASS  pipe2 O_CLOEXEC returns 0
+
+  PASS  pipe2 fds valid
+
+  PASS  pipe2 read FD_CLOEXEC
+
+  PASS  pipe2 write FD_CLOEXEC
+
+  PASS  pipe2 O_NONBLOCK returns 0
+
+  PASS  pipe2 read O_NONBLOCK
+
+  PASS  pipe2 no flags returns 0
+
+
+
+[poll timeout=-1]
+
+  PASS  pipe2
+
+  PASS  poll(-1) returns ready
+
+  PASS  POLLIN set
+
+
+
+[pselect6: timeout]
+
+  PASS  pselect6 timeout returns 0
+
+
+
+[select: nfds=0]
+
+  PASS  select nfds=0 returns 0
+
+
+
+[select: timeout]
+
+  PASS  select timeout returns 0
+
+
+
+[timerfd flags]
+
+  PASS  timerfd(TFD_CLOEXEC) >= 0
+
+  PASS  timerfd CLOEXEC: F_GETFD = 1
+
+  PASS  timerfd(TFD_NONBLOCK) >= 0
+
+  PASS  timerfd NONBLOCK: O_NONBLOCK set
+
+  PASS  timerfd(0) >= 0
+
+  PASS  timerfd(0): F_GETFD = 0
+
+
+
+[unix-poll: sendmsg]
+
+  PASS  socketpair
+
+  PASS  sendmsg returns 12
+
+  PASS  recv returns 12
+
+  PASS  data 's'
+
+  PASS  data 't'
+
+
+
+[unix-poll: POLLHUP]
+
+  PASS  socketpair
+
+  PASS  poll returns ready
+
+  PASS  POLLHUP set
+
+
+
+[unix-poll: POLLOUT]
+
+  PASS  socketpair
+
+  PASS  poll returns ready
+
+  PASS  POLLOUT set
+
+
+
+[unix-poll: POLLIN]
+
+  PASS  socketpair
+
+  PASS  poll returns ready
+
+  PASS  POLLIN set
+
+
+
+[AF_UNIX]
+
+  PASS  socketpair returns 0
+
+  PASS  socketpair sv[0] >= 0
+
+  PASS  socketpair sv[1] >= 0
+
+  PASS  socketpair sv[0] != sv[1]
+
+  PASS  write 11 bytes to sv[0]
+
+  PASS  read from sv[1] returns 11
+
+  PASS  read data matches 'H'
+
+  PASS  read data matches 'e'
+
+  PASS  read data matches '!'
+
+  PASS  write 2 bytes to sv[1]
+
+  PASS  read from sv[0] returns 2
+
+  PASS  bidirectional data 'O'
+
+  PASS  bidirectional data 'K'
+
+  PASS  sendmsg returns 8
+
+  PASS  recvmsg returns 8
+
+  PASS  recvmsg data 's'
+
+  PASS  recvmsg data '!'
+
+  PASS  socketpair #2 returns 0
+
+  PASS  read after peer close = 0 (EOF)
+
+  PASS  socket(AF_UNIX) >= 0
+
+  PASS  socketpair #3 returns 0
+
+  PASS  blocking: write 5 bytes
+
+  PASS  blocking: read returns 5
+
+  PASS  blocking: data 'b'
+
+  PASS  blocking: data 'k'
+
+  PASS  socketpair #4 returns 0
+
+  PASS  blocking EOF: read = 0
+
+
+
+[clone flags]
+
+  PASS  mmap clone stack
+
+  PASS  clone(VM|FS|FILES|SIGHAND|SYSVSEM) tid > 0
+
+  PASS  clone(SIGCHLD) = fork, pid > 0
+
+  PASS  wait4 reaps forked child
+
+  PASS  child exit status 42
+
+
+
+[Wake via pipe]
+
+  PASS  pipe created
+
+  PASS  fork succeeded
+
+  PASS  write to pipe
+
+  PASS  child woke and exited 42
+
+
+
+[RT Query]
+
+  PASS  subcase 0 returns -EINVAL
+
+  PASS  subcase 1 returns -EINVAL
+
+  PASS  invalid query returns -EINVAL
+
+
+
+[Scheduler]
+
+  PASS  sched_yield returns 0
+
+
+
+[Skal-M: fork till OOM]
+
+  PASS  spawned >= 48
+
+  spawned=128
+
+  PASS  reaped all
+
+
+
+[Skal-M: many threads]
+
+  FAIL  created >= 64 threads (got=0 min=64)
+
+  PASS  all threads ran
+
+  threads created=0 ran=0
+
+
+
+[Skal-M: many processes]
+
+  PASS  spawned >= 32 procs
+
+  spawned=48
+
+  PASS  reaped all
+
+
+
+[Threads]
+
+  PASS  mmap thread stack
+
+  FAIL  clone returns tid
+
+  FAIL  worker thread ran
+
+  worker tid=-22
+
+
+
+[TLS]
+
+  PASS  arch_prctl SET_FS
+
+  PASS  arch_prctl GET_FS
+
+  PASS  FS base roundtrip
+
+
+
+[signal: exec reset]
+
+  PASS  install handler
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child exit 0 (handler inherited, reset ok)
+
+  PASS  fork #2
+
+  PASS  child #2 exited
+
+  PASS  SIG_IGN survives fork
+
+
+
+[Job Control]
+
+  PASS  TIOCSPGRP set 99
+
+  PASS  TIOCGPGRP returns 0
+
+  PASS  TIOCGPGRP roundtrip 99
+
+  PASS  fork returned child pid
+
+  PASS  wait4 returned child pid
+
+  PASS  child exited normally
+
+  PASS  child exit code 42
+
+  PASS  fork for stop test
+
+  PASS  kill(child, SIGTSTP)
+
+  PASS  wait4 WUNTRACED returned child
+
+  PASS  WIFSTOPPED
+
+  PASS  WSTOPSIG == SIGTSTP
+
+  PASS  child killed after continue
+
+  PASS  fork for pgid kill
+
+  PASS  kill(-pgid, SIGINT)
+
+  PASS  wait4 after pgid kill
+
+  PASS  killed by signal
+
+  PASS  WTERMSIG == SIGINT
+
+  PASS  fork for continue test
+
+  PASS  SIGSTOP: wait4 returned child
+
+  PASS  SIGSTOP: WIFSTOPPED
+
+  PASS  SIGCONT: wait4 returned child
+
+  FAIL  SIGCONT: WIFCONTINUED
+
+
+
+[sigaltstack]
+
+  PASS  sigaltstack get returns 0
+
+  PASS  mmap altstack
+
+  PASS  sigaltstack set returns 0
+
+  PASS  sigaltstack verify returns 0
+
+  PASS  ss_sp matches
+
+  PASS  ss_size matches
+
+  PASS  sigaltstack disable
+
+  PASS  disabled ss_flags
+
+
+
+[SIG-BUG3: per-thread sig_blocked]
+
+  PASS  mmap thread B stack
+
+  PASS  clone thread B
+
+  PASS  thread B ready
+
+  b_received=1
+
+  PASS  thread B received SIGUSR1
+
+
+
+[SIG-BUG2: RSP Alignment]
+
+  handler RSP=0x7ffd3ec35708
+
+  RSP mod 16=8
+
+  PASS  handler entry RSP mod 16
+
+
+
+[SIG-BUG1: Red Zone]
+
+  PASS  redzone handler ran
+
+  canary expected=0xdeadbeefcafebabe
+
+  canary got=0xdeadbeefcafebabe
+
+  PASS  redzone canary intact
+
+
+
+[signal constants]
+
+  PASS  kill sig=0
+
+  PASS  sigaction SIGHUP
+
+  PASS  kill SIGHUP
+
+  PASS  sigaction SIGABRT
+
+  PASS  sigaction SIGBUS
+
+  PASS  sigaction SIGWINCH
+
+  PASS  sigaction SIGSYS
+
+
+
+[Signals]
+
+  PASS  rt_sigaction SIG_IGN
+
+  PASS  kill(self, SIGUSR1) SIG_IGN
+
+  PASS  rt_sigaction user handler
+
+  PASS  kill(self, SIGUSR1) handler
+
+  PASS  handler received sig
+
+  PASS  handler got SIGUSR1
+
+  PASS  SIGUSR2 handler ran
+
+  PASS  SIGUSR2 value
+
+  PASS  blocked sig not delivered
+
+  PASS  unblocked sig delivered
+
+  PASS  unblocked sig value
+
+  PASS  oldact handler matches
+
+  PASS  oldact restorer matches
+
+  PASS  rt_sigaction sig 32
+
+  PASS  kill(self, 32)
+
+  PASS  sig 32 handler ran
+
+  PASS  sig 32 value
+
+  PASS  sig 63 handler ran
+
+  PASS  sig 63 value
+
+  PASS  tgkill(self) returns 0
+
+  PASS  tgkill handler ran
+
+  PASS  tgkill handler got SIGUSR1
+
+  PASS  tgkill bad tgid → error
+
+  PASS  tgkill sig 0
+
+  PASS  SA_SIGINFO handler ran
+
+  PASS  SA_SIGINFO sig value
+
+  PASS  SA_SIGINFO info ptr non-null
+
+  PASS  SA_SIGINFO si_signo
+
+  PASS  fork SIGHUP ok
+
+  PASS  SIGHUP WIFSIGNALED
+
+  PASS  SIGHUP WTERMSIG
+
+  PASS  fork SIGALRM ok
+
+  PASS  SIGALRM WIFSIGNALED
+
+  PASS  SIGALRM WTERMSIG
+
+
+
+[Signals Extended]
+
+  PASS  pipe for SIGPIPE
+
+  PASS  write broken pipe -> -EPIPE
+
+  PASS  SIGPIPE received
+
+  PASS  write broken pipe SIG_IGN -> -EPIPE
+
+  PASS  SIGPIPE not received (SIG_IGN)
+
+  FAIL  alarm(1) old=0 (got=5 expected=0)
+
+  PASS  SIGALRM received
+
+  PASS  alarm(0) returns remaining > 0
+
+  PASS  SIGALRM not received (cancelled)
+
+  PASS  fork for SIGCHLD ok
+
+  PASS  child exited normally
+
+  PASS  child exit code
+
+  FAIL  SIGCHLD received (got=0 expected=1)
+
+
+
+[winsize]
+
+  PASS  TIOCGWINSZ returns 0
+
+  PASS  ws_row > 0
+
+  PASS  ws_col > 0
+
+  PASS  ws_col in range 80-200
+
+  PASS  ws_row in range 24-60
+
+  PASS  TIOCSWINSZ returns 0
+
+  PASS  TIOCGWINSZ after SET returns 0
+
+  PASS  ws_row roundtrip
+
+  PASS  ws_col roundtrip
+
+  PASS  pipe2 ok
+
+  PASS  TIOCGWINSZ on pipe = -ENOTTY
+
+
+
+[ABI: mprotect takes effect]
+
+  PASS  mmap for mprotect
+
+  PASS  mprotect PROT_NONE ok
+
+  PASS  fork for SIGSEGV test
+
+
+SEGFAULT CR2=00007e43b18ba000 RIP=00000000004387a3 err=0000000000000004 pid=0000000000000138 killed
+  PASS  PROT_NONE causes signal
+
+  PASS  mprotect PROT_READ ok
+
+  PASS  data preserved after PROT_NONE->PROT_READ
+
+
+
+[ABI: mmap demand zero]
+
+  PASS  mmap succeeded
+
+  PASS  anonymous page all zeroes
+
+  PASS  big mmap succeeded
+
+  PASS  big page[0] zero
+
+  PASS  big page[last] zero
+
+  PASS  big page[mid] zero
+
+
+
+[ABI: fork TLS isolation]
+
+  PASS  fork succeeded
+
+  PASS  child exited
+
+  PASS  child FS_BASE matches parent
+
+  parent fs after=0x7f0000000000
+
+  PASS  parent FS_BASE preserved
+
+
+
+[ABI: signal red zone 128 bytes]
+
+  PASS  redzone handler ran
+
+  PASS  redzone  -8 intact
+
+  PASS  redzone -24 intact
+
+  PASS  redzone -40 intact
+
+  PASS  redzone -56 intact
+
+  PASS  redzone -72 intact
+
+  PASS  redzone -88 intact
+
+  PASS  redzone -104 intact
+
+  PASS  redzone -120 intact
+
+
+
+[ABI: signal handler register isolation]
+
+  PASS  handler B ran
+
+  handler A rbx before=0xa1a1a1a1a1a1a1a1
+
+  handler A rbx after =0xa1a1a1a1a1a1a1a1
+
+  PASS  handler A rbx not leaked from B
+
+
+
+[ABI: syscall preserves RSP]
+
+  rsp before=0x7ffd3ec35e10
+
+  rsp after =0x7ffd3ec35e10
+
+  PASS  rsp preserved over syscall
+
+
+
+[ABI: syscall preserves callee-saved]
+
+  PASS  fork child for register test
+
+  PASS  callee-saved preserved
+
+
+
+[ARCH_GET_GS]
+
+  PASS  arch_prctl ARCH_GET_GS returns 0
+
+  PASS  GS base = 0 (unused)
+
+  PASS  arch_prctl ARCH_SET_GS → -EINVAL
+
+
+
+[getrusage]
+
+  PASS  getrusage returns 0
+
+  PASS  ru_maxrss > 0
+
+  PASS  ru_utime non-zero
+
+  PASS  getrusage children returns 0
+
+  PASS  children ru_maxrss = 0
+
+  PASS  getrusage invalid who → -EINVAL
+
+
+
+[Identity]
+
+  PASS  getpid > 0
+
+  PASS  gettid > 0
+
+  PASS  uname returns 0
+
+  PASS  uname.sysname = CosmoRT
+
+  PASS  uname.machine = x86_64
+
+
+
+[prctl]
+
+  PASS  prctl PR_SET_NAME
+
+  PASS  prctl PR_GET_NAME
+
+  PASS  PR_GET_NAME matches
+
+  PASS  prctl PR_SET_PDEATHSIG
+
+  PASS  prctl invalid → EINVAL
+
+
+
+[Process Groups]
+
+  PASS  getpgrp == getpid initially
+
+  PASS  setpgid(0,0)
+
+  PASS  getpgrp == pid after setpgid(0,0)
+
+  PASS  getpgid(0) == pid
+
+  PASS  getpgid(pid) == pid
+
+  PASS  setsid returns pid
+
+  PASS  getsid(0) == pid
+
+  PASS  getsid(pid) == pid
+
+  PASS  child pgrp == child pid
+
+  PASS  child exited
+
+  PASS  parent pgrp unchanged
+
+
+
+[Security]
+
+  PASS  write(kernel_addr) → EFAULT
+
+  PASS  read(kernel_addr) → EFAULT
+
+  PASS  mmap(SIZE_MAX) fails
+
+
+
+[set_tid_address]
+
+  PASS  set_tid_address returns TID
+
+  PASS  mmap thread stack
+
+  FAIL  clone returns tid
+
+  FAIL  child_tid cleared to 0 (got=-1 expected=0)
+
+
+
+[shebang: CRLF]
+
+  PASS  create script
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ENOENT (\r stripped)
+
+
+
+[shebang: with arg]
+
+  PASS  create script
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ENOENT (arg parsed ok)
+
+
+
+[shebang: binary noexec]
+
+  PASS  create file
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ENOEXEC
+
+
+
+[shebang: loop]
+
+  PASS  create scripts
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ELOOP
+
+
+
+[shebang: empty interp]
+
+  PASS  create script
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ENOEXEC
+
+
+
+[shebang: ENOENT]
+
+  PASS  create script
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  ENOENT
+
+
+
+[Timers]
+
+  PASS  clock_gettime MONOTONIC returns 0
+
+  PASS  monotonic.sec >= 0
+
+  PASS  monotonic.sec < 3600 (uptime)
+
+  PASS  monotonic.nsec in range
+
+  uptime: 22s 867ms
+
+  PASS  clock_gettime REALTIME returns 0
+
+  PASS  realtime.sec > 1700000000
+
+  PASS  realtime.nsec in range
+
+  epoch: 1775112540s
+
+  PASS  gettimeofday returns 0
+
+  PASS  gettimeofday.sec > 1700000000
+
+  PASS  gettimeofday.usec in range
+
+
+
+[times]
+
+  PASS  times returns ticks > 0
+
+  PASS  tms_utime > 0
+
+  PASS  tms_stime = 0
+
+  PASS  tms_cutime = 0
+
+  PASS  tms_cstime = 0
+
+  PASS  tms_utime close to return
+
+
+
+[vfork]
+
+  PASS  vfork child exited 0
+
+
+
+[Wait Status]
+
+  PASS  fork1 ok
+
+  PASS  wait4 returns child pid
+
+  PASS  exit(42) WIFEXITED
+
+  PASS  exit(42) WEXITSTATUS
+
+  PASS  fork2 ok
+
+  PASS  wait4 returns child pid (0)
+
+  PASS  exit(0) WIFEXITED
+
+  PASS  exit(0) WEXITSTATUS
+
+  PASS  fork3 ok
+
+  PASS  wait4 returns child pid (sig)
+
+  PASS  SIGSEGV WIFSIGNALED
+
+  PASS  SIGSEGV WTERMSIG
+
+  PASS  fork4 ok
+
+  PASS  wait4 returns child pid (kill)
+
+  PASS  SIGKILL WIFSIGNALED
+
+  PASS  SIGKILL WTERMSIG
+
+
+
+[Device Nodes]
+
+  PASS  open /dev/null
+
+  PASS  write /dev/null → 7
+
+  PASS  read /dev/null → 0 (EOF)
+
+  PASS  open /dev/zero
+
+  PASS  read /dev/zero → 100
+
+  PASS  read /dev/zero all zeros
+
+  PASS  write /dev/zero → 7
+
+  PASS  open /dev/urandom
+
+  PASS  read /dev/urandom → 32
+
+  PASS  read /dev/urandom not all zeros
+
+  PASS  read /dev/urandom not all same
+
+  PASS  write /dev/urandom → 7
+
+  PASS  open /dev/random
+
+  PASS  read /dev/random → 16
+
+  PASS  open /dev/tty succeeds or ENOTTY
+
+tty
+
+  PASS  write /dev/tty → 4
+
+  PASS  stat /dev/null succeeds
+
+  PASS  stat /dev/null S_IFCHR
+
+  PASS  stat /dev/null rdev
+
+  PASS  stat /dev/zero succeeds
+
+  PASS  stat /dev/zero rdev
+
+  PASS  stat /dev/urandom succeeds
+
+  PASS  stat /dev/urandom rdev
+
+  PASS  open /dev/zero for mmap
+
+  PASS  mmap /dev/zero succeeds
+
+  PASS  mmap /dev/zero pages are zero
+
+
+
+[getrandom large]
+
+  PASS  getrandom 512 returns 512
+
+  PASS  getrandom second 256 bytes have data
+
+  PASS  getrandom 1024 returns 1024
+
+
+
+[PCI Scan]
+
+  PASS  open /proc/bus/pci/devices
+
+  PASS  read pci devices
+
+  4 PCI devices
+
+  PASS  PCI devices found
+
+
+
+[Random]
+
+  PASS  getrandom returns 16
+
+  PASS  getrandom produces data
+
+
+
+[TTY Device Nodes]
+
+  PASS  open /dev/tty1
+
+tty1
+
+  PASS  write /dev/tty1 -> 5
+
+  PASS  open /dev/tty2
+
+  PASS  open /dev/tty3
+
+  PASS  open /dev/tty4
+
+  PASS  open /dev/tty5
+
+  PASS  open /dev/tty12
+
+  PASS  open /dev/tty13 fails
+
+  PASS  open /dev/console
+
+con
+
+  PASS  write /dev/console -> 4
+
+  PASS  open /dev/pts/0
+
+  PASS  open /dev/pts/3
+
+  PASS  open /dev/pts/4
+
+  PASS  stat /dev/tty1
+
+  PASS  stat /dev/tty1 S_IFCHR
+
+  PASS  stat /dev/tty1 rdev
+
+  PASS  stat /dev/tty4
+
+  PASS  stat /dev/tty4 rdev
+
+  PASS  stat /dev/console
+
+  PASS  stat /dev/console S_IFCHR
+
+  PASS  stat /dev/console rdev
+
+  PASS  stat /dev/pts/0
+
+  PASS  stat /dev/pts/0 rdev
+
+  PASS  open /dev/tty1 for ioctl
+
+  PASS  TCGETS on /dev/tty1
+
+  PASS  c_iflag has ICRNL
+
+  PASS  c_oflag has OPOST|ONLCR
+
+  PASS  c_lflag has ISIG|ICANON|ECHO
+
+  PASS  c_cc[VINTR]=3
+
+  PASS  c_cc[VEOF]=4
+
+  PASS  c_cc[VMIN]=1
+
+  PASS  c_cc[VSUSP]=26
+
+  PASS  TCSETS disable echo
+
+  PASS  TCGETS after TCSETS
+
+  PASS  echo cleared
+
+
+
+[net/dhcp]
+
+  PASS  open /proc/dmesg
+
+  PASS  read dmesg
+
+  PASS  DHCP ok in dmesg
+
+
+
+[net/dns]
+
+  PASS  socket
+
+  PASS  connect registry.npmjs.org:80
+
+
+
+[net/tcp]
+
+  PASS  socket
+
+  PASS  connect example.com:80
+
+  PASS  send HTTP GET
+
+  PASS  recv > 0
+
+  PASS  response HTTP/1.
+
+  PASS  status 200
+
+
+
+[net/tcp-transfer: sequential]
+
+  PASS  connect #1
+
+  PASS  recv #1 > 500
+
+  PASS  connect #2
+
+  PASS  recv #2 > 500
+
+
+
+[net/tcp-transfer: small]
+
+  PASS  connect
+
+  PASS  send GET /
+
+  received 797 bytes
+
+  PASS  recv > 500 bytes
+
+  PASS  recv < 100KB
+
+
+
+[net/arp_cache]
+
+  PASS  empty lookup miss
+
+  PASS  insert+lookup hit
+
+  PASS  mac matches
+
+  PASS  update lookup
+
+  PASS  mac updated
+
+  PASS  second ip lookup
+
+  PASS  second mac matches
+
+  PASS  first still present
+
+  PASS  evicted miss
+
+  PASS  other still present
+
+  PASS  64 entries all found
+
+  PASS  collision: first found
+
+  PASS  collision: first mac ok
+
+  PASS  collision: second found
+
+  PASS  collision: second mac ok
+
+  PASS  collision: evict first
+
+  PASS  collision: second survives
+
+  PASS  pool full: 128 found
+
+  PASS  pool overflow: new findable
+
+  PASS  pool overflow: new mac ok
+
+  PASS  pool overflow: 127 originals remain
+
+  PASS  evict nonexistent ok
+
+
+
+[net/ip_checksum]
+
+  PASS  ip hdr cksum roundtrip
+
+  PASS  all-zeros → 0xFFFF
+
+  PASS  odd-length checksum
+
+  PASS  single byte
+
+  PASS  complement property
+
+  PASS  max values
+
+
+
+[net/multi_conn_mixed]
+
+  PASS  sock1
+
+  PASS  sock2
+
+  PASS  connect1
+
+  PASS  connect2
+
+  PASS  recv1 > 0
+
+  PASS  recv2 > 0
+
+
+
+[net/multi_conn]
+
+  PASS  4 connects
+
+  PASS  4 sends
+
+  PASS  4 HTTP responses
+
+
+
+[net/udp_echo]
+
+  PASS  socket A
+
+  PASS  bind A:10053
+
+  PASS  socket B
+
+  PASS  bind B:10054
+
+  PASS  sendto A
+
+  PASS  sendto B
+
+  PASS  recvfrom A > 12
+
+  PASS  A: ID=0x1111
+
+  PASS  A: QR=1
+
+  PASS  recvfrom B > 12
+
+  PASS  B: ID=0x2222
+
+  PASS  B: QR=1
+
+
+
+[net/nonblock: unconnected read]
+
+  PASS  socket
+
+  PASS  read unconnected → -ENOTCONN
+
+
+
+[net/nonblock: unconnected write]
+
+  PASS  socket
+
+  PASS  write unconnected → -ENOTCONN
+
+
+
+[net/nonblock: read after connect]
+
+  PASS  socket
+
+  PASS  connect ok or EINPROGRESS
+
+  FAIL  net/nonblock-read (TIMEOUT)
+
+
+
+[net/nonblock: write after connect]
+
+  PASS  socket
+
+  FAIL  net/nonblock-write (TIMEOUT)
+
+
+
+[net/nonblock: connect]
+
+  PASS  socket(NONBLOCK)
+
+  PASS  connect EINPROGRESS or 0
+
+  FAIL  net/nonblock-connect (TIMEOUT)
+
+
+
+[net/lifecycle: udp bind reuse]
+
+  PASS  socket
+
+  PASS  bind #1
+
+  PASS  socket
+
+  PASS  bind #2 after close
+
+  PASS  socket
+
+  PASS  bind #3 after close
+
+
+
+[net/lifecycle: fork refcount]
+
+  PASS  socketpair
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child exit 0 (refcount ok)
+
+
+
+[net/lifecycle: close cleanup]
+
+  PASS  socket #1
+
+  PASS  bind #1 ephemeral
+
+  PASS  socket #2 after close
+
+
+
+[socket/scale]
+
+  PASS  open 128 sockets
+
+  PASS  re-open 128 after close
+
+  PASS  single alloc
+
+  PASS  single free
+
+  PASS  open 64 UDP sockets
+
+
+
+[net/tcp-advanced-combined]
+
+  PASS  combined: connect
+
+  PASS  combined: send
+
+  PASS  combined: recv
+
+  PASS  combined: connect
+
+  PASS  combined: send
+
+  PASS  combined: recv
+
+  PASS  combined: connect
+
+  PASS  combined: send
+
+  PASS  combined: recv
+
+  PASS  combined: 3 sequential connections OK
+
+
+
+[net/tcp-tfo]
+
+  PASS  tfo: first connect (cookie request)
+
+  PASS  tfo: first send GET
+
+  PASS  tfo: first recv > 0
+
+  PASS  tfo: first HTTP response
+
+  PASS  tfo: second connect (with cookie if cached)
+
+  PASS  tfo: second send GET
+
+  PASS  tfo: second recv > 0
+
+  PASS  tfo: second HTTP response
+
+  PASS  tfo: cookie request/reuse OK
+
+
+
+[net/tcp-ecn]
+
+  PASS  ecn: connect
+
+  PASS  ecn: send GET
+
+  PASS  ecn: recv > 0
+
+  PASS  ecn: HTTP response
+
+  PASS  ecn: connection with ECN negotiation OK
+
+
+
+[net/tcp-timestamps]
+
+  PASS  ts: connect
+
+  PASS  ts: send GET
+
+  PASS  ts: recv > 0
+
+  PASS  ts: HTTP response
+
+  PASS  ts: connection with timestamps OK
+
+
+
+[net/tcp_hash_multi]
+
+  PASS  8 connects
+
+  PASS  8 sends
+
+  PASS  8 recvs HTTP
+
+
+
+[net/tcp_hash_unreg]
+
+  PASS  socket1
+
+  PASS  socket2
+
+  PASS  connect1
+
+  PASS  connect2
+
+  PASS  send after close1
+
+  PASS  recv after close1 > 0
+
+  PASS  recv after close1 HTTP
+
+
+
+[net/tcp_hash_two]
+
+  PASS  socket1
+
+  PASS  socket2
+
+  PASS  connect1
+
+  PASS  connect2
+
+  PASS  send1
+
+  PASS  send2
+
+  PASS  recv1 > 0
+
+  PASS  recv1 HTTP
+
+  PASS  recv2 > 0
+
+  PASS  recv2 HTTP
+
+
+
+[net/tcp_ooo_reset]
+
+  PASS  socket
+
+  PASS  connect
+
+  PASS  send
+
+  PASS  recv > 0
+
+  PASS  HTTP response
+
+  PASS  socket
+
+  PASS  connect
+
+  PASS  send
+
+  PASS  recv > 0
+
+  PASS  HTTP response
+
+
+
+[net/tcp_ooo_large]
+
+  PASS  socket
+
+  PASS  connect
+
+  PASS  send
+
+  PASS  total > 512
+
+  PASS  multiple reads
+
+  PASS  clean EOF
+
+
+
+[net/tcp_rxring]
+
+  PASS  socket
+
+  PASS  connect
+
+  PASS  send request
+
+  PASS  total > 512 bytes
+
+  PASS  multiple reads
+
+  PASS  clean termination
+
+  PASS  socket2
+
+  PASS  connect2
+
+  PASS  send2
+
+  PASS  large recv > 0
+
+  PASS  response2 HTTP
+
+
+
+[TCP server]
+
+  PASS  socket(AF_INET) >= 0
+
+  PASS  setsockopt SO_REUSEADDR
+
+  PASS  bind 127.0.0.1:8080
+
+  PASS  listen(fd, 5)
+
+  PASS  getsockname returns 0
+
+  PASS  getsockname family
+
+  PASS  getsockname port
+
+  PASS  getsockname addr
+
+  PASS  getsockname addrlen
+
+  PASS  setsockopt TCP_NODELAY
+
+  PASS  getsockopt TCP_NODELAY ret
+
+  PASS  getsockopt TCP_NODELAY val
+
+  PASS  setsockopt SO_KEEPALIVE
+
+  PASS  getsockopt SO_KEEPALIVE ret
+
+  PASS  getsockopt SO_KEEPALIVE val
+
+  PASS  accept empty -> EAGAIN
+
+  PASS  shutdown RDWR
+
+  PASS  close
+
+  PASS  socket2 >= 0
+
+  PASS  listen no bind -> EDESTADDRREQ
+
+  PASS  bind1 port 9090
+
+  PASS  bind2 port 9090 -> EADDRINUSE
+
+  PASS  sendto unconnected -> ENOTCONN
+
+
+
+[net/tcp_state]
+
+  PASS  socket create
+
+  PASS  read unconnected → ENOTCONN
+
+  PASS  connect → ESTABLISHED
+
+  PASS  reconnect → EISCONN
+
+  PASS  getpeername ok
+
+  PASS  peer addr set
+
+  PASS  write in ESTABLISHED
+
+  PASS  recv in ESTABLISHED
+
+  PASS  shutdown(WR)
+
+  PASS  close
+
+  PASS  read after close → EBADF
+
+
+
+[net/tcp-window: snd_wnd init]
+
+  PASS  connect
+
+  PASS  write succeeds (snd_wnd > 0)
+
+  PASS  recv > 0 (server got our data)
+
+
+
+[net/tcp-window: large transfer]
+
+  PASS  connect
+
+  PASS  send GET
+
+  received 797 bytes
+
+  PASS  recv > 500 bytes
+
+
+
+[net/tcp-window: recv window update]
+
+  PASS  connect
+
+  PASS  send GET
+
+  PASS  recv first chunk > 0
+
+  PASS  recv second chunk >= 0
+
+  PASS  total > 100
+
+
+
+[net/tx_ring]
+
+  FAIL  ktest on compute core
+
+  PASS  socket
+
+  PASS  connect via tx_ring
+
+  PASS  send via tx_ring
+
+  PASS  recv response
+
+  PASS  response is HTTP
+
+
+
+[net/udp_collision]
+
+  PASS  collision sock1
+
+  PASS  collision sock2
+
+  PASS  bind collision p1
+
+  PASS  bind collision p2
+
+  PASS  collision sock3
+
+  PASS  rebind after collision
+
+
+
+[net/udp_rebind]
+
+  PASS  socket1
+
+  PASS  bind 21000
+
+  PASS  socket2
+
+  PASS  rebind 21000
+
+
+
+[net/udp_scale_bind]
+
+  PASS  32 UDP binds
+
+
+
+[net/udp]
+
+  PASS  udp socket
+
+  PASS  sendto DNS
+
+  PASS  recvfrom > 12
+
+  PASS  response ID match
+
+  PASS  QR=1 (response)
+
+  PASS  RCODE=0 (no error)
+
+
+
+[/proc/sys/kernel/hostname]
+
+  PASS  open
+
+  PASS  non-empty
+
+
+
+[/proc/sys/kernel/pid_max]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  value > 0
+
+
+
+[/proc/bus/pci/devices]
+
+  PASS  open
+
+  PASS  has devices
+
+
+
+[/proc/self/maps]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  has address range
+
+
+
+[/proc/self/cwd]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  starts with /
+
+
+
+[/proc/self/cmdline]
+
+  PASS  open
+
+  PASS  non-empty
+
+
+
+[/proc/self/status]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  has Pid:
+
+  PASS  has Name:
+
+  PASS  has State:
+
+  PASS  has VmSize:
+
+
+
+[/proc/meminfo]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  has MemTotal
+
+
+
+[/proc/filesystems]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  has ext2
+
+
+
+[/proc/loadavg]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  contains /
+
+
+
+[/proc/uptime]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  uptime > 0
+
+
+
+[/proc/version]
+
+  PASS  open
+
+  PASS  read
+
+  PASS  contains CosmoRT
+
+
+
+[/proc/cpuinfo format]
+
+  PASS  open /proc/cpuinfo
+
+  PASS  read cpuinfo > 0
+
+  PASS  has processor field
+
+  PASS  has model name
+
+  PASS  has cpu MHz
+
+
+
+[Procfs]
+
+  PASS  open /proc/dmesg
+
+  PASS  read /proc/dmesg > 0
+
+  PASS  dmesg contains CosmoRT
+
+  PASS  open /proc/meminfo
+
+  PASS  read /proc/meminfo > 0
+
+  PASS  meminfo starts with MemTotal
+
+  PASS  open /proc/cpuinfo
+
+  PASS  read /proc/cpuinfo > 0
+
+  PASS  cpuinfo starts with processor
+
+  PASS  open /proc/nonexistent fails
+
+
+
+[Procfs Ext]
+
+  PASS  readlink /proc/self/exe > 0
+
+  PASS  exe is absolute path
+
+  PASS  open /proc/self/cmdline
+
+  PASS  read cmdline > 0
+
+  PASS  open /proc/self/stat
+
+  PASS  read stat > 0
+
+  PASS  stat starts with digit
+
+  PASS  stat contains parens
+
+  PASS  open /proc/meminfo
+
+  PASS  meminfo > 0
+
+  PASS  meminfo has MemTotal
+
+  PASS  open /proc/self/maps
+
+  PASS  maps > 0
+
+  PASS  maps has addr range
+
+  PASS  maps has perms
+
+
+
+[maps/stack-growth]
+
+  PASS  read > 0
+
+  PASS  stack found
+
+  PASS  parsed start > 0
+
+  PASS  stack found after growth
+
+  PASS  stack grew (start lower)
+
+
+
+[maps/pid]
+
+  PASS  mmap shared
+
+  PASS  mmap stack
+
+  PASS  clone
+
+  PASS  clone
+
+  PASS  open /proc/pid/maps
+
+  PASS  read child maps
+
+  PASS  child has [stack]
+
+  PASS  child has exec VMA
+
+
+
+[maps/mprotect]
+
+  PASS  mmap rw
+
+  PASS  mprotect r
+
+  PASS  VMA found
+
+  PASS  perms r--p after mprotect
+
+
+
+[maps/mmap]
+
+  PASS  mmap
+
+  PASS  more VMAs after mmap
+
+  PASS  VMAs restored after munmap
+
+
+
+[maps/shared]
+
+  PASS  mmap shared
+
+  PASS  read > 0
+
+  PASS  has shared 's' VMA
+
+
+
+[maps/heap]
+
+  PASS  brk(0)
+
+  PASS  brk grow
+
+  PASS  read > 0
+
+  PASS  [heap] present
+
+  PASS  heap is rw-p
+
+
+
+[maps/stack]
+
+  PASS  read > 0
+
+  PASS  [stack] present
+
+  PASS  stack line found
+
+  PASS  stack is rw-p
+
+
+
+[maps/format]
+
+  PASS  read > 0
+
+  PASS  has address range
+
+  PASS  has offset field
+
+  PASS  has dev field
+
+  PASS  has rw- VMA
+
+  PASS  has executable VMA
+
+
+
+[/proc/meminfo format]
+
+  PASS  open /proc/meminfo
+
+  PASS  read meminfo > 0
+
+  PASS  has MemAvailable
+
+  PASS  has Buffers
+
+  PASS  has Cached
+
+
+
+[/proc/self/exe]
+
+  PASS  readlink /proc/self/exe > 0
+
+  PASS  exe path starts with /
+
+  exe_path: /usr/bin/unknown
+
+
+
+[net/accept4-flags]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept4 returned error (loopback accept failed)
+
+  PASS  child exited
+
+
+
+[net/accept-enotsock]
+
+  PASS  open /dev/null
+
+  PASS  accept ENOTSOCK
+
+
+
+[net/accept-loopback]
+
+  PASS  listen socket
+
+  PASS  bind loopback
+
+  PASS  getsockname
+
+  PASS  listen
+
+  PASS  fork  PASS  fork
+
+
+
+  FAIL  accept loopback
+
+  PASS  child exited
+
+  FAIL  child connect ok (got=1 expected=0)
+
+
+
+[mm/brk-limit]
+
+  PASS  brk readable
+
+  PASS  brk +1MB succeeds
+
+  PASS  brk memory writable
+
+  PASS  brk shrink
+
+  PASS  brk rejects kernel addr
+
+  PASS  brk rejects below base
+
+
+
+[fpu/rounding-sign]
+
+  result=0x0
+
+  PASS  magnitude zero
+
+
+
+[fpu/signed-zero-persist]
+
+  before=0x8000000000000000  after=0x8000000000000000
+
+  PASS  neg zero bits
+
+
+
+[fpu/signed-zero-mul]
+
+  result bits = 0x8000000000000000
+
+  PASS  sign bit set
+
+  PASS  magnitude zero
+
+
+
+[fpu/mxcsr]
+
+  mxcsr set=0xff80  mxcsr got=0xff80
+
+  PASS  mxcsr preserved
+
+
+
+[fpu/control-word]
+
+  cw set=0xf7f  cw got=0xf7f
+
+  PASS  fpu cw preserved
+
+
+
+[fpu/xmm-across-fork]
+
+  PASS  child exited
+
+  PASS  xmm3 after fork
+
+
+
+[fpu/xmm-across-syscall]
+
+  PASS  xmm0 preserved
+
+  PASS  xmm7 preserved
+
+  PASS  xmm15 preserved
+
+
+
+[mm/mmap-shared]
+
+  PASS  mmap shared
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child exit 0
+
+  PASS  shared page visible
+
+
+
+[ipc/robust-futex]
+
+  PASS  mmap shared
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  set_robust_list
+
+  PASS  child exited
+
+  futex word = 0x400001bb
+
+  PASS  FUTEX_OWNER_DIED set
+
+
+
+[fs/utime-64bit]
+
+  PASS  create file
+
+  PASS  utimensat big ts
+
+  PASS  fstatat
+
+  FAIL  atime 64-bit (got=0 expected=4294967296)
+
+  FAIL  mtime 64-bit (got=0 expected=4294967296)
+
+
+
+[fs/utime-enotdir]
+
+  FAIL  utime ENOTDIR (got=-2 expected=-20)
+
+
+
+[ltp/abort01]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  wait4
+
+  PASS  child signaled
+
+  PASS  SIGABRT (6)
+
+
+
+[ltp/accept4-noflags]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept4 flags=0 (accept4 failed (loopback bug))
+
+
+
+[ltp/accept4-both]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept4 CLOEXEC|NONBLOCK (accept4 failed (loopback bug))
+
+
+
+[ltp/accept4-nonblock]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept4 SOCK_NONBLOCK (accept4 failed (loopback bug))
+
+
+
+[ltp/accept4-cloexec]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept4 SOCK_CLOEXEC (accept4 failed (loopback bug))
+
+
+
+[ltp/accept03-memfd]
+
+  PASS  memfd_create
+
+  PASS  accept memfd ENOTSOCK
+
+
+
+[ltp/accept03-inotify]
+
+  PASS  inotify_init1
+
+  PASS  accept inotify ENOTSOCK
+
+
+
+[ltp/accept03-timerfd]
+
+  PASS  timerfd_create
+
+  PASS  accept timerfd ENOTSOCK
+
+
+
+[ltp/accept03-eventfd]
+
+  PASS  eventfd2
+
+  PASS  accept eventfd ENOTSOCK
+
+
+
+[ltp/accept03-epoll]
+
+  PASS  epoll_create1
+
+  PASS  accept epoll ENOTSOCK
+
+
+
+[ltp/accept03-pipe]
+
+  PASS  pipe
+
+  PASS  accept pipe ENOTSOCK
+
+
+
+[ltp/accept03-dir]
+
+  PASS  open /tmp
+
+  PASS  accept dir ENOTSOCK
+
+
+
+[ltp/accept03-file]
+
+  PASS  open /dev/null
+
+  PASS  accept file ENOTSOCK
+
+
+
+[ltp/accept02-loopback]
+
+  PASS  listen socket
+
+  PASS  bind loopback
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  loopback accept (accept failed (loopback bug))
+
+  PASS  child exited
+
+
+
+[ltp/accept01-eopnotsupp]
+
+  PASS  UDP socket
+
+  FAIL  accept UDP EOPNOTSUPP (got=-22 expected=-95)
+
+
+
+[ltp/accept01-einval-nolisten]
+
+  PASS  socket
+
+  PASS  accept no-listen EINVAL
+
+
+
+[ltp/accept01-einval-salen]
+
+  PASS  socket
+
+  PASS  accept salen=1 EINVAL
+
+
+
+[ltp/accept01-einval-buf]
+
+  PASS  socket
+
+  PASS  bind
+
+  PASS  accept invalid buf EINVAL
+
+
+
+[ltp/accept01-ebadf]
+
+  PASS  accept bad fd EBADF
+
+
+
+[ltp/access04-rok-noread]
+
+  PASS  access R_OK on 0222 (root may pass)
+
+
+
+[ltp/access04-xok-noperm]
+
+  FAIL  access X_OK no-exec EACCES (got=0 expected=-13)
+
+
+
+[ltp/access03-faccessat-enoent]
+
+  PASS  faccessat ENOENT
+
+
+
+[ltp/access03-faccessat]
+
+  PASS  faccessat F_OK
+
+  PASS  faccessat R_OK
+
+  PASS  faccessat W_OK
+
+
+
+[ltp/access02-eloop]
+
+  PASS  access ELOOP
+
+
+
+[ltp/access02-enotdir]
+
+  PASS  access ENOTDIR
+
+
+
+[ltp/access02-enametoolong]
+
+  PASS  access ENAMETOOLONG
+
+
+
+[ltp/access02-enoent]
+
+  PASS  access ENOENT
+
+
+
+[ltp/access01-combined]
+
+  PASS  access R_OK|W_OK
+
+  PASS  access R_OK|X_OK
+
+  PASS  access R_OK|W_OK|X_OK
+
+
+
+[ltp/access01-xok]
+
+  PASS  access X_OK
+
+
+
+[ltp/access01-wok]
+
+  PASS  access W_OK
+
+
+
+[ltp/access01-rok]
+
+  PASS  access R_OK
+
+
+
+[ltp/access01-fok]
+
+  PASS  access F_OK
+
+
+
+[ltp/acct01-null]
+
+  PASS  acct(NULL) succeeds or ENOSYS
+
+
+
+[ltp/acct01-efault]
+
+  FAIL  acct bad addr EFAULT (got=0 expected=-14)
+
+
+
+[ltp/acct01-enotdir]
+
+  FAIL  acct ENOTDIR (got=0 expected=-20)
+
+
+
+[ltp/acct01-enoent]
+
+  FAIL  acct nonexistent ENOENT (got=0 expected=-2)
+
+
+
+[ltp/acct01-eisdir]
+
+  FAIL  acct(".") EISDIR (got=0 expected=-21)
+
+
+
+[ltp/add_key01]
+
+  PASS  add_key ENOSYS
+
+
+
+[ltp/adjtimex03]
+
+  FAIL  invalid mode EINVAL (got=0 expected=-22)
+
+  PASS  tai is zero (no leak)
+
+
+
+[ltp/adjtimex02-efault]
+
+  PASS  NULL timex EFAULT
+
+
+
+[ltp/adjtimex02-tick-high]
+
+  PASS  tick too high EINVAL
+
+
+
+[ltp/adjtimex02-tick-low]
+
+  PASS  tick too low EINVAL
+
+
+
+[ltp/adjtimex01]
+
+  PASS  adjtimex read
+
+  FAIL  adjtimex SET_MODE (got=-22 min=0)
+
+  PASS  adjtimex SINGLESHOT
+
+
+
+[ltp/alarm07]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  parent alarm(0) returns ~100
+
+  PASS  child exited
+
+  PASS  child alarm(0)==0
+
+
+
+[ltp/alarm06]
+
+  PASS  alarm(0) returns ~1
+
+  PASS  no SIGALRM after cancel
+
+
+
+[ltp/alarm05]
+
+  FAIL  alarm(1) returns 0 (got=5 expected=0)
+
+  PASS  SIGALRM received
+
+
+
+[ltp/alarm03]
+
+  FAIL  alarm(100) returns 0 (got=5 expected=0)
+
+  PASS  alarm(50) returns ~100
+
+  PASS  alarm(0) returns ~50
+
+
+
+[ltp/alarm02]
+
+  FAIL  alarm(100) first call returns 0 (got=5 expected=0)
+
+  PASS  alarm(0) returns remaining ~100
+
+  PASS  no SIGALRM
+
+
+
+[ltp/arch_prctl-invalid]
+
+  PASS  invalid code EINVAL
+
+
+
+[ltp/arch_prctl-fs]
+
+  PASS  ARCH_GET_FS
+
+  PASS  ARCH_SET_FS
+
+  PASS  ARCH_GET_FS after set
+
+  PASS  FS roundtrip
+
+
+
+[ltp/bind-unix]
+
+  PASS  unix socket
+
+  PASS  bind AF_UNIX
+
+
+
+[ltp/bind-einval-already-bound]
+
+  PASS  socket
+
+  PASS  first bind
+
+  FAIL  double bind EINVAL (got=0 expected=-22)
+
+
+
+[ltp/bind05]
+
+  PASS  socket 1
+
+  PASS  bind first
+
+  PASS  port assigned
+
+  PASS  socket 2
+
+  PASS  bind same port EADDRINUSE
+
+
+
+[ltp/bind04]
+
+  PASS  open file
+
+  PASS  bind file ENOTSOCK
+
+  PASS  pipe
+
+  PASS  bind pipe ENOTSOCK
+
+
+
+[ltp/bind03]
+
+  PASS  bind(-1) EBADF
+
+  PASS  bind(999) EBADF
+
+
+
+[ltp/bind02]
+
+  PASS  socket
+
+  PASS  bind loopback
+
+  PASS  addr 127.0.0.1
+
+
+
+[ltp/bind01]
+
+  PASS  TCP socket
+
+  PASS  bind TCP INADDR_ANY
+
+  PASS  getsockname
+
+  PASS  port assigned
+
+  PASS  UDP socket
+
+  PASS  bind UDP INADDR_ANY
+
+
+
+[ltp/bpf_prog01]
+
+  PASS  bpf PROG_LOAD ENOSYS
+
+
+
+[ltp/bpf_map01]
+
+  PASS  bpf MAP_CREATE ENOSYS
+
+
+
+[ltp/brk02]
+
+  PASS  brk(0)
+
+  PASS  brk(0x1000) rejected
+
+  PASS  brk(0) still works
+
+  PASS  brk(huge) rejected
+
+  PASS  brk still functional
+
+
+
+[ltp/brk01]
+
+  PASS  brk(0) returns current break
+
+  PASS  brk increase
+
+  PASS  write to new memory
+
+  PASS  brk increase 2
+
+  PASS  brk decrease
+
+  PASS  brk restore
+
+
+
+[ltp/capset03-efault]
+
+  FAIL  NULL data EFAULT (got=-1 expected=-14)
+
+
+
+[ltp/capset02-einval]
+
+  FAIL  bad version EINVAL (got=-1 expected=-22)
+
+
+
+[ltp/capset01]
+
+  FAIL  capget before set (got=-1 expected=0)
+
+  FAIL  capset same caps (got=-1 expected=0)
+
+
+
+[ltp/capget02-esrch]
+
+  FAIL  nonexistent pid ESRCH (got=-1 expected=-3)
+
+
+
+[ltp/capget02-einval-pid]
+
+  FAIL  pid=-1 EINVAL (got=-1 expected=-22)
+
+
+
+[ltp/capget02-einval-version]
+
+  FAIL  bad version EINVAL (got=-1 expected=-22)
+
+  FAIL  kernel sets v3 (got=0 expected=537396514)
+
+
+
+[ltp/capget01]
+
+  FAIL  capget v1 (got=-1 expected=0)
+
+  FAIL  capget v2 (got=-1 expected=0)
+
+  FAIL  capget v3 (got=-1 expected=0)
+
+
+
+[ltp/chdir-basic]
+
+  PASS  chdir
+
+  PASS  getcwd
+
+  PASS  cwd contains dir name
+
+
+
+[ltp/chdir04-enotdir]
+
+  PASS  create
+
+  PASS  chdir to file ENOTDIR
+
+
+
+[ltp/chdir04-enoent]
+
+  PASS  chdir ENOENT
+
+
+
+[ltp/chdir04-enametoolong]
+
+  PASS  chdir ENAMETOOLONG
+
+
+
+[ltp/chdir02]
+
+  FAIL  slash paths all resolve to / (got=4 expected=0)
+
+
+
+[ltp/chmod08]
+
+  PASS  create
+
+  PASS  chmod via symlink
+
+  PASS  stat target
+
+  PASS  target mode
+
+
+
+[ltp/chmod07]
+
+  PASS  create
+
+  PASS  chmod 01777
+
+  PASS  stat
+
+  PASS  sticky+perms
+
+
+
+[ltp/chmod06-eloop]
+
+  PASS  chmod ELOOP
+
+
+
+[ltp/chmod06-enametoolong]
+
+  PASS  chmod ENAMETOOLONG
+
+
+
+[ltp/chmod06-enotdir]
+
+  PASS  create
+
+  PASS  chmod through file ENOTDIR
+
+
+
+[ltp/chmod06-enoent]
+
+  FAIL  chmod empty ENOENT (got=0 expected=-2)
+
+  PASS  chmod nonexist ENOENT
+
+
+
+[ltp/chmod05]
+
+  NOTE  single-user: root can always set ISGID
+
+  PASS  chmod 03777
+
+  PASS  stat
+
+  PASS  ISGID+ISVTX+perms
+
+
+
+[ltp/chmod03-dir]
+
+  PASS  chmod 01777
+
+  PASS  stat
+
+  PASS  sticky+perms
+
+
+
+[ltp/chmod03-file]
+
+  PASS  create
+
+  PASS  chmod 01777
+
+  PASS  stat
+
+  PASS  sticky+perms
+
+
+
+[ltp/chmod01-dir]
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  FAIL  mode bits (got=448 expected=0)
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+  PASS  chmod dir
+
+  PASS  stat dir
+
+  PASS  mode bits
+
+
+
+[ltp/chmod01-file]
+
+  PASS  create file
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  FAIL  mode bits (got=384 expected=0)
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+  PASS  chmod file
+
+  PASS  stat file
+
+  PASS  mode bits
+
+
+
+[ltp/chown05]
+
+  PASS  create
+
+  PASS  chown(700,701)
+
+  PASS  stat
+
+  PASS  uid
+
+  PASS  gid
+
+  PASS  chown(702,-1)
+
+  PASS  stat
+
+  PASS  uid
+
+  PASS  gid unchanged
+
+  PASS  chown(-1,704)
+
+  PASS  stat
+
+  PASS  uid unchanged
+
+  PASS  gid
+
+  PASS  chown(-1,-1)
+
+  PASS  stat
+
+  PASS  uid nop
+
+  PASS  gid nop
+
+
+
+[ltp/chown04-eloop]
+
+  PASS  chown ELOOP
+
+
+
+[ltp/chown04-enametoolong]
+
+  PASS  chown ENAMETOOLONG
+
+
+
+[ltp/chown04-enotdir]
+
+  PASS  create
+
+  PASS  chown through file ENOTDIR
+
+
+
+[ltp/chown04-enoent]
+
+  FAIL  chown empty ENOENT (got=0 expected=-2)
+
+  PASS  chown nonexist ENOENT
+
+
+
+[ltp/chown03]
+
+  NOTE  single-user: always root, testing sgid clear on gid change
+
+  PASS  create
+
+  PASS  chmod
+
+  PASS  chown(-1, 0)
+
+  PASS  stat
+
+  FAIL  uid unchanged (got=1000 expected=0)
+
+  PASS  gid set
+
+
+
+[ltp/chown02-preserves-sgid]
+
+  PASS  create
+
+  PASS  chmod 02700
+
+  PASS  chown
+
+  PASS  stat
+
+  FAIL  sgid preserved (got=0 expected=1024)
+
+
+
+[ltp/chown02-clears-suid]
+
+  PASS  create
+
+  PASS  chmod 06770
+
+  PASS  chown
+
+  PASS  stat
+
+  PASS  suid/sgid cleared
+
+  PASS  rwx preserved
+
+
+
+[ltp/chown01]
+
+  PASS  create
+
+  PASS  chown(0,0)
+
+  PASS  stat
+
+  PASS  uid
+
+  PASS  gid
+
+
+
+[ltp/chroot04]
+
+  NOTE  single-user: root bypasses EACCES
+
+  PASS  fork
+
+  PASS  root chroot to 0222 dir succeeds
+
+
+
+[ltp/chroot03-eloop]
+
+  FAIL  chroot ELOOP (got=-2 expected=-40)
+
+
+
+[ltp/chroot03-enoent]
+
+  PASS  chroot ENOENT
+
+
+
+[ltp/chroot03-enotdir]
+
+  PASS  create
+
+  PASS  chroot ENOTDIR
+
+
+
+[ltp/chroot03-enametoolong]
+
+  PASS  chroot ENAMETOOLONG
+
+
+
+[ltp/chroot02]
+
+  PASS  create testfile
+
+  PASS  fork
+
+  PASS  child exited
+
+  FAIL  child exit code (got=2 expected=0)
+
+
+
+[ltp/chroot01]
+
+  SKIP  single-user: always uid 0, EPERM test not applicable
+
+
+
+[ltp/clock_adjtime02-efault]
+
+  PASS  NULL timex EFAULT
+
+
+
+[ltp/clock_adjtime02-einval-clock]
+
+  PASS  invalid clock EINVAL
+
+
+
+[ltp/clock_adjtime01-read]
+
+  PASS  clock_adjtime read
+
+
+
+[ltp/clock_getres01-null]
+
+  PASS  getres NULL res
+
+
+
+[ltp/clock_getres01]
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_BOOTTIME
+
+  PASS  CLOCK_BOOTTIME
+
+  PASS  CLOCK_BOOTTIME
+
+  PASS  invalid clock -1
+
+
+
+[ltp/clock_gettime04]
+
+  PASS  gettime a
+
+  PASS  gettime b
+
+  PASS  realtime forward
+
+  PASS  realtime delta < 5ms
+
+
+
+[ltp/clock_gettime03]
+
+  PASS  gettime 1
+
+  PASS  gettime 2
+
+  PASS  monotonic forward
+
+
+
+[ltp/clock_gettime02]
+
+  PASS  invalid clock -1 EINVAL
+
+  PASS  invalid clock 999 EINVAL
+
+
+
+[ltp/clock_gettime01]
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_REALTIME
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_MONOTONIC_RAW
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_REALTIME_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_MONOTONIC_COARSE
+
+  PASS  CLOCK_BOOTTIME
+
+  PASS  CLOCK_BOOTTIME
+
+  PASS  CLOCK_BOOTTIME
+
+
+
+[ltp/clock_nanosleep04]
+
+  PASS  abstime sleep ret
+
+  PASS  abstime elapsed >= 10ms
+
+
+
+[ltp/clock_nanosleep03]
+
+  PASS  realtime sleep ret
+
+  PASS  realtime elapsed >= 10ms
+
+  PASS  monotonic sleep ret
+
+  PASS  monotonic elapsed >= 10ms
+
+
+
+[ltp/clock_nanosleep02]
+
+  PASS  nanosleep return
+
+  PASS  elapsed >= 10ms
+
+
+
+[ltp/clock_nanosleep01]
+
+  FAIL  negative tv_nsec EINVAL (got=0 expected=-22)
+
+  FAIL  tv_nsec=1e9 EINVAL (got=0 expected=-22)
+
+  FAIL  invalid clock EINVAL (got=0 expected=-22)
+
+
+
+[ltp/clock_settime02-efault]
+
+  PASS  NULL timespec EFAULT
+
+
+
+[ltp/clock_settime02-badclock]
+
+  PASS  invalid clock EINVAL
+
+
+
+[ltp/clock_settime02-boottime]
+
+  PASS  CLOCK_BOOTTIME EINVAL
+
+
+
+[ltp/clock_settime02-monotonic]
+
+  PASS  CLOCK_MONOTONIC EINVAL
+
+
+
+[ltp/clock_settime02-nsec-overflow]
+
+  PASS  tv_nsec>1e9 EINVAL
+
+
+
+[ltp/clock_settime02-neg-nsec]
+
+  PASS  tv_nsec=-1 EINVAL
+
+
+
+[ltp/clock_settime02-neg-sec]
+
+  PASS  tv_sec=-1 EINVAL
+
+
+
+[ltp/clock_settime01-advance]
+
+  PASS  clock_gettime
+
+  PASS  clock_settime advance
+
+  PASS  clock_gettime after
+
+  FAIL  time advanced >= 9s (got=0 min=9)
+
+
+
+[ltp/clone302-invalid-stack]
+
+  PASS  no stack but stack_size EINVAL
+
+
+
+[ltp/clone302-zero-stack-size]
+
+  PASS  stack set, stack_size=0 EINVAL
+
+
+
+[ltp/clone302-invalid-signal]
+
+  PASS  invalid signal EINVAL
+
+
+
+[ltp/clone302-fs-newns]
+
+  PASS  CLONE_FS|CLONE_NEWNS EINVAL
+
+
+
+[ltp/clone302-thread-no-sighand]
+
+  PASS  CLONE_THREAD without CLONE_SIGHAND EINVAL
+
+
+
+[ltp/clone302-sighand-no-vm]
+
+  PASS  CLONE_SIGHAND without CLONE_VM EINVAL
+
+
+
+[ltp/clone302-short-size]
+
+  PASS  short size EINVAL
+
+
+
+[ltp/clone302-zero-size]
+
+  PASS  size=0 EINVAL
+
+
+
+[ltp/clone301-sigusr2]
+
+  PASS  clone3 SIGUSR2
+
+  PASS  clone3 SIGUSR2
+
+  --- ltp/clone301-sigusr2: CRASHED (status=140)
+
+
+
+[ltp/clone301-fs]
+
+  PASS  clone3 CLONE_FS
+
+  PASS  clone3 CLONE_FS
+
+  PASS  child exited
+
+
+
+[ltp/clone301]
+
+  PASS  clone3
+
+  PASS  clone3
+
+  PASS  wait returns child pid
+
+  PASS  child exited cleanly
+
+
+
+[ltp/clone11]
+
+  PASS  mmap stack
+
+  PASS  CLONE_NEWPID fails
+
+
+
+[ltp/clone09]
+
+  PASS  mmap stack
+
+  PASS  CLONE_NEWNET fails
+
+
+
+[ltp/clone07]
+
+  PASS  mmap stack
+
+  PASS  clone
+
+  PASS  clone
+
+  PASS  clone07 child exited cleanly
+
+
+
+[ltp/clone06]
+
+  PASS  mmap stack
+
+  PASS  clone
+
+  PASS  clone
+
+  PASS  child inherited memory
+
+
+
+[ltp/clone05]
+
+  PASS  mmap shared
+
+  PASS  mmap stack
+
+  PASS  clone VFORK
+
+  PASS  clone VFORK
+
+  PASS  child set flag before parent resumed
+
+
+
+[ltp/clone04]
+
+  PASS  clone(SIGCHLD, 0) succeeds
+
+  PASS  clone(SIGCHLD, 0) succeeds
+
+  PASS  child exited cleanly
+
+
+
+[ltp/clone03]
+
+  PASS  mmap shared
+
+  PASS  mmap stack
+
+  PASS  clone
+
+  PASS  clone
+
+  PASS  child pid matches
+
+
+
+[ltp/clone01]
+
+  PASS  mmap stack
+
+  PASS  clone
+
+  PASS  clone
+
+  PASS  wait returns child pid
+
+  PASS  child exited cleanly
+
+
+
+[ltp/close_range-cloexec]
+
+  PASS  open
+
+  PASS  close_range CLOEXEC
+
+  FAIL  fd still open
+
+  PASS  FD_CLOEXEC set
+
+
+
+[ltp/close_range-high]
+
+  PASS  close_range(UINT_MAX, UINT_MAX)
+
+
+
+[ltp/close_range-bad-flags]
+
+  PASS  close_range bad flags EINVAL
+
+
+
+[ltp/close_range-einval]
+
+  PASS  close_range(4,3) EINVAL
+
+
+
+[ltp/close_range-basic]
+
+  PASS  open f1
+
+  PASS  dup
+
+  PASS  close_range
+
+  PASS  fd1 closed
+
+  PASS  fd2 closed
+
+
+
+[ltp/close02]
+
+  PASS  close(-1) EBADF
+
+  PASS  open
+
+  PASS  first close
+
+  PASS  double close EBADF
+
+
+
+[ltp/close01-socket]
+
+  PASS  socket
+
+  PASS  close socket
+
+
+
+[ltp/close01-pipe]
+
+  PASS  pipe
+
+  PASS  close pipe read
+
+  PASS  close pipe write
+
+
+
+[ltp/close01-file]
+
+  PASS  open file
+
+  PASS  close file
+
+  PASS  fd closed EBADF
+
+
+
+[ltp/confstr01]
+
+  PASS  confstr is libc-only, skip
+
+
+
+[ltp/connect-eisconn]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS    PASS  fork
+
+fork
+
+  PASS  child exited
+
+  FAIL  connect EISCONN (got=2 expected=0)
+
+
+
+[ltp/connect02]
+
+  PASS  listen socket
+
+  PASS  bind
+
+  PASS  listen
+
+  PASS  fork
+
+  PASS  fork
+
+  FAIL  accept (loopback accept failed)
+
+  PASS  child exited
+
+  FAIL  child connect ok (got=1 expected=0)
+
+
+
+[ltp/connect01-econnrefused]
+
+  PASS  socket
+
+  FAIL  connect refused ECONNREFUSED (got=-110 expected=-111)
+
+
+
+[ltp/connect01-eafnosupport]
+
+  PASS  socket
+
+  PASS  connect bad AF fails
+
+
+
+[ltp/connect01-enotsock]
+
+  PASS  open
+
+  PASS  connect file ENOTSOCK
+
+
+
+[ltp/connect01-ebadf]
+
+  PASS  connect(-1) EBADF
+
+  PASS  connect(999) EBADF
+
+
+
+[ltp/copy_file_range-ebadf]
+
+  PASS  bad fds EBADF
+
+
+
+[ltp/copy_file_range03]
+
+  PASS  create src
+
+  PASS  create dst
+
+  PASS  copy for timestamp test
+
+  PASS  mtime advanced
+
+
+
+[ltp/copy_file_range-offsets]
+
+  PASS  create src
+
+  PASS  create dst
+
+  PASS  copy 10 bytes from offset 5
+
+  PASS  off_in advanced
+
+  PASS  off_out advanced
+
+  PASS  src fd pos unchanged
+
+
+
+[ltp/copy_file_range-basic]
+
+  PASS  create src
+
+  PASS  reopen src
+
+  PASS  create dst
+
+  PASS  copy_file_range returns bytes
+
+  PASS  read back length
+
+  FAIL  data matches
+
+
+
+[ltp/creat08]
+
+  FAIL  creat ENAMETOOLONG (got=3 expected=-36)
+
+
+
+[ltp/creat07]
+
+  PASS  creat
+
+  FAIL  read on creat fd EBADF (got=0 expected=-9)
+
+  PASS  write succeeds
+
+
+
+[ltp/creat06]
+
+  PASS  creat 0444
+
+  PASS  mode 0444
+
+  PASS  creat 0700
+
+  PASS  mode 0700
+
+  PASS  creat 0000
+
+  FAIL  mode 0000 (got=420 expected=0)
+
+
+
+[ltp/creat04]
+
+  FAIL  creat ENOENT (got=3 expected=-2)
+
+
+
+[ltp/creat03]
+
+  PASS  initial open
+
+  PASS  creat truncate
+
+  PASS  fstat
+
+  PASS  size 0 after truncate
+
+
+
+[ltp/creat01]
+
+  PASS  creat
+
+  PASS  fstat
+
+  PASS  mode 0644
+
+  PASS  write 5
+
+  PASS  stat
+
+  PASS  size 5
+
+
+
+[ltp/cve-2025-38236]
+
+  PASS  normal recv returns error (acceptable)
+
+
+
+[ltp/cve-2017-2671]
+
+  PASS  ping socket connect/disconnect did not crash
+
+
+
+[ltp/cve-2017-2618]
+
+  PASS  /proc/self/attr/fscreate not available, skip
+
+
+
+[ltp/cve-2017-17053]
+
+  PASS  fork stress (LDT variant) did not crash
+
+
+
+[ltp/cve-2017-17052]
+
+  PASS  fork stress did not crash
+
+
+
+[ltp/cve-2016-7042]
+
+  PASS  add_key not implemented (ENOSYS)
+
+
+
+[ltp/cve-2016-10044]
+
+  PASS  io_setup not implemented (ENOSYS)
+
+
+
+[ltp/delete_module02]
+
+  PASS  delete_module ENOSYS
+
+
+
+[ltp/dup3_02-invalid-flags]
+
+  PASS  dup3 invalid flags EINVAL
+
+
+
+[ltp/dup3_02-same-fd]
+
+  PASS  dup3 same fd EINVAL
+
+  PASS  dup3 same fd flags=0 EINVAL
+
+
+
+[ltp/dup3_01-cloexec]
+
+  PASS  dup3 O_CLOEXEC
+
+  PASS  FD_CLOEXEC set
+
+
+
+[ltp/dup3_01-nocloexec]
+
+  PASS  dup3 no flags
+
+  PASS  no FD_CLOEXEC
+
+
+
+[ltp/dup207]
+
+  PASS  open
+
+  PASS  dup2
+
+  PASS  read 6 bytes
+
+  PASS  offset shared
+
+  PASS  read 5 bytes after seek
+
+  PASS  offset shared after seek
+
+
+
+[ltp/dup206]
+
+  PASS  open
+
+  PASS  dup2(fd,fd) returns fd
+
+
+
+[ltp/dup204]
+
+  PASS  pipe
+
+  PASS  dup2 pipe[0]->10
+
+  PASS  dup2 pipe[1]->20
+
+  PASS  pipe[0] same inode
+
+
+
+[ltp/dup203-open]
+
+  PASS  create f0
+
+  PASS  reopen f0
+
+  PASS  create f1
+
+  PASS  dup2 returns newfd
+
+  PASS  read 5 bytes
+
+  PASS  data matches
+
+  PASS  FD_CLOEXEC clear
+
+
+
+[ltp/dup201]
+
+  PASS  dup2(-1,5) EBADF
+
+  PASS  dup2(9999,5) EBADF
+
+  PASS  dup2(1,-1) EBADF
+
+
+
+[ltp/dup07]
+
+  PASS  open
+
+  PASS  dup
+
+  PASS  same mode
+
+
+
+[ltp/dup04]
+
+  PASS  pipe
+
+  PASS  dup pipe read end
+
+  PASS  dup pipe write end
+
+
+
+[ltp/dup03]
+
+  PASS  open base
+
+  PASS  dup EMFILE
+
+
+
+[ltp/dup02]
+
+  PASS  dup(-1) EBADF
+
+  PASS  dup(1500) EBADF
+
+
+
+[ltp/dup01]
+
+  PASS  open
+
+  PASS  dup returns valid fd
+
+  PASS  dup returns different fd
+
+  PASS  fstat orig
+
+  PASS  fstat dup
+
+  PASS  same inode
+
+
+
+[ltp/epoll_create1_02-bad]
+
+  PASS  epoll_create1(EPOLL_CLOEXEC+1) EINVAL
+
+
+
+[ltp/epoll_create1_02-neg1]
+
+  PASS  epoll_create1(-1) EINVAL
+
+
+
+[ltp/epoll_create1_01-cloexec]
+
+  PASS  epoll_create1(EPOLL_CLOEXEC) returns valid fd
+
+  FAIL  FD_CLOEXEC set
+
+
+
+[ltp/epoll_create1_01-nocloexec]
+
+  PASS  epoll_create1(0) returns valid fd
+
+  PASS  FD_CLOEXEC not set
+
+
+
+[ltp/epoll_create02-neg]
+
+  PASS  epoll_create(-1) EINVAL
+
+
+
+[ltp/epoll_create02-zero]
+
+  PASS  epoll_create(0) EINVAL
+
+
+
+[ltp/epoll_create01-sizemax]
+
+  PASS  epoll_create(INT_MAX) returns valid fd
+
+
+
+[ltp/epoll_create01-size1]
+
+  PASS  epoll_create(1) returns valid fd
+
+
+
+[ltp/epoll_ctl05]
+
+  FAIL  circular ELOOP (got=0 expected=-40)
+
+
+
+[ltp/epoll_ctl04]
+
+  PASS  epoll_create1 chain
+
+  PASS  chain ADD
+
+  PASS  epoll_create1 chain
+
+  PASS  chain ADD
+
+  PASS  epoll_create1 chain
+
+  PASS  chain ADD
+
+  PASS  epoll_create1 chain
+
+  PASS  chain ADD
+
+  PASS  epoll_create1 chain
+
+  PASS  chain ADD
+
+  PASS  epoll_create1 overflow
+
+  FAIL  nesting > 5 fails
+
+
+
+[ltp/epoll_ctl03]
+
+  PASS  epoll_create1
+
+  PASS  initial ADD
+
+  PASS  MOD various event combos
+
+
+
+[ltp/epoll_ctl02-eexist]
+
+  PASS  epoll_create1
+
+  PASS  first ADD
+
+  PASS  duplicate ADD EEXIST
+
+
+
+[ltp/epoll_ctl02-enoent]
+
+  PASS  epoll_create1
+
+  PASS  DEL unregistered ENOENT
+
+  PASS  MOD unregistered ENOENT
+
+
+
+[ltp/epoll_ctl02-eperm]
+
+  PASS  epoll_create1
+
+  PASS  open /tmp
+
+  FAIL  regular file EPERM (got=0 expected=-1)
+
+
+
+[ltp/epoll_ctl02-einval]
+
+  PASS  epoll_create1
+
+  PASS  invalid op EINVAL
+
+  FAIL  fd==epfd EINVAL (got=0 expected=-22)
+
+
+
+[ltp/epoll_ctl02-ebadf]
+
+  PASS  epoll_create1
+
+  PASS  invalid epfd EBADF
+
+  PASS  invalid fd EBADF
+
+
+
+[ltp/epoll_ctl01]
+
+  PASS  epoll_create1
+
+  PASS  pipe
+
+  PASS  EPOLL_CTL_ADD read
+
+  PASS  EPOLL_CTL_ADD write
+
+  PASS  epoll_wait after ADD returns >= 1
+
+  PASS  EPOLL_CTL_MOD
+
+  PASS  epoll_wait after MOD returns >= 1
+
+  PASS  EPOLL_CTL_DEL write
+
+  PASS  EPOLL_CTL_DEL read
+
+
+
+[ltp/epoll-ltp]
+
+  PASS  epoll-ltp covered by existing epoll tests, skip
+
+
+
+[ltp/epoll_pwait05]
+
+  PASS  epoll_create1
+
+  FAIL  epoll_pwait2 tv_sec<0 EINVAL (got=1 expected=-22)
+
+  FAIL  epoll_pwait2 tv_nsec<0 EINVAL (got=1 expected=-22)
+
+  FAIL  epoll_pwait2 tv_nsec>=1e9 EINVAL (got=1 expected=-22)
+
+
+
+[ltp/epoll_pwait02]
+
+  PASS  epoll_create1
+
+  PASS  epoll_pwait data ready returns 1
+
+
+
+[ltp/epoll_pwait01]
+
+  PASS  epoll_create1
+
+  PASS  epoll_pwait with sigmask returns 1
+
+
+
+[ltp/epoll_wait07]
+
+  PASS  epoll_create1
+
+  PASS  oneshot first wait returns 1
+
+  PASS  oneshot cleared returns 0
+
+  FAIL  oneshot second write returns 0 (got=1 expected=0)
+
+
+
+[ltp/epoll_wait06]
+
+  PASS  pipe2 nonblock
+
+  PASS  epoll_create1
+
+  PASS  ET first wait returns 1
+
+  PASS  ET second wait (data left) returns 0
+
+
+
+[ltp/epoll_wait04]
+
+  PASS  epoll_create1
+
+  PASS  timeout=0 no data returns 0
+
+
+
+[ltp/epoll_wait03-einval-maxevents]
+
+  PASS  epoll_create1
+
+  PASS  maxevents < 0 EINVAL
+
+  PASS  maxevents == 0 EINVAL
+
+
+
+[ltp/epoll_wait03-einval-notepoll]
+
+  FAIL  epoll_wait on pipe EINVAL (got=-9 expected=-22)
+
+
+
+[ltp/epoll_wait03-ebadf]
+
+  PASS  epoll_wait bad fd EBADF
+
+
+
+[ltp/epoll_wait01-in]
+
+  PASS  epoll_create1
+
+  PASS  epoll_wait EPOLLIN returns 1
+
+  PASS  fd matches
+
+  PASS  events EPOLLIN
+
+
+
+[ltp/epoll_wait01-out]
+
+  PASS  epoll_create1
+
+  PASS  epoll_wait EPOLLOUT returns 1
+
+  PASS  fd matches
+
+  PASS  events EPOLLOUT
+
+
+
+[ltp/eventfd2_03]
+
+  PASS  eventfd2(0, EFD_SEMAPHORE|EFD_NONBLOCK)
+
+  PASS  write 3
+
+  PASS  sem read 1
+
+  FAIL  sem value 1 (got=3 expected=1)
+
+  FAIL  sem read 2 (got=-11 expected=8)
+
+  FAIL  sem value 1 again (got=3 expected=1)
+
+  FAIL  sem read 3 (got=-11 expected=8)
+
+  FAIL  sem value 1 third (got=3 expected=1)
+
+  PASS  sem exhausted EAGAIN
+
+
+
+[ltp/eventfd2_02]
+
+  PASS  eventfd2(1, 0)
+
+  PASS  no O_NONBLOCK
+
+  PASS  eventfd2(1, EFD_NONBLOCK)
+
+  PASS  O_NONBLOCK set
+
+
+
+[ltp/eventfd2_01]
+
+  PASS  eventfd2(1, 0)
+
+  PASS  no FD_CLOEXEC
+
+  PASS  eventfd2(1, EFD_CLOEXEC)
+
+  PASS  FD_CLOEXEC set
+
+
+
+[ltp/eventfd05]
+
+  PASS  eventfd2
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  read 8 bytes
+
+  PASS  value from child
+
+
+
+[ltp/eventfd02]
+
+  PASS  eventfd2(0, EFD_NONBLOCK)
+
+  PASS  write 12
+
+  PASS  read back 12
+
+  PASS  write near-max
+
+  PASS  write overflow EAGAIN
+
+  PASS  write 4 bytes EINVAL
+
+  FAIL  write UINT64_MAX EINVAL (got=8 expected=-22)
+
+
+
+[ltp/eventfd01]
+
+  PASS  eventfd2(10, EFD_NONBLOCK)
+
+  PASS  read 8 bytes
+
+  PASS  counter is 10
+
+  PASS  read zero counter EAGAIN
+
+  PASS  read 4 bytes EINVAL
+
+
+
+[ltp/execveat02-eloop]
+
+  FAIL  execveat symlink ELOOP (got=-38 expected=-40)
+
+
+
+[ltp/execveat02-enotdir]
+
+  FAIL  execveat notdir ENOTDIR (got=-38 expected=-20)
+
+
+
+[ltp/execveat02-einval]
+
+  FAIL  execveat invalid flags EINVAL (got=-38 expected=-22)
+
+
+
+[ltp/execveat02-ebadf]
+
+  FAIL  execveat bad dirfd EBADF (got=-38 expected=-9)
+
+
+
+[ltp/execve05]
+
+  PASS  all children exited
+
+
+
+[ltp/execve03-enoexec]
+
+  PASS  ENOEXEC empty file
+
+
+
+[ltp/execve03-eacces]
+
+  FAIL  EACCES (got=-8 expected=-13)
+
+
+
+[ltp/execve03-enotdir]
+
+  FAIL  ENOTDIR (got=-2 expected=-20)
+
+
+
+[ltp/execve03-enoent]
+
+  PASS  ENOENT
+
+
+
+[ltp/execve03-enametoolong]
+
+  FAIL  ENAMETOOLONG (got=-2 expected=-36)
+
+
+
+[ltp/exit_group01-vs-exit]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  exit code 7
+
+
+
+[ltp/exit_group01]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  exit code 4
+
+
+
+[ltp/exit02]
+
+  PASS    PASS  fork
+
+fork
+
+  PASS  child exited
+
+  PASS  open file
+
+  PASS  read 10 bytes
+
+  PASS  data correct
+
+
+
+[ltp/exit01-codes]
+
+  PASS  exit code matches
+
+  PASS  exit code matches
+
+  PASS  exit code matches
+
+  PASS  exit code matches
+
+  PASS  exit code matches
+
+
+
+[ltp/exit01]
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  wait returns correct pid
+
+  PASS  child exited
+
+  PASS  exit code 1
+
+  PASS  no signal
+
+
+
+[ltp/faccessat202]
+
+  FAIL  invalid flags EINVAL (got=0 expected=-22)
+
+  PASS  invalid mode EINVAL
+
+  PASS  bad fd EBADF
+
+  PASS  file fd ENOTDIR
+
+
+
+[ltp/faccessat201]
+
+  PASS  open dir
+
+  PASS  faccessat2 dirfd
+
+  PASS  faccessat2 AT_EACCESS
+
+  PASS  faccessat2 abspath
+
+
+
+[ltp/faccessat02]
+
+  PASS  open file
+
+  PASS  file fd ENOTDIR
+
+  PASS  bad fd EBADF
+
+
+
+[ltp/faccessat01]
+
+  PASS  create file
+
+  PASS  open dir
+
+  PASS  dirfd + relative
+
+  PASS  AT_FDCWD + relative
+
+  PASS  bad fd + abspath
+
+
+
+[ltp/fadvise04]
+
+  PASS  pipe
+
+  PASS  fadvise64 pipe ESPIPE
+
+  PASS  fadvise64 pipe ESPIPE
+
+  PASS  fadvise64 pipe ESPIPE
+
+  PASS  fadvise64 pipe ESPIPE
+
+  PASS  fadvise64 pipe ESPIPE
+
+  PASS  fadvise64 pipe ESPIPE
+
+
+
+[ltp/fadvise03]
+
+  PASS  open
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+  PASS  fadvise64 invalid advice EINVAL
+
+
+
+[ltp/fadvise02]
+
+  PASS  fadvise64 bad fd
+
+  PASS  fadvise64 bad fd
+
+  PASS  fadvise64 bad fd
+
+  PASS  fadvise64 bad fd
+
+  PASS  fadvise64 bad fd
+
+  PASS  fadvise64 bad fd
+
+
+
+[ltp/fadvise01]
+
+  PASS  open
+
+  PASS  fadvise64 returns 0
+
+  PASS  fadvise64 returns 0
+
+  PASS  fadvise64 returns 0
+
+  PASS  fadvise64 returns 0
+
+  PASS  fadvise64 returns 0
+
+  PASS  fadvise64 returns 0
+
+
+
+[ltp/fallocate03]
+
+  PASS  open
+
+  PASS  fallocate hole
+
+  PASS  size >= 12288
+
+
+
+[ltp/fallocate02]
+
+  PASS  open rdonly
+
+  FAIL  EBADF rdonly (got=0 expected=-9)
+
+  PASS  open rdwr
+
+  PASS  negative offset EINVAL
+
+  PASS  negative length EINVAL
+
+  PASS  zero length EINVAL
+
+
+
+[ltp/fallocate01]
+
+  PASS  open mode1
+
+  PASS  fallocate default
+
+  PASS  size grew
+
+  PASS  open mode2
+
+  FAIL  fallocate KEEP_SIZE (got=-95 expected=0)
+
+  PASS  size unchanged
+
+
+
+[ltp/fanotify_mark]
+
+  PASS  fanotify_mark returns error
+
+
+
+[ltp/fanotify12]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fanotify11]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fanotify08]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fanotify07]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fanotify04]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fanotify02]
+
+  PASS  fanotify_init ENOSYS
+
+
+
+[ltp/fchdir03]
+
+  PASS  open file
+
+  PASS  fchdir(file) ENOTDIR
+
+
+
+[ltp/fchdir02]
+
+  PASS  fchdir(-5) EBADF
+
+  PASS  fchdir(9999) EBADF
+
+
+
+[ltp/fchdir01]
+
+  PASS  open dir
+
+  PASS  fchdir
+
+  PASS  getcwd ok
+
+  PASS  cwd is fchdir01_dir
+
+
+
+[ltp/fchmodat2-einval]
+
+  PASS  create
+
+  FAIL  fchmodat2 EINVAL (got=0 expected=-22)
+
+
+
+[ltp/fchmodat2-enoent]
+
+  PASS  open dir
+
+  PASS  fchmodat2 ENOENT
+
+
+
+[ltp/fchmodat2-ebadf]
+
+  PASS  create
+
+  PASS  fchmodat2 EBADF
+
+
+
+[ltp/fchmodat02-enoent]
+
+  FAIL  fchmodat empty ENOENT (got=0 expected=-2)
+
+
+
+[ltp/fchmodat02-enametoolong]
+
+  PASS  fchmodat ENAMETOOLONG
+
+
+
+[ltp/fchmodat02-ebadf]
+
+  PASS  fchmodat EBADF
+
+
+
+[ltp/fchmodat02-enotdir]
+
+  PASS  create
+
+  PASS  fchmodat ENOTDIR
+
+
+
+[ltp/fchmodat01-abs]
+
+  PASS  create
+
+  PASS  fchmodat abs path
+
+  PASS  stat
+
+  PASS  mode
+
+
+
+[ltp/fchmodat01-atcwd]
+
+  PASS  create
+
+  PASS  fchmodat AT_FDCWD
+
+  PASS  stat
+
+  PASS  mode
+
+
+
+[ltp/fchmodat01-dirfd]
+
+  PASS  create file
+
+  PASS  open dir
+
+  PASS  fchmodat dirfd
+
+  PASS  stat
+
+  PASS  mode
+
+
+
+[ltp/fchmod06-ebadf]
+
+  PASS  create
+
+  PASS  fchmod closed fd EBADF
+
+  PASS  fchmod(-1) EBADF
+
+
+
+[ltp/fchmod05]
+
+  NOTE  single-user: root can set ISGID
+
+  PASS  open dir
+
+  PASS  fchmod 043777
+
+  PASS  fstat
+
+  PASS  sgid+sticky+perms
+
+
+
+[ltp/fchmod04]
+
+  PASS  open dir
+
+  PASS  fchmod 01777
+
+  PASS  fstat
+
+  PASS  sticky+perms
+
+
+
+[ltp/fchmod03]
+
+  NOTE  single-user: always root
+
+  PASS  create
+
+  PASS  fchmod 01777
+
+  PASS  fstat
+
+  PASS  sticky+perms
+
+
+
+[ltp/fchmod02]
+
+  PASS  create
+
+  PASS  fchmod 01777
+
+  PASS  fstat
+
+  PASS  sticky+perms
+
+
+
+[ltp/fchmod01]
+
+  PASS  create
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  FAIL  mode bits (got=384 expected=0)
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+  PASS  fchmod
+
+  PASS  fstat
+
+  PASS  mode bits
+
+
+
+[ltp/fchownat03-eloop]
+
+  PASS  fchownat ELOOP
+
+
+
+[ltp/fchownat03-enametoolong]
+
+  PASS  fchownat ENAMETOOLONG
+
+
+
+[ltp/fchownat03-enoent]
+
+  PASS  fchownat ENOENT
+
+
+
+[ltp/fchownat03-einval]
+
+  PASS  create
+
+  PASS  open dir
+
+  FAIL  fchownat EINVAL (got=0 expected=-22)
+
+
+
+[ltp/fchownat03-enotdir]
+
+  PASS  create
+
+  PASS  fchownat ENOTDIR
+
+
+
+[ltp/fchownat03-ebadf]
+
+  PASS  fchownat EBADF
+
+
+
+[ltp/fchownat02]
+
+  PASS  create target
+
+  PASS  fchownat NOFOLLOW
+
+  PASS  stat target
+
+  PASS  lstat link
+
+  FAIL  link uid (got=0 expected=1000)
+
+  FAIL  link gid (got=0 expected=1000)
+
+  FAIL  target uid unchanged
+
+
+
+[ltp/fchownat01-dirfd]
+
+  PASS  create
+
+  PASS  open dir
+
+  PASS  fchownat dirfd
+
+  PASS  stat
+
+  PASS  uid
+
+  PASS  gid
+
+
+
+[ltp/fchownat01-atcwd]
+
+  PASS  create
+
+  PASS  fchownat AT_FDCWD
+
+  PASS  stat
+
+  PASS  uid
+
+  PASS  gid
+
+
+
+[ltp/fchown05]
+
+  PASS  create
+
+  PASS  fchown(700,701)
+
+  PASS  uid
+
+  PASS  gid
+
+  PASS  fchown(702,-1)
+
+  PASS  uid
+
+  PASS  gid unchanged
+
+  PASS  fchown(-1,704)
+
+  PASS  uid unchanged
+
+  PASS  gid
+
+  PASS  fchown(-1,-1)
+
+  PASS  uid nop
+
+  PASS  gid nop
+
+
+
+[ltp/fchown04-ebadf]
+
+  PASS  fchown(-1) EBADF
+
+  PASS  create
+
+  PASS  fchown closed fd EBADF
+
+
+
+[ltp/fchown03]
+
+  NOTE  single-user: always root, testing sgid clear on gid change
+
+  PASS  create
+
+  PASS  fchown(-1, 0)
+
+  PASS  fstat
+
+  FAIL  uid unchanged (got=1000 expected=0)
+
+  PASS  gid set
+
+
+
+[ltp/fchown02-preserves]
+
+  PASS  create
+
+  PASS  fchown
+
+  PASS  fstat
+
+  PASS  sgid preserved
+
+
+
+[ltp/fchown02-clears]
+
+  PASS  create
+
+  PASS  fchown
+
+  PASS  fstat
+
+  FAIL  suid/sgid cleared (got=3072 expected=0)
+
+  PASS  rwx preserved
+
+
+
+[ltp/fchown01]
+
+  PASS  create
+
+  PASS  fchown(0,0)
+
+  PASS  fstat
+
+  PASS  uid
+
+  PASS  gid
+
+
+
+[ltp/fcntl14]
+
+  PASS  open
+
+  PASS  lock bytes 0-4
+
+  PASS  lock bytes 5-9
+
+  PASS  F_SETLKW own range
+
+
+
+[ltp/fcntl13]
+
+  PASS  pipe
+
+  FAIL  F_SETLK pipe read EINVAL (got=0 expected=-22)
+
+  FAIL  F_SETLK pipe write EINVAL (got=0 expected=-22)
+
+
+
+[ltp/fcntl12]
+
+  PASS  open
+
+  PASS  parent write lock
+
+  PASS    PASS  fork
+
+fork
+
+  PASS  child exited
+
+  PASS  child saw parent lock
+
+
+
+[ltp/fcntl11]
+
+  PASS  open
+
+  FAIL  F_SETLK bad type EINVAL (got=0 expected=-22)
+
+
+
+[ltp/fcntl10]
+
+  PASS  open
+
+  PASS  parent read lock
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child read lock succeeded
+
+
+
+[ltp/fcntl09]
+
+  PASS  open
+
+  PASS  parent write lock
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child got EAGAIN/EACCES
+
+
+
+[ltp/fcntl08]
+
+  PASS  open
+
+  PASS  F_SETFL +O_NONBLOCK
+
+  PASS  O_NONBLOCK set
+
+  PASS  F_SETFL -O_NONBLOCK
+
+  PASS  O_NONBLOCK cleared
+
+  PASS  F_SETFL +O_APPEND
+
+  PASS  O_APPEND set
+
+  PASS  F_SETFL -O_APPEND
+
+  PASS  O_APPEND cleared
+
+  PASS  F_SETFL +NONBLOCK+APPEND
+
+  PASS  both set
+
+
+
+[ltp/fcntl05]
+
+  PASS  open
+
+  PASS  F_SETLK write lock
+
+  PASS  F_GETLK
+
+  PASS  F_GETLK self sees F_UNLCK
+
+  PASS  F_SETLK unlock
+
+
+
+[ltp/fcntl04]
+
+  PASS  F_GETFL(-1) EBADF
+
+  PASS  F_GETFL(999) EBADF
+
+
+
+[ltp/fcntl03]
+
+  PASS  create file
+
+  PASS  open RDONLY
+
+  PASS  F_GETFL RDONLY access
+
+  PASS  open WRONLY
+
+  PASS  F_GETFL WRONLY access
+
+  PASS  open RDWR
+
+  PASS  F_GETFL RDWR access
+
+  PASS  open RDWR|APPEND
+
+  PASS  F_GETFL has O_APPEND
+
+
+
+[ltp/fcntl02]
+
+  PASS  F_DUPFD(-1) EBADF
+
+  PASS  F_DUPFD(999) EBADF
+
+  PASS  open
+
+  PASS  F_DUPFD closed fd EBADF
+
+
+
+[ltp/fcntl01]
+
+  PASS  open
+
+  PASS  F_DUPFD(0) valid
+
+  PASS  F_DUPFD(0) != orig
+
+  PASS  F_DUPFD(100) >= 100
+
+  PASS  F_DUPFD(fd+1) >= fd+1
+
+
+
+[ltp/fcntl33]
+
+  PASS  open
+
+  PASS  set lock
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  lock released on close
+
+
+
+[ltp/fcntl30]
+
+  PASS  open
+
+  PASS  no initial CLOEXEC
+
+  PASS  F_SETFD CLOEXEC
+
+  PASS  FD_CLOEXEC set
+
+  PASS  F_SETFD clear
+
+  PASS  FD_CLOEXEC cleared
+
+
+
+[ltp/fcntl29]
+
+  PASS  open
+
+  PASS  F_DUPFD_CLOEXEC valid
+
+  PASS  FD_CLOEXEC set
+
+  PASS  F_DUPFD_CLOEXEC(50) >= 50
+
+  PASS  FD_CLOEXEC set (50)
+
+  PASS  orig no FD_CLOEXEC
+
+
+
+[ltp/fcntl23]
+
+  PASS  open
+
+  PASS  parent lock 0-7
+
+  PASS    PASS  forkfork
+
+
+
+  PASS  child exited
+
+  PASS  multi-process locks correct
+
+
+
+[ltp/fcntl21]
+
+  PASS  open
+
+  PASS  parent lock 2-7
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  child saw lock info
+
+
+
+[ltp/fcntl19]
+
+  PASS  open
+
+  PASS  lock all
+
+  PASS  unlock middle
+
+  PASS  fork
+
+  PASS  fork
+
+  PASS  child exited
+
+  FAIL  partial unlock correct (got=1 expected=0)
+
+
+
+[ltp/fcntl17]
+
+  PASS  open
+
+  PASS  read lock
+
+  PASS  upgrade to write lock
+
+  PASS  downgrade to read lock
+
+
+
+[ltp/fcntl15]
+
+  PASS  open
+
+  PASS  parent lock
+
+  PASS  pipe
+
+  PASS    PASS  fork
+
+fork
+
+  PASS  child exited
+
+  FAIL  child got lock after wait (got=1 expected=0)
+
+
+
+[ltp/fdatasync02-einval]
+
+  PASS  pipe
+
+  FAIL  fdatasync(pipe) EINVAL (got=0 expected=-22)
+
+
+
+[ltp/fdatasync02-ebadf]
+
+  PASS  fdatasync(-1) EBADF
+
+  PASS  fdatasync(9999) EBADF
+
+
+
+[ltp/fdatasync01]
+
+  PASS  open
+
+  PASS  fdatasync
+
+
+
+[ltp/flock07]
+
+  PASS  open
+
+  PASS  parent EX lock
+
+  PASS  child unlock+relock
+
+
+
+[ltp/flock06]
+
+  PASS  open fd1
+
+  PASS  fd1 EX lock
+
+  PASS  open fd2
+
+  FAIL  fd2 EX denied (got=0 expected=-11)
+
+  PASS  fd1 unlock
+
+  PASS  fd2 EX after unlock
+
+
+
+[ltp/flock04]
+
+  PASS  open
+
+  PASS  parent SH
+
+  FAIL  child SH ok, EX blocked
+
+  PASS  parent EX
+
+  FAIL  child SH+EX both blocked
+
+
+
+[ltp/flock03]
+
+  PASS  open
+
+  PASS  parent EX lock
+
+  FAIL  child got EWOULDBLOCK
+
+
+
+[ltp/flock02]
+
+  FAIL  flock(-1) EBADF (got=0 expected=-9)
+
+  PASS  open
+
+  FAIL  LOCK_NB alone EINVAL (got=0 expected=-22)
+
+  FAIL  SH|EX EINVAL (got=0 expected=-22)
+
+
+
+[ltp/flock01]
+
+  PASS  open
+
+  PASS  LOCK_SH
+
+  PASS  LOCK_UN
+
+  PASS  LOCK_EX
+
+  PASS  LOCK_UN after EX
+
+
+
+[ltp/leapsec01-mono]
+
+  PASS  clock_gettime mono
+
+  PASS  clock_nanosleep mono
+
+  PASS  mono: woke at or after target
+
+
+
+[ltp/leapsec01]
+
+  PASS  clock_gettime
+
+  PASS  clock_nanosleep
+
+  PASS  woke at or after target (no early expiry)
+
+
+
+[ltp/process_vm_writev]
+
+  PASS  process_vm_writev ENOSYS
+
+
+
+[ltp/process_vm_readv]
+
+  PASS  process_vm_readv ENOSYS
+
+
+
+[ltp/stack_clash]
+
+  PASS  fork
+
+  FAIL  child exited normally (stack overflow not caught)
+
+
+
+[ltp/meltdown]
+
+  PASS  fork
+
+
+SEGFAULT CR2=ffffffff80000000 RIP=00000000004b3fa8 err=0000000000000004 pid=000000000000033d killed
+  PASS  child got SIGSEGV reading kernel memory
+
+
+
+[ltp/kernbench]
+
+  PASS  kernbench is a benchmark, skip
+
+
+
+[ltp/tst_exit]
+
+  PASS  fork
+
+  PASS  child exited
+
+  PASS  exit code 42
+
+
+
+[ltp/tst_ncpus_proc]
+
+  PASS  open /proc/stat
+
+  FAIL  read /proc/stat
+
+
+
+[ltp/tst_ncpus]
+
+  PASS  sched_getaffinity succeeds
+
+  PASS  at least 1 CPU
+
+
+
+[ltp/flistxattr03]
+
+  PASS  open
+
+  FAIL  flistxattr zero-size returns
+
+
+
+[ltp/flistxattr02-ebadf]
+
+  PASS  flistxattr bad fd
+
+
+
+[ltp/flistxattr01]
+
+  PASS  open
+
+  PASS  flistxattr returns error or empty
+
+
+
+[ltp/fsetxattr]
+
+  PASS  open
+
+  PASS  fsetxattr returns error
+
+
+
+[ltp/fgetxattr03]
+
+  PASS  open
+
+  PASS  fgetxattr zero-size returns error
+
+
+
+[ltp/fgetxattr02-regular]
+
+  PASS  open
+
+  PASS  fgetxattr returns error
+
+
+
+=== 2219 passed, 123 failed ===
+
+HALT

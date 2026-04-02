@@ -1,0 +1,2068 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Primary,Master,0x0)
+[2J[01;01HCOSMO OS Bootloader
+
+GOP: 1280x800 @ 0xC0000000
+
+Memory map: 122 entries
+
+Calling ExitBootServices...
+
+K
+
+CosmoRT v0.1
+Paging: 5120 MB phys, 8 GB direct map, 4324 MB mapped
+buddy: 1033032 pages (4035 MB), bitmap 680 pages
+sec: SMEP enabled
+sec: SMAP enabled
+fpu: FXSAVE (no XSAVE)
+IRQ: IDT loaded
+IRQ: LAPIC enabled
+IRQ: Timer 1000Hz (RT-Core)
+Timer: 2414969 TSC/ms
+RTC: 1775044786 epoch sec
+random: CSPRNG init (ChaCha20)
+TSS: loaded (core 0)
+syscall: LSTAR mode
+percpu: BSP init
+sched: single-core init (32 prio levels)
+proc: init (dynamic slab)
+vma: init (slab)
+IPC: init
+hw: 5 primitives ready
+virtio-blk: found on PCI 00:04
+virtio-blk: 2048 MB, qsz=256
+hw: IRQ 11 → vector 43
+bcache: init (256 blocks, 1MB)
+vfs: init (ramfs)
+ext2: mounted (2048 MB, 219368 free blocks, 41224 free inodes)
+vfs: ext2 mounted as /
+procfs: init (21 entries)
+futex: init (64 buckets, 256 waiters)
+epoll: init
+e1000: found on PCI
+e1000: MAC=52:54:00:12:34:56
+net: NIC registered: e1000
+hw: IRQ 11 → vector 43
+e1000: IRQ 11 (interrupt-driven)
+virtio-net: not found
+virtio-gpu: not found
+virtio-input: not found
+fb: 1280x800 glyph 10x21
+pty: < slots
+vt: < terminals, 128x38 chars
+serial: bridge attached to VT0
+net: DHCP...ok 10.0.2.15 gw 10.0.2.2 dns 10.0.2.3
+
+--- Loading init ---
+--- Entering userspace ---
+
+========================================
+
+  CosmoRT Boot Test
+
+  CosmoRT cosmo 0.1.0 CosmoRT 0.1 x86_64 Linux
+
+========================================
+
+
+
+=== MUSL LIBC-TEST ===
+
+PASS argv-static
+
+PASS argv
+
+PASS basename-static
+
+PASS basename
+
+PASS clocale_mbfuncs-static
+
+PASS clocale_mbfuncs
+
+PASS clock_gettime-static
+
+PASS clock_gettime
+
+PASS crypt-static
+
+PASS crypt
+
+PASS dirname-static
+
+PASS dirname
+
+PASS dlopen
+
+PASS env-static
+
+PASS env
+
+PASS fcntl-static
+
+PASS fcntl
+
+PASS fdopen-static
+
+PASS fdopen
+
+PASS fnmatch-static
+
+PASS fnmatch
+
+PASS fscanf-static
+
+PASS fscanf
+
+PASS fwscanf-static
+
+PASS fwscanf
+
+PASS iconv_open-static
+
+PASS iconv_open
+
+PASS inet_pton-static
+
+PASS inet_pton
+
+FAIL ipc_msg-static (rc=1)
+
+src/functional/ipc_msg.c:56: qid_ds.msg_perm.cuid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:57: qid_ds.msg_perm.uid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:58: qid_ds.msg_perm.cgid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:59: qid_ds.msg_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:128: child exit status: 256
+
+FAIL src/functional/ipc_msg-static.exe [status 1]
+
+FAIL ipc_msg (rc=1)
+
+src/functional/ipc_msg.c:56: qid_ds.msg_perm.cuid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:57: qid_ds.msg_perm.uid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_msg.ant 1000
+
+src/functional/ipc_msg.c:59: qid_ds.msg_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_msg.c:128: child exit status: 256
+
+FAIL src/functional/ipc_msg.exe [status 1]
+
+c:58: qid_ds.msg_perm.cgid == getegid() failed: got 0, wFAIL ipc_sem-static (rc=1)
+
+src/functional/ipc_sem.c:59: semid_ds.sem_perm.cuid == geteuid() failed: got 0, want 1000
+
+t 0, want 1000
+
+src/functional/ipc_sem.c:62: semid_ds.sem_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_sem.c:121: child exit status: 256
+
+FAIL src/functional/ipc_sem-static.exe [status 1]
+
+src/functional/ipc_sem.c:60: semid_ds.sem_perm.uid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_sem.c:61: semid_ds.sem_perm.cgid == getegid() failed: goFAIL ipc_sem (rc=1)
+
+src/functional/ipc_sem.c:59: semidt 0, want 1000
+
+src/functional/ipc_sem.c:62: semid_ds.sem_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_sem.c:121: child exit status: 256
+
+FAIL src/functional/ipc_sem.exe [status 1]
+
+_ds.sem_perm.cuid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_sem.c:60: semid_ds.sem_perm.uid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_sem.c:61: semid_ds.sem_perm.cgid == getegid() failed: goFAIL ipc_shm-static (rc=1)
+
+src/functional/ipc_shm.c:53: shmid_ds.shm_perm.cuid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:54: shmid_ds.shm_perm.uid == geteuid() failed: got 0, wantt 0, want 1000
+
+src/functional/ipc_shm.c:56: shmid_ds.shm_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:118: child exit status: 256
+
+FAIL src/functional/ipc_shm-static.exe [status 1]
+
+ 1000
+
+src/functional/ipc_shm.c:55: shmid_ds.shm_perm.cgid == getegid() failed: goFAIL ipc_shm (rc=1)
+
+src/functional/ipc_shm.c:53: shmid_ds.shm_perm.cuid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:54: shmid_ds.shm_perm.uid == geteuid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:55: shmid_ds.shm_perm.cgid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:56: shmid_ds.shm_perm.gid == getegid() failed: got 0, want 1000
+
+src/functional/ipc_shm.c:118: child exit status: 256
+
+FAIL src/functional/ipc_shm.exe [status 1]
+
+PASS mbc-static
+
+PASS mbc
+
+PASS memstream-static
+
+PASS memstream
+
+PASS popen-static
+
+PASS popen
+
+PASS pthread_cancel-points-static
+
+PASS pthread_cancel-points
+
+PASS pthread_cancel-static
+
+PASS pthread_cancel
+
+PASS pthread_cond-static
+
+PASS pthread_cond
+
+PASS pthread_mutex-static
+
+PASS pthread_mutex
+
+PASS pthread_mutex_pi-static
+
+PASS pthread_mutex_pi
+
+FAIL pthread_robust-static (rc=1)
+
+FAIL src/functional/pthread_robust-static.exe [timed out]
+
+FAIL pthread_robust (rc=1)
+
+FAIL src/functional/pthread_robust.exe [timed out]
+
+PASS pthread_tsd-static
+
+PASS pthread_tsd
+
+PASS qsort-static
+
+PASS qsort
+
+PASS random-static
+
+PASS random
+
+PASS search_hsearch-static
+
+PASS search_hsearch
+
+PASS search_insque-static
+
+PASS search_insque
+
+PASS search_lsearch-static
+
+PASS search_lsearch
+
+PASS search_tsearch-static
+
+PASS search_tsearch
+
+PASS sem_init-static
+
+PASS sem_init
+
+FAIL sem_open-static (rc=1)
+
+src/functional/sem_open.c:34: val == 1 failed: wrong initial semaphore value: 0
+
+FAIL src/functional/sem_open-static.exe [timed out]
+
+FAIL sem_open (rc=1)
+
+src/functional/sem_open.c:34: val == 1 failed: wrong initial semaphore value: 0
+
+FAIL src/functional/sem_open.exe [timed out]
+
+PASS setjmp-static
+
+PASS setjmp
+
+PASS snprintf-static
+
+PASS snprintf
+
+FAIL socket-static (rc=1)
+
+src/functional/socket.c:51: (t=accept(s, (void *)&sa, &(socklen_t){sizeof sa}))>=0 failed: errno = Resource temporarily unavailable
+
+FAIL src/functional/socket-static.exe [status 1]
+
+FAIL socket (rc=1)
+
+src/functional/socket.c:51: (t=accept(s, (void *)&sa, &(socklen_t){sizeof sa}))>=0 failed: errno = Resource temporarily unavailable
+
+FAIL src/functional/socket.exe [status 1]
+
+PASS spawn-static
+
+PASS spawn
+
+PASS sscanf-static
+
+PASS sscanf
+
+PASS sscanf_long-static
+
+PASS sscanf_long
+
+FAIL stat-static (rc=1)
+
+src/functional/stat.c:35: st.st_uid==geteuid() failed: 0 vs 1000
+
+src/functional/stat.c:36: st.st_gid==getegid() failed: 0 vs 1000
+
+FAIL src/functional/stat-static.exe [status 1]
+
+FAIL stat (rc=1)
+
+src/functional/stat.c:35: st.st_uid==geteuid() failed: 0 vs 1000
+
+src/functional/stat.c:36: st.st_gid==getegid() failed: 0 vs 1000
+
+FAIL src/functional/stat.exe [status 1]
+
+PASS strftime-static
+
+PASS strftime
+
+PASS string-static
+
+PASS string
+
+PASS string_memcpy-static
+
+PASS string_memcpy
+
+PASS string_memmem-static
+
+PASS string_memmem
+
+PASS string_memset-static
+
+PASS string_memset
+
+PASS string_strchr-static
+
+PASS string_strchr
+
+PASS string_strcspn-static
+
+PASS string_strcspn
+
+PASS string_strstr-static
+
+PASS string_strstr
+
+PASS strtod-static
+
+PASS strtod
+
+PASS strtod_long-static
+
+PASS strtod_long
+
+PASS strtod_simple-static
+
+PASS strtod_simple
+
+PASS strtof-static
+
+PASS strtof
+
+PASS strtol-static
+
+PASS strtol
+
+PASS strtold-static
+
+PASS strtold
+
+PASS swprintf-static
+
+PASS swprintf
+
+PASS tgmath-static
+
+PASS tgmath
+
+PASS time-static
+
+PASS time
+
+PASS tls_align-static
+
+PASS tls_align
+
+PASS tls_align_dlopen
+
+PASS tls_init-static
+
+PASS tls_init
+
+PASS tls_init_dlopen
+
+PASS tls_local_exec-static
+
+PASS tls_local_exec
+
+PASS udiv-static
+
+PASS udiv
+
+PASS ungetc-static
+
+PASS ungetc
+
+FAIL utime-static (rc=1)
+
+src/functional/utime.c:21: utimensat(AT_FDCWD, "/dev/null/invalid", ((struct timespec[2]){{.tv_nsec=UTIME_OMIT},{.tv_nsec=UTIME_OMIT}}), 0)==0 || errno==ENOTDIR failed: No such file or directory
+
+src/functional/utime.c:65: st.st_atim.tv_sec == 1LL<<32 failed: 0
+
+src/functional/utime.c:66: st.st_mtim.tv_sec == 1LL<<32 failed: 0
+
+FAIL src/functional/utime-static.exe [status 1]
+
+FAIL utime (rc=1)
+
+src/functional/utime.c:21: utimensat(AT_FDCWD, "/dev/null/invalid", ((struct timespec[2]){{.tv_nseed: 0
+
+src/functional/utime.c:66: st.st_mtim.tv_sec == 1LL<<32 failed: 0
+
+FAIL src/functional/utime.exe [status 1]
+
+c=UTIME_OMIT},{.tv_nsec=UTIME_OMIT}}), 0)==0 || errno==ENOTDIR failed: No such file or directory
+
+src/functional/utime.c:65: st.st_atim.tv_sec == 1LL<<32 failPASS vfork-static
+
+PASS vfork
+
+PASS wcsstr-static
+
+PASS wcsstr
+
+PASS wcstol-static
+
+PASS wcstol
+
+PASS acos
+
+PASS acosf
+
+PASS acosh
+
+PASS acoshf
+
+PASS acoshl
+
+PASS acosl
+
+PASS asin
+
+PASS asinf
+
+PASS asinh
+
+PASS asinhf
+
+PASS asinhl
+
+PASS asinl
+
+PASS atan
+
+PASS atan2
+
+PASS atan2f
+
+PASS atan2l
+
+PASS atanf
+
+PASS atanh
+
+PASS atanhf
+
+PASS atanhl
+
+PASS atanl
+
+PASS cbrt
+
+PASS cbrtf
+
+PASS cbrtl
+
+PASS ceil
+
+PASS ceilf
+
+PASS ceill
+
+PASS copysign
+
+PASS copysignf
+
+PASS copysignl
+
+PASS cos
+
+PASS cosf
+
+PASS cosh
+
+PASS coshf
+
+PASS coshl
+
+PASS cosl
+
+PASS drem
+
+PASS dremf
+
+PASS erf
+
+PASS erfc
+
+PASS erfcf
+
+PASS erfcl
+
+PASS erff
+
+PASS erfl
+
+PASS exp
+
+PASS exp10
+
+PASS exp10f
+
+PASS exp10l
+
+PASS exp2
+
+PASS exp2f
+
+PASS exp2l
+
+PASS expf
+
+PASS expl
+
+PASS expm1
+
+PASS expm1f
+
+PASS expm1l
+
+PASS fabs
+
+PASS fabsf
+
+PASS fabsl
+
+PASS fdim
+
+PASS fdimf
+
+PASS fdiml
+
+PASS fenv
+
+PASS floor
+
+PASS floorf
+
+PASS floorl
+
+FAIL fma (rc=1)
+
+src/math/special/fma.h:850: RN fma(-0x1p-1000,0x1p-100,0x0p+0) want -0x0p+0 got 0x0p+0 ulperr inf = inf + 0x1p-26
+
+src/math/special/fma.h:852: RZ fma(-0x1p-1000,0x1p-100,0x0p+0) want -0x0p+0 got 0x0p+0 ulperr inf = inf + 0x1p-26
+
+src/math/special/fma.h:856: RU fma(-0x1p-1000,0x1p-100,0x0p+0) want -0x0p+0 got 0x0p+0 ulperr inf = inf + 0x1p-26
+
+FAIL src/math/fma.exe [status 1]
+
+PASS fmaf
+
+FAIL fmal (rc=1)
+
+src/math/special/fmal.h:46: bad fp exception: RN fmal(-0x1p-10000,0x1.0000000000001p-6445,0x1p-16382)=0x1.fffffffffffffffcp-16383, want INEXACT|UNDERFLOW got INEXACT
+
+FAIL src/math/fmal.exe [status 1]
+
+PASS fmax
+
+PASS fmaxf
+
+PASS fmaxl
+
+PASS fmin
+
+PASS fminf
+
+PASS fminl
+
+PASS fmod
+
+PASS fmodf
+
+PASS fmodl
+
+PASS fpclassify
+
+PASS frexp
+
+PASS frexpf
+
+PASS frexpl
+
+PASS hypot
+
+PASS hypotf
+
+PASS hypotl
+
+PASS ilogb
+
+PASS ilogbf
+
+PASS ilogbl
+
+PASS isless
+
+PASS j0
+
+PASS j0f
+
+PASS j1
+
+PASS j1f
+
+PASS jn
+
+PASS jnf
+
+PASS ldexp
+
+PASS ldexpf
+
+PASS ldexpl
+
+PASS lgamma
+
+PASS lgamma_r
+
+PASS lgammaf
+
+PASS lgammaf_r
+
+PASS lgammal
+
+PASS lgammal_r
+
+PASS llrint
+
+PASS llrintf
+
+PASS llrintl
+
+PASS llround
+
+PASS llroundf
+
+PASS llroundl
+
+PASS log
+
+PASS log10
+
+PASS log10f
+
+PASS log10l
+
+PASS log1p
+
+PASS log1pf
+
+PASS log1pl
+
+PASS log2
+
+PASS log2f
+
+PASS log2l
+
+PASS logb
+
+PASS logbf
+
+PASS logbl
+
+PASS logf
+
+PASS logl
+
+PASS lrint
+
+PASS lrintf
+
+PASS lrintl
+
+PASS lround
+
+PASS lroundf
+
+PASS lroundl
+
+PASS modf
+
+PASS modff
+
+PASS modfl
+
+PASS nearbyint
+
+PASS nearbyintf
+
+PASS nearbyintl
+
+PASS nextafter
+
+PASS nextafterf
+
+PASS nextafterl
+
+PASS nexttoward
+
+PASS nexttowardf
+
+PASS nexttowardl
+
+PASS pow
+
+PASS pow10
+
+PASS pow10f
+
+PASS pow10l
+
+FAIL powf (rc=1)
+
+src/math/ucb/powf.h:103: bad fp exception: RU powf(0x1.fffffep+127,0x1p+0)=0x1.fffffep+127, want 0 got INEXACT|OVERFLOW
+
+X src/mathucb/powf.h:533: bad fp exception: RN powf(0x1.fffffcp-127,0x1p+0)=0x1.fffffcp-127, want 0 got INEXACT|UNDERFLOW
+
+X src/math/ucb/powf.h:719: bad fp exception: RN powf(-0x1.fffff8p-127,0x1p+0)=-0x1.fffff8p-127, want 0 got INEXACT|UNDERFLOW
+
+X src/math/ucb/powf.h:722: bad fp exception: RN powf(-0x1.fffffcp-127,0x1p+0)=-0x1.fffffcp-127, want 0 got INEXACT|UNDERFLOW
+
+FAIL src/math/powf.exe [status 1]
+
+/ucb/powf.h:530: bad fp exception: RN powf(0x1.fffff8p-127,0x1p+0)=0x1.fffff8p-127, want 0 got INEXACT|UNDERFLOW
+
+X src/math/PASS powl
+
+PASS remainder
+
+PASS remainderf
+
+PASS remainderl
+
+PASS remquo
+
+PASS remquof
+
+FAIL remquol (rc=1)
+
+src/math/sanity/remquol.h:1: RN remquol(-0x1.02239f3c6a8f13dep+3,0x1.22484b9ef31efd4p+2) want 0x1.01256314447f4b1p+0,-2 got 0x1.01256314447f4b1p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:3: RN remquol(-0x1.0c34b3e01e29e83f6cb16p+1) want -0x1.7324f49dbaa7edcp-4,3 got -0x1.7324f49dbaa7edcp-4,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:4: RN remquol(-0x1.a206f0a19dcc3948p+2,0x1.24527f7b576abb6p+2) want -0x1.f6d1c4991985f7ap+0,-1 got -0x1.f6d1c4991985f7ap+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:5: RN remquol(0x1.288bbb0d6a1e5bdap+3,0x1.33edd910a3c00b7p+2) want -0x1.6c43c0673435f2cp-2,2 got -0x1.6c43c0673435f2cp-2,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:6: RN remquol(-0x1.9ccd8be03f4949a2p+2,0x1.52fb12ef638a1222p-1) want 0x1.5d89795fa469a11p-3,-10 got 0x1.5d89795fa469a11p-3,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:7: RN remquol(0x1.f6f80ed2eab43b22p+2,0x1.ab3ff8575b21cf92p-5) want -0x1.0d682422cda7bc3cp-6,151 got -0x1.0d682422cda7bc3cp-6,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/sanity/remquol.h:10: RN remquol(-0x1.1e159e36313ee67cp-1,0x1.081bd34224212bp-5) want -0x1.5e036ffab6ea33p-7,-17 got -0x1.5e036ffab6ea33p-7,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:5: RN remquol(0x1p+0,0x1p+0) want 0x0p+0,1 got 0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:6: RN remquol(-0x1p+0,0x1p+0) want -0x0p+0,-1 got -0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:7: RN remquol(0x1.8p+0,0x1p+0) want -0x1p-1,2 got -0x1p-1,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:8: RN remquol(-0x1.8p+0,0x1p+0) want 0x1p-1,-2 got 0x1p-1,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:9: RN remquol(0x1p+1,0x1p+0) want 0x0p+0,2 got 0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:10: RN remquol(-0x1p+1,0x1p+0) want -0x0p+0,-2 got -0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:18: RN remquol(0x1p+0,-0x1p+0) want 0x0p+0,-1 got 0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:19: RN remquol(-0x1p+0,-0x1p+0) want -0x0p+0,1 got -0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:20: RN remquol(0x1.8p+0,-0x1p+0) want -0x1p-1,-2 got -0x1p-1,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:21: RN remquol(-0x1.8p+0,-0x1p+0) want 0x1p-1,2 got 0x1p-1,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:22: RN remquol(0x1p+1,-0x1p+0) want 0x0p+0,-2 got 0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:23: RN remquol(-0x1p+1,-0x1p+0) want -0x0p+0,2 got -0x0p+0,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:63: RN remquol(0x1.cp+0,0x1p-1) want -0x1p-2,4 got -0x1p-2,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:64: RN remquol(-0x1.cp+0,0x1p-1) want 0x1p-2,-4 got 0x1p-2,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:65: RN remquol(0x1.cp+0,-0x1p-1) want -0x1p-2,-4 got -0x1p-2,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+src/math/special/remquol.h:66: RN remquol(-0x1.cp+0,-0x1p-1) want 0x1p-2,4 got 0x1p-2,0 ulperr 0.000 = 0x0p+0 + 0x0p+0
+
+FAIL src/math/remquol.exe [status 1]
+
+6e682cp+3,-0x1.61bdePASS rint
+
+PASS rintf
+
+PASS rintl
+
+PASS round
+
+PASS roundf
+
+PASS roundl
+
+PASS scalb
+
+PASS scalbf
+
+PASS scalbln
+
+PASS scalblnf
+
+PASS scalblnl
+
+PASS scalbn
+
+PASS scalbnf
+
+PASS scalbnl
+
+PASS sin
+
+PASS sincos
+
+PASS sincosf
+
+PASS sincosl
+
+PASS sinf
+
+PASS sinh
+
+PASS sinhf
+
+PASS sinhl
+
+PASS sinl
+
+PASS sqrt
+
+PASS sqrtf
+
+PASS sqrtl
+
+PASS tan
+
+PASS tanf
+
+PASS tanh
+
+PASS tanhf
+
+PASS tanhl
+
+PASS tanl
+
+PASS tgamma
+
+PASS tgammaf
+
+PASS tgammal
+
+PASS trunc
+
+PASS truncf
+
+PASS truncl
+
+PASS y0
+
+PASS y0f
+
+PASS y1
+
+PASS y1f
+
+PASS yn
+
+PASS ynf
+
+PASS pleval-static
+
+PASS daemon-failure-static
+
+PASS daemon-failure
+
+PASS dn_expand-empty-static
+
+PASS dn_expand-empty
+
+PASS dn_expand-ptr-0-static
+
+PASS dn_expand-ptr-0
+
+PASS execle-env-static
+
+PASS execle-env
+
+PASS fflush-exit-static
+
+PASS fflush-exit
+
+PASS fgets-eof-static
+
+PASS fgets-eof
+
+PASS fgetwc-buffering-static
+
+PASS fgetwc-buffering
+
+PASS flockfile-list-static
+
+PASS flockfile-list
+
+PASS fpclassify-invalid-ld80-static
+
+PASS fpclassify-invalid-ld80
+
+PASS ftello-unflushed-append-static
+
+PASS ftello-unflushed-append
+
+PASS getpwnam_r-crash-static
+
+PASS getpwnam_r-crash
+
+PASS getpwnam_r-errno-static
+
+PASS getpwnam_r-errno
+
+PASS iconv-roundtrips-static
+
+PASS iconv-roundtrips
+
+PASS inet_ntop-v4mapped-static
+
+PASS inet_ntop-v4mapped
+
+PASS inet_pton-empty-last-field-static
+
+PASS inet_pton-empty-last-field
+
+PASS iswspace-null-static
+
+PASS iswspace-null
+
+PASS lrand48-signextend-static
+
+PASS lrand48-signextend
+
+PASS lseek-large-static
+
+PASS lseek-large
+
+PASS malloc-0-static
+
+PASS malloc-0
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffc00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf7000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+brk: ENOMEM collision 0x000000000040f000 vs VMA [0x000000000040d000,0x000000000041a000)
+FAIL malloc-brk-fail-static (rc=1)
+
+src/regression/malloc-brk-fail.c:29: malloc(10000) succeeded after memory is filled
+
+FAIL src/regression/malloc-brk-fail-static.exe [status 1]
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdff00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdfec0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdfea0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdfe90000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdfe88000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effdfe84000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001ff00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001fee0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001fed8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001fed4000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001fed2000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000001ff000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+PASS malloc-brk-fail
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffc00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf7000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+brk: ENOMEM collision 0x000000000040c000 vs VMA [0x000000000040b000,0x00007f0000000000)
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000000000d000 hint=0x0000000000000000
+PASS malloc-oom-static
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff0000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe8000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe4000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe2000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe1000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0f00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0e80000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0e60000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0e58000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effe0e57000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001f000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001ef00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000001eeff000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000001ff000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000000000d000 hint=0x0000000000000000
+PASS malloc-oom
+
+PASS mbsrtowcs-overflow-static
+
+PASS mbsrtowcs-overflow
+
+PASS memmem-oob-read-static
+
+PASS memmem-oob-read
+
+PASS memmem-oob-static
+
+PASS memmem-oob
+
+PASS mkdtemp-failure-static
+
+PASS mkdtemp-failure
+
+PASS mkstemp-failure-static
+
+PASS mkstemp-failure
+
+PASS printf-1e9-oob-static
+
+PASS printf-1e9-oob
+
+PASS printf-fmt-g-round-static
+
+PASS printf-fmt-g-round
+
+PASS printf-fmt-g-zeros-static
+
+PASS printf-fmt-g-zeros
+
+PASS printf-fmt-n-static
+
+PASS printf-fmt-n
+
+PASS pthread-robust-detach-static
+
+PASS pthread-robust-detach
+
+FAIL pthread_atfork-errno-clobber-static (rc=1)
+
+src/regression/pthread_atfork-errno-clobber.c:23: (pid = fork()) == -1 failed: fork succeeded despite rlimit
+
+src/regression/pthread_atfork-errno-clobber.c:23: (pid = fork()) == -1 failed: fork succeeded despite rlimit
+
+FAIL src/regression/pthread_atfork-errno-clobber-static.exe [status 1]
+
+FAIL pthread_atfork-errno-clobber (rc=1)
+
+src/regression/pthread_atrrno-clobber.exe [status 1]
+
+fork-errno-clobber.c:23: (pid = fork()) == -1 failed: fork succeeded despite rlimit
+
+src/regression/pthread_atfork-errno-clobber.c:23: (pid = fork()) == -1 failed: fork succeeded despite rlimit
+
+FAIL src/regression/pthread_atfork-ePASS pthread_cancel-sem_wait-static
+
+PASS pthread_cancel-sem_wait
+
+PASS pthread_cond-smasher-static
+
+PASS pthread_cond-smasher
+
+PASS pthread_cond_wait-cancel_ignored-static
+
+PASS pthread_cond_wait-cancel_ignored
+
+PASS pthread_condattr_setclock-static
+
+PASS pthread_condattr_setclock
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffc00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf6000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000023000 hint=0x0000000000000000
+PASS pthread_create-oom-static
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff0000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effec000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effeb000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effeaf80000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effeaf78000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effeaf74000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effeaf73000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000018000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000016000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000015000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000014e00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000014df0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000014de8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000014de4000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000014de3000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000001ff000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000023000 hint=0x0000000000000000
+PASS pthread_create-oom
+
+PASS pthread_exit-cancel-static
+
+PASS pthread_exit-cancel
+
+PASS pthread_exit-dtor-static
+
+PASS pthread_exit-dtor
+
+PASS pthread_once-deadlock-static
+
+PASS pthread_once-deadlock
+
+PASS pthread_rwlock-ebusy-static
+
+PASS pthread_rwlock-ebusy
+
+PASS putenv-doublefree-static
+
+PASS putenv-doublefree
+
+PASS regex-backref-0-static
+
+PASS regex-backref-0
+
+PASS regex-bracket-icase-static
+
+PASS regex-bracket-icase
+
+PASS regex-ere-backref-static
+
+PASS regex-ere-backref
+
+PASS regex-escaped-high-byte-static
+
+PASS regex-escaped-high-byte
+
+PASS regex-negated-range-static
+
+PASS regex-negated-range
+
+PASS regexec-nosub-static
+
+PASS regexec-nosub
+
+PASS rewind-clear-error-static
+
+PASS rewind-clear-error
+
+FAIL rlimit-open-files-static (rc=1)
+
+src/regression/rlimit-open-files.c:23: getrlimit 7 says cur=42,max=1024 after setting the limit to 42
+
+src/regression/rlimit-open-files.c:30: more fds are open than rlimit allows: fd=1023, limit=42
+
+FAIL src/regression/rlimit-open-files-static.exe [status 1]
+
+FAIL rlimit-open-files (rc=1)
+
+src/regression/rlimit-open-files.c:23: getrlimit 7 says cur=42,max=1024 after setting the limit to 42
+
+src/regression/rlimit-open-files.c:30: more fds are open than rlimit allows: fd=1023, limit=42
+
+FAIL src/regression/rlimit-open-files.exe [status 1]
+
+PASS scanf-bytes-consumed-static
+
+PASS scanf-bytes-consumed
+
+PASS scanf-match-literal-eof-static
+
+PASS scanf-match-literal-eof
+
+PASS scanf-nullbyte-char-static
+
+PASS scanf-nullbyte-char
+
+PASS sem_close-unmap-static
+
+PASS sem_close-unmap
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffc00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007effffbf4000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+PASS setenv-oom-static
+
+mmap: ENOMEM len=0x4000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x2000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x1000000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0800000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0400000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0200000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0100000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0080000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0040000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0020000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0010000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0008000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0004000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0002000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0001000000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000800000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007f0000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff8000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff7800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff7600000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff7500000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff74c0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff74a0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff7498000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00007efff7494000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000400000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000200000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000100000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000080000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000040000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000020000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000010000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000008000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000004000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000002000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000001000000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000800000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000400000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000200000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000100000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000080000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000040000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000020000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000010000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000000c000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x000000000a000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000009000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008c00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008a00000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008900000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000088e0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000088d0000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000088c8000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000088c4000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000088c2000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000008000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000004000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000002000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000001000000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000800000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000400000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000200000 hint=0x0000000000000000
+mmap: ENOMEM len=0x00000000001ff000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000100000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000080000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000040000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000020000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000010000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000004000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000002000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000001000 hint=0x0000000000000000
+mmap: ENOMEM len=0x0000000000008000 hint=0x0000000000000000
+PASS setenv-oom
+
+PASS setvbuf-unget-static
+
+PASS setvbuf-unget
+
+PASS sigaltstack-static
+
+PASS sigaltstack
+
+PASS sigprocmask-internal-static
+
+PASS sigprocmask-internal
+
+PASS sigreturn-static
+
+PASS sigreturn
+
+PASS sscanf-eof-static
+
+PASS sscanf-eof
+
+PASS statvfs-static
+
+PASS statvfs
+
+PASS strverscmp-static
+
+PASS strverscmp
+
+PASS syscall-sign-extend-static
+
+PASS syscall-sign-extend
+
+
+SEGFAULT CR2=0000000000000000 RIP=0000000000000000 err=0000000000000014 pid=0000000000000962 killed
+FAIL tls_get_new-dtv (rc=1)
+
+src/regression/tls_get_new-dtv.c:32: mod = dlopen("tls_get_new-dtv_dso.so", RTLD_NOW) failed
+
+src/regression/tls_get_new-dtv.c:18: f = dlsym(mod, "f") failed
+
+FAIL src/regression/tls_get_new-dtv.exe [status 139]
+
+PASS uselocale-0-static
+
+PASS uselocale-0
+
+PASS wcsncpy-read-overflow-static
+
+PASS wcsncpy-read-overflow
+
+PASS wcsstr-false-negative-static
+
+PASS wcsstr-false-negative
+
+musl libc-test: 446 PASS, 26 FAIL
+
+
+
+=== LTP REQUIRED TESTS ===
+
+[1/313] abort01 ... FAIL (rc=1)
+
+tst_tmpdir.c:308: TINFO: Using /tmp/LTP_aboPDaApI as tmpdir (tmpfs filesystem)
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+tst_test.c:2059: TINFO: LTP smoRT 0.1 x86_64
+
+tst_kconfig.c:71: TINFO: Couldn't locate kernel config!
+
+tst_test.c:1887: TINFO: Overall timeout per run is 0h 00m 30s
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+abort01.c:58: TFAIL: abort() failed to dump core
+
+abort01.c:63: TPASS: abort() raised SIGIOT
+
+
+
+Summary:
+
+passed   1
+
+failed   1
+
+broken   0
+
+skipped  0
+
+warnings 0
+
+version: 20260130
+
+tst_test.c:2062: TINFO: Tested kernel: 0.1.0 Co[2/313] accept01 ... FAIL (rc=1)
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+tst_test.c:2059: TINFO: est.c:1887: TINFO: Overall timeout per run is 0h 00m 30s
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+accept01.c:91: TPASS: bad file descriptor : EBADF (9)
+
+accept01.c:91: TPASS: invalid socket buffer : EINVAL (22)
+
+accept01.c:91: TPASS: invalid salen : EINVAL (22)
+
+accept01.c:91: TPASS: no queued connections : EINVAL (22)
+
+accept01.c:91: TFAIL: UDP accept expected EOPNOTSUPP: EINVAL (22)
+
+
+
+Summary:
+
+passed   4
+
+failed   1
+
+broken   0
+
+skipped  0
+
+warnings 0
+
+LTP version: 20260130
+
+tst_test.c:2062: TINFO: Tested kernel: 0.1.0 CosmoRT 0.1 x86_64
+
+tst_kconfig.c:71: TINFO: Couldn't locate kernel config!
+
+tst_t[3/313] accept02 ... FAIL (rc=2)
+
+tst_tmpdir.c:308: TINFO: Using /tmp/LTP_acclLCfha as tmpdir (tmpfs filesystem)
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+tst_test.c:2059: TINFO: LTP version: 20260130
+
+tst_test.c:2062: TINFO: Tested kernel: 0.1.0 CosmoRT 0.1 x86_64
+
+tst_kconfig.c:71: TINFO: Couldn't locate kernel config!
+
+tst_testng guarded buffers
+
+accept02.c:129: TINFO: Starting listener on port: 61146
+
+accept02.c:100: TBROK: tst_checkpoint_wait(0, 10000) failed: ENOMEM (12)
+
+
+
+HINT: You _MAY_ be missing kernel fixes:
+
+
+
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=657831ff
+
+
+
+HINT: You _MAY_ be vulnerable to CVE(s):
+
+
+
+https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2017-8890
+
+
+
+Summary:
+
+passed   0
+
+failed   0
+
+broken   1
+
+skipped  0
+
+warnings 0
+
+.c:1887: TINFO: Overall timeout per run is 0h 00m 30s
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+tst_buffers.c:57: TINFO: Test is usi[4/313] accept03 ... FAIL (rc=1)
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+tst_test.c:2059: TINFO: LTP version: 20260130
+
+tst_test.c:2062: TINFO: Tested kernel: 0.1.0 CosmoRT 0.1 x86_64
+
+tst_kconfig.c:71: TINFO: Couldn't loest.c:1887: TINFO: Overall timeout per run is 0h 00m 30s
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+accept03.c:46: TPASS: accept() on file : ENOTSOCK (88)
+
+accept03.c:46: TFAIL: accept() on O_PATH file expected EBADF: ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on directory : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on /dev/zero : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on /proc/self/maps : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on pipe read end : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on pipe write end : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on epoll : ENOTSOCK (88)
+
+accept03.c:46: TPASS: accept() on eventfd : ENOTSOCK (88)
+
+tst_fd.c:125: TCONF: Skipping signalfd: ENOSYS (38)
+
+accept03.c:46: TPASS: accept() on timerfd : ENOTSOCK (88)
+
+tst_fd.c:144: TCONF: pidfd_open(): ENOSYS (38)
+
+tst_fd.c:151: TCONF: Skipping fanotify: ENOSYS (38)
+
+accept03.c:46: TPASS: accept() on inotify : ENOTSOCK (88)
+
+tst_fd.c:170: TCONF: Skipping userfaultfd: ENOSYS (38)
+
+tst_fd.c:188: TCONF: Skipping perf event: ENOSYS (38)
+
+tst_fd.c:199: TCONF: Skipping io uring: ENOSYS (38)
+
+tst_fd.c:215: TCONF: Skipping bpf map: ENOSYS (38)
+
+tst_fd.c:224: TCONF: Skipping fsopen: ENOSYS (38)
+
+tst_fd.c:233: TCONF: Skipping fspick: ENOSYS (38)
+
+tst_fd.c:242: TCONF: Skipping open_tree: ENOSYS (38)
+
+accept03.c:46: TPASS: accept() on memfd : ENOTSOCK (88)
+
+tst_fd.c:260: TCONF: Skipping memfd secret: ENOSYS (38)
+
+
+
+Summary:
+
+passed   11
+
+failed   1
+
+broken   0
+
+skipped  11
+
+warnings 0
+
+cate kernel config!
+
+tst_t[5/313] accept4_01 ... FAIL (rc=2)
+
+tst_buffers.c:57: TINFO: Test is using guarded buffers
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+onfig.c:71: TINFO: Couldn't locate kernel config!
+
+tst_test.c:1887: TINFO: Overall timeout per run is 0h 00m 30s
+
+tst_memutils.c:153: TINFO: oom_score_adj does not exist, skipping the adjustment
+
+accept4_01.c:71: TINFO: Testing variant: libc accept4()
+
+accept4_01.c:78: TINFO: server listening on: 49696
+
+Sending SIGKILL to test process...
+
+tst_test.c:1959: TINFO: If you are running on slow machine, try exporting LTP_TIMEOUT_MUL > 1
+
+tst_test.c:1961: TBROK: Test killed! (timeout?)
+
+
+
+Summary:
+
+passed   0
+
+failed   0
+
+broken   1
+
+skipped  0
+
+warnings 0
+
+tst_test.c:2059: TINFO: LTP version: 20260130
+
+tst_test.c:2062: TINFO: Tested kernel: 0.1.0 CosmoRT 0.1 x86_64
+
+tst_kc[6/313] access01 ... SKIP
+
+[7/313] access02 ... SKIP
+
+[8/313] access03 ... SKIP
+
+[9/313] access04 ... SKIP
+
+[10/313] acct01 ... FAIL (rc=2)
+
+[11/313] add_key01 ... SKIP
+
+[12/313] add_key02 ... SKIP
+
+[13/313] add_key03 ... SKIP
+
+[14/313] add_key04 ... SKIP
+
+[15/313] adjtimex01 ... SKIP
+
+[16/313] adjtimex02 ... SKIP
+
+[17/313] adjtimex03 ... FAIL (rc=2)
+
+[18/313] alarm02 ... PASS
+
+[19/313] alarm03 ... PASS
+
+[20/313] alarm05 ... FAIL (rc=2)
+
+[21/313] alarm06 ... PASS
+
+[22/313] alarm07 ... PASS
+
+[23/313] arch_prctl01 ... SKIP
+
+[24/313] bind01 ... FAIL (rc=1)
+
+[25/313] bind02 ... SKIP
+
+[26/313] bind03 ... FAIL (rc=2)
+
+[27/313] bind04 ... FAIL (rc=33)
+
+[28/313] bind05 ... SKIP
+
+[29/313] bpf_map01 ... SKIP
+
+[30/313] bpf_prog01 ... SKIP
+
+[31/313] bpf_prog02 ... FAIL (rc=2)
+
+[32/313] bpf_prog03 ... FAIL (rc=2)
+
+[33/313] bpf_prog04 ... FAIL (rc=2)
+
+[34/313] brk01 ... PASS
+
+[35/313] brk02 ... PASS
+
+[36/313] capget01 ... FAIL (rc=2)
+
+[37/313] capget02 ... FAIL (rc=1)
+
+[38/313] capset01 ... FAIL (rc=1)
+
+[39/313] capset02 ... SKIP
+
+[40/313] capset03 ... SKIP
+
+[41/313] capset04 ... FAIL (rc=2)
+
+[42/313] chdir02 ... FAIL (rc=1)
+
+[43/313] chdir04 ... 
