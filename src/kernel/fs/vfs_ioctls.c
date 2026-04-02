@@ -49,6 +49,17 @@ void fill_ext2_stat(uint32_t ino, struct ext2_inode *ip, struct k_stat *buf) {
     buf->st_mode = ip->i_mode;
 }
 
+/* Fallback: use stat to get the correct path error code when
+ * a specific inode_op is not implemented for a mount. */
+static int vfs_path_error(struct mount *mnt, const char *relpath) {
+    if (mnt && mnt->i_ops && mnt->i_ops->stat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->stat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    return -ENOENT;
+}
+
 /* ── stat — dispatch via mount table ────────────── */
 
 int vfs_stat(const char *path, struct k_stat *buf) {
@@ -135,7 +146,7 @@ int vfs_chmod(const char *path, uint32_t mode) {
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (mnt && mnt->i_ops && mnt->i_ops->chmod)
         return mnt->i_ops->chmod(mnt, relpath, mode);
-    return -ENOENT;
+    return vfs_path_error(mnt, relpath);
 }
 
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
@@ -143,7 +154,7 @@ int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (mnt && mnt->i_ops && mnt->i_ops->chown)
         return mnt->i_ops->chown(mnt, relpath, uid, gid);
-    return -ENOENT;
+    return vfs_path_error(mnt, relpath);
 }
 
 int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
@@ -191,7 +202,7 @@ int vfs_truncate(const char *path, int64_t length) {
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (mnt && mnt->i_ops && mnt->i_ops->truncate)
         return mnt->i_ops->truncate(mnt, relpath, length);
-    return -ENOENT;
+    return vfs_path_error(mnt, relpath);
 }
 
 int vfs_ftruncate(int fd, int64_t length) {
@@ -215,5 +226,5 @@ int vfs_utimensat(const char *path, const int64_t times[4], int flags) {
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (mnt && mnt->i_ops && mnt->i_ops->utimensat)
         return mnt->i_ops->utimensat(mnt, relpath, times, flags);
-    return -ENOENT;
+    return vfs_path_error(mnt, relpath);
 }

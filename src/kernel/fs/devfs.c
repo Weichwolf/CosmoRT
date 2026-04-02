@@ -37,6 +37,20 @@ static int devfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *
     const char *name = relpath;
     if (name[0] == '/') name++;
 
+    /* Check for path traversal through a non-directory device node:
+     * e.g. "/null/invalid" → ENOTDIR (null is a char device, not a dir) */
+    {
+        static const char *devnames[] = {
+            "null", "zero", "urandom", "random", "tty", "console", 0
+        };
+        for (int i = 0; devnames[i]; i++) {
+            const char *d = devnames[i];
+            const char *n = name;
+            while (*d && *n == *d) { n++; d++; }
+            if (*d == 0 && *n == '/') return -ENOTDIR;
+        }
+    }
+
     if (kstreq(name, "null")) {
         buf->st_mode = S_IFCHR | 0666; buf->st_rdev = 0x0103; buf->st_ino = 5; return 0;
     }

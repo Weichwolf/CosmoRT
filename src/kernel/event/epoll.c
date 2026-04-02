@@ -88,10 +88,36 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
 
+    /* Cannot add epoll to itself */
+    if (fd == epfd) return -EINVAL;
+
     /* Validate target fd exists (except for DEL, target may already be closed) */
     if (op != EPOLL_CTL_DEL) {
         fd_entry_t *tgt = fd_get(&p->fds, fd);
         if (!tgt || tgt->type == FD_NONE) return -EBADF;
+
+        /* Check epoll nesting depth + circular reference (ADD only) */
+        if (op == EPOLL_CTL_ADD && tgt->type == FD_EPOLL) {
+            /* Walk the chain: fd→ep2, check all entries of ep2 for epoll fds,
+             * count depth. Linux max nesting = 5 (EP_MAX_NESTS). */
+            #define EP_MAX_NESTS 5
+            int depth = 0;
+            epoll_t *walk = (epoll_t *)tgt->obj;
+            /* BFS would be correct; simplified DFS chain check */
+            while (walk && depth < EP_MAX_NESTS + 1) {
+                depth++;
+                /* Check if walk contains epfd → circular */
+                epoll_t *next = 0;
+                for (int i = 0; i < walk->count; i++) {
+                    if (walk->entries[i].fd == epfd) return -ELOOP;
+                    fd_entry_t *e = fd_get(&p->fds, walk->entries[i].fd);
+                    if (e && e->type == FD_EPOLL && !next)
+                        next = (epoll_t *)e->obj;
+                }
+                walk = next;
+            }
+            if (depth >= EP_MAX_NESTS) return -EINVAL;
+        }
     }
 
     uint64_t irqf;

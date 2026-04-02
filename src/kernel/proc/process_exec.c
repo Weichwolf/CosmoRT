@@ -233,7 +233,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     int shebang_depth = 0;
     #define SHEBANG_MAX_DEPTH 4
 
-shebang_retry:
+shebang_retry:;
+    /* Validate path first — propagate ENAMETOOLONG, ENOTDIR, ELOOP etc. */
+    struct k_stat exec_st;
+    { int st_rc = vfs_stat(kpath, &exec_st);
+      if (st_rc < 0) EXECVE_FAIL(st_rc); }
+
     ext2_ino = vfs_ext2_lookup(kpath);
     ramfs_node = 0;
     elf_len = 0;
@@ -244,9 +249,9 @@ shebang_retry:
             EXECVE_FAIL(-ENOEXEC);
         elf_len = ip.i_size;
     } else {
-        { struct vfs_node *dentry = vfs_lookup(kpath);
+        struct vfs_node *dentry = vfs_lookup(kpath);
         if (!dentry || !dentry->inode) EXECVE_FAIL(-ENOENT);
-        ramfs_node = dentry->inode; }
+        ramfs_node = dentry->inode;
         if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
         if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;

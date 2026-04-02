@@ -20,11 +20,13 @@ int resolve_path(const char *path, char *out, int outsize) {
     while (*path && oi < outsize - 1) out[oi++] = *path++;
     out[oi] = '\0';
 
-    /* Normalize: resolve "." and ".." in-place */
+    /* Normalize: collapse "//" , resolve "/." and "/.." in-place */
     char *w = out, *r = out;
     if (*r == '/') *w++ = *r++;
     while (*r) {
-        if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
+        if (r[0] == '/' && r[1] == '/') {
+            r++; /* skip duplicate slash */
+        } else if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
             r += 2; /* skip "/." */
         } else if (r[0] == '/' && r[1] == '.' && r[2] == '.' && (r[3] == '/' || r[3] == '\0')) {
             r += 3; /* skip "/.." */

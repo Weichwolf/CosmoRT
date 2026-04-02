@@ -551,7 +551,7 @@ not_pts:
         if (ino != 0 && (flags & O_CREAT) && (flags & O_EXCL))
             return -EEXIST;
 
-        if (ino == 0 && (flags & O_CREAT)) {
+        if (ino == 0 && (flags & O_CREAT) && werr == -ENOENT) {
             const char *basename;
             int perr = -ENOENT;
             uint64_t parent_ino64 = ext2_walk_parent_err(path, &basename, &perr);
@@ -611,7 +611,7 @@ not_pts:
 
     if (node && (flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
 
-    if (!node && (flags & O_CREAT)) {
+    if (!node && (flags & O_CREAT) && verr == -ENOENT) {
         ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
         if (node) {
