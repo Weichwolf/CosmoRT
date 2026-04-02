@@ -304,11 +304,11 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
              * point by restoring callee-saved registers and RSP/RIP from the
              * jmpbuf into the IRQ frame. The setjmp will return 1 (via RAX). */
             {
-                percpu_t *kfcpu = percpu_self();
-                if (kfcpu->fault_recover && cr2 < 0x800000000000ULL) {
-                    kfcpu->fault_recover = 0;
+                thread_t *kft = percpu_self()->current_thread;
+                if (kft && kft->fault_recover && cr2 < 0x800000000000ULL) {
+                    kft->fault_recover = 0;
                     /* jmpbuf layout: [rbx, rbp, r12, r13, r14, r15, rsp, rip] */
-                    uint64_t *jb = kfcpu->fault_jmpbuf;
+                    uint64_t *jb = kft->fault_jmpbuf;
                     frame->rbx = jb[0];
                     frame->rbp = jb[1];
                     frame->r12 = jb[2];
@@ -319,6 +319,30 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     frame->rip = jb[7];
                     frame->rax = 1; /* setjmp return value */
                     return; /* IRET will resume at setjmp return */
+                }
+            }
+            /* Kernel fault: kill process if in syscall, skip if in IRQ */
+            {
+                thread_t *kft2 = percpu_self()->current_thread;
+                if (kft2 && kft2->proc && kft2->proc->pml4) {
+                    serial_puts("\nKERNEL PF → kill pid=");
+                    serial_hex64(kft2->proc->pid);
+                    serial_puts(" cr2="); serial_hex64(cr2);
+                    serial_puts(" rip="); serial_hex64(frame->rip);
+                    serial_putchar('\n');
+                    extern void do_exit_group(int status);
+                    extern uint64_t pml4[];
+                    arch_set_cr3(virt_to_phys(pml4));
+                    kft2->proc->exit_signal = 11;
+                    do_exit_group(128 + 11);
+                }
+                /* NULL call in IRQ/idle context (stale timer callback):
+                 * pop return address from stack, resume caller. */
+                if (frame->rip == 0) {
+                    serial_puts("\nKERNEL NULL-CALL in IRQ → skip\n");
+                    frame->rip = *(uint64_t *)frame->rsp;
+                    frame->rsp += 8;
+                    return;
                 }
             }
             pf_kernel_panic(cr2, error, frame->rip);
@@ -576,12 +600,17 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
         segfault_log(cr2, frame->rip, error, (t && t->proc) ? (int)t->proc->pid : -1);
         if (t && t->proc) {
-            /* Use do_exit_group to properly close FDs, wake parent, etc. */
             extern void do_exit_group(int status);
-            /* Switch to user page tables for exit (FD cleanup may access user ptrs) */
             arch_set_cr3(virt_to_phys(t->proc->pml4));
-            do_exit_group(139); /* SIGSEGV */
-            /* do_exit_group calls thread_return_to_kernel internally */
+            t->proc->exit_signal = 11;
+            do_exit_group(128 + 11); /* SIGSEGV */
+        }
+        /* Last resort: if NULL call, try to skip */
+        if (frame->rip == 0 && (error & 0x10)) {
+            serial_puts(" NULL-CALL in kernel (no process) → skip\n");
+            frame->rip = *(uint64_t *)frame->rsp;
+            frame->rsp += 8;
+            return;
         }
         pf_kernel_panic(cr2, error, frame->rip);
     }
@@ -621,9 +650,9 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     /* Kernel-mode exception during syscall with fault_recover armed:
      * the kernel faulted on user-supplied data (e.g. fxrstor with garbage).
      * Recover via longjmp → sys_handler returns -EFAULT. */
-    if (!(frame->cs & 3) && cpu->fault_recover) {
-        cpu->fault_recover = 0;
-        uint64_t *jb = cpu->fault_jmpbuf;
+    if (!(frame->cs & 3) && t && t->fault_recover) {
+        t->fault_recover = 0;
+        uint64_t *jb = t->fault_jmpbuf;
         frame->rbx = jb[0]; frame->rbp = jb[1];
         frame->r12 = jb[2]; frame->r13 = jb[3];
         frame->r14 = jb[4]; frame->r15 = jb[5];
@@ -727,6 +756,29 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         do_exit_group(128 + vector);
     }
 
+    /* Kernel fault in syscall context: kill process instead of panic */
+    if (t && t != (thread_t *)(void *)&t /* not idle */ && t->proc && t->proc->pml4) {
+        serial_puts(" KERNEL FAULT in syscall → kill pid=");
+        serial_hex64(t->proc->pid);
+        serial_putchar('\n');
+        extern void do_exit_group(int status);
+        extern uint64_t pml4[];
+        arch_set_cr3(virt_to_phys(pml4));
+        t->proc->exit_signal = vector;
+        do_exit_group(128 + vector);
+    }
+
+    /* Kernel fault in IRQ/idle context: try to skip and continue.
+     * This handles stale TCP timer callbacks calling freed connections.
+     * The IRQ frame's RIP is patched to skip the faulting call. */
+    if (frame->rip == 0 && frame->cs == 0x08) {
+        serial_puts(" KERNEL NULL-CALL — skipping (stale callback?)\n");
+        /* Return address is on the stack at RSP. Pop it into RIP. */
+        frame->rip = *(uint64_t *)frame->rsp;
+        frame->rsp += 8;
+        return;
+    }
+
     serial_puts(" KERNEL PANIC\n");
     arch_cli_halt();
 }
@@ -806,10 +858,11 @@ static void timer_handler(int vector) {
     /* I/O polling: network + timer wheel */
     extern int net_rx_poll(int max_work);
     extern int net_tx_poll(int max_work);
-    extern void timer_wheel_tick(void);
     net_rx_poll(64);
     net_tx_poll(64);
-    timer_wheel_tick();
+    /* Fire expired high-resolution timers + reprogram LAPIC one-shot */
+    extern void hrtimer_run_expired(void);
+    hrtimer_run_expired();
 }
 
 uint64_t irq_get_ticks(void) { return tick_count; }

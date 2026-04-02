@@ -17,7 +17,9 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/tss.o \
             $(BUILD)/kernel/core/percpu.o \
             $(BUILD)/kernel/core/timer_wheel.o \
-            $(BUILD)/kernel/core/event_queue.o
+            $(BUILD)/kernel/core/event_queue.o \
+            $(BUILD)/kernel/core/rbtree.o \
+            $(BUILD)/kernel/core/hrtimer.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/paging.o \
@@ -31,7 +33,10 @@ KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/process_fork.o \
             $(BUILD)/kernel/proc/process_exec.o \
             $(BUILD)/kernel/proc/process_wait.o \
-            $(BUILD)/kernel/proc/elf.o
+            $(BUILD)/kernel/proc/elf.o \
+            $(BUILD)/kernel/proc/signal.o \
+            $(BUILD)/kernel/proc/signal_frame.o \
+            $(BUILD)/kernel/proc/signal_handler.o
 
 KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_file.o \
@@ -39,9 +44,6 @@ KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_mem.o \
              $(BUILD)/kernel/sys/sys_proc.o \
              $(BUILD)/kernel/sys/sys_sched.o \
-             $(BUILD)/kernel/sys/sys_signal.o \
-             $(BUILD)/kernel/sys/sys_signal_frame.o \
-             $(BUILD)/kernel/sys/sys_signal_handler.o \
              $(BUILD)/kernel/sys/sys_time.o \
              $(BUILD)/kernel/sys/sys_ipc.o \
              $(BUILD)/kernel/sys/sys_net.o \
@@ -87,12 +89,15 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/fb.o \
             $(BUILD)/kernel/vt/input.o
 
+KERN_HAL  = $(BUILD)/arch/x86_64/cpu/hal_cpu.o \
+            $(BUILD)/arch/x86_64/timer/hal_timer.o
+
 KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
-            $(BUILD)/arch/x86_64/hyperv.o \
-            $(BUILD)/arch/x86_64/qemu.o \
+            $(BUILD)/arch/x86_64/hw/hyperv.o \
+            $(BUILD)/arch/x86_64/hw/qemu.o \
             $(BUILD)/arch/x86_64/sha256.o
 
 KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
@@ -111,7 +116,7 @@ KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
 
 KERN_OBJ = $(KERN_ASM) $(KERN_CORE) $(KERN_MM) $(KERN_PROC) \
            $(KERN_SYS) $(KERN_IPC) $(KERN_FS) $(KERN_NET) \
-           $(KERN_EVENT) $(KERN_VT) $(KERN_HW) $(KERN_DRV)
+           $(KERN_EVENT) $(KERN_VT) $(KERN_HAL) $(KERN_HW) $(KERN_DRV)
 
 # All kernel objects except main.o (for test builds that substitute their own)
 KERN_OBJ_NO_MAIN = $(filter-out $(BUILD)/kernel/core/main.o,$(KERN_OBJ))

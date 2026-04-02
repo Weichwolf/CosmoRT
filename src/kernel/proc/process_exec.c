@@ -440,8 +440,8 @@ shebang_retry:
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(cur);
-        return -ENOMEM;
+        schedule();
+        __builtin_unreachable();
     }
 
     /* ASLR */
@@ -465,8 +465,8 @@ shebang_retry:
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(cur);
-        return -ENOEXEC;
+        schedule();
+        __builtin_unreachable();
     }
 
     /* Create VMAs from header buffer (phdrs already in hdr_buf) */
@@ -524,8 +524,8 @@ shebang_retry:
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(cur);
-        return -ENOMEM;
+        schedule();
+        __builtin_unreachable();
     }
 
     /* Store executable path for /proc/self/exe */

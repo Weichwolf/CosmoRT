@@ -1,15 +1,12 @@
 /* CosmoRT Event Queue — kernel-side event_post + event_wait
  *
  * event_post: write event into target thread's queue, then sched_wake.
- * event_wait: consume next event; if empty, block thread (syscall restart).
- *
- * Race-free: event is in the queue BEFORE sched_wake. If the target
- * thread isn't blocked yet, it finds the event on next event_wait.
- * If already blocked, sched_wake wakes it and the re-executed syscall
- * calls event_wait which finds the event immediately.
+ * event_wait: consume next event; if empty, block via schedule().
+ * Timeouts use hrtimer (LAPIC one-shot) instead of polling.
  */
 
 #include "core/event_queue.h"
+#include "core/hrtimer.h"
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
@@ -41,39 +38,26 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     uint32_t h = eq->head;
     uint32_t t = eq->tail;
 
-    /* Queue full: advance tail (drop oldest) */
     if (h - t >= EQ_MAX_EVENTS)
         arch_store_release(&eq->tail, t + 1);
 
-    /* Write event at head slot */
     eq->events[h & EQ_MASK].type = type;
     eq->events[h & EQ_MASK].data = data;
     arch_store_release(&eq->head, h + 1);
 
     spin_unlock_irq(lk, irqf);
 
-    /* Wake target — sched_wake is atomic CAS (BLOCKED->RUNNABLE).
-     * If target isn't blocked yet, this is a no-op. The event is
-     * already in the queue, so next event_wait will find it. */
     extern void sched_wake(struct thread *t);
     sched_wake(target);
 }
 
-/* ── Wait: consume next event, block if empty ── */
+/* ── hrtimer timeout callback: wake blocked thread ── */
 
-extern uint64_t pml4[];
-extern void save_user_state_for_block(thread_t *t, long return_value);
-extern void thread_return_to_kernel(thread_t *t);
-extern void epoll_sleeper_add_ext(thread_t *t);
-
-/* Syscall saved frame layout — must match syscall_entry.asm push order */
-typedef struct {
-    uint64_t r15, r14, r13, r12, rbp, rbx;
-    uint64_t r9, r8, r10, rdx, rsi, rdi;
-    uint64_t rax;       /* syscall number */
-    uint64_t r11;       /* user RFLAGS */
-    uint64_t rcx;       /* user RIP */
-} eq_syscall_frame_t;
+static void timeout_wake(hrtimer_t *timer) {
+    thread_t *t = (thread_t *)timer->data;
+    extern void sched_wake(thread_t *t);
+    sched_wake(t);
+}
 
 /* ── Block: pure timeout sleep (no event queue) ── */
 
@@ -83,107 +67,113 @@ void thread_block_ms(int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return;
 
-    percpu_t *cpu = percpu_self();
-    eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
-    uint64_t orig_syscall_nr = frame->rax;
-
-    save_user_state_for_block(cur, 0);
-    cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
-    cur->rax = orig_syscall_nr;
-
-    /* Check for deliverable signals — restart syscall immediately
-     * so caller (e.g. do_nanosleep) sees the signal and returns -EINTR. */
     if (cur->proc) {
         uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
         uint64_t deliverable = all_pending & ~cur->sig_blocked;
-        if (deliverable) {
-            cur->state = THREAD_RUNNABLE;
-            extern void sched_add(thread_t *t);
-            sched_add(cur);
-            arch_set_cr3(virt_to_phys(pml4));
-            thread_return_to_kernel(cur);
-            /* unreachable */
-        }
+        if (deliverable) return;
     }
 
-    cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
-    cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
-    epoll_sleeper_add_ext(cur);
+    /* hrtimer wakes us after timeout */
+    hrtimer_t timer;
+    hrtimer_init(&timer, timeout_wake, cur);
+    hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
+
     cur->state = THREAD_BLOCKED;
 
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(cur);
-    /* unreachable */
+    extern void schedule(void);
+    schedule();
+
+    hrtimer_cancel(&timer);
 }
 
+/* ── Wait: consume next event, block if empty ── */
+
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
-    /* Fast path: event available */
-    uint32_t h = arch_load_acquire(&eq->head);
-    uint32_t t = eq->tail;  /* only consumer reads tail */
-
-    if (h != t) {
-        *out = eq->events[t & EQ_MASK];
-        arch_store_release(&eq->tail, t + 1);
-        return 0;
-    }
-
-    /* Queue empty — non-blocking mode */
-    if (timeout_ms == 0)
-        return -11; /* EAGAIN */
-
-    /* Check for any deliverable signals before blocking.
-     * Linux: any unblocked pending signal interrupts blocking syscalls
-     * with -EINTR (or -ERESTARTSYS for SA_RESTART).
-     * The signal is delivered by check_pending_signals on syscall return. */
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
-    if (cur->proc) {
-        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        uint64_t deliverable = all_pending & ~cur->sig_blocked;
-        if (deliverable) return -4; /* EINTR */
-    }
 
-    /* Block: save user state for syscall restart.
-     * On wake, the syscall re-executes from userspace.
-     * event_wait is called again and finds the event in the queue. */
-
-    /* Read original syscall number from frame before save overwrites rax */
-    percpu_t *cpu = percpu_self();
-    eq_syscall_frame_t *frame = (eq_syscall_frame_t *)cpu->syscall_frame;
-    uint64_t orig_syscall_nr = frame->rax;
-
-    save_user_state_for_block(cur, 0);
-    cur->rip -= 2;           /* back to `syscall` instruction (0F 05) */
-    cur->rax = orig_syscall_nr;
-
-    /* Timeout — TSC-based for sub-ms precision */
+    /* Set up timeout hrtimer (if finite timeout) */
+    hrtimer_t timer;
+    int has_timer = 0;
+    uint64_t deadline_ns = 0;
     if (timeout_ms > 0) {
-        cur->wake_at = timer_ms() + (uint64_t)timeout_ms;
-        cur->wake_at_tsc = timer_deadline_tsc((uint64_t)timeout_ms);
-    } else {
-        cur->wake_at = 0;
-        cur->wake_at_tsc = 0;
+        deadline_ns = hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms);
+        hrtimer_init(&timer, timeout_wake, cur);
+        has_timer = 1;
     }
 
-    /* Register for timeout checking */
-    epoll_sleeper_add_ext(cur);
+    for (;;) {
+        /* Signal check — fatal signals (SIGALRM, SIGKILL) must interrupt.
+         * But ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
+         * SIGWINCH=28, SIGIO=29) to avoid spurious EINTR. */
+        if (cur->proc) {
+            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+            uint64_t deliverable = all_pending & ~cur->sig_blocked;
+            if (deliverable) {
+                /* Filter out SIG_DFL-ignored signals */
+                #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
+                uint64_t real = deliverable;
+                for (int s = 1; s < 64 && real; s++) {
+                    if (!(real & (1ULL << (s-1)))) continue;
+                    if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+                        ((1ULL << (s-1)) & SIG_DFL_IGNORE))
+                        real &= ~(1ULL << (s-1)); /* SIG_DFL + ignored class */
+                }
+                if (real) {
+                    if (has_timer) hrtimer_cancel(&timer);
+                    return -4; /* EINTR */
+                }
+            }
+        }
 
-    cur->state = THREAD_BLOCKED;
+        /* Fast path: event available */
+        uint32_t h = arch_load_acquire(&eq->head);
+        uint32_t t = eq->tail;
 
-    /* Close race: event_post writes event then sched_wake(CAS BLOCKED→RUNNABLE).
-     * If event arrived between our fast-path check and BLOCKED, sched_wake saw
-     * RUNNING/... and was a no-op. Re-check after BLOCKED. mfence ensures our
-     * BLOCKED store is globally visible before we read head (so event_post on
-     * another core sees BLOCKED and its sched_wake succeeds). */
-    __asm__ volatile("mfence" ::: "memory");
-    if (arch_load_acquire(&eq->head) != eq->tail) {
-        /* Event arrived — undo block, let scheduler re-run us */
-        cur->state = THREAD_RUNNABLE;
-        extern void sched_add(thread_t *t);
-        sched_add(cur);
+        if (h != t) {
+            *out = eq->events[t & EQ_MASK];
+            arch_store_release(&eq->tail, t + 1);
+            if (has_timer) hrtimer_cancel(&timer);
+            return 0;
+        }
+
+        /* Queue empty — non-blocking mode */
+        if (timeout_ms == 0)
+            return -11; /* EAGAIN */
+
+        /* Check timeout before blocking */
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            return -11; /* EAGAIN (timeout) */
+        }
+
+        /* Arm hrtimer for this block iteration */
+        if (has_timer)
+            hrtimer_start(&timer, deadline_ns);
+
+        cur->state = THREAD_BLOCKED;
+
+        /* Close race: event arrived between fast-path and BLOCKED */
+        __asm__ volatile("mfence" ::: "memory");
+        if (arch_load_acquire(&eq->head) != eq->tail) {
+            cur->state = THREAD_RUNNING;
+            continue;
+        }
+
+        extern void schedule(void);
+        schedule();
+
+        /* Resumed — check timeout */
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            /* Check queue one last time (event might have arrived with timeout) */
+            h = arch_load_acquire(&eq->head);
+            if (h != eq->tail) {
+                *out = eq->events[eq->tail & EQ_MASK];
+                arch_store_release(&eq->tail, eq->tail + 1);
+                return 0;
+            }
+            return -11; /* EAGAIN (timeout) */
+        }
     }
-
-    arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(cur);
-    return 0; /* unreachable */
 }

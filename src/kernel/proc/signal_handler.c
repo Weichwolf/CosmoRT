@@ -1,6 +1,6 @@
 /* CosmoRT Syscall Layer — sigaction, sigaltstack, signal helpers */
 
-#include "internal.h"
+#include "sys/internal.h"
 #include "core/event_queue.h"
 
 /* sigaltstack flags */
@@ -136,10 +136,17 @@ void check_alarm_timers(void) {
         if (!p || p->state != PROC_ALIVE) continue;
         if (p->alarm_deadline_ms == 0 || now < p->alarm_deadline_ms) continue;
         p->alarm_deadline_ms = 0;
-        /* Deliver via kill_one — handles SIG_DFL (terminate + wake threads
-         * + notify parent) and user handlers (set pending + wake) correctly. */
-        extern long kill_one(process_t *target, int sig);
-        kill_one(p, SIGALRM);
+        /* Set SIGALRM pending and wake blocked threads.
+         * Actual delivery happens in event_wait signal check or
+         * check_signals_syscall_path on next syscall return. */
+        p->sig_pending |= SIG_BIT(SIGALRM);
+        extern void sched_wake(thread_t *t);
+        thread_t *t = p->threads;
+        while (t) {
+            if (t->state == THREAD_BLOCKED)
+                sched_wake(t);
+            t = t->proc_next;
+        }
     }
 }
 
@@ -219,16 +226,9 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     /* SIGSTOP: thread was stopped by check_pending_signals.
      * Yield to scheduler — on SIGCONT, syscall will restart. */
     if (t->state == THREAD_STOPPED) {
-        extern uint64_t pml4[];
-        extern void thread_return_to_kernel(thread_t *t);
-        /* RIP already points at user code; back up to re-execute syscall on resume */
-        t->rip = frame->rcx;  /* original user RIP (pre-signal) */
-        t->rsp = cpu->user_rsp;
-        t->rax = frame->rax;  /* original syscall nr for restart */
-        t->rip -= 2;          /* back to `syscall` instruction (0F 05) */
-        arch_set_cr3(virt_to_phys(pml4));
-        thread_return_to_kernel(t);
-        /* unreachable */
+        extern void schedule(void);
+        schedule();
+        /* Returned: SIGCONT woke us. Restore thread_t → frame below. */
     }
 
     /* Write back thread_t -> syscall frame */

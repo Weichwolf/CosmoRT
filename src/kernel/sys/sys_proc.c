@@ -200,8 +200,8 @@ void do_exit(int status) {
 
     extern uint64_t pml4[];
     arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    arch_cli_halt();
+    schedule();
+    __builtin_unreachable();
 }
 
 void do_exit_group(int status) {
@@ -213,8 +213,8 @@ void do_exit_group(int status) {
 
     extern uint64_t pml4[];
     arch_set_cr3(virt_to_phys(pml4));
-    thread_return_to_kernel(t);
-    arch_cli_halt();
+    schedule();
+    __builtin_unreachable();
 }
 
 /* ── SYS_reboot (169) ────────────────────────────── */
@@ -312,6 +312,8 @@ long do_clone(unsigned long flags, void *child_stack,
     t->kstack = (uint8_t *)pages_alloc(KSTACK_SIZE / 4096);
     if (!t->kstack) { thread_free(t); return -ENOMEM; }
     t->kstack_top = (uint64_t)(uintptr_t)(t->kstack + KSTACK_SIZE);
+    extern void thread_init_kstack(thread_t *t);
+    thread_init_kstack(t);
 
     /* TLS (CLONE_SETTLS) */
     if (flags & CLONE_SETTLS) {

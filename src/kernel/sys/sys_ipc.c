@@ -299,8 +299,17 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
                 udp_sock_t *us = udp_find(s->udp_local_port);
                 if (us) udp_unbind(us);
             }
-            if (s->state == SOCK_CONNECTED && !s->is_dgram)
-                net_tcp_close(&s->tcp);
+            if (!s->is_dgram) {
+                if (s->state == SOCK_CONNECTED)
+                    net_tcp_close(&s->tcp);
+                else if (s->tcp.state != TCP_CLOSED) {
+                    /* Deregister non-connected but registered TCP connections
+                     * (e.g. SYN_SENT from failed connect). Prevents dangling hash entry. */
+                    extern void tcp_unregister(net_tcp_t *c);
+                    tcp_unregister(&s->tcp);
+                    s->tcp.state = TCP_CLOSED;
+                }
+            }
             sock_free(s);
         }
     } else if (fde_type == FD_PIPE) {

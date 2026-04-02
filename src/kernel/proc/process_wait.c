@@ -160,13 +160,29 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (!found_child) return -ECHILD;
         if (wnohang) return 0;
 
-        /* Block: child exists but hasn't exited/stopped/continued.
-         * event_post wakes us. event_wait either blocks (syscall restart)
-         * or returns immediately (event queued). Loop re-scans children. */
+        /* Block until child state change.
+         * Like Linux: consume SIGCHLD (it led us here) and always re-scan
+         * after wake. Only return -EINTR for non-SIGCHLD signals. */
         {
+            __sync_fetch_and_and(&parent->sig_pending, ~SIG_BIT(SIGCHLD));
+            __sync_fetch_and_and(&cur->sig_thread_pending, ~SIG_BIT(SIGCHLD));
+
             event_t ev;
             int _wr = event_wait(&cur->eq, &ev, -1);
-            if (_wr == -4) return -EINTR;
+
+            /* Clear SIGCHLD again — child exit sets it during our block */
+            __sync_fetch_and_and(&parent->sig_pending, ~SIG_BIT(SIGCHLD));
+            __sync_fetch_and_and(&cur->sig_thread_pending, ~SIG_BIT(SIGCHLD));
+
+            if (_wr == -4) {
+                /* event_wait saw a signal. If only SIGCHLD was pending,
+                 * we just cleared it — re-scan. If other signals remain,
+                 * return -EINTR for real interruption. */
+                uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked;
+                if (remaining)
+                    return -EINTR;
+                /* Only SIGCHLD was pending → re-scan children */
+            }
         }
     }
 }

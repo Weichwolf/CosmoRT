@@ -82,12 +82,15 @@ typedef struct thread {
     struct thread *rq_next;      /* scheduler run queue */
     struct thread *proc_next;    /* process thread list */
 
-    /* ── Kernel context (setjmp buffer) ── */
-    uint64_t jmpbuf[8];
+    /* ── Kernel context (context_switch RSP) ── */
+    uint64_t kstack_rsp;
 
-    /* ── Kernel-level yield: resume in-kernel call chain (e.g., net_idle) ── */
-    uint64_t kernel_yield_jmpbuf[8];
-    int      in_kernel_yield;   /* 1 = resume via kernel_yield_jmpbuf */
+    /* ── Per-thread percpu state (saved/restored by schedule()) ── */
+    uint64_t saved_user_rsp;     /* percpu->user_rsp: sysret needs it per-thread */
+
+    /* ── Fault recovery (per-thread, used by syscall page-fault handler) ── */
+    uint64_t fault_jmpbuf[8];
+    int      fault_recover;
 
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;

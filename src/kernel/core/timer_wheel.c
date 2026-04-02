@@ -119,6 +119,7 @@ int timer_wheel_cancel(void *ctx) {
 /* ── Fire callback ───────────────────────────────── */
 
 static void tw_fire(tw_entry_t *e) {
+    if (!e->ctx) return;
     switch (e->action) {
     case RT_TIMER_TCP_RETRANSMIT: {
         extern void net_tcp_retransmit(void *conn);

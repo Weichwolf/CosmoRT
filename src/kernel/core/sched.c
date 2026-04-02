@@ -1,10 +1,13 @@
-/* CosmoRT Scheduler — Single-core, priority queues
+/* CosmoRT Scheduler — Single-core, priority queues, one context_switch
  *
  * 32 priority levels (0 = SCHED_OTHER, 1-31 = RT).
  * Per-priority FIFO queues. Highest non-empty queue runs first.
  * SCHED_FIFO: no timeslice, runs until yield/block.
  * SCHED_RR: timeslice, rotates within same priority.
  * SCHED_OTHER: round-robin at priority 0.
+ *
+ * ONE switch mechanism: context_switch(prev, next) in context.asm.
+ * schedule() is the SOLE entry point for all context switches.
  */
 
 #include "proc/thread.h"
@@ -16,6 +19,12 @@
 #include "core/timer.h"
 #include "arch/arch.h"
 
+_Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 232,
+               "kstack_rsp offset mismatch with context.asm THREAD_KSTACK_RSP");
+
+/* Assembly: saves prev callee-saved+RFLAGS+RSP, loads next's */
+extern void context_switch(thread_t *prev, thread_t *next);
+
 /* Run queue: single-core, protected by spinlock (IRQ context) */
 static struct {
     thread_t *head;
@@ -24,6 +33,10 @@ static struct {
 
 static spinlock_t rq_lock = SPINLOCK_INIT;
 static uint32_t rq_bitmap;  /* bit N set = rq[N] non-empty */
+
+/* Idle thread: kstack_rsp used for context_switch, runs on boot stack */
+static thread_t idle_thread;
+static uint8_t idle_stack[16384] __attribute__((aligned(16)));
 
 /* ── Enqueue / dequeue ───────────────────────────── */
 
@@ -53,8 +66,10 @@ void sched_add(thread_t *t) {
 void sched_wake(thread_t *t) {
     if (!t) return;
     int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-    if (old != THREAD_BLOCKED) return;
-    sched_add(t);
+    if (old == THREAD_BLOCKED) { sched_add(t); return; }
+    /* Also wake STOPPED threads (SIGCONT) */
+    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
+    if (old == THREAD_STOPPED) sched_add(t);
 }
 
 __attribute__((hot))
@@ -82,9 +97,76 @@ thread_t *sched_pick(void) {
     return t;
 }
 
+/* ── schedule() — THE one switch point ──────────── */
+
+extern void tss_set_rsp0(uint64_t rsp0);
+extern uint64_t pml4[];
+
+void schedule(void) {
+    percpu_t *cpu = percpu_self();
+    thread_t *prev = cpu->current_thread;
+
+    /* Re-enqueue prev if still RUNNING (preemption / yield) */
+    if (prev && prev != &idle_thread && prev->state == THREAD_RUNNING) {
+        prev->state = THREAD_RUNNABLE;
+        sched_add(prev);
+    }
+
+    /* Pick next runnable thread, skip dead/invalid */
+    thread_t *next;
+    for (;;) {
+        next = sched_pick();
+        if (!next) { next = &idle_thread; break; }
+        if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
+            !next->proc || !next->proc->pml4) {
+            if (next->state == THREAD_DEAD && !next->proc)
+                thread_free(next);
+            continue;
+        }
+        break;
+    }
+
+    if (prev == next) {
+        if (next != &idle_thread) next->state = THREAD_RUNNING;
+        return;
+    }
+
+    /* Save prev per-thread state (skip idle and dead threads) */
+    if (prev && prev != &idle_thread && prev->state != THREAD_DEAD) {
+        prev->saved_user_rsp = cpu->user_rsp;
+        prev->fs_base = arch_get_fs_base();
+        arch_fpstate_save(prev->xsave_area);
+    }
+
+    /* Load next state */
+    if (next != &idle_thread) {
+        next->state = THREAD_RUNNING;
+        arch_set_cr3(virt_to_phys(next->proc->pml4));
+        tss_set_rsp0(next->kstack_top);
+        cpu->kernel_rsp = next->kstack_top;
+        /* Restore per-CPU state that syscall_entry_asm writes per-thread:
+         * user_rsp (sysret reads it), syscall_frame (signal delivery reads it).
+         * For new threads (ret_from_fork), these are set by ret_from_fork itself. */
+        cpu->user_rsp = next->saved_user_rsp;
+        cpu->syscall_frame = next->kstack_top - 15 * 8;
+        arch_set_fs_base(next->fs_base);
+        arch_fpstate_restore(next->xsave_area);
+    } else {
+        uint64_t idle_top = (uint64_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
+        arch_set_cr3(virt_to_phys(pml4));
+        tss_set_rsp0(idle_top);
+        cpu->kernel_rsp = idle_top;
+    }
+
+    cpu->current_thread = next;
+    context_switch(prev, next);
+    /* Returns here when WE are switched back to */
+}
+
 /* ── Timer preemption ────────────────────────────── */
 
 void sched_preempt(void *frame_ptr) {
+    /* timerfd expiry + epoll wakeups (still needed until timerfd uses hrtimer) */
     {
         extern void epoll_check_timeouts(void);
         epoll_check_timeouts();
@@ -93,7 +175,7 @@ void sched_preempt(void *frame_ptr) {
     /* Check alarm timers for the current thread's process */
     {
         thread_t *alarm_t = percpu_self()->current_thread;
-        if (alarm_t && alarm_t->proc) {
+        if (alarm_t && alarm_t != &idle_thread && alarm_t->proc) {
             process_t *ap = alarm_t->proc;
             if (ap->alarm_deadline_ms > 0 && timer_ms() >= ap->alarm_deadline_ms) {
                 ap->alarm_deadline_ms = 0;
@@ -122,7 +204,7 @@ void sched_preempt(void *frame_ptr) {
 
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
-    if (!cur || cur->state != THREAD_RUNNING) return;
+    if (!cur || cur == &idle_thread || cur->state != THREAD_RUNNING) return;
 
     uint64_t *f = (uint64_t *)frame_ptr;
 
@@ -170,19 +252,22 @@ void sched_preempt(void *frame_ptr) {
     cur->rbp = f[8]; cur->rdi = f[9]; cur->rsi = f[10]; cur->rdx = f[11];
     cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
     cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
-
     cur->fs_base = arch_get_fs_base();
-    arch_fpstate_save(cur->xsave_area);
 
-    if (cur->state == THREAD_RUNNING)
-        cur->state = THREAD_RUNNABLE;
+    /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
     extern void lapic_eoi(void);
     lapic_eoi();
-    arch_set_kernel_gs_base((uint64_t)(uintptr_t)cpu);
-    extern void kernel_longjmp(uint64_t buf[8], int val) __attribute__((noreturn));
-    extern uint64_t pml4[];
-    arch_set_cr3(virt_to_phys(pml4));
-    kernel_longjmp(cur->jmpbuf, 1);
+
+    schedule();
+
+    /* Returned: we've been rescheduled.
+     * schedule() already loaded our CR3, TSS, FPU, FS_BASE.
+     * Restore user regs from thread_t to IRQ frame. */
+    f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;
+    f[4] = cur->r11; f[5] = cur->r10; f[6] = cur->r9;  f[7] = cur->r8;
+    f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
+    f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
+    f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
 }
 
 /* ── Init + scheduler loop ───────────────────────── */
@@ -201,54 +286,26 @@ void sched_init(void) {
     serial_puts(" prio levels)\n");
 }
 
-static uint8_t idle_stack[16384] __attribute__((aligned(16)));
-
-void sched_loop_once(void) {
-    thread_t *next = sched_pick();
-    if (next) {
-        if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
-            !next->proc || !next->proc->pml4) {
-            if (next->state == THREAD_DEAD && !next->proc)
-                thread_free(next);
-            return;
-        }
-        thread_run(next);
-        if (next->state == THREAD_RUNNABLE)
-            sched_add(next);
-    } else {
-        arch_halt();
-    }
-}
-
 void sched_loop(void) {
     percpu_t *cpu = percpu_self();
-    extern void tss_set_rsp0(uint64_t rsp0);
+    cpu->current_thread = &idle_thread;
+    idle_thread.state = THREAD_RUNNING;
 
     for (;;) {
-        cpu->need_resched = 0;
+        schedule();
 
-        thread_t *next = sched_pick();
-        if (next) {
-            if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
-                !next->proc || !next->proc->pml4) {
-                if (next->state == THREAD_DEAD && !next->proc)
-                    thread_free(next);
-                continue;
-            }
-            thread_run(next);
-            if (next->state == THREAD_RUNNABLE)
-                sched_add(next);
-        } else {
-            uint64_t idle_top = (uint64_t)(uintptr_t)
-                (idle_stack + sizeof(idle_stack));
-            tss_set_rsp0(idle_top);
-            cpu->kernel_rsp = idle_top;
+        /* Returned: no runnable threads (or switched back to idle) */
+        idle_thread.state = THREAD_RUNNING;
+        cpu->current_thread = &idle_thread;
 
-            {
-                extern void epoll_check_timeouts(void);
-                epoll_check_timeouts();
-            }
-            arch_halt();
+        {
         }
+        {
+            extern void epoll_check_timeouts(void);
+            epoll_check_timeouts();
+        }
+        arch_sti();
+        arch_halt();
+        arch_cli();
     }
 }
