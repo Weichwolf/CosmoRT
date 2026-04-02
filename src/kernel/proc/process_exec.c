@@ -221,9 +221,9 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    /* Identify file source: ext2 inode or ramfs inode */
-    extern int ext2_inode_read(uint32_t ino, struct ext2_inode *out);
-    uint64_t ext2_ino;
+    /* Identify file source: ext4 inode or ramfs inode */
+    extern int ext4_inode_read(uint32_t ino, struct ext4_inode *out);
+    uint64_t ext4_ino;
     struct vfs_inode *ramfs_node;
     size_t elf_len;
 
@@ -233,20 +233,25 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     int shebang_depth = 0;
     #define SHEBANG_MAX_DEPTH 4
 
-shebang_retry:
-    ext2_ino = vfs_ext2_lookup(kpath);
+shebang_retry:;
+    /* Validate path first — propagate ENAMETOOLONG, ENOTDIR, ELOOP etc. */
+    struct k_stat exec_st;
+    { int st_rc = vfs_stat(kpath, &exec_st);
+      if (st_rc < 0) EXECVE_FAIL(st_rc); }
+
+    ext4_ino = vfs_ext4_lookup(kpath);
     ramfs_node = 0;
     elf_len = 0;
 
-    if (ext2_ino) {
-        struct ext2_inode ip;
-        if (ext2_inode_read((uint32_t)ext2_ino, &ip) < 0 || ip.i_size == 0)
+    if (ext4_ino) {
+        struct ext4_inode ip;
+        if (ext4_inode_read((uint32_t)ext4_ino, &ip) < 0 || ip.i_size == 0)
             EXECVE_FAIL(-ENOEXEC);
         elf_len = ip.i_size;
     } else {
-        { struct vfs_node *dentry = vfs_lookup(kpath);
+        struct vfs_node *dentry = vfs_lookup(kpath);
         if (!dentry || !dentry->inode) EXECVE_FAIL(-ENOENT);
-        ramfs_node = dentry->inode; }
+        ramfs_node = dentry->inode;
         if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
         if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;
@@ -256,9 +261,9 @@ shebang_retry:
     {
         uint8_t shebang_buf[256];
         size_t peek_len = elf_len < 256 ? elf_len : 256;
-        if (ext2_ino) {
-            extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-            if (ext2_read((uint32_t)ext2_ino, shebang_buf, 0, peek_len) < (int)peek_len)
+        if (ext4_ino) {
+            extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+            if (ext4_read((uint32_t)ext4_ino, shebang_buf, 0, peek_len) < (int)peek_len)
                 EXECVE_FAIL(-EIO);
         } else {
             kmemcpy(shebang_buf, ramfs_node->data, peek_len);
@@ -347,13 +352,13 @@ shebang_retry:
     if (elf_len < sizeof(Elf64_Ehdr)) EXECVE_FAIL(-ENOEXEC);
 
     /* Read only the ELF header to determine type and check for PT_INTERP.
-     * elf_load_ext2/elf_load_ramfs will read the full header internally,
+     * elf_load_ext4/elf_load_ramfs will read the full header internally,
      * but we need e_type + interp path before destroying the address space. */
     uint8_t hdr_buf[sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr)];
     size_t hdr_read = sizeof(Elf64_Ehdr);
-    if (ext2_ino) {
-        extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-        if (ext2_read((uint32_t)ext2_ino, hdr_buf, 0, hdr_read) < (int)hdr_read)
+    if (ext4_ino) {
+        extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+        if (ext4_read((uint32_t)ext4_ino, hdr_buf, 0, hdr_read) < (int)hdr_read)
             EXECVE_FAIL(-EIO);
     } else {
         kmemcpy(hdr_buf, ramfs_node->data, hdr_read);
@@ -366,9 +371,9 @@ shebang_retry:
     if (phdrs_end > sizeof(hdr_buf) || phdrs_end > elf_len) EXECVE_FAIL(-ENOEXEC);
     if (phdrs_end > hdr_read) {
         size_t extra = phdrs_end - hdr_read;
-        if (ext2_ino) {
-            extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-            if (ext2_read((uint32_t)ext2_ino, hdr_buf + hdr_read, hdr_read, extra) < (int)extra)
+        if (ext4_ino) {
+            extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+            if (ext4_read((uint32_t)ext4_ino, hdr_buf + hdr_read, hdr_read, extra) < (int)extra)
                 EXECVE_FAIL(-EIO);
         } else {
             kmemcpy(hdr_buf + hdr_read, ramfs_node->data + hdr_read, extra);
@@ -380,7 +385,7 @@ shebang_retry:
     char interp_path[256];
     interp_path[0] = '\0';
     /* Track interpreter source for streaming load */
-    uint64_t interp_ext2_ino = 0;
+    uint64_t interp_ext4_ino = 0;
     struct vfs_inode *interp_ramfs = 0;
     size_t interp_len = 0;
 
@@ -395,26 +400,26 @@ shebang_retry:
                 if (iplen >= sizeof(interp_path)) iplen = sizeof(interp_path) - 1;
                 if (ph->p_offset + iplen <= phdrs_end) {
                     kmemcpy(interp_path, hdr_buf + ph->p_offset, iplen);
-                } else if (ext2_ino) {
-                    extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-                    ext2_read((uint32_t)ext2_ino, interp_path, (size_t)ph->p_offset, iplen);
+                } else if (ext4_ino) {
+                    extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+                    ext4_read((uint32_t)ext4_ino, interp_path, (size_t)ph->p_offset, iplen);
                 } else {
                     kmemcpy(interp_path, ramfs_node->data + ph->p_offset, iplen);
                 }
                 interp_path[iplen] = '\0';
                 while (iplen > 0 && interp_path[iplen - 1] == '\0') iplen--;
 
-                /* Locate interpreter: try ramfs first, then ext2 */
+                /* Locate interpreter: try ramfs first, then ext4 */
                 struct vfs_node *interp_dentry = vfs_lookup(interp_path);
                 struct vfs_inode *interp_ino = interp_dentry ? interp_dentry->inode : 0;
                 if (interp_ino && interp_ino->type == VFS_FILE && interp_ino->data && interp_ino->size > 0) {
                     interp_ramfs = interp_ino;
                     interp_len = interp_ino->size;
                 } else {
-                    interp_ext2_ino = vfs_ext2_lookup(interp_path);
-                    if (interp_ext2_ino) {
-                        struct ext2_inode iip;
-                        if (ext2_inode_read((uint32_t)interp_ext2_ino, &iip) == 0)
+                    interp_ext4_ino = vfs_ext4_lookup(interp_path);
+                    if (interp_ext4_ino) {
+                        struct ext4_inode iip;
+                        if (ext4_inode_read((uint32_t)interp_ext4_ino, &iip) == 0)
                             interp_len = iip.i_size;
                     }
                 }
@@ -457,8 +462,8 @@ shebang_retry:
     elf_info_t info;
     int load_rc;
 
-    if (ext2_ino)
-        load_rc = elf_load_ext2((uint32_t)ext2_ino, elf_len, p->pml4, 0, &info);
+    if (ext4_ino)
+        load_rc = elf_load_ext4((uint32_t)ext4_ino, elf_len, p->pml4, 0, &info);
     else
         load_rc = elf_load_ramfs(ramfs_node->data, elf_len, p->pml4, 0, &info);
 
@@ -476,7 +481,7 @@ shebang_retry:
     create_elf_vmas(&p->vma_root, hdr_buf, phdrs_end, info.load_base);
 
     /* Load interpreter if present */
-    if (has_interp && (interp_ramfs || interp_ext2_ino) && interp_len > 0) {
+    if (has_interp && (interp_ramfs || interp_ext4_ino) && interp_len > 0) {
         uint64_t interp_base_hint = (info.brk + 0x200000ULL) & ~0xFFFULL;
         elf_info_t interp_info;
         int irc;
@@ -484,7 +489,7 @@ shebang_retry:
             irc = elf_load_ramfs(interp_ramfs->data, interp_len, p->pml4,
                                  interp_base_hint, &interp_info);
         else
-            irc = elf_load_ext2((uint32_t)interp_ext2_ino, interp_len, p->pml4,
+            irc = elf_load_ext4((uint32_t)interp_ext4_ino, interp_len, p->pml4,
                                 interp_base_hint, &interp_info);
         if (irc < 0) {
             serial_puts("execve: failed to load interpreter\n");
@@ -500,8 +505,8 @@ shebang_retry:
             if (interp_ramfs) {
                 kmemcpy(ihdr, interp_ramfs->data, ihr);
             } else {
-                extern int ext2_read(uint32_t ino, void *buf, size_t offset, size_t len);
-                ext2_read((uint32_t)interp_ext2_ino, ihdr, 0, ihr);
+                extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
+                ext4_read((uint32_t)interp_ext4_ino, ihdr, 0, ihr);
             }
             create_elf_vmas(&p->vma_root, ihdr, ihr, interp_info.load_base);
         }

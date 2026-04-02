@@ -210,19 +210,33 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
 
     spin_unlock_irq(&futex_hash[bucket].lock, flags);
 
-    /* Block via event_wait — futex_wake will event_post us.
-     * On wake, syscall restarts: futex_wait re-enters, drains the event,
-     * and returns -EAGAIN (value changed) or -ETIMEDOUT (timeout). */
-    {
-        event_t ev;
-        int _wr = event_wait(&t->eq, &ev, timeout_ms);
-        if (_wr == -4) {
-            /* Signal pending — remove waiter before returning */
-            futex_remove_waiter(addr, pid, t);
-            return -EINTR;
-        }
+    /* Block via event_wait — hrtimer wakes us on timeout,
+     * futex_wake posts EQ_FUTEX_WAKE on wakeup. */
+    event_t ev;
+    int wr = event_wait(&t->eq, &ev, timeout_ms);
+
+    if (wr == -4) {
+        futex_remove_waiter(addr, pid, t);
+        return -EINTR;
     }
-    return 0; /* unreachable — event_wait does syscall restart when blocking */
+    if (wr == -11) {
+        /* EAGAIN = hrtimer deadline expired */
+        futex_remove_waiter(addr, pid, t);
+        return -ETIMEDOUT;
+    }
+    /* wr == 0: got an event — classify */
+    if (ev.type == EQ_TIMEOUT) {
+        futex_remove_waiter(addr, pid, t);
+        return -ETIMEDOUT;
+    }
+    if (ev.type == EQ_FUTEX_WAKE)
+        return 0;
+    /* Spurious event (stale from previous op) — value may have changed */
+    if (__atomic_load_n(uaddr, __ATOMIC_ACQUIRE) != val) {
+        futex_remove_waiter(addr, pid, t);
+        return -EAGAIN;
+    }
+    return 0;
 }
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */

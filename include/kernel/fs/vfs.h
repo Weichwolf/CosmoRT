@@ -1,14 +1,24 @@
-/* CosmoRT VFS — filesystem dispatch layer
+/* CosmoRT VFS — Virtual Filesystem Switch
  *
- * Two backends:
- *   VFS_BACKEND_RAM  — in-memory ramfs (original, used for /dev/shm and no-disk boots)
- *   VFS_BACKEND_EXT2 — persistent ext2 on virtio-blk
+ * Like Linux: super_operations + inode_operations + file_operations.
  *
- * Path routing: ext2 is root "/" when mounted. /dev/shm always ramfs.
+ * Filesystems register via vfs_mount(). VFS dispatches through mount table
+ * (longest-prefix match). Each FS implements three operation tables:
  *
- * Dentry/Inode separation (like Linux):
- *   vfs_inode — data, metadata, refcount. Shared by hard links.
- *   vfs_node  — dentry: name, parent/sibling tree links, inode pointer.
+ *   super_ops  — per-mount: sync, statfs
+ *   inode_ops  — per-directory: lookup, create, mkdir, unlink, symlink
+ *   file_ops   — per-open-file: read, write, lseek, getdents, poll
+ *
+ * Path resolution walks component-by-component. At each directory, VFS calls
+ * inode_ops->lookup(dir, name) to resolve the next component. Crossing a
+ * mount boundary switches to the mounted FS's root.
+ *
+ * Mount table:
+ *   /         ext4
+ *   /dev      devfs
+ *   /dev/shm  tmpfs
+ *   /proc     procfs
+ *   /tmp      tmpfs
  */
 #ifndef VFS_H
 #define VFS_H
@@ -16,17 +26,16 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* O_*, SEEK_*, S_IF*, k_stat — all from linux.h */
 #define __KERNEL__
 #include "linux/abi.h"
 
-/* Node types */
+/* ── Node types ─────────────────────────────────── */
+
 #define VFS_FILE    1
 #define VFS_DIR     2
 #define VFS_PIPE    3
 #define VFS_SYMLINK 4
 
-/* S_I permission bits (not in uapi — kernel-only detail) */
 #define S_IRWXU  0700
 #define S_IRUSR  0400
 #define S_IWUSR  0200
@@ -36,86 +45,167 @@
 #define S_IROTH  0004
 #define S_IWOTH  0002
 
-/* Inode — data + metadata. Shared by hard links. Refcounted. */
+/* ── VFS inode — unified across all filesystems ─── */
+
 struct vfs_inode {
-    int type;               /* VFS_FILE, VFS_DIR, VFS_SYMLINK */
-    uint8_t *data;          /* file content (page-allocated) */
-    size_t size;            /* current file size */
-    size_t capacity;        /* allocated capacity */
-    uint64_t ino;           /* inode number */
-    uint32_t mode;          /* permission bits */
-    uint32_t uid, gid;      /* owner (single-user: always 0) */
-    uint32_t atime, mtime, ctime; /* Unix epoch seconds */
-    char symlink_target[256]; /* symlink target (VFS_SYMLINK only) */
-    int refcount;           /* nlink + open files. Free at 0. */
-    struct vfs_node *children; /* directory entries (dirs only) */
+    int type;
+    uint8_t *data;          /* tmpfs: file content */
+    size_t size;
+    size_t capacity;
+    uint64_t ino;
+    uint32_t mode;
+    uint32_t uid, gid;
+    uint64_t atime, mtime, ctime;
+    char symlink_target[256];
+    int refcount;
+    struct vfs_node *children;  /* tmpfs dir entries */
 };
 
-/* Dentry — directory entry. Name + tree links + inode pointer. */
+/* ── Dentry ─────────────────────────────────────── */
+
 struct vfs_node {
     char name[256];
-    struct vfs_inode *inode;    /* shared with hard links */
-    struct vfs_node *next;      /* sibling link */
-    struct vfs_node *parent;    /* parent dentry */
+    struct vfs_inode *inode;
+    struct vfs_node *next;
+    struct vfs_node *parent;
 };
 
-/* Filesystem backend */
+/* Legacy backend IDs — will be removed after full fs_ops migration */
 #define VFS_BACKEND_RAM     0
-#define VFS_BACKEND_EXT2    1
+#define VFS_BACKEND_EXT4    1
 
-/* Open file (per-fd state) */
-struct vfs_file {
-    int type;               /* VFS_FILE, VFS_DIR, VFS_PIPE */
-    int flags;              /* O_RDONLY, O_WRONLY, O_RDWR */
-    int refcount;           /* reference count (fork shares vfs_file) */
-    int backend;            /* VFS_BACKEND_RAM or VFS_BACKEND_EXT2 */
-    uint64_t offset;        /* current read/write position */
-    struct vfs_inode *inode; /* ramfs inode (NULL for ext2) */
-    uint64_t disk_ino;      /* ext2 inode number (0 for ramfs) */
-    uint64_t disk_size;     /* cached size for ext2 files */
-    uint64_t disk_dir_ino;  /* parent dir inode for ext2 getdents */
-    char path[256];         /* resolved path at open time (for dirfd) */
+/* ── Forward declarations ───────────────────────── */
+
+struct vfs_file;
+struct mount;
+
+/* ── Super operations (per-mount) ───────────────── */
+
+struct super_ops {
+    void (*sync)(struct mount *mnt);
 };
 
-/* Initialize VFS — create root directory "/" */
-void vfs_init(void);
+/* ── Inode operations (namespace: lookup/create/delete) ── */
 
-/* Path operations */
+struct inode_ops {
+    /* Resolve full relative path within this FS.
+     * Returns fs-specific handle (ext4: ino, tmpfs: vfs_node*) via out param.
+     * Sets *err to specific errno on failure.
+     * follow: 1=follow final symlink, 0=nofollow (lstat/readlink). */
+    int (*lookup)(struct mount *mnt, const char *relpath, int follow,
+                  uint64_t *handle, int *err);
+
+    int (*stat)(struct mount *mnt, const char *relpath, struct k_stat *buf);
+    int (*lstat)(struct mount *mnt, const char *relpath, struct k_stat *buf);
+
+    int (*create)(struct mount *mnt, const char *relpath, int mode);
+    int (*mkdir)(struct mount *mnt, const char *relpath, int mode);
+    int (*rmdir)(struct mount *mnt, const char *relpath);
+    int (*unlink)(struct mount *mnt, const char *relpath);
+    int (*rename)(struct mount *mnt, const char *oldrel, const char *newrel);
+
+    int (*symlink)(struct mount *mnt, const char *target, const char *relpath);
+    int (*readlink)(struct mount *mnt, const char *relpath, char *buf, size_t bufsiz);
+    int (*link)(struct mount *mnt, const char *oldrel, const char *newrel);
+
+    int (*chmod)(struct mount *mnt, const char *relpath, uint32_t mode);
+    int (*chown)(struct mount *mnt, const char *relpath, uint32_t uid, uint32_t gid);
+    int (*lchown)(struct mount *mnt, const char *relpath, uint32_t uid, uint32_t gid);
+    int (*truncate)(struct mount *mnt, const char *relpath, int64_t length);
+    int (*utimensat)(struct mount *mnt, const char *relpath,
+                     const int64_t times[4], int flags);
+};
+
+/* ── File operations (per-open-file) ────────────── */
+
+struct file_ops {
+    long (*read)(struct vfs_file *f, void *buf, size_t count);
+    long (*write)(struct vfs_file *f, const void *buf, size_t count);
+    long (*lseek)(struct vfs_file *f, long offset, int whence);
+    long (*pread)(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
+    long (*pwrite)(struct vfs_file *f, const void *buf, size_t count, uint64_t offset);
+    int  (*close)(struct vfs_file *f);
+    int  (*getdents)(struct vfs_file *f, void *buf, size_t count);
+    int  (*fstat)(struct vfs_file *f, struct k_stat *buf);
+    int  (*ftruncate)(struct vfs_file *f, int64_t length);
+    int  (*fchmod)(struct vfs_file *f, uint32_t mode);
+    int  (*fchown)(struct vfs_file *f, uint32_t uid, uint32_t gid);
+    int  (*fsync)(struct vfs_file *f);
+};
+
+/* ── Mount entry ────────────────────────────────── */
+
+#define MOUNT_MAX 16
+
+struct mount {
+    const char *path;
+    int pathlen;
+    struct super_ops *s_ops;
+    struct inode_ops *i_ops;
+    struct file_ops  *f_ops;    /* default file_ops (FS can override per-file) */
+    void *fs_data;
+};
+
+/* ── Open file (per-fd state) ───────────────────── */
+
+struct vfs_file {
+    int type;
+    int flags;
+    int refcount;
+    uint64_t offset;
+    struct file_ops *f_ops;     /* file_ops for this open file */
+    struct mount *mnt;          /* owning mount */
+    char path[256];
+
+    /* Legacy backend tag — will be removed when all fs_ops are implemented */
+    int backend;
+    /* Backend-specific storage */
+    struct vfs_inode *inode;    /* tmpfs */
+    uint64_t disk_ino;          /* ext4 */
+    uint64_t disk_size;         /* ext4 cached size */
+    uint64_t disk_dir_ino;      /* ext4 dir iteration */
+};
+
+/* ── Mount table API ────────────────────────────── */
+
+void vfs_init(void);
+int  vfs_mount(const char *path, struct super_ops *s_ops,
+               struct inode_ops *i_ops, struct file_ops *f_ops, void *fs_data);
+struct mount *vfs_resolve_mount(const char *abspath, const char **relpath);
+
+/* ── Path operations (tmpfs dentry tree) ────────── */
+
 struct vfs_node *vfs_lookup(const char *path);
 struct vfs_node *vfs_lookup_err(const char *path, int *err);
 struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
 struct vfs_node *vfs_create(const char *path, int type);
 
-/* File operations (take process fd_table, return fd or error) */
-int vfs_open(const char *path, int flags, int mode);
-int vfs_close(int fd);
+/* ── Syscall-facing API ─────────────────────────── */
+
+int  vfs_open(const char *path, int flags, int mode);
+int  vfs_close(int fd);
 long vfs_read(int fd, void *buf, size_t count);
 long vfs_write(int fd, const void *buf, size_t count);
 long vfs_lseek(int fd, long offset, int whence);
+long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
+long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset);
 
-/* Stat operations */
 int vfs_stat(const char *path, struct k_stat *buf);
 int vfs_lstat(const char *path, struct k_stat *buf);
 int vfs_fstat(int fd, struct k_stat *buf);
 
-/* Directory operations */
 int vfs_getcwd(char *buf, size_t size);
 int vfs_chdir(const char *path);
 
-/* Directory/file mutation */
 int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *oldpath, const char *newpath);
 
-/* Symlink operations */
 int vfs_symlink(const char *target, const char *linkpath);
 int vfs_readlink(const char *path, char *buf, size_t bufsiz);
-
-/* Hard link (returns -ENOSYS if not supported) */
 int vfs_link(const char *oldpath, const char *newpath);
 
-/* Metadata operations */
 int vfs_chmod(const char *path, uint32_t mode);
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid);
 int vfs_lchown(const char *path, uint32_t uid, uint32_t gid);
@@ -125,32 +215,30 @@ int vfs_truncate(const char *path, int64_t length);
 int vfs_ftruncate(int fd, int64_t length);
 int vfs_utimensat(const char *path, const int64_t times[4], int flags);
 
-/* Populate ramfs with a file (for init binary, etc.) */
-int vfs_add_file(const char *path, const void *data, size_t len);
+/* ── Utility ────────────────────────────────────── */
 
-/* Mount ext2 as root filesystem (called from main after bcache_init) */
-void vfs_mount_ext2(void);
-
-/* Read from an open file at a specific offset without changing file position.
- * Returns bytes read or negative errno. */
-long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
-
-/* Write to an open file at a specific offset without changing file position.
- * Returns bytes written or negative errno. */
-long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset);
-
-/* Increment refcount on a vfs_file (for fork fd duplication) */
+int  vfs_add_file(const char *path, const void *data, size_t len);
+void vfs_mount_ext4(void);
+int  vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size);
+long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len);
+long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len);
 void vfs_file_incref(struct vfs_file *f);
-
-/* Free a vfs_file object by external pointer (used by proc_cleanup) */
 void vfs_file_free_obj(void *obj);
+uint64_t vfs_ext4_lookup(const char *path);
 
-/* Look up an ext2 inode by path. Returns inode number, or 0 if not found. */
-uint64_t vfs_ext2_lookup(const char *path);
-/* Read entire file into a kernel buffer (page-allocated).
- * Handles both ramfs and ext2. Caller must free with pages_free().
- * Returns 0 on success, fills *out_data and *out_size.
- * Returns negative errno on failure. */
-int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size);
+/* ── Filesystem registrations ───────────────────── */
+
+extern struct inode_ops ext4_inode_ops;
+extern struct file_ops  ext4_file_ops;
+extern struct super_ops ext4_super_ops;
+
+extern struct inode_ops tmpfs_inode_ops;
+extern struct file_ops  tmpfs_file_ops;
+
+extern struct inode_ops procfs_inode_ops;
+extern struct file_ops  procfs_file_ops;
+
+extern struct inode_ops devfs_inode_ops;
+extern struct file_ops  devfs_file_ops;
 
 #endif

@@ -1,23 +1,41 @@
-/* CosmoRT Network Stack — NIC registration, global state, packet queues.
+/* CosmoRT Network Stack — NIC bridge, global state, packet queues.
  * Protocol modules: tcp.c, udp.c, dispatch.c, arp.c, ip.c, dns.c, dhcp.c.
  */
 
 #include "net/net.h"
+#include "net/netif.h"
 #include "net/net_util.h"
 #include "hw/serial.h"
 
-/* ── NIC Registration ──────────────────────────────── */
+/* ── NIC Registration (legacy bridge to netif) ─────── */
 
 static const nic_driver_t *nic;
+
+/* netif wrapper for legacy nic_driver_t */
+static struct netif hw_netif;
+
+static void hw_send(struct netif *nif, const uint8_t *data, uint16_t len) {
+    (void)nif;
+    if (nic && nic->send) nic->send(data, len);
+}
+
+static void hw_get_mac(struct netif *nif, uint8_t *out) {
+    (void)nif;
+    if (nic && nic->get_mac) nic->get_mac(out);
+}
 
 void net_nic_register(const nic_driver_t *driver) {
     nic = driver;
     if (driver) {
-        serial_puts("net: NIC registered: ");
-        serial_puts(driver->name);
-        serial_putchar('\n');
-    } else {
-        serial_puts("net: NIC deregistered\n");
+        hw_netif.send = hw_send;
+        hw_netif.get_mac = hw_get_mac;
+        hw_netif.mtu = 1500;
+        /* Copy driver name */
+        const char *s = driver->name;
+        int i = 0;
+        while (s[i] && i < NETIF_NAME_MAX - 1) { hw_netif.name[i] = s[i]; i++; }
+        hw_netif.name[i] = 0;
+        netif_register(&hw_netif);
     }
 }
 
@@ -67,7 +85,10 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
 
 /* ── Init ──────────────────────────────────────────── */
 
+extern void lo_init(void);
+
 int net_init(void) {
+    lo_init();
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
     return 0;

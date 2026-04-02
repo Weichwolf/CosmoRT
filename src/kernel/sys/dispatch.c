@@ -171,16 +171,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         return do_dup3((int)a1, (int)a2, 0);
     }
 
-    /* accept4: dispatch to unix socket or TCP */
-    case SYS_ACCEPT4: {
-        process_t *a4p = proc_current();
-        if (a4p) {
-            fd_entry_t *a4e = fd_get(&a4p->fds, (int)a1);
-            if (a4e && a4e->type == FD_UNIX_SOCK)
-                return usock_accept4((int)a1, (void *)a2, (int *)a3, (int)a4);
-        }
-        return do_accept((int)a1, (void *)a2, (int *)a3);
-    }
+    /* accept4: now handled via syscall_table (do_accept4 with flags) */
 
     /* socketpair: AF_UNIX only */
     case SYS_SOCKETPAIR: {

@@ -161,27 +161,29 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (wnohang) return 0;
 
         /* Block until child state change.
-         * Like Linux: consume SIGCHLD (it led us here) and always re-scan
-         * after wake. Only return -EINTR for non-SIGCHLD signals. */
+         * Temporarily suppress SIGCHLD during event_wait to prevent spurious
+         * EINTR (we handle child state changes ourselves by re-scanning).
+         * If a user handler is registered, re-post SIGCHLD after wait so
+         * check_signals_syscall_path delivers it on syscall return. */
         {
-            __sync_fetch_and_and(&parent->sig_pending, ~SIG_BIT(SIGCHLD));
-            __sync_fetch_and_and(&cur->sig_thread_pending, ~SIG_BIT(SIGCHLD));
+            (void)parent; /* sig_actions checked later by check_signals_syscall_path */
+
+            /* Suppress SIGCHLD for event_wait (prevent -EINTR loop) */
+            cur->sig_blocked |= SIG_BIT(SIGCHLD);
 
             event_t ev;
             int _wr = event_wait(&cur->eq, &ev, -1);
 
-            /* Clear SIGCHLD again — child exit sets it during our block */
-            __sync_fetch_and_and(&parent->sig_pending, ~SIG_BIT(SIGCHLD));
-            __sync_fetch_and_and(&cur->sig_thread_pending, ~SIG_BIT(SIGCHLD));
+            /* Restore SIGCHLD unblocked */
+            cur->sig_blocked &= ~SIG_BIT(SIGCHLD);
 
             if (_wr == -4) {
-                /* event_wait saw a signal. If only SIGCHLD was pending,
-                 * we just cleared it — re-scan. If other signals remain,
-                 * return -EINTR for real interruption. */
-                uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked;
+                /* Signal interrupted wait. If non-SIGCHLD signals remain,
+                 * return -EINTR. Otherwise re-scan children. */
+                uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending)
+                                   & ~cur->sig_blocked & ~SIG_BIT(SIGCHLD);
                 if (remaining)
                     return -EINTR;
-                /* Only SIGCHLD was pending → re-scan children */
             }
         }
     }

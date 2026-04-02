@@ -16,6 +16,8 @@
 #define EACCES          13
 #define EFAULT          14
 #define EEXIST          17
+#define EXDEV           18
+#define ENODEV          19
 #define ENOTDIR         20
 #define EISDIR          21
 #define EINVAL          22
@@ -37,6 +39,7 @@
 #define EDESTADDRREQ    89
 #define EMSGSIZE        90
 #define EPROTONOSUPPORT 93
+#define ENOTSUP         95
 #define EOPNOTSUPP      95
 #define EAFNOSUPPORT    97
 #define EADDRINUSE      98

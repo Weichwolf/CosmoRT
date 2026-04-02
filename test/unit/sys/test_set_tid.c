@@ -16,7 +16,7 @@ static void test_set_tid(void) {
     if (stack <= 0) return;
 
     long ret = sc5(SYS_CLONE,
-                   CLONE_VM | CLONE_THREAD | CLONE_CHILD_CLEARTID,
+                   CLONE_VM | CLONE_SIGHAND | CLONE_THREAD | CLONE_CHILD_CLEARTID,
                    stack + 65536,
                    0,  /* parent_tid */
                    (long)&child_tid,  /* child_tid */

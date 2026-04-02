@@ -17,7 +17,7 @@ static void test_threads(void) {
     check("mmap thread stack", stack > 0);
     if (stack <= 0) return;
 
-    long ret = sc5(SYS_CLONE, CLONE_VM | CLONE_THREAD, stack + 65536, 0, 0, 0);
+    long ret = sc5(SYS_CLONE, CLONE_VM | CLONE_SIGHAND | CLONE_THREAD, stack + 65536, 0, 0, 0);
     if (ret == 0) {
         /* Child */
         worker_fn();

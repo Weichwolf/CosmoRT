@@ -168,7 +168,7 @@ static void test_getdents(void) {
         long n = sc3(SYS_GETDENTS64, fd, (long)buf, sizeof(buf));
         check("getdents64 dirtest > 0", n > 0);
         int cnt = count_dirents(buf, n);
-        check_ge("dirtest entry count", cnt, 10); /* 10 files (+ . + .. on ext2) */
+        check_ge("dirtest entry count", cnt, 10); /* 10 files (+ . + .. on ext4) */
 
         /* Verify all names present */
         for (int i = 0; i < 10; i++)

@@ -58,16 +58,22 @@ KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
             $(BUILD)/kernel/ipc/sysv_ipc.o
 
 KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
+            $(BUILD)/kernel/fs/vfs_mount.o \
             $(BUILD)/kernel/fs/vfs_lookup.o \
             $(BUILD)/kernel/fs/vfs_rw.o \
             $(BUILD)/kernel/fs/vfs_dirops.o \
             $(BUILD)/kernel/fs/vfs_ioctls.o \
             $(BUILD)/kernel/fs/vfs_symlink.o \
-            $(BUILD)/kernel/fs/ext2.o \
+            $(BUILD)/kernel/fs/ext4.o \
+            $(BUILD)/kernel/fs/ext4_vfs.o \
+            $(BUILD)/kernel/fs/tmpfs.o \
+            $(BUILD)/kernel/fs/devfs.o \
             $(BUILD)/kernel/fs/bcache.o \
             $(BUILD)/kernel/fs/procfs.o
 
 KERN_NET  = $(BUILD)/kernel/net/net.o \
+            $(BUILD)/kernel/net/netif.o \
+            $(BUILD)/kernel/net/lo.o \
             $(BUILD)/kernel/net/dispatch.o \
             $(BUILD)/kernel/net/arp.o \
             $(BUILD)/kernel/net/ip.o \

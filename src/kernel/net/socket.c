@@ -199,9 +199,10 @@ long do_connect(int fd, const void *addr, int addrlen) {
         for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
             ((uint8_t *)&s->tcp)[i] = 0;
 
-    /* No gateway configured → network unreachable */
+    /* No gateway configured and not loopback → network unreachable */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
-        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0 &&
+        dst_ip[0] != 127)
         return -ENETUNREACH;
 
     /* Loopback (127.x.x.x): ip_send_raw() intercepts and injects into q_tcp.
@@ -606,7 +607,7 @@ long do_listen(int fd, int backlog) {
 
 /* ── SYS_ACCEPT (43) / SYS_ACCEPT4 (288) ─────────── */
 
-long do_accept(int fd, void *addr, int *addrlen) {
+long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     process_t *p = proc_current();
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
@@ -659,6 +660,13 @@ long do_accept(int fd, void *addr, int *addrlen) {
             int len = (int)sizeof(struct k_sockaddr_in);
             copy_to_user(addrlen, &len, sizeof(int));
         }
+        if (acc_flags) {
+            fd_entry_t *nfde = fd_get(&p->fds, newfd);
+            if (nfde) {
+                if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
+                if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
+            }
+        }
         return newfd;
     }
     spin_unlock_irq(&sock_lock, flags);
@@ -669,10 +677,14 @@ long do_accept(int fd, void *addr, int *addrlen) {
       if (fde && (fde->flags & O_NONBLOCK)) nonblock = 1; }
     if (nonblock) return -EAGAIN;
 
-    /* No gateway → can only accept on loopback (not wired yet) → EAGAIN */
+    /* No gateway and not loopback → can't accept from WAN → EAGAIN */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
-        net_gw_ip[2] == 0 && net_gw_ip[3] == 0)
-        return -EAGAIN;
+        net_gw_ip[2] == 0 && net_gw_ip[3] == 0) {
+        uint32_t lip = ls->local_ip;
+        uint8_t lip0 = (uint8_t)lip;
+        if (lip0 != 127 && lip != 0) /* not loopback and not INADDR_ANY */
+            return -EAGAIN;
+    }
 
     /* Try accept (non-blocking). Uses ls->tcp as scratch for handshake state. */
     uint16_t host_port = bswap16(ls->local_port);
@@ -683,14 +695,23 @@ long do_accept(int fd, void *addr, int *addrlen) {
             if (r < 0) { ls->tcp.state = TCP_CLOSED; return -EAGAIN; }
             break;
         }
-        if (timer_ms() >= accept_deadline) return -EAGAIN;
+        if (timer_ms() >= accept_deadline) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EAGAIN;
+        }
         thread_t *t = thread_current();
         __atomic_store_n(&q_tcp_wait_thread, t, __ATOMIC_RELEASE);
         int remain = (int)(accept_deadline - timer_ms());
-        if (remain <= 0) return -EAGAIN;
+        if (remain <= 0) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EAGAIN;
+        }
         event_t ev;
         int wr = event_wait(&t->eq, &ev, remain);
-        if (wr == -4) return -EINTR;
+        if (wr == -4) {
+            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            return -EINTR;
+        }
     }
 
     /* Handshake complete — allocate new socket */
@@ -727,6 +748,15 @@ long do_accept(int fd, void *addr, int *addrlen) {
         copy_to_user(addr, &sa, sizeof(sa));
         int len = (int)sizeof(struct k_sockaddr_in);
         copy_to_user(addrlen, &len, sizeof(int));
+    }
+
+    /* accept4 flags: SOCK_NONBLOCK (0x800) → O_NONBLOCK, SOCK_CLOEXEC (0x80000) → O_CLOEXEC */
+    if (acc_flags) {
+        fd_entry_t *nfde = fd_get(&p->fds, newfd);
+        if (nfde) {
+            if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
+            if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
+        }
     }
 
     return newfd;
@@ -976,50 +1006,4 @@ long do_shutdown(int fd, int how) {
     return 0;
 }
 
-/* ── SYS_POLL (7) ────────────────────────────────── */
-
-struct k_pollfd { int fd; short events; short revents; };
-#define POLLIN  0x0001
-#define POLLOUT 0x0004
-
-long do_poll(void *fds_ptr, int nfds, int timeout) {
-    if (nfds <= 0 || nfds > 256) return -EINVAL;
-    struct k_pollfd kfds[256];
-    { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
-
-    int infinite = (timeout < 0);
-    uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
-
-    for (;;) {
-        int ready = 0;
-        for (int i = 0; i < nfds; i++) {
-            kfds[i].revents = 0;
-            uint32_t interest = 0;
-            if (kfds[i].events & POLLIN)  interest |= 0x001;
-            if (kfds[i].events & POLLOUT) interest |= 0x004;
-            uint32_t r_ev = fd_poll_readiness(kfds[i].fd, interest);
-            if (r_ev & 0x001) kfds[i].revents |= POLLIN;
-            if (r_ev & 0x004) kfds[i].revents |= POLLOUT;
-            if (r_ev & 0x010) kfds[i].revents |= 0x0010;
-            if (r_ev & 0x008) kfds[i].revents |= 0x0008;
-            if (kfds[i].revents) ready++;
-        }
-        if (ready > 0) {
-            copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
-            return ready;
-        }
-        if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) return 0;
-
-        /* Block via event_wait — hrtimer handles timeout. */
-        {
-            thread_t *t = thread_current();
-            if (!t) return -EFAULT;
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) return 0;
-            event_t ev;
-            { int wr = event_wait(&t->eq, &ev, timeout_ms);
-            if (wr == -4) return -EINTR; }
-        }
-    }
-}
+/* do_poll moved to sys_event.c — it's generic FD polling, not socket-specific */

@@ -111,11 +111,11 @@ static int vstor_send_cmd(struct vstor_packet *pkt) {
                             pkt, sizeof(*pkt), 0, 0);
     if (r < 0) return -1;
 
-    /* Wait for response */
+    /* Wait for response — HLT until vmbus IRQ fires callback */
     uint64_t deadline = hw_ms() + 5000;
-    while (!cmd_done) {
+    while (!__atomic_load_n(&cmd_done, __ATOMIC_ACQUIRE)) {
         if (hw_ms() > deadline) return -1;
-        __asm__ volatile("pause");
+        __asm__ volatile("sti; hlt; cli");
     }
     return 0;
 }

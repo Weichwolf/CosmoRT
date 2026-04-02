@@ -73,7 +73,7 @@ static void test_proc_filesystems(void) {
     if (fd < 0) return;
     long n = sc3(SYS_READ, fd, (long)buf, sizeof(buf) - 1);
     check("read", n > 0);
-    if (n > 0) { buf[n] = 0; check("has ext2", contains(buf, (int)n, "ext2")); }
+    if (n > 0) { buf[n] = 0; check("has ext4", contains(buf, (int)n, "ext4")); }
     sc1(SYS_CLOSE, fd);
 }
 TEST("proc_filesystems", test_proc_filesystems);

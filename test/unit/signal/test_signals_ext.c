@@ -113,6 +113,7 @@ static void test_signals_ext(void) {
         sa.mask = 0;
         sc4(SYS_RT_SIGACTION, SIGALRM, (long)&sa, 0, 8);
 
+        sc1(SYS_ALARM, 0); /* cancel test-runner watchdog */
         long old = sc1(SYS_ALARM, 1);
         check_val("alarm(1) old=0", old, 0);
 

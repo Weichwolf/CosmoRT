@@ -36,7 +36,7 @@ static void test_alarm02(void) {
     install_sigalrm();
     alarms_received = 0;
 
-    /* Set a large alarm */
+    sc1(SYS_ALARM, 0); /* cancel test-runner watchdog */
     long r = sc1(SYS_ALARM, 100);
     check_val("alarm(100) first call returns 0", r, 0);
 
@@ -55,6 +55,7 @@ static void test_alarm03(void) {
     install_sigalrm();
     alarms_received = 0;
 
+    sc1(SYS_ALARM, 0); /* cancel test-runner watchdog */
     long r = sc1(SYS_ALARM, 100);
     check_val("alarm(100) returns 0", r, 0);
 
@@ -74,7 +75,7 @@ static void test_alarm05(void) {
     install_sigalrm();
     alarms_received = 0;
 
-    /* Set alarm for 1 second */
+    sc1(SYS_ALARM, 0); /* cancel test-runner watchdog */
     long r = sc1(SYS_ALARM, 1);
     check_val("alarm(1) returns 0", r, 0);
 

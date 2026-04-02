@@ -65,10 +65,10 @@ long do_setpriority(int which, int who, int prio) {
     (void)which; (void)who; (void)prio; return 0;
 }
 
-/* sync/syncfs/fsync/fdatasync: flush to disk (noop for ramfs, ext2_sync for ext2) */
+/* sync/syncfs/fsync/fdatasync: flush to disk (noop for ramfs, ext4_sync for ext4) */
 long do_sync(void) {
-    extern void ext2_sync(void);
-    ext2_sync();
+    extern void ext4_sync(void);
+    ext4_sync();
     return 0;
 }
 
@@ -79,12 +79,12 @@ long do_fsync(int fd) {
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
-    /* ext2 backend: sync. ramfs/other: noop */
+    /* ext4 backend: sync. ramfs/other: noop */
     if (fde->type == FD_FILE) {
         struct vfs_file *f = (struct vfs_file *)fde->obj;
-        if (f && f->backend == VFS_BACKEND_EXT2) {
-            extern void ext2_sync(void);
-            ext2_sync();
+        if (f && f->backend == VFS_BACKEND_EXT4) {
+            extern void ext4_sync(void);
+            ext4_sync();
         }
     }
     return 0;
@@ -146,9 +146,10 @@ long do_chroot(const char *path) {
         else if (++comp > 255) return -ENAMETOOLONG;
     }
     /* Validate: path must exist and be a directory */
-    extern struct vfs_node *vfs_lookup(const char *path);
-    struct vfs_node *node = vfs_lookup(kpath);
-    if (!node) return -ENOENT;
+    extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
+    int lerr = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
+    if (!node) return lerr;
     if (node->inode->type != VFS_DIR) return -ENOTDIR;
     /* Check for symlink loops (simplified: path with >40 symlinks) */
     return 0; /* accept but no-op: single-root filesystem */

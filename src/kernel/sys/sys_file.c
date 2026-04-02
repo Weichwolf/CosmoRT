@@ -20,11 +20,13 @@ int resolve_path(const char *path, char *out, int outsize) {
     while (*path && oi < outsize - 1) out[oi++] = *path++;
     out[oi] = '\0';
 
-    /* Normalize: resolve "." and ".." in-place */
+    /* Normalize: collapse "//" , resolve "/." and "/.." in-place */
     char *w = out, *r = out;
     if (*r == '/') *w++ = *r++;
     while (*r) {
-        if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
+        if (r[0] == '/' && r[1] == '/') {
+            r++; /* skip duplicate slash */
+        } else if (r[0] == '/' && r[1] == '.' && (r[2] == '/' || r[2] == '\0')) {
             r += 2; /* skip "/." */
         } else if (r[0] == '/' && r[1] == '.' && r[2] == '.' && (r[3] == '/' || r[3] == '\0')) {
             r += 3; /* skip "/.." */
@@ -569,7 +571,7 @@ static size_t emit_dirent(uint8_t *out, size_t remaining,
     return reclen;
 }
 
-/* Callback context for ext2 getdents64 via ext2_dir_iterate */
+/* Callback context for ext4 getdents64 via ext4_dir_iterate */
 struct getdents_ctx {
     uint8_t *out;
     size_t   count;
@@ -581,11 +583,11 @@ struct getdents_ctx {
 static int getdents_cb(const char *name, uint32_t ino, uint8_t file_type,
                        uint32_t next_pos, void *arg) {
     struct getdents_ctx *ctx = (struct getdents_ctx *)arg;
-    /* Map ext2 file_type to DT_* */
+    /* Map ext4 file_type to DT_* */
     uint8_t d_type = 0; /* DT_UNKNOWN */
-    if (file_type == EXT2_FT_REG_FILE) d_type = 8; /* DT_REG */
-    else if (file_type == EXT2_FT_DIR) d_type = 4; /* DT_DIR */
-    else if (file_type == EXT2_FT_SYMLINK) d_type = 10; /* DT_LNK */
+    if (file_type == EXT4_FT_REG_FILE) d_type = 8; /* DT_REG */
+    else if (file_type == EXT4_FT_DIR) d_type = 4; /* DT_DIR */
+    else if (file_type == EXT4_FT_SYMLINK) d_type = 10; /* DT_LNK */
     else d_type = 8; /* default to DT_REG */
 
     size_t n = emit_dirent(ctx->out + ctx->written, ctx->count - ctx->written,
@@ -672,8 +674,8 @@ long do_getdents64(int fd, void *buf, size_t count) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
 
-    /* ext2 directory */
-    if (f->backend == VFS_BACKEND_EXT2) {
+    /* ext4 directory */
+    if (f->backend == VFS_BACKEND_EXT4) {
         if (f->type != VFS_DIR) return -ENOTDIR;
         struct getdents_ctx ctx = {
             .out = (uint8_t *)buf,
@@ -682,7 +684,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
             .next_off = f->offset,
             .full = 0
         };
-        ext2_dir_iterate((uint32_t)f->disk_ino, (uint32_t)f->offset, getdents_cb, &ctx);
+        ext4_dir_iterate((uint32_t)f->disk_ino, (uint32_t)f->offset, getdents_cb, &ctx);
         f->offset = ctx.next_off;
         return (long)ctx.written;
     }
