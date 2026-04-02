@@ -34,14 +34,6 @@ long do_flock(int fd, int operation) {
 /* msync: moved to sys_mem.c (SH-C3: dirty tracking + write-back) */
 /* TODO: implement if needed */
 long do_sendfile(void) { return -ENOSYS; }
-/* lchown: like chown but don't follow symlinks */
-long do_lchown(const char *upath, uint32_t uid, uint32_t gid) {
-    char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, upath, PATH_MAX);
-    if (len < 0) return len;
-    /* No symlink resolution — use path as-is for ramfs lookup */
-    return vfs_chown(kpath, uid, gid);
-}
 
 long do_sched_get_priority_max(int policy) { (void)policy; return 31; }
 long do_sched_get_priority_min(int policy) { (void)policy; return 0; }
@@ -266,13 +258,7 @@ long do_inotify_init(void) {
     return do_inotify_init1(0);
 }
 
-/* preadv2/pwritev2: delegate to preadv/pwritev (ignore flags) */
-long do_preadv2(int fd, const void *iov, int iovcnt) {
-    return do_readv(fd, (const struct iovec *)iov, iovcnt);
-}
-long do_pwritev2(int fd, const void *iov, int iovcnt) {
-    return do_writev(fd, (const struct iovec *)iov, iovcnt);
-}
+/* preadv2/pwritev2: now handled by do_preadv/do_pwritev in sys_file.c */
 
 /* openat2: delegate to openat (ignore resolve flags) */
 long do_openat2(int dirfd, const char *pathname, void *how, size_t size) {
@@ -282,7 +268,6 @@ long do_openat2(int dirfd, const char *pathname, void *how, size_t size) {
     uint64_t fields[3];
     int r = copy_from_user(fields, how, sizeof(fields));
     if (r) return r;
-    extern long do_openat(int dirfd, const char *path, int flags, int mode);
     return do_openat(dirfd, pathname, (int)fields[0], (int)fields[1]);
 }
 

@@ -166,13 +166,37 @@ long do_write(int fd, const void *buf, size_t count) {
     return -EBADF;
 }
 
-/* ── SYS_writev (20) ────────────────────────────── */
+/* ── SYS_pwritev / SYS_writev ───────────────────── */
 
-long do_writev(int fd, const struct iovec *iov, int iovcnt) {
+long do_pwritev(int fd, const struct iovec *iov, int iovcnt, int64_t offset) {
     if (iovcnt < 0 || iovcnt > 16) return -EINVAL;
     /* Copy iov array to kernel stack to prevent TOCTOU */
     struct iovec k_iov[16];
     { int r = copy_from_user(k_iov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
+
+    /* If offset >= 0, use positional writes (seekable files only) */
+    if (offset >= 0) {
+        process_t *p = proc_current();
+        if (__builtin_expect(!p, 0)) return -EFAULT;
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (__builtin_expect(!fde, 0)) return -EBADF;
+        if (fde->type != FD_FILE) return -ESPIPE;
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (__builtin_expect(!f, 0)) return -EBADF;
+        long total = 0;
+        uint64_t pos = (uint64_t)offset;
+        for (int i = 0; i < iovcnt; i++) {
+            if (!user_ok((uint64_t)k_iov[i].iov_base, k_iov[i].iov_len)) return -EFAULT;
+            long r = vfs_pwrite(f, (const void *)k_iov[i].iov_base, k_iov[i].iov_len, pos);
+            if (r < 0) return total > 0 ? total : r;
+            total += r;
+            pos += (uint64_t)r;
+            if ((size_t)r < k_iov[i].iov_len) break;
+        }
+        return total;
+    }
+
+    /* offset == -1: use current file position (works for all fd types) */
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
         if (!user_ok((uint64_t)k_iov[i].iov_base, k_iov[i].iov_len)) return -EFAULT;
@@ -182,6 +206,10 @@ long do_writev(int fd, const struct iovec *iov, int iovcnt) {
         if ((size_t)r < k_iov[i].iov_len) break;
     }
     return total;
+}
+
+long do_writev(int fd, const struct iovec *iov, int iovcnt) {
+    return do_pwritev(fd, iov, iovcnt, -1);
 }
 
 /* ── SYS_read (0) ────────────────────────────────── */
@@ -327,15 +355,39 @@ long do_read(int fd, void *buf, size_t count) {
     return -EBADF;
 }
 
-/* ── SYS_readv (19) ──────────────────────────────── */
+/* ── SYS_preadv / SYS_readv ─────────────────────── */
 
-long do_readv(int fd, const struct iovec *iov, int iovcnt) {
+long do_preadv(int fd, const struct iovec *iov, int iovcnt, int64_t offset) {
     if (iovcnt < 0 || iovcnt > 1024) return -EINVAL;
     if (iovcnt > 64) return -EINVAL; /* kernel stack limit */
     /* Copy iovec array to kernel stack to prevent TOCTOU on iov_base/iov_len.
      * Buffer contents are still user memory — do_read validates via user_ok. */
     struct iovec kiov[64];
     { int r = copy_from_user(kiov, iov, (size_t)iovcnt * sizeof(struct iovec)); if (r) return r; }
+
+    /* If offset >= 0, use positional reads (seekable files only) */
+    if (offset >= 0) {
+        process_t *p = proc_current();
+        if (__builtin_expect(!p, 0)) return -EFAULT;
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (__builtin_expect(!fde, 0)) return -EBADF;
+        if (fde->type != FD_FILE) return -ESPIPE;
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (__builtin_expect(!f, 0)) return -EBADF;
+        long total = 0;
+        uint64_t pos = (uint64_t)offset;
+        for (int i = 0; i < iovcnt; i++) {
+            if (!user_ok((uint64_t)kiov[i].iov_base, kiov[i].iov_len)) return -EFAULT;
+            long r = vfs_pread(f, (void *)kiov[i].iov_base, kiov[i].iov_len, pos);
+            if (r < 0) return total > 0 ? total : r;
+            total += r;
+            pos += (uint64_t)r;
+            if ((size_t)r < kiov[i].iov_len) break; /* short read */
+        }
+        return total;
+    }
+
+    /* offset == -1: use current file position (works for all fd types) */
     long total = 0;
     for (int i = 0; i < iovcnt; i++) {
         if (!user_ok((uint64_t)kiov[i].iov_base, kiov[i].iov_len)) return -EFAULT;
@@ -345,6 +397,10 @@ long do_readv(int fd, const struct iovec *iov, int iovcnt) {
         if ((size_t)r < kiov[i].iov_len) break; /* short read */
     }
     return total;
+}
+
+long do_readv(int fd, const struct iovec *iov, int iovcnt) {
+    return do_preadv(fd, iov, iovcnt, -1);
 }
 
 /* ── SYS_close (3) ───────────────────────────────── */
@@ -389,15 +445,7 @@ long do_close(int fd) {
     return fd_close(&p->fds, fd);
 }
 
-/* ── SYS_open (2) / SYS_openat (257) ────────────────── */
-
-long do_open(const char *path, int flags, int mode) {
-    char kpath[PATH_MAX], rpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
-    if (len < 0) return len;
-    resolve_path(kpath, rpath, PATH_MAX);
-    return vfs_open(rpath, flags, mode);
-}
+/* ── SYS_openat (257) — primary; SYS_open delegates with AT_FDCWD ── */
 
 long do_openat(int dirfd, const char *path, int flags, int mode) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
@@ -405,6 +453,10 @@ long do_openat(int dirfd, const char *path, int flags, int mode) {
     if (len < 0) return len;
     resolve_path(kpath, rpath, PATH_MAX);
     return vfs_open(rpath, flags, mode);
+}
+
+long do_open(const char *path, int flags, int mode) {
+    return do_openat(AT_FDCWD, path, flags, mode);
 }
 
 /* ── SYS_lseek (8) ──────────────────────────────── */

@@ -107,7 +107,7 @@
     /* Stubs for npm/node compatibility */ \
     X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \
-    X(SYS_LCHOWN, lchown, do_lchown((const char *)a1, (uint32_t)a2, (uint32_t)a3)) \
+    X(SYS_LCHOWN, lchown, do_fchownat(AT_FDCWD, (const char *)a1, (uint32_t)a2, (uint32_t)a3, AT_SYMLINK_NOFOLLOW)) \
     X(SYS_SCHED_GET_PRIORITY_MAX, sched_get_priority_max, do_sched_get_priority_max((int)a1)) \
     X(SYS_SCHED_GET_PRIORITY_MIN, sched_get_priority_min, do_sched_get_priority_min((int)a1)) \
     X(SYS_SETRLIMIT, setrlimit, do_setrlimit()) \
@@ -186,7 +186,7 @@
     X(SYS_GETDENTS, getdents, do_getdents((int)a1, (void *)a2, (size_t)a3)) \
     X(SYS_FCHDIR, fchdir, do_fchdir((int)a1)) \
     X(SYS_CREAT, creat, do_creat((const char *)a1, (int)a2)) \
-    X(SYS_CHOWN, chown, do_chown((const char *)a1, (uint32_t)a2, (uint32_t)a3)) \
+    X(SYS_CHOWN, chown, do_fchownat(AT_FDCWD, (const char *)a1, (uint32_t)a2, (uint32_t)a3, 0)) \
     X(SYS_FCHOWNAT, fchownat, do_fchownat((int)a1, (const char *)a2, (uint32_t)a3, (uint32_t)a4, (int)a5)) \
     X(SYS_RENAMEAT, renameat, do_renameat((int)a1, (const char *)a2, (int)a3, (const char *)a4)) \
     X(SYS_UTIME, utime, do_utime((const char *)a1, (const void *)a2)) \
@@ -220,9 +220,9 @@
     X(SYS_SELECT, select, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_SELECT)) \
     X(SYS_PSELECT6, pselect6, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_PSELECT6)) \
     X(SYS_PPOLL, ppoll, do_ppoll(a1, a2, a3)) \
-    /* vectored I/O with offset */ \
-    X(SYS_PREADV, preadv, do_readv((int)a1, (const struct iovec *)a2, (int)a3)) \
-    X(SYS_PWRITEV, pwritev, do_writev((int)a1, (const struct iovec *)a2, (int)a3)) \
+    /* vectored I/O with offset (x86_64: offset split into low/high 32-bit in a4/a5) */ \
+    X(SYS_PREADV, preadv, do_preadv((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
+    X(SYS_PWRITEV, pwritev, do_pwritev((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
     /* multi-message send/recv */ \
     X(SYS_SENDMMSG, sendmmsg, do_sendmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
     X(SYS_RECVMMSG, recvmmsg, do_recvmmsg((int)a1, (uint64_t)a2, (int)a3, (int)a4)) \
@@ -251,8 +251,8 @@
     X(SYS_RT_TGSIGQUEUEINFO, rt_tgsigqueueinfo, do_rt_tgsigqueueinfo((int)a1, (int)a2, (int)a3, (void *)a4)) \
     X(SYS_EPOLL_CREATE, epoll_create, do_epoll_create((int)a1)) \
     X(SYS_INOTIFY_INIT, inotify_init, do_inotify_init()) \
-    X(SYS_PREADV2, preadv2, do_preadv2((int)a1, (const void *)a2, (int)a3)) \
-    X(SYS_PWRITEV2, pwritev2, do_pwritev2((int)a1, (const void *)a2, (int)a3)) \
+    X(SYS_PREADV2, preadv2, do_preadv((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
+    X(SYS_PWRITEV2, pwritev2, do_pwritev((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
     X(SYS_OPENAT2, openat2, do_openat2((int)a1, (const char *)a2, (void *)a3, (size_t)a4)) \
     X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (void *)a2, (int)a3, (void *)a4)) \
     X(SYS_MKNOD, mknod, do_mknod((const char *)a1, (uint32_t)a2, (uint64_t)a3)) \
