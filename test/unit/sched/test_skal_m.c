@@ -44,7 +44,7 @@ static void test_many_threads(void) {
         long stk = sc6(SYS_MMAP, 0, 8192, PROT_RW, MAP_PRIV_ANON, -1, 0);
         if (stk <= 0) break;
 
-        long tid = sc5(SYS_CLONE, (long)(CLONE_VM | CLONE_THREAD), stk + 8192, 0, 0, 0);
+        long tid = sc5(SYS_CLONE, (long)(CLONE_VM | CLONE_SIGHAND | CLONE_THREAD), stk + 8192, 0, 0, 0);
         if (tid == 0) {
             /* Child thread: increment and exit */
             __sync_fetch_and_add(&thread_counter, 1);
