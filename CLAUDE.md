@@ -475,23 +475,23 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Stack-Ownership: Ein Thread, ein Kernel-Stack, exklusiv.             │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ context_switch(prev, next): ein Mechanismus, ein Callsite, atomar.   │ Wie Linux  │ ret_from_fork als Resume-Target fuer neue Threads     │
-  │                                                                      │            │ ist inherente fork()-Asymmetrie, kein Legacy.         │
+  │ context_switch(prev, next): ein Mechanismus, ein Callsite, atomar.   │ Wie Linux  │ ret_from_fork als Resume-Target fuer neue Threads    │
+  │                                                                      │            │ ist inherente fork()-Asymmetrie, kein Legacy.        │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Atomare Transitions: State-Change und Switch in einer Operation.     │ Wie Linux  │ —                                                    │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Ownership: Ein Owner oder expliziter Refcount. Nie implizit shared.  │ Wie Linux  │ — (Linux: refcount auf file, mm_struct, pages)       │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Ein Pfad pro Konzept: fork/vfork/clone → eine Implementierung.       │ Strenger   │ Linux: 4 Entry-Points → kernel_clone(). CosmoRT:     │
-  │                                                                      │            │ kein Legacy, eine Funktion mit Flags.                 │
+  │                                                                      │            │ kein Legacy, eine Funktion mit Flags.                │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Bounded Execution: Core-Pfade bounded, I/O timeout-guarded.          │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.           │
-  │                                                                      │            │ Linux: WARN_ON + Recovery.                            │
+  │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.          │
+  │                                                                      │            │ Linux: WARN_ON + Recovery.                           │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Explizite Dependencies: Jede Abhaengigkeit im Typ/API sichtbar.      │ Strenger   │ Kein Legacy. Linux: initcall-Levels, implizite        │
-  │                                                                      │            │ Reihenfolge.                                          │
+  │ Explizite Dependencies: Jede Abhaengigkeit im Typ/API sichtbar.      │ Strenger   │ Kein Legacy. Linux: initcall-Levels, implizite       │
+  │                                                                      │            │ Reihenfolge.                                         │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Interrupt-Transparenz: Jeder Code-Punkt unterbrechbar oder           │ Wie        │ — (konsistent mit PREEMPT_RT)                        │
   │ explizit geschuetzt.                                                 │ PREEMPT_RT │                                                      │

@@ -461,27 +461,16 @@ long do_statx(int dirfd, const char *pathname, int flags,
     return copy_to_user(statxbuf, &sx, sizeof(sx));
 }
 
-/* ── SYS_chown (92) — set file owner (single-user: noop, validate path) ── */
-
-long do_chown(const char *upath, uint32_t uid, uint32_t gid) {
-    char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, upath, PATH_MAX);
-    if (len < 0) return len;
-    char rpath[PATH_MAX];
-    resolve_path(kpath, rpath, PATH_MAX);
-    return vfs_chown(rpath, uid, gid);
-}
-
-/* ── SYS_fchownat (260) — chown with dirfd ────────── */
+/* ── SYS_fchownat (260) — primary; chown/lchown delegate here via dispatch ── */
 
 long do_fchownat(int dirfd, const char *upath, uint32_t uid, uint32_t gid, int flags) {
-    (void)flags;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     char kpath[PATH_MAX];
-    int len = resolve_at_path(dirfd, upath, kpath, PATH_MAX);
-    if (len < 0) return len;
-    char rpath[PATH_MAX];
-    resolve_path(kpath, rpath, PATH_MAX);
-    return vfs_chown(rpath, uid, gid);
+    int r = resolve_at_path(dirfd, upath, kpath, PATH_MAX);
+    if (r < 0) return r;
+    if (flags & AT_SYMLINK_NOFOLLOW)
+        return vfs_lchown(kpath, uid, gid);
+    return vfs_chown(kpath, uid, gid);
 }
 
 /* ── SYS_renameat (264) — delegate to renameat2 ──── */

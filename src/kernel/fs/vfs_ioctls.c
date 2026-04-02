@@ -283,6 +283,37 @@ int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     return 0;
 }
 
+int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
+    if (!is_ramfs_path(path)) {
+        const char *basename;
+        uint64_t parent_ino64 = ext2_walk_parent(path, &basename);
+        uint32_t parent_ino = (uint32_t)parent_ino64;
+        if (parent_ino == 0) {
+            if (path[0] == '/' && path[1] == 0)
+                return vfs_chown(path, uid, gid); /* root: no symlink */
+            return -ENOENT;
+        }
+        uint32_t ino;
+        if (ext2_dir_lookup(parent_ino, basename, &ino) < 0) return -ENOENT;
+        struct ext2_inode ip;
+        if (ext2_inode_read(ino, &ip) < 0) return -EIO;
+        if (uid != (uint32_t)-1) ip.i_uid = (uint16_t)uid;
+        if (gid != (uint32_t)-1) ip.i_gid = (uint16_t)gid;
+        ip.i_mode &= ~(uint16_t)(04000 | 02000);
+        ext2_inode_write(ino, &ip);
+        inotify_event(path, IN_ATTRIB);
+        return 0;
+    }
+    int lerr = 0;
+    struct vfs_node *node = vfs_lookup_nofollow(path, &lerr);
+    if (!node) return lerr ? lerr : -ENOENT;
+    if (uid != (uint32_t)-1) node->inode->uid = uid;
+    if (gid != (uint32_t)-1) node->inode->gid = gid;
+    node->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inotify_event(path, IN_ATTRIB);
+    return 0;
+}
+
 int vfs_fchmod(int fd, uint32_t mode) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;

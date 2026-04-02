@@ -87,9 +87,15 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
 
 long do_clock_nanosleep(int clk_id, int flags,
                                const struct k_timespec *req, struct k_timespec *rem) {
+    if (clk_id != CLOCK_MONOTONIC && clk_id != CLOCK_REALTIME &&
+        clk_id != CLOCK_MONOTONIC_COARSE && clk_id != CLOCK_REALTIME_COARSE &&
+        clk_id != CLOCK_BOOTTIME) return -EINVAL;
+    if (!req || !user_ok((uint64_t)req, sizeof(struct k_timespec))) return -EFAULT;
+    struct k_timespec kreq_chk;
+    { int r = copy_from_user(&kreq_chk, req, sizeof(kreq_chk)); if (r) return r; }
+    if (kreq_chk.tv_nsec < 0 || kreq_chk.tv_nsec >= 1000000000LL) return -EINVAL;
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
-        if (!req) return -EFAULT;
 
         struct k_timespec kreq;
         { int r = copy_from_user(&kreq, req, sizeof(kreq)); if (r) return r; }
