@@ -485,7 +485,7 @@ Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
   │ Ein Pfad pro Konzept: fork/vfork/clone → eine Implementierung.       │ Strenger   │ Linux: 4 Entry-Points → kernel_clone(). CosmoRT:     │
   │                                                                      │            │ kein Legacy, eine Funktion mit Flags.                 │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
-  │ Bounded Execution: Jeder Kernel-Pfad terminiert in endlicher Zeit.   │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
+  │ Bounded Execution: Core-Pfade bounded, I/O timeout-guarded.          │ Strenger   │ RT-Anforderung. Linux: unbounded Paths erlaubt.      │
   ├──────────────────────────────────────────────────────────────────────┼────────────┼──────────────────────────────────────────────────────┤
   │ Fail-Stop: Fehler → Panic oder -ERRNO. Nie stille Korruption.        │ Strenger   │ RT: kein Weiterarbeiten mit kaputtem State.           │
   │                                                                      │            │ Linux: WARN_ON + Recovery.                            │
