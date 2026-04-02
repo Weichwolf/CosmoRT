@@ -466,6 +466,100 @@ make qemu-alpine        # Normaler Alpine Boot (OpenRC → getty → login)
 make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 ```
 
+## C in der Kernel-Entwicklung
+
+Ziel-Standard: `gnu11`.
+
+### `_Static_assert`
+
+Fängt ABI-Brüche zur Compile-Zeit. Im Kernel kein segfault – korrupter Kernel-State.
+```c
+_Static_assert(sizeof(struct task_control_block) == 64,
+               "TCB muss exakt eine Cache-Line sein");
+_Static_assert(offsetof(struct cpu_context, sp) == ARCH_SP_OFFSET,
+               "sp-Offset stimmt nicht mit asm-Glue überein");
+_Static_assert(ARRAY_SIZE(syscall_table) == __NR_syscall_max,
+               "Syscall-Tabelle unvollständig");
+```
+
+Jeden Kontrakt zwischen C und ASM absichern. Jeden Struct der in Hardware-Strukturen
+mapped. Wenn der Assert nervt, ist die Abstraktion falsch.
+
+### `__typeof__`
+
+Typsichere Makros. Jedes Makro das einen Ausdruck zweimal auswertet ist eine Bombe.
+```c
+#define MIN(a, b) ({          \
+    __typeof__(a) _a = (a);   \
+    __typeof__(b) _b = (b);   \
+    _a < _b ? _a : _b;        \
+})
+
+#define container_of(ptr, type, member) ({                    \
+    __typeof__(((type *)0)->member) *_mptr = (ptr);           \
+    (type *)((char *)_mptr - offsetof(type, member));         \
+})
+```
+
+`container_of` ist das wichtigste Beispiel – intrusive linked lists sind das Rückgrat
+von Scheduler, VM, VFS.
+
+### `__attribute__((warn_unused_result))`
+
+Im Kernel keine Exceptions. Ignorierter Returnwert = ignorierter Fehler = stille
+Corruption. Nie `(void)` casten um die Warning zu unterdrücken ohne dokumentierten Grund.
+```c
+__attribute__((warn_unused_result))
+int map_page(vaddr_t vaddr, paddr_t paddr, uint32_t flags);
+```
+
+Sinnvoll auf: Memory-Allocation, Page-Mapping, Lock-Acquire, jeder Initialisierung
+die fehlschlagen kann.
+
+### Übergreifend
+
+Kein Sanitizer im hot path, kein RAII, keine Exceptions, oft kein sinnvoller Debugger.
+Der Compiler ist das letzte Sicherheitsnetz vor der Hardware. Gib ihm alle Informationen.
+
+## Ressource-Design: Keine fixen Pools
+
+Fixe systemweite Pools sind verboten. Ein Prozess der alles aufbraucht blockiert
+alle anderen – das ist kein Limit, das ist ein Angriffsvektor.
+
+### Regel
+
+Jede Ressource die ein Prozess alloziert folgt diesem Schema:
+
+1. **Slab-allokiert** – kein statisches Array, kein Pool fixer Größe
+2. **Per-Prozess gecapped** – RLIMIT-Mechanismus, nicht globales Maximum
+3. **On-demand wachsend** – nie vorab reservieren was nicht gebraucht wird
+
+### Ausnahmen
+
+Fixe Limits nur wo die Hardware es erzwingt (IDT: 256, IRQ: 256) oder wo
+POSIX es explizit definiert (Signals: 64). Alles andere ist kein Argument.
+
+### Neue Subsysteme: Checkliste
+
+Vor jedem Merge:
+
+- [ ] Ist das Limit systemweit oder per-Prozess?
+- [ ] Kann ein einzelner Prozess das Limit alleine erschöpfen?
+- [ ] Wächst die Struktur on-demand oder ist sie vorab alloziert?
+- [ ] Ist das Limit durch RLIMIT oder Slab-OOM gebunden, nicht durch Magic Number?
+
+### Reihenfolge bei Neuentwicklung
+
+1. Slab-Cache definieren
+2. Per-Prozess-Limit via RLIMIT verdrahten
+3. `_Static_assert` auf kritische Struct-Größen
+4. Erst dann: Funktionalität
+
+### Warnsignal
+
+`#define FOO_MAX <zahl>` gefolgt von `foo_t pool[FOO_MAX]` ist ein Review-Blocker.
+Keine Ausnahmen ohne explizite Begründung im Commit.
+
 ## Regeln
 
 Default: Implementiere es wie Linux. Abweichungen NUR wenn durch RT begruendet.
