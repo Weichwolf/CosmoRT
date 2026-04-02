@@ -291,6 +291,7 @@ long do_mknod(const char *path, uint32_t mode, uint64_t dev) {
 
 /* fchmodat2: delegate to fchmodat */
 long do_fchmodat2(int dirfd, const char *path, uint32_t mode, int flags) {
+    if (flags & ~(AT_SYMLINK_NOFOLLOW)) return -EINVAL;
     extern long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags);
     return do_fchmodat(dirfd, path, mode, flags);
 }

@@ -464,6 +464,7 @@ long do_statx(int dirfd, const char *pathname, int flags,
 /* ── SYS_fchownat (260) — primary; chown/lchown delegate here via dispatch ── */
 
 long do_fchownat(int dirfd, const char *upath, uint32_t uid, uint32_t gid, int flags) {
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     char kpath[PATH_MAX];
     int r = resolve_at_path(dirfd, upath, kpath, PATH_MAX);
     if (r < 0) return r;

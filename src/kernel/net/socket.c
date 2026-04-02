@@ -618,6 +618,7 @@ long do_accept(int fd, void *addr, int *addrlen) {
 
     socket_t *ls = sock_from_fd(fd);
     if (!ls) return -EBADF;
+    if (ls->is_dgram) return -EOPNOTSUPP;
     if (ls->state != SOCK_LISTENING) return -EINVAL;
 
     /* Check accept queue first (pre-queued connections) */
