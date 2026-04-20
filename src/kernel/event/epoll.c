@@ -17,6 +17,7 @@
 #include "net/net.h"
 #include "core/event_queue.h"
 #include "core/smp.h"
+#include "core/tick.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
@@ -47,11 +48,14 @@ static slab_t  epoll_slab;
 
 /* ── Init ────────────────────────────────────────── */
 
+static struct tick_callback epoll_timeout_cb;
+
 void epoll_init(void) {
     slab_init(&epoll_slab, epoll_pool, (int)sizeof(epoll_t), EPOLL_POOL_MAX);
     eventfd_init();
     timerfd_init();
     inotify_init_slab();
+    tick_register(&epoll_timeout_cb, epoll_check_timeouts, TICK_EVERY);
     serial_puts("epoll: init\n");
 }
 

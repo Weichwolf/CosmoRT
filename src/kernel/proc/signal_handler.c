@@ -2,6 +2,7 @@
 
 #include "sys/internal.h"
 #include "core/event_queue.h"
+#include "core/tick.h"
 
 /* sigaltstack flags */
 #define SS_ONSTACK 1
@@ -127,7 +128,8 @@ long do_alarm(unsigned int seconds) {
 }
 
 /* Check all processes for expired alarm timers.
- * Called from timer tick on BSP. Sets SIGALRM pending + wakes blocked threads. */
+ * Registered in alarm_init() via tick_register. Runs every tick.
+ * Per-Prozess-Scan O(PID_TABLE_MAX) — Folge-Arbeit: Timer-Wheel. */
 void check_alarm_timers(void) {
     uint64_t now = timer_ms();
     extern process_t *pid_table[];
@@ -148,6 +150,12 @@ void check_alarm_timers(void) {
             t = t->proc_next;
         }
     }
+}
+
+static struct tick_callback alarm_cb;
+
+void alarm_init(void) {
+    tick_register(&alarm_cb, check_alarm_timers, TICK_EVERY);
 }
 
 /* Check and deliver signals in the SYSCALL return path.

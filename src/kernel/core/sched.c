@@ -196,35 +196,6 @@ void schedule(void) {
 /* ── Timer preemption ────────────────────────────── */
 
 void sched_preempt(irq_frame_t *f) {
-    /* timerfd expiry + epoll wakeups (still needed until timerfd uses hrtimer) */
-    {
-        extern void epoll_check_timeouts(void);
-        epoll_check_timeouts();
-    }
-
-    /* Check alarm timers for the current thread's process */
-    {
-        thread_t *alarm_t = percpu_self()->current_thread;
-        if (alarm_t && alarm_t != &idle_thread && alarm_t->proc) {
-            process_t *ap = alarm_t->proc;
-            if (ap->alarm_deadline_ms > 0 && timer_ms() >= ap->alarm_deadline_ms) {
-                ap->alarm_deadline_ms = 0;
-                void *handler = ap->sig_actions[SIGALRM].sa_handler;
-                if ((uint64_t)handler > 1)
-                    ap->sig_pending |= SIG_BIT(SIGALRM);
-                else if (handler == (void *)0) {
-                    ap->exit_signal = SIGALRM;
-                    ap->sig_pending |= SIG_BIT(SIGALRM);
-                }
-            }
-        }
-    }
-    /* Scan ALL processes for alarms (catches blocked threads) */
-    {
-        extern void check_alarm_timers(void);
-        check_alarm_timers();
-    }
-
     /* VT flush */
     {
         extern void vt_flush(int vt_id);

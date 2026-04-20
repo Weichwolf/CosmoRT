@@ -227,6 +227,9 @@ void kernel_main(struct boot_info *info) {
     vma_init();
     ipc_init();
 
+    extern void alarm_init(void);
+    alarm_init();
+
     /* Hardware primitives (MMIO, DMA, IRQ, PCI, FW) */
     extern void hw_init(void);
     hw_init();

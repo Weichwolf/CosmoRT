@@ -16,6 +16,7 @@
 #include "arch/arch.h"
 #include "memops.h"
 #include "mm/extable.h"
+#include "core/tick.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 
@@ -575,10 +576,15 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         return;
     }
 
-    /* Timer (vector 32): RT scheduler preemption */
-    if (vector == 32) {
+    /* Timer (vector 32): handler (tick_run + I/O-polling) laeuft zuerst,
+     * damit sched_preempt frisch gesetzte sig_pending/alarm sieht. */
+    if (vector == 32 && vector < MAX_HANDLERS && handlers[vector]) {
+        handlers[vector](vector);
         extern void sched_preempt(irq_frame_t *frame);
         sched_preempt(frame);
+        irq_event_pending = 1;
+        lapic_eoi();
+        return;
     }
 
     /* Reschedule IPI (vector 0xFD): preempt immediately instead of
@@ -777,9 +783,10 @@ static volatile uint64_t tick_count = 0;
 
 static void timer_handler(int vector) {
     (void)vector;
-    __sync_fetch_and_add(&tick_count, 1);
+    uint64_t ticks = __sync_add_and_fetch(&tick_count, 1);
     extern void random_add_interrupt_entropy(void);
     random_add_interrupt_entropy();
+    tick_run(ticks * TICK_NS_PER_MS);
     /* Poll serial RX → PTY input (serial console bridge) */
     extern void serial_bridge_poll(void);
     serial_bridge_poll();
