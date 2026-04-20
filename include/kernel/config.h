@@ -44,6 +44,7 @@ static inline uint64_t ensure_high(uint64_t addr) {
 #define RLIM_STACK_DEFAULT (8UL * 1024 * 1024) /* default RLIMIT_STACK: 8MB */
 #define RLIM_STACK_MAX     (64UL * 1024 * 1024) /* hard limit: 64MB */
 #define STACK_GUARD_GAP  (1UL * 1024 * 1024)    /* 1MB gap between stack and adjacent VMAs */
+#define STACK_GUARD_SIZE 0x1000UL                /* PROT_NONE guard VMA below each user stack */
 #define USER_MMAP_BASE   0x7F0000000000ULL
 #define USER_BRK_BASE    0x600000ULL         /* above typical ELF load */
 

@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2413/6 (2× identisch nach Einzelbug-Sweep `0a96060`..`f6b79d1`), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2414/5 (5× identisch nach Phase 6.4 Stack-Guard-Page), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -236,11 +236,19 @@ Commits `9543eae`, `9606617`, `b10a495`, `0188169`. Test-Delta 2403/16 → 2405/
 - [ ] `clone` child exit code: Exit-Pfad durchreichen
 - [ ] Fork-Memory-Vererbung: CoW-Verifikation
 
-### 6.4 Memory-Protection
+### 6.4 Memory-Protection — Stack-Guard-Page (teilweise ✓)
 
-- [ ] Stack-Guard-Page (1 Page unterhalb jedes user-Stacks, `PROT_NONE`)
-- [ ] Test `stack_clash` darf SIGSEGV auslösen
-- [ ] `meltdown`-Test: Kernel-Memory-Read aus userspace → SIGSEGV
+Test-Delta 2413/6 → 2414/5 (`ltp/stack_clash` PASS, 5× Varianz = 0).
+
+Design: PROT_NONE-VMA der Größe `STACK_GUARD_SIZE` (= 1 Page) direkt unter `stack_top - RLIMIT_STACK`. Guard liegt am Wachstumslimit, nicht am initialen Stack-Boden — sonst könnte der Stack nicht mehr wachsen. Fault-Handler erkennt sie per `vma->prot == 0` und liefert unkonditional SIGSEGV.
+
+- [x] `STACK_GUARD_SIZE`-Konstante in `config.h`
+- [x] `process_exec.c` + `process.c` fügen PROT_NONE-Guard-VMA bei `[stack_top - RLIMIT_STACK - GUARD, stack_top - RLIMIT_STACK)` ein
+- [x] `irq.c` Page-Fault: `vma && prot == 0` → explizit `kill_process`; zusätzlich spin_unlock bei fallthrough im vma-Block (Deadlock-Fix)
+- [x] `copy_one_vma` trägt Guard-VMA ohne PTE in Child-Tree (automatisch via vma_walk)
+- [x] `test/ltp/test_security.c` stack_recurse: `noinline optimize("O0")` + asm-sink, sonst inlinete GCC die Selbstrekursion zu einer Schleife und der Stack wuchs nie
+- [x] Validierung: crash/stack_guard, crash/stack, crash/deep_recursion alle grün (separates `make test-crash`-Target); `/proc/self/maps` zeigt `---p`-VMA
+- [ ] `meltdown`-Test: Kernel-Memory-Read aus userspace → SIGSEGV (bereits grün via SMAP, siehe ltp/meltdown)
 
 ### 6.5 Socket-Readiness-Wakeup ✓ done
 

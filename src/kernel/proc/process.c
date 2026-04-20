@@ -309,11 +309,15 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     fd_table_init(&p->fds);
 
     /* Stack: small initial VMA with VMA_GROWSDOWN (expands on page fault).
-     * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand. */
+     * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand.
+     * PROT_NONE guard VMA at the growth limit makes overflow fail-stop. */
     uint64_t stack_bottom = stack_top - USER_STACK_INIT;
+    uint64_t stack_floor  = stack_top - RLIM_STACK_DEFAULT;
     vma_insert(&p->vma_root, stack_bottom, stack_top,
                PROT_READ | PROT_WRITE,
                MAP_PRIVATE | MAP_ANONYMOUS | VMA_GROWSDOWN);
+    vma_insert(&p->vma_root, stack_floor - STACK_GUARD_SIZE, stack_floor,
+               0, MAP_PRIVATE | MAP_ANONYMOUS);
     p->stack_top = stack_top;
 
     /* brk VMA is created on first brk() call that grows beyond brk_base.

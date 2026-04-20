@@ -535,11 +535,16 @@ shebang_retry:;
     p->brk_current = info.brk;
     entry = info.entry;
 
-    /* Stack: small initial VMA with VMA_GROWSDOWN */
+    /* Stack: small initial VMA with VMA_GROWSDOWN, plus PROT_NONE guard page at
+     * the maximum-growth limit to turn stack overflow / stack-clash into
+     * deterministic SIGSEGV. Linux: `stack_guard_gap` + VM_GROWSDOWN. */
     uint64_t stack_bottom = stack_top - USER_STACK_INIT;
+    uint64_t stack_floor  = stack_top - RLIM_STACK_DEFAULT;
     vma_insert(&p->vma_root, stack_bottom, stack_top,
                PROT_READ | PROT_WRITE,
                MAP_PRIVATE | MAP_ANONYMOUS | VMA_GROWSDOWN);
+    vma_insert(&p->vma_root, stack_floor - STACK_GUARD_SIZE, stack_floor,
+               0, MAP_PRIVATE | MAP_ANONYMOUS);
     p->stack_top = stack_top;
     spin_unlock_irq(&p->lock, exec_irqf);
 

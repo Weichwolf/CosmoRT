@@ -352,6 +352,11 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             spin_lock_irq(&p->lock, &vma_flags);
             vma_t *vma = vma_find(p->vma_root, cr2);
             if (vma) {
+                /* PROT_NONE VMA (e.g. stack guard page) → deterministic SIGSEGV */
+                if ((vma->prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) == 0) {
+                    spin_unlock_irq(&p->lock, vma_flags);
+                    goto kill_process;
+                }
                 /* Protection violation: check write permission */
                 if ((error & 1) && (error & 2) && !(vma->prot & PROT_WRITE)) {
                     /* Write to read-only VMA → kill */
@@ -496,6 +501,9 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     }
                     goto kill_process;
                 }
+                /* Unhandled fault within a valid VMA (e.g. present+NX without exec prot) */
+                spin_unlock_irq(&p->lock, vma_flags);
+                goto kill_process;
             } else {
                 /* No VMA at fault address — check for stack growth.
                  * If a VMA_GROWSDOWN VMA starts just above cr2,

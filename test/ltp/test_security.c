@@ -58,12 +58,17 @@ static void test_meltdown(void) {
  *
  * Simplified: just verify that deep recursion causes SIGSEGV in child. */
 
+/* noinline + O0 + asm-sink defeats tail-call optimisation; without it, GCC turns
+ * this self-recursion into a loop and the stack never grows — the test would
+ * pass trivially without actually exercising the guard page. */
+__attribute__((noinline, optimize("O0")))
 static void stack_recurse(volatile int depth) {
     volatile char buf[1024];
     buf[0] = (char)depth;
     buf[1023] = (char)depth;
     if (depth < 100000)
         stack_recurse(depth + 1);
+    __asm__ volatile("" :: "r"(buf[0]), "r"(buf[1023]));
 }
 
 static void test_stack_clash(void) {
