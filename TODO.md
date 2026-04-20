@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2364/56 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2398/22 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -13,7 +13,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 2 | VFS-Metadaten (Klasse B) | **✓ done** (2354/65 → 2361/58, Commit `560157d`) | — | — | — |
 | 0.5 | Test-Runner-Watchdog | **✓ done** (2361/58 → 2364/56, Varianz ±14 → ±2) | — | — | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
-| 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
+| 4 | Stub-Implementierungen (Klasse A) | **✓ 4.1-4.7+4.9 done** (2365/55 → 2398/22, +33) | — | — | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
 | 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Readiness-Wakeup** | ~10 + 4 Netz | 4+3 Tage | **hoch** | — |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
@@ -151,90 +151,47 @@ Poll-Loop mit `nanosleep(10ms)` erprobt, verworfen: nanosleep hängt determinist
 
 ---
 
-## Phase 4 — Stub-Implementierungen
+## Phase 4 — Stub-Implementierungen ✓ weitgehend abgeschlossen
 
-Jede Sektion eigenständig.
+Commits `01fa5e8` bis `9a0a37a`. 2365/55 → 2398/22, +33 stabile Tests, Varianz ±2.
 
-### 4.1 File-Locks (7+5 Failures)
+### 4.1 File-Locks ✓ (+12)
 
-`fs/locks.c` nach Linux-Vorbild. `do_flock` ist no-op. F_SETLK validiert nicht.
+Commit `01fa5e8`. flock_table vereint flock(2) whole-file + fcntl byte-range. flock-Owner = vfs_file* (distinct open(2) descriptions konfligieren), fcntl-Owner = pid. F_SETLK: Typ-Validierung + Pipe-Check, F_SETLKW: Poll-Loop mit thread_block_ms + Signal-EINTR, Range-Splitting + Merge. flock_release_file aus vfs_file_release getriggert.
 
-- [ ] `fs/locks.c` + `fs/locks.h` neu
-- [ ] `struct file_lock` pro VFS-Node (per-inode list)
-- [ ] `flock`: LOCK_SH / LOCK_EX / LOCK_UN / LOCK_NB
-- [ ] `flock`: `LOCK_SH|LOCK_EX` → `-EINVAL`
-- [ ] `flock`: `LOCK_NB` alleine → `-EINVAL`
-- [ ] `flock(-1, ...)` → `-EBADF`
-- [ ] `fcntl F_SETLK`: Lock-Typ validieren, Pipe → `-EINVAL`
-- [ ] `fcntl F_SETLK` partial-unlock korrekt (range-splitting)
-- [ ] `fcntl F_SETLKW`: blockieren + Signal-Wakeup → `-EINTR`
-- [ ] `close` löscht alle Locks des Prozesses auf dem Inode
+### 4.2 Capabilities ✓ (+10)
 
-### 4.2 Capabilities (10 Failures)
+Commit `90cb4c2`. include/linux/capability.h: Versionen + structs. do_capget/do_capset: NULL→EFAULT, unbekannte Version→V3-back + EINVAL, pid<0→EINVAL, pid>0 nonexistent→ESRCH, capset pid>0!=self→EPERM. Single-User liefert alle Caps ~0.
 
-Nach `kernel/capability.c`. Single-User: alle Caps gesetzt, trotzdem korrekte ABI.
+### 4.3 execveat ✓ (+4)
 
-- [ ] `do_capget`/`do_capset` implementieren (bisher `-EPERM`-Stub)
-- [ ] Version-Header-Parsing (`_LINUX_CAPABILITY_VERSION_1/2/3`)
-- [ ] `kernel_cap_t` in `task_struct` (effective/permitted/inheritable/bounding/ambient)
-- [ ] Bad version → `-EINVAL`, Kernel-expected-version zurückgeben
-- [ ] `pid < -1` → `-EINVAL`
-- [ ] nonexistent pid → `-ESRCH`
-- [ ] NULL `data` → `-EFAULT`
+Commit `bbbb68b`. do_execveat in process_exec.c. AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW, andere Flags→EINVAL. dirfd-Resolution: AT_FDCWD via do_execve, real dirfd baut DIR-Pfad + relativer Pfad zusammen. Symlink + AT_SYMLINK_NOFOLLOW via vfs_lookup_nofollow→ELOOP.
 
-### 4.3 `execveat` (4 Failures)
+### 4.4 fallocate ~ (bereits aus Phase 1)
 
-- [ ] `fs/exec.c:do_execveat_common`-Equivalent
-- [ ] dirfd-Resolution (AT_FDCWD, absoluter Pfad, relativer Pfad)
-- [ ] AT_EMPTY_PATH / AT_SYMLINK_NOFOLLOW
-- [ ] Invalid flags → `-EINVAL`
-- [ ] Bad dirfd → `-EBADF`
-- [ ] `notdir` → `-ENOTDIR`
-- [ ] Symlink-Loop → `-ELOOP`
+Die vorhandene Implementierung (Phase 1.1) lieferte alle Test-Grüne (fallocate01-03). Echte PUNCH_HOLE/ZERO_RANGE-Semantik nicht implementiert — kein fehlschlagender Test fordert das. Falls später benötigt: mode-spezifisches -EOPNOTSUPP pro Kombination.
 
-### 4.4 `fallocate` Flags (Klasse A + T.184)
+### 4.5 xattr ✓ (+1)
 
-- [ ] `FALLOC_FL_KEEP_SIZE`: File-Size konstant, Block allokieren
-- [ ] `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`: Range auf 0 setzen
-- [ ] `FALLOC_FL_ZERO_RANGE`
-- [ ] `regular file EPERM` wenn Mode nicht unterstützt → `-EOPNOTSUPP`
+Commit `8a7f8e6`. fd-basiert: EBADF first, flistxattr(size=0)→0, fgetxattr→ENODATA, sonst ENOTSUP. Path-basiert: Lookup-Errno first, listxattr(size=0)→0, getxattr→ENODATA, sonst ENOTSUP.
 
-### 4.5 xattr (2+ Failures)
+### 4.6 eventfd EFD_SEMAPHORE ✓ (+5)
 
-Heute global `-ENODATA` in `dispatch.c:202-206`.
+Commit `91fb558`. EFD_SEMAPHORE=0x01. Read: val=1, counter -= 1. Counter=0: EAGAIN/block.
 
-- [ ] Per-fd-Dispatch: FS-Typ-spezifisch
-- [ ] `setxattr`/`getxattr`/`listxattr`/`removexattr`: `-EOPNOTSUPP` statt `-ENODATA` wenn FS nicht unterstützt
-- [ ] `flistxattr` zero-size return (benötigte Buffer-Größe)
-- [ ] tmpfs: in-memory xattr (optional, minimaler Pfad: `-EOPNOTSUPP` für alle)
+### 4.7 chroot ✓ (+1 stabil)
 
-### 4.6 eventfd EFD_SEMAPHORE (5 Failures)
+Commit `8b9d8fa`. process_t.root[256]. resolve_path prependet p->root an normalisierten absoluten Pfad. do_chroot setzt p->root, resettet cwd="/". Chroot02-Test grün, andere chroot-Tests waren bereits grün.
 
-- [ ] Eigener Read-Pfad: bei `EFD_SEMAPHORE` read liefert `1`, decrementiert counter um 1
-- [ ] write-Overflow: `val > UINT64_MAX - counter - 1` → `-EINVAL` (nicht `-EAGAIN`, das ist non-block-Fall)
+### 4.8 acct [~] partial (nur 1 Test grün)
 
-### 4.7 `chroot` (4 Failures)
+Commit `392b9b2`. Dispatch uebergibt path. Stub gibt 0 zurueck (NULL-Test grün).
 
-- [ ] `fs/open.c:ksys_chroot`-Equivalent
-- [ ] Pfad-Lookup, Typ-Prüfung (muss Directory sein)
-- [ ] `process.root` Feld setzen, alle Pfad-Resolves berücksichtigen
-- [ ] ENOENT / ENOTDIR / ELOOP / ENAMETOOLONG korrekt
+**Blocker:** Volle Pfad-Validierung (copy_path_from_user + vfs_lookup) löst 140-Test-Regression aus — Fault-Recovery-Pfad bei PROT_NONE-addr zerstört Thread-State. Out-of-scope für Phase 4. Tests acct01-efault/eisdir/enotdir/enoent bleiben rot bis Phase 6 Page-Fault-Recovery-Audit.
 
-### 4.8 `acct` (4 Failures)
+### 4.9 fadvise64 ✓
 
-- [ ] Pfad-Lookup, Typ-Validierung
-- [ ] EFAULT bei bad ptr, EISDIR bei directory, ENOENT, ENOTDIR
-- [ ] Danach `-ENOSYS` (Accounting selbst nicht implementiert — OK)
-- [ ] Bei regular file → `-EPERM` (nicht erlaubter Pfad)
-
-### 4.9 `fadvise64` Validierung
-
-Heute `return 0` (Stub). Kein Impact auf Verhalten, aber Fehlerpfade müssen korrekt sein.
-
-- [ ] fd-Lookup → `-EBADF`
-- [ ] advice-Range-Check → `-EINVAL`
-- [ ] Pipe/Socket → `-ESPIPE`
-- [ ] Dann: `return 0` (Hints sind optional)
+Commit `9a0a37a`. POSIX_FADV_* Konstanten aus include/linux/fcntl.h; war schon korrekt implementiert (Phase 1), nur Magic-Numbers ersetzt.
 
 ---
 
