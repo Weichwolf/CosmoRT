@@ -22,8 +22,78 @@ long do_get_robust_list(int pid, void **head_ptr, size_t *len_ptr) {
 long do_mount(void)           { return 0; }
 long do_sethostname(void)     { return 0; }
 long do_rseq(void)            { return -ENOSYS; }
-long do_capget(void)          { return -EPERM; }
-long do_capset(void)          { return -EPERM; }
+#include "linux/capability.h"
+
+/* capget/capset — single-user kernel: all caps always set. Still enforce
+ * Linux ABI validation (version, pid, EFAULT). */
+
+static int cap_version_u32s(uint32_t ver) {
+    if (ver == _LINUX_CAPABILITY_VERSION_1) return _LINUX_CAPABILITY_U32S_1;
+    if (ver == _LINUX_CAPABILITY_VERSION_2) return _LINUX_CAPABILITY_U32S_2;
+    if (ver == _LINUX_CAPABILITY_VERSION_3) return _LINUX_CAPABILITY_U32S_3;
+    return 0;
+}
+
+long do_capget(void *hdrp, void *datap) {
+    if (!hdrp) return -EFAULT;
+    if (!user_ok((uint64_t)hdrp, sizeof(struct __user_cap_header_struct)))
+        return -EFAULT;
+    struct __user_cap_header_struct hdr;
+    int r = copy_from_user(&hdr, hdrp, sizeof(hdr));
+    if (r) return r;
+
+    int u32s = cap_version_u32s(hdr.version);
+    if (!u32s) {
+        hdr.version = _LINUX_CAPABILITY_VERSION_3;
+        copy_to_user(hdrp, &hdr, sizeof(hdr));
+        return -EINVAL;
+    }
+    if (hdr.pid < 0) return -EINVAL;
+    if (hdr.pid > 0) {
+        process_t *target = proc_find((uint32_t)hdr.pid);
+        if (!target) return -ESRCH;
+    }
+    if (!datap) return 0;
+    if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
+        return -EFAULT;
+
+    struct __user_cap_data_struct data[2] = {
+        { .effective = 0xFFFFFFFFu, .permitted = 0xFFFFFFFFu, .inheritable = 0xFFFFFFFFu },
+        { .effective = 0xFFFFFFFFu, .permitted = 0xFFFFFFFFu, .inheritable = 0xFFFFFFFFu },
+    };
+    return copy_to_user(datap, data, u32s * sizeof(struct __user_cap_data_struct));
+}
+
+long do_capset(void *hdrp, const void *datap) {
+    if (!hdrp) return -EFAULT;
+    if (!user_ok((uint64_t)hdrp, sizeof(struct __user_cap_header_struct)))
+        return -EFAULT;
+    struct __user_cap_header_struct hdr;
+    int r = copy_from_user(&hdr, hdrp, sizeof(hdr));
+    if (r) return r;
+
+    int u32s = cap_version_u32s(hdr.version);
+    if (!u32s) {
+        hdr.version = _LINUX_CAPABILITY_VERSION_3;
+        copy_to_user(hdrp, &hdr, sizeof(hdr));
+        return -EINVAL;
+    }
+    if (hdr.pid < 0) return -EINVAL;
+    /* Linux: capset only supports pid==0 or pid==self — others -EPERM. */
+    if (hdr.pid > 0) {
+        process_t *p = proc_current();
+        if (!p || (uint32_t)hdr.pid != p->pid) return -EPERM;
+    }
+    if (!datap) return -EFAULT;
+    if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
+        return -EFAULT;
+
+    struct __user_cap_data_struct data[2];
+    r = copy_from_user(data, datap, u32s * sizeof(struct __user_cap_data_struct));
+    if (r) return r;
+    /* Single-user: accept any capset as no-op — all caps already granted. */
+    return 0;
+}
 
 /* msync: moved to sys_mem.c (SH-C3: dirty tracking + write-back) */
 /* TODO: implement if needed */

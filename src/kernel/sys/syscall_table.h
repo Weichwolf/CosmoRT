@@ -88,8 +88,8 @@
     X(SYS_MOUNT, mount, do_mount()) \
     X(SYS_SETHOSTNAME, sethostname, do_sethostname()) \
     X(SYS_RSEQ, rseq, do_rseq()) \
-    X(SYS_CAPGET, capget, do_capget()) \
-    X(SYS_CAPSET, capset, do_capset()) \
+    X(SYS_CAPGET, capget, do_capget((void *)a1, (void *)a2)) \
+    X(SYS_CAPSET, capset, do_capset((void *)a1, (const void *)a2)) \
     /* Filesystem (stat wrappers) */ \
     X(SYS_STATFS, statfs, do_statfs((const char *)a1, (void *)a2)) \
     X(SYS_FSTATFS, fstatfs, do_fstatfs((int)a1, (void *)a2)) \
