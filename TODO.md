@@ -307,13 +307,16 @@ Commits `7cc77de`, `7277835`, `e53b8f8`, `4ccad5f`. 2425/1 stabil (5×, Varianz 
 - [x] `sched_preempt` reduziert auf Signal-Delivery + RCU + Timeslice + `schedule()`. Zeilenzahl 331 → 290.
 - [ ] Folge-Arbeit: Per-Prozess-Alarm-Scan in `check_alarm_timers` ist weiterhin O(PID_TABLE_MAX)=4096 pro Tick — Timer-Wheel/RB-Tree ist Phase 7.3-Nachbar.
 
-### 7.2 HAL: echt oder löschen
+### 7.2 HAL durchgesetzt ✓ done
 
-`hal_cpu.c:17-44` ist Pure-Forwarding. `src/kernel/` ruft `arch_*` direkt 7× (sched.c). Entweder HAL ernst nehmen (Kernel ruft nur `hal_*`) oder Layer löschen.
+Entscheidung: **HAL behalten und durchsetzen** — aarch64 ist geplantes Zweitziel (CLAUDE.md), HAL ist die einzige Plattformgrenze. Rückweg (Layer löschen) würde aarch64-Port zur Rewrite machen.
 
-- [ ] Entscheidung: HAL behalten und durchsetzen, oder HAL entfernen?
-- [ ] Wenn behalten: jeden `arch_*`-Call in `src/kernel/` durch `hal_*` ersetzen
-- [ ] Wenn entfernen: `hal/`-Layer komplett, alle `arch_*` direkt exponieren
+- [x] HAL-Interface ergänzt: `hal_cpu_halt_noirq`, `store_release/load_acquire`, `stack_ptr`, `hwrand`, `user_access_begin/end`, `shutdown`, `reset`, `set_percpu_active`, `fpu_boot_init`, `io_{outb,inb,outl,inl}`; `hal_mmu_switch` (paddr), `flush`, `flush_all`, `flush_range`, `fault_address`; `hal_irq_install_vector_table`
+- [x] `src/kernel/` komplett auf `hal_*` migriert: 0 `arch_*`-Calls (außer Linux-ABI-Syscall-Name `arch_prctl` in Kommentar/Tabelle), 0 inline-asm, 0 `#ifdef __x86_64__`
+- [x] Inherent x86-spezifische Quellen nach `src/arch/x86_64/` verschoben: `core/timer.c` (PIT/CMOS) → `timer/timer.c`; `core/tss.c` (TSS+SYSCALL-MSR) → `cpu/tss.c`; `mm/uaccess.c` (extable-rep-movsb/byte-copy) → `cpu/uaccess.c`; `copy_path_from_user` konsolidiert (war 2× dupliziert)
+- [x] Boot-CPU-Feature-Detection (`CR0/CR4/CPUID/XSETBV`) aus `core/main.c` nach `arch/x86_64/cpu/hal_features.c` als `hal_cpu_fpu_boot_init()` + `memops_init()`
+- [x] aarch64-HAL-Stubs in `src/arch/aarch64/hal_{cpu,mmu,irq,timer,smp}.c` — jede Funktion panic-trap, ready für Phase 9. Nicht in x86_64-Build gelinkt.
+- [x] Test-Stand 2425/1 stabil über alle 4 Migrations-Commits.
 
 ### 7.3 Fixe Pools → Slab + RLIMIT
 
@@ -390,11 +393,15 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [ ] Callback-Execution aus `rcu_gp_complete` in dedizierten Kernel-Thread (aktuell: synchron im caller-Kontext, kann `synchronize_rcu`-Pfad blockieren)
 - [ ] `rcu_state.cpu[i]` Range-Check auf `SMP_MAX_CORES` (`rcu.c:262,283,297`)
 
-### 7.6 Layer-Verstöße
+### 7.6 Layer-Verstöße ✓ done
 
-- [ ] `src/kernel/sys/sys_proc.c:235-236`: inline-asm `lidt`/`int3` für reboot in `arch/x86_64/` verschieben
-- [ ] `src/kernel/hw/serial.c`: inline-asm `outb/inb` → `hal_io`
-- [ ] Jeden `arch_*`-Call in `src/kernel/` auditieren (sched.c:150,157,162,163,166,243,275)
+Mit Phase 7.2 erledigt:
+
+- [x] `sys/sys_proc.c` reboot → `hal_cpu_reset()` (Triple-Fault-Impl in `arch/x86_64/cpu/hal_cpu.c`)
+- [x] `hw/serial.c` outb/inb → `hal_io_outb`/`hal_io_inb`
+- [x] `sched.c` + alle weiteren `arch_*`-Calls in `src/kernel/` → `hal_*`
+
+Übrig: `core/irq.c` enthält noch APIC-Register-Direkt-Access (LAPIC/IOAPIC MMIO) und IDT-Entry-Tabelle. Der IRQ-Init-Block (handler-table, APIC-Programmierung) ist x86-spezifisch und gehört nach `src/arch/x86_64/irq/` — **separater Phase-7-Umzug**, nicht blockierend für aarch64-Interface.
 
 ---
 
