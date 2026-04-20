@@ -321,9 +321,10 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     if (!p) return -EFAULT;
 
     fd_entry_t *epfde = fd_get(&p->fds, epfd);
-    if (!epfde || epfde->type != FD_EPOLL) return -EBADF;
+    if (!epfde || epfde->type == FD_NONE) return -EBADF;
+    if (epfde->type != FD_EPOLL) return -EINVAL;
     epoll_t *ep = (epoll_t *)epfde->obj;
-    if (!ep) return -EBADF;
+    if (!ep) return -EINVAL;
 
     /* Use absolute deadline to avoid timeout reset on re-execute.
      * On first call: compute deadline. On re-execute after wakeup:

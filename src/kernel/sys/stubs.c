@@ -78,16 +78,25 @@ long do_fsync(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
-    if (!fde) return -EBADF;
-    /* ext4 backend: sync. ramfs/other: noop */
-    if (fde->type == FD_FILE) {
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    switch (fde->type) {
+    case FD_FILE: {
         struct vfs_file *f = (struct vfs_file *)fde->obj;
         if (f && f->backend == VFS_BACKEND_EXT4) {
             extern void ext4_sync(void);
             ext4_sync();
         }
+        return 0;
     }
-    return 0;
+    case FD_PROCFS:
+    case FD_DEVICE:
+    case FD_SERIAL:
+    case FD_PTY_MASTER:
+    case FD_PTY_SLAVE:
+        return 0;
+    default:
+        return -EINVAL;
+    }
 }
 
 long do_fdatasync(int fd) { return do_fsync(fd); }
@@ -120,17 +129,74 @@ long do_sched_rr_get_interval(int pid, void *tp) {
 /* vhangup: no-op */
 long do_vhangup(void) { return 0; }
 
-/* adjtimex: validate timex pointer, check tick range */
+/* adjtimex: validate timex pointer, check tick range.
+ * struct timex layout mirrors Linux __kernel_timex (see test_adjtimex.c). */
+#define ADJ_OFFSET            0x0001
+#define ADJ_FREQUENCY         0x0002
+#define ADJ_MAXERROR          0x0004
+#define ADJ_ESTERROR          0x0008
+#define ADJ_STATUS            0x0010
+#define ADJ_TIMECONST          0x0020
+#define ADJ_TAI                0x0080
+#define ADJ_SETOFFSET          0x0100
+#define ADJ_MICRO              0x1000
+#define ADJ_NANO               0x2000
+#define ADJ_TICK               0x4000
+#define ADJ_OFFSET_SINGLESHOT  0x8001
+#define ADJ_OFFSET_SS_READ     0xa001
+
+#define ADJ_ALL_VALID (ADJ_OFFSET | ADJ_FREQUENCY | ADJ_MAXERROR |        \
+                       ADJ_ESTERROR | ADJ_STATUS | ADJ_TIMECONST |         \
+                       ADJ_TAI | ADJ_SETOFFSET | ADJ_MICRO | ADJ_NANO |    \
+                       ADJ_TICK | ADJ_OFFSET_SS_READ)
+
+#define TIMEX_TICK_DEFAULT     10000L  /* HZ=100 → 1e6/HZ µs */
+#define TIMEX_TICK_MIN         9000L
+#define TIMEX_TICK_MAX        11000L
+
+struct k_timex {
+    unsigned int modes;
+    long         offset;
+    long         freq;
+    long         maxerror;
+    long         esterror;
+    int          status;
+    long         constant;
+    long         precision;
+    long         tolerance;
+    long         time_sec;
+    long         time_usec;
+    long         tick;
+    long         ppsfreq;
+    long         jitter;
+    int          shift;
+    long         stabil;
+    long         jitcnt;
+    long         calcnt;
+    long         errcnt;
+    long         stbcnt;
+    int          tai;
+    int          __padding[11];
+};
+
 long do_adjtimex(void *tx) {
-    if (!tx || !user_ok((uint64_t)tx, 4)) return -EFAULT;
-    /* Read tick field at offset 16 (struct timex.tick) */
-    struct { int modes; long _pad[2]; long tick; } ktx;
+    if (!tx) return -EFAULT;
+    if (!user_ok((uint64_t)tx, sizeof(struct k_timex))) return -EFAULT;
+    struct k_timex ktx;
     int r = copy_from_user(&ktx, tx, sizeof(ktx));
     if (r) return r;
-    /* ADJ_TICK: tick must be in [900000/HZ, 1100000/HZ] = [9000, 11000] for HZ=100 */
-    if (ktx.modes & 0x4000 /* ADJ_TICK */) {
-        if (ktx.tick < 9000 || ktx.tick > 11000) return -EINVAL;
+    if (ktx.modes == ADJ_OFFSET_SINGLESHOT) {
+        /* legacy compat: accept as TIME_OK */
+    } else if (ktx.modes & ~ADJ_ALL_VALID) {
+        return -EINVAL;
     }
+    if (ktx.modes & ADJ_TICK) {
+        if (ktx.tick < TIMEX_TICK_MIN || ktx.tick > TIMEX_TICK_MAX) return -EINVAL;
+    }
+    ktx.tick = TIMEX_TICK_DEFAULT;
+    ktx.tai = 0;
+    r = copy_to_user(tx, &ktx, sizeof(ktx));
+    if (r) return r;
     return 0; /* TIME_OK */
 }
 
@@ -172,15 +238,29 @@ long do_restart_syscall(void) { return -EINTR; }
 
 /* clock_settime: validate, reject non-settable clocks */
 long do_clock_settime(int clk_id, const void *tp) {
-    if (!tp || !user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
-    /* Only CLOCK_REALTIME is settable; monotonic/boottime are not */
-    if (clk_id != CLOCK_REALTIME) return -EINVAL;
+    if (!tp) return -EFAULT;
+    if (!user_ok((uint64_t)tp, sizeof(struct k_timespec))) return -EFAULT;
+    switch (clk_id) {
+    case CLOCK_REALTIME:
+    case CLOCK_REALTIME_COARSE:
+        break;
+    case CLOCK_MONOTONIC:
+    case CLOCK_MONOTONIC_RAW:
+    case CLOCK_MONOTONIC_COARSE:
+    case CLOCK_BOOTTIME:
+        return -EINVAL;
+    default:
+        return -EINVAL;
+    }
     struct k_timespec kts;
     int r = copy_from_user(&kts, tp, sizeof(kts));
     if (r) return r;
-    if (kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000L) return -EINVAL;
+    if (kts.tv_nsec < 0 || kts.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
     if (kts.tv_sec < 0) return -EINVAL;
-    return 0; /* accept but don't change (no RTC write support) */
+    extern uint64_t rtc_epoch_sec;
+    uint64_t uptime_sec = timer_ms() / MSEC_PER_SEC;
+    rtc_epoch_sec = (uint64_t)kts.tv_sec - uptime_sec;
+    return 0;
 }
 
 /* clock_adjtime: validate clock_id */
@@ -279,7 +359,8 @@ long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout) {
         int64_t ts[2];
         int r = copy_from_user(ts, timeout, sizeof(ts));
         if (r) return r;
-        timeout_ms = (int)(ts[0] * 1000 + ts[1] / 1000000);
+        if (ts[0] < 0 || ts[1] < 0 || ts[1] >= NSEC_PER_SEC) return -EINVAL;
+        timeout_ms = (int)(ts[0] * MSEC_PER_SEC + ts[1] / NSEC_PER_MSEC);
     }
     return do_epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout_ms);
 }

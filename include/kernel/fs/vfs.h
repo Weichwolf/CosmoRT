@@ -42,8 +42,10 @@
 #define S_IXUSR  0100
 #define S_IRGRP  0040
 #define S_IWGRP  0020
+#define S_IXGRP  0010
 #define S_IROTH  0004
 #define S_IWOTH  0002
+#define S_IXOTH  0001
 
 /* ── VFS inode — unified across all filesystems ─── */
 

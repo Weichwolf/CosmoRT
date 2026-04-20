@@ -198,14 +198,38 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
 
 /* ── SYS_fallocate (285) ────────────────────────── */
 
+#define FALLOC_FL_KEEP_SIZE      0x01
+#define FALLOC_FL_PUNCH_HOLE     0x02
+#define FALLOC_FL_NO_HIDE_STALE  0x04
+#define FALLOC_FL_COLLAPSE_RANGE 0x08
+#define FALLOC_FL_ZERO_RANGE     0x10
+#define FALLOC_FL_INSERT_RANGE   0x20
+#define FALLOC_FL_UNSHARE_RANGE  0x40
+
+#define FALLOC_FL_ALL (FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE |      \
+                       FALLOC_FL_NO_HIDE_STALE | FALLOC_FL_COLLAPSE_RANGE | \
+                       FALLOC_FL_ZERO_RANGE | FALLOC_FL_INSERT_RANGE |    \
+                       FALLOC_FL_UNSHARE_RANGE)
+
 long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
-    if (mode != 0) return -EOPNOTSUPP;
+    if (mode & ~FALLOC_FL_ALL) return -EOPNOTSUPP;
     if (offset < 0 || len <= 0) return -EINVAL;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    if ((fde->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+    if (fde->type == FD_PIPE) return -ESPIPE;
+    if (fde->type != FD_FILE) return -ENODEV;
+    if (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_COLLAPSE_RANGE |
+                FALLOC_FL_ZERO_RANGE | FALLOC_FL_INSERT_RANGE |
+                FALLOC_FL_UNSHARE_RANGE))
+        return -EOPNOTSUPP;
     int64_t end = offset + len;
-    /* Only extend, never shrink — check current size via fstat */
     struct k_stat st;
     int rc = vfs_fstat(fd, &st);
     if (rc < 0) return rc;
+    if (mode & FALLOC_FL_KEEP_SIZE) return 0;
     if (end <= st.st_size) return 0;
     return vfs_ftruncate(fd, end);
 }
@@ -298,8 +322,12 @@ found:
         if (vfs_err && vfs_err != -ENOENT) return vfs_err;
         return -ENOENT;
     }
-    /* F_OK: existence only — already confirmed.
-     * R_OK/W_OK/X_OK: single-user system, all permissions granted if file exists. */
+    if (mode & X_OK) {
+        struct k_stat st;
+        if (vfs_stat(kpath, &st) == 0) {
+            if ((st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) return -EACCES;
+        }
+    }
     return 0;
 }
 

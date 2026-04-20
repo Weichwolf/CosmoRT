@@ -57,10 +57,8 @@ void hrtimer_run_expired(void);
  * Called after insert/cancel and from idle. */
 void hrtimer_reprogram(void);
 
-/* Convenience: nanoseconds from milliseconds */
-#define NSEC_PER_MSEC  1000000ULL
-#define NSEC_PER_SEC   1000000000ULL
+#include "linux/time.h"
 
-static inline uint64_t ms_to_ns(uint64_t ms) { return ms * NSEC_PER_MSEC; }
+static inline uint64_t ms_to_ns(uint64_t ms) { return (uint64_t)ms * (uint64_t)NSEC_PER_MSEC; }
 
 #endif

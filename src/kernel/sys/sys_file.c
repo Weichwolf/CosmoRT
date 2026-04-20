@@ -95,6 +95,7 @@ long do_write(int fd, const void *buf, size_t count) {
     if (__builtin_expect(!p, 0)) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
+    if (__builtin_expect((fde->flags & O_ACCMODE) == O_RDONLY, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL || devid == DEV_ZERO || devid == DEV_URANDOM)
@@ -223,6 +224,7 @@ long do_read(int fd, void *buf, size_t count) {
     if (__builtin_expect(!p, 0)) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
+    if (__builtin_expect((fde->flags & O_ACCMODE) == O_WRONLY, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL)    return 0; /* EOF */

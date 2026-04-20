@@ -66,6 +66,8 @@ long eventfd_read(void *obj, void *buf, long count) {
     return (long)sizeof(val);
 }
 
+#define EVENTFD_MAX_VAL 0xFFFFFFFFFFFFFFFEULL
+
 long eventfd_write(void *obj, const void *buf, long count) {
     if (count < 8) return -EINVAL;
     eventfd_t *efd = (eventfd_t *)obj;
@@ -73,10 +75,11 @@ long eventfd_write(void *obj, const void *buf, long count) {
 
     uint64_t val;
     copy_from_user(&val, buf, sizeof(val)); /* buf validated by do_write caller */
+    if (val == (uint64_t)-1) return -EINVAL;
 
     uint64_t irqf;
     spin_lock_irq(&efd->lock, &irqf);
-    if (efd->counter > 0xFFFFFFFFFFFFFFFEULL - val) {
+    if (efd->counter > EVENTFD_MAX_VAL - val) {
         spin_unlock_irq(&efd->lock, irqf);
         return -EAGAIN;
     }

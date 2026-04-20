@@ -519,6 +519,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != SOCK_CREATED) return -EINVAL;
+    if (s->local_port != 0) return -EINVAL;
 
     struct k_sockaddr_in k_addr;
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }

@@ -190,6 +190,7 @@ long kernel_clone(unsigned long flags, void *child_stack,
     if (flags & CLONE_NS_FLAGS) return -EINVAL;
     if ((flags & CLONE_THREAD) && !(flags & CLONE_SIGHAND)) return -EINVAL;
     if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM)) return -EINVAL;
+    if ((flags & CLONE_VM) && !child_stack) return -EINVAL;
 
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
