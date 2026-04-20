@@ -600,7 +600,7 @@ shebang_retry:;
      * blocked readers/writers get woken (e.g., posix_spawn error-check pipe). */
     {
         extern void vfs_file_free_obj(void *obj);
-        extern void fd_cleanup_entry(int fde_type, void *fde_obj);
+        extern void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags);
         for (int i = 0; i < FD_MAX; i++) {
             if (p->fds.entries[i].type != FD_NONE &&
                 (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
@@ -608,7 +608,8 @@ shebang_retry:;
                 if (ftype == FD_FILE) {
                     vfs_file_free_obj(p->fds.entries[i].obj);
                 } else if (ftype != FD_SERIAL) {
-                    fd_cleanup_entry(ftype, p->fds.entries[i].obj);
+                    fd_cleanup_entry(ftype, p->fds.entries[i].obj,
+                                     p->fds.entries[i].flags);
                 }
                 fd_close(&p->fds, i);
             }

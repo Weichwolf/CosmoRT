@@ -58,7 +58,8 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
             extern void vfs_file_free_obj(void *obj);
             vfs_file_free_obj(p->fds.entries[i].obj);
         } else if (ftype != FD_NONE && ftype != FD_SERIAL) {
-            fd_cleanup_entry(ftype, p->fds.entries[i].obj);
+            fd_cleanup_entry(ftype, p->fds.entries[i].obj,
+                             p->fds.entries[i].flags);
         }
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;

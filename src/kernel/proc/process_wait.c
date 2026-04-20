@@ -18,7 +18,8 @@ void proc_cleanup(process_t *p) {
         if (type == FD_FILE) {
             vfs_file_free_obj(p->fds.entries[i].obj);
         } else if (type != FD_NONE && type != FD_SERIAL) {
-            fd_cleanup_entry(type, p->fds.entries[i].obj);
+            fd_cleanup_entry(type, p->fds.entries[i].obj,
+                             p->fds.entries[i].flags);
         }
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;

@@ -36,9 +36,10 @@ int vfs_mount(const char *path, struct super_ops *s_ops,
     m->f_ops   = f_ops;
     m->fs_data = fs_data;
 
-    /* Insert sorted by pathlen descending (longest prefix first) */
+    /* Insert sorted by pathlen descending, newer mount shadows older at same
+     * pathlen (do_mount over existing mount point — Linux mnt_hash-Verhalten). */
     struct mount **pp = &mount_head;
-    while (*pp && (*pp)->pathlen >= len)
+    while (*pp && (*pp)->pathlen > len)
         pp = &(*pp)->next;
     m->next = *pp;
     *pp = m;

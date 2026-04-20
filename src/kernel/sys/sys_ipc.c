@@ -272,7 +272,7 @@ long pipe_close(fd_entry_t *fde) {
 
 /* ── fd_cleanup_entry — process-exit cleanup for non-file FDs ── */
 
-void fd_cleanup_entry(int fde_type, void *fde_obj) {
+void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags) {
     if (!fde_obj) return;
     if (fde_type == FD_SOCKET) {
         socket_t *s = (socket_t *)fde_obj;
@@ -295,7 +295,7 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
             sock_free(s);
         }
     } else if (fde_type == FD_PIPE) {
-        fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
+        fd_entry_t tmp = { FD_PIPE, fde_obj, fde_flags };
         pipe_close(&tmp);
     } else if (fde_type == FD_EPOLL) {
         epoll_destroy(fde_obj);

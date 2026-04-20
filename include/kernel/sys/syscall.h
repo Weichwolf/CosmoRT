@@ -11,8 +11,8 @@
 
 /* Clean up a single FD entry (socket, pipe, etc.) during process exit.
  * Does NOT free FD_FILE — caller handles that via vfs.
- * fde_type: FD type, fde_obj: kernel object pointer. */
-void fd_cleanup_entry(int fde_type, void *fde_obj);
+ * fde_flags needed to distinguish read/write end for FD_PIPE. */
+void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags);
 
 /* Increment refcount on a non-file FD object (for fork/dup).
  * fde_flags needed to distinguish read/write end for FD_PIPE. */

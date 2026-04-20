@@ -120,7 +120,7 @@ cp tools/ltp_required.txt "$ALPINE_ROOT/opt/ltp_required.txt" 2>/dev/null || tru
 # ── Step 2: Create ext4 image ────────────────────────
 echo "mkalpine: creating ext4 ($FS_MB MB) from $ALPINE_ROOT"
 dd if=/dev/zero of="$EXT4_TMP" bs=1M count="$FS_MB" 2>/dev/null
-mkfs.ext4 -q -I 256 -N 65536 -d "$ALPINE_ROOT" "$EXT4_TMP"
+mkfs.ext4 -q -I 256 -N 65536 -O ^extent,^metadata_csum,^huge_file,^64bit -d "$ALPINE_ROOT" "$EXT4_TMP"
 
 # Inject resolv.conf for QEMU SLIRP
 if command -v debugfs >/dev/null 2>&1; then

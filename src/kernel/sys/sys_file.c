@@ -508,7 +508,7 @@ long do_dup3(int oldfd, int newfd, int flags) {
             vfs_close(newfd);
         } else if (cur->type == FD_PIPE) pipe_close(cur);
         else {
-            fd_cleanup_entry(cur->type, cur->obj);
+            fd_cleanup_entry(cur->type, cur->obj, cur->flags);
             fd_close(&p->fds, newfd);
         }
         p->fds.entries[newfd].type = FD_NONE;
