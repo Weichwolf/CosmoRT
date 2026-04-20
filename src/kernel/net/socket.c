@@ -639,10 +639,8 @@ long do_listen(int fd, int backlog) {
     if (s->state != SOCK_CREATED) return -EINVAL;
     if (s->local_port == 0) return -EDESTADDRREQ;
 
-    (void)backlog; /* accept queue is fixed at ACCEPT_QUEUE_MAX */
+    (void)backlog; /* backlog honored in tcp_input (SYN queue); no per-socket queue here */
     s->state = SOCK_LISTENING;
-    s->accept_head = 0;
-    s->accept_count = 0;
     return 0;
 }
 
@@ -662,55 +660,6 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     if (!ls) return -EBADF;
     if (ls->is_dgram) return -EOPNOTSUPP;
     if (ls->state != SOCK_LISTENING) return -EINVAL;
-
-    /* Check accept queue first (pre-queued connections) */
-    uint64_t flags;
-    spin_lock_irq(&sock_lock, &flags);
-    if (ls->accept_count > 0) {
-        accept_conn_t ac;
-        kmemcpy(&ac, &ls->accept_q[ls->accept_head], sizeof(accept_conn_t));
-        ls->accept_head = (ls->accept_head + 1) % ACCEPT_QUEUE_MAX;
-        ls->accept_count--;
-        uint32_t ls_local_ip = ls->local_ip;
-        uint16_t ls_local_port = ls->local_port;
-        spin_unlock_irq(&sock_lock, flags);
-
-        socket_t *ns = sock_alloc();
-        if (!ns) return -EMFILE;
-
-        kmemcpy(&ns->tcp, &ac.tcp, sizeof(net_tcp_t));
-        ns->state = SOCK_CONNECTED;
-        ns->refcount = 1;
-        ns->local_ip = ls_local_ip;
-        ns->local_port = ls_local_port;
-        ns->remote_ip = ac.remote_ip;
-        ns->remote_port = ac.remote_port;
-
-        p = proc_current();
-        if (!p) { sock_free(ns); return -EFAULT; }
-        int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
-        if (newfd < 0) { sock_free(ns); return -EMFILE; }
-
-        if (addr && addrlen) {
-            struct k_sockaddr_in sa;
-            for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
-            sa.sin_family = 2;
-            sa.sin_port = ac.remote_port;
-            sa.sin_addr = ac.remote_ip;
-            copy_to_user(addr, &sa, sizeof(sa));
-            int len = (int)sizeof(struct k_sockaddr_in);
-            copy_to_user(addrlen, &len, sizeof(int));
-        }
-        if (acc_flags) {
-            fd_entry_t *nfde = fd_get(&p->fds, newfd);
-            if (nfde) {
-                if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
-                if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
-            }
-        }
-        return newfd;
-    }
-    spin_unlock_irq(&sock_lock, flags);
 
     /* Non-blocking: return EAGAIN immediately if no pending connection */
     int nonblock = 0;

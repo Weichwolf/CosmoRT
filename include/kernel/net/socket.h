@@ -12,9 +12,6 @@
 #define SOCK_LISTENING 3
 #define SOCK_SHUTDOWN  4
 
-/* Accept queue capacity */
-#define ACCEPT_QUEUE_MAX 8
-
 /* Socket option flags (bitfield) */
 #define SOCKF_REUSEADDR  (1 << 0)
 #define SOCKF_KEEPALIVE  (1 << 1)
@@ -22,14 +19,6 @@
 #define SOCKF_CONNECTING (1 << 3) /* non-blocking connect in progress */
 
 typedef struct socket socket_t;
-
-/* Pending connection in accept queue */
-typedef struct {
-    net_tcp_t tcp;
-    uint32_t  remote_ip;   /* big-endian */
-    uint16_t  remote_port; /* big-endian */
-    uint16_t  _pad;
-} accept_conn_t;
 
 struct socket {
     net_tcp_t tcp;
@@ -55,10 +44,8 @@ struct socket {
     /* socket options */
     uint32_t  sockflags;
 
-    /* accept queue (only for listening sockets) */
-    accept_conn_t accept_q[ACCEPT_QUEUE_MAX];
-    int           accept_head;
-    int           accept_count;
+    /* Actual accept path runs through net_tcp_accept (tcp.c); no in-socket
+     * queue needed. listen()-backlog is tracked there. */
 
     /* Recv deadline across syscall restarts (0 = not set) */
     uint64_t     recv_deadline;
