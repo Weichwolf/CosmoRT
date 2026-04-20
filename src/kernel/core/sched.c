@@ -48,10 +48,20 @@ void sched_add(thread_t *t) {
     if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
 
     t->state = THREAD_RUNNABLE;
-    t->rq_next = 0;
 
     uint64_t flags;
     spin_lock_irq(&rq_lock, &flags);
+
+    /* Idempotency: if t is already in this rq (rq_next set, or t is the
+     * tail), skip enqueue. SIGSTOP+SIGCONT on a still-runnable thread or
+     * any double-wake would otherwise produce a self-loop (tail->rq_next = t
+     * with tail == t) and corrupt the run queue. */
+    if (rq[prio].tail == t || t->rq_next) {
+        spin_unlock_irq(&rq_lock, flags);
+        return;
+    }
+
+    t->rq_next = 0;
 
     if (rq[prio].tail) {
         rq[prio].tail->rq_next = t;
@@ -131,7 +141,9 @@ void schedule(void) {
             break;
         }
         if (next->state == THREAD_DEAD || next->state == THREAD_FREE ||
-            !next->proc || !next->proc->pml4) {
+            next->state == THREAD_STOPPED ||
+            !next->proc || !next->proc->pml4 ||
+            next->proc->state != PROC_ALIVE) {
             if (next->state == THREAD_DEAD && !next->proc)
                 thread_free(next);
             continue;

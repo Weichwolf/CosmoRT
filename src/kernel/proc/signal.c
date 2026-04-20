@@ -253,22 +253,26 @@ long kill_one(process_t *target, int sig) {
             /* Clear any pending stop signals */
             target->sig_pending &= ~(SIG_BIT(SIGSTOP) | SIG_BIT(SIGTSTP) |
                                       SIG_BIT(SIGTTIN) | SIG_BIT(SIGTTOU));
-            /* Resume stopped threads directly */
+            /* Resume stopped threads. Set was_continued BEFORE sched_add so a
+             * concurrent wait4(WCONTINUED) on a fast-scheduled child sees the
+             * flag even if the child reaches PROC_ZOMBIE between sched_add
+             * and the flag-update. */
             {
                 extern void sched_add(thread_t *t);
                 thread_t *t = target->threads;
                 int resumed = 0;
-                while (t) {
-                    if (t->state == THREAD_STOPPED) {
-                        t->state = THREAD_RUNNABLE;
-                        sched_add(t);
-                        resumed = 1;
-                    }
-                    t = t->proc_next;
+                for (t = target->threads; t; t = t->proc_next) {
+                    if (t->state == THREAD_STOPPED) { resumed = 1; break; }
                 }
                 if (resumed) {
                     target->stop_signal = 0;
                     target->was_continued = 1;
+                }
+                for (t = target->threads; t; t = t->proc_next) {
+                    if (t->state == THREAD_STOPPED) {
+                        t->state = THREAD_RUNNABLE;
+                        sched_add(t);
+                    }
                 }
                 /* Notify parent */
                 if (resumed && target->parent_pid) {
@@ -317,10 +321,10 @@ long kill_one(process_t *target, int sig) {
             while (t) {
                 int old = t->state;
                 if (old == THREAD_BLOCKED) {
-                    /* Wake first so scheduler can dequeue, then mark dead */
-                    sched_wake(t);  /* BLOCKED → RUNNABLE + enqueued */
+                    sched_wake(t);
                     t->state = THREAD_DEAD;
-                } else if (old == THREAD_RUNNING || old == THREAD_STOPPED) {
+                } else if (old == THREAD_RUNNING || old == THREAD_STOPPED ||
+                           old == THREAD_RUNNABLE) {
                     t->state = THREAD_DEAD;
                 }
                 t = t->proc_next;
