@@ -11,12 +11,15 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 0 | Build-Infrastruktur (Header-Deps) | **✓ done** (Commit `5d17930`, 2335/79 → 2341/78) | — | — | — |
 | 1 | Syscall-Validierung (Klasse D) | **✓ done** (2334/79 → 2349/65) | — | — | — |
 | 2 | VFS-Metadaten (Klasse B) | **✓ done** (2354/65 → 2361/58, Commit `560157d`) | — | — | — |
+| **0.5** | **Test-Runner-Watchdog (vorziehen)** | Test-Count-Varianz (±5) → 0 | 1 Tag | niedrig | 6.5-Diagnose |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
-| 6 | Race/Signal-Pfad (Klasse E) | ~10 | 4 Tage | **hoch** | — |
+| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Readiness-Wakeup** | ~10 + 4 Netz | 4+3 Tage | **hoch** | — |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
 | 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
+
+**Phase 0.5** nach Netz-Instabilitäts-Audit eingefügt (Diagnose-Run nach Phase 2): Test-Count schwankt 2349..2361 über 5 Runs. Wurzel zweigeteilt — Runner-`alarm(5)` im Child kollidiert mit Kernel-Busy-Waits (ARP/DHCP bis 3s), und `poll()` hat keinen Readiness-Wakeup aus dem Netz-Stack (→ Phase 6.5).
 
 ---
 
@@ -99,6 +102,31 @@ Commit `560157d`. Test-Stand 2354/65 → 2361/58. POSIX-Inode-Felder (uid/gid/mo
 - [x] `fill_stat`: Single Source of Truth; Symlink-Size bei symlink-Create gesetzt, redundante Branches entfernt
 - [x] Hard-Link (`link`, `linkat`): `i_nlink++` in tmpfs (ext4: `ip.i_links_count++` war bereits da)
 - [x] `atime`/`mtime` 64-bit: `inode->atime/mtime` ist `uint64_t`, direkter Pass-Through nach `st_atime_sec` (`int64_t`). Test `fs/utime-64bit` mit `tv_sec = 1LL<<32` grün.
+
+---
+
+## Phase 0.5 — Test-Runner-Watchdog (vorziehen, blockiert 6.5-Diagnose)
+
+`make test-hw` 5× sequentiell gelaufen (Netz-Audit nach Phase 2):
+
+| Test | PASS-Quote |
+|------|-----------|
+| `net/nonblock-connect` | 2/5 |
+| `net/nonblock-read` | 2/5 |
+| `net/nonblock-write` | 0/5 (stabil rot) |
+| `ltp/accept02-loopback` | 4/5 |
+
+Runner setzt `alarm(5)` im Child (`test/main.c:54`). Kernel-Busy-Waits in `net_arp_resolve` (bis 3s, `arp.c:209`) + `dhcp.c:39` (3s Retry). Summiert mit slirp-NAT-Delay → SIGALRM-Race **vor** echter Kernel-Fehlschlag sichtbar wird.
+
+Ohne diesen Fix sind 6.5-Kandidaten als "Flake" getarnt. Mit Fix wird der echte Bug deterministisch rot.
+
+- [ ] Parent-seitiger `fork`+`waitpid`-Watchdog mit `SIGKILL` on timeout
+- [ ] `alarm()` im Child entfernen
+- [ ] Timeout pro Kategorie konfigurierbar (unit=2s, net=10s, fork=5s)
+- [ ] Löst die 4 alarm-Tests (ehemalige Klasse M)
+- [ ] Test-Count-Varianz muss auf 0 fallen (5× Run-Delta = 0)
+
+**Nicht** in Phase 8.2 — zu früh nötig für die Netz-Diagnose.
 
 ---
 
@@ -228,6 +256,7 @@ Commit `7b85a5f` hat Loopback begonnen, Tests failen weiterhin. Audit benötigt.
 - [ ] `connect` lokaler listener: TCP-Statemachine durch Loopback
 - [ ] `connect` auf unbekannten Port → `-ECONNREFUSED` (Linux-konform)
 - [ ] `connect` auf bereits verbundenen Socket → `-EISCONN`
+- [ ] **Accept-Deadline entfernen** (`do_accept` aktuell 1s-Timeout, `NET_TCP_TIMEOUT_MS` — Linux hat keins); blocking accept nutzt Socket-Wait-Queue aus Phase 6.5
 - [ ] Tests: `net/accept-loopback`, `ltp/accept02-loopback`, `ltp/connect*`, `net/tcp_hash_multi`
 
 ---
@@ -259,6 +288,24 @@ Commit `7b85a5f` hat Loopback begonnen, Tests failen weiterhin. Audit benötigt.
 - [ ] Stack-Guard-Page (1 Page unterhalb jedes user-Stacks, `PROT_NONE`)
 - [ ] Test `stack_clash` darf SIGSEGV auslösen
 - [ ] `meltdown`-Test: Kernel-Memory-Read aus userspace → SIGSEGV
+
+### 6.5 Socket-Readiness-Wakeup
+
+**Wurzel (Netz-Audit, Stand `3d26a2e`):** `tcp_input` (`net/tcp.c:747`) postet Events nur an `c->wait_thread` — dieser Slot wird aber nur von blocking `do_connect`/`do_recv` gesetzt. Für `O_NONBLOCK + poll(POLLOUT|POLLIN)` weiß der Input-Pfad nichts vom Poller → `do_poll` (`sys_event.c:97`) schläft bis zur Deadline, während SYN-ACK/Daten längst da sind.
+
+Zweite Wurzel: `net_arp_resolve` busy-waits 3s ohne Signal-Check (`arp.c:190`). Linux: Paket queuen, async auflösen.
+
+Betroffene Tests: `net/nonblock-connect`, `-read`, `-write` (stabil rot), `ltp/accept02-loopback`. Alle vier zusammen durch 6.5 lösbar, da gemeinsame Infrastruktur.
+
+Linux-Vorbild: `struct sock.sk_wq` + `sock_def_readable`/`sock_def_write_space` + `poll_wait()` im `file_operations.poll`-Hook + `wait_event_interruptible_timeout`.
+
+- [ ] Per-Socket Wait-Queue (`sk_wq`-Äquivalent), Multi-Waiter-Liste, statt Single-Slot `wait_thread`
+- [ ] `tcp_input`/`udp_input`/Loopback-RX wecken **alle** registrierten Poller (`sock_wake_all`)
+- [ ] `do_poll` registriert sich via `sock_poll_wait_register(sk, t)` **vor** Readiness-Check, deregistriert vor Return
+- [ ] Accept-Pfad nutzt dieselbe Queue (ersetzt `q_tcp_wait_thread` globalen Slot in `net.c:55`)
+- [ ] `net_arp_resolve` non-blocking: bei Miss Paket in Queue + TTL, `-EAGAIN` zurück
+- [ ] TX-Pfad identisch: Completion weckt wartende Writer statt Busy-Wait
+- [ ] Test-Varianz-Check: 5× `make test-hw` muss identische PASS/FAIL-Liste produzieren
 
 ---
 
@@ -378,10 +425,9 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [ ] ALSA-ABI oder eigene minimal-API (`notes/AUDIO.md` entscheiden)
 - [ ] RT-Scheduling-Pfad bis Audio-Thread bounded
 
-### 8.2 Test-Runner-Robustheit
+### 8.2 Test-Runner-Robustheit → siehe Phase 0.5
 
-- [ ] Timeout parent-seitig (fork-watchdog), **nicht** `alarm()` im child
-- [ ] Löst 4 alarm-Tests (ehemalige Klasse M), kein Kernel-Bug
+Nach dem Netz-Audit vorgezogen. Inhalt in Phase 0.5 dokumentiert.
 
 ### 8.3 procfs-Vervollständigung
 
