@@ -495,12 +495,26 @@ long do_mmap(unsigned long addr, size_t length, int prot,
 
     /* Validate file-backed mmap parameters */
     int is_file = (fd >= 0 && !(flags & MAP_ANONYMOUS));
+    int is_procfs = 0;
     struct vfs_file *vf = 0;
+    procfs_fd_t *pf = 0;
     if (is_file) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
-        if (!fde || fde->type != FD_FILE) return -EBADF;
-        vf = (struct vfs_file *)fde->obj;
-        if (!vf) return -EBADF;
+        if (!fde) return -EBADF;
+        if (fde->type == FD_FILE) {
+            vf = (struct vfs_file *)fde->obj;
+            if (!vf) return -EBADF;
+        } else if (fde->type == FD_PROCFS) {
+            /* procfs: only PROT_READ + MAP_PRIVATE supported (Linux semantics:
+             * procfs content is synthesized, no backing store for MAP_SHARED). */
+            if (prot & (PROT_WRITE | PROT_EXEC)) return -EACCES;
+            if (flags & MAP_SHARED) return -ENODEV;
+            pf = (procfs_fd_t *)fde->obj;
+            if (!pf) return -EBADF;
+            is_procfs = 1;
+        } else {
+            return -EBADF;
+        }
         if (offset < 0) return -EINVAL;
     }
 
@@ -616,13 +630,34 @@ long do_mmap(unsigned long addr, size_t length, int prot,
 
     /* File-backed mmap: lazy — just store file metadata in VMA.
      * Pages are loaded on demand by the page fault handler. */
-    if (is_file) {
+    if (is_file && !is_procfs) {
         uint64_t ino = vf->disk_ino;
         if (!ino && vf->inode) ino = vf->inode->ino;
         v->file_ino = ino;
         v->file_offset = (uint64_t)offset;
         v->file_backend = vf->backend;
         spin_unlock_irq(&p->lock, irqf);
+        return (long)vaddr;
+    }
+
+    /* procfs mmap: synthesize content into physical pages, map eager.
+     * Read callbacks write directly into the kernel-mapped page via
+     * phys_to_virt; user-side PTEs are installed with the requested prot. */
+    if (is_procfs) {
+        v->flags |= MAP_ANONYMOUS;
+        spin_unlock_irq(&p->lock, irqf);
+        for (uint64_t va = vaddr; va < vaddr + length; va += 4096) {
+            uint64_t *page = alloc_page();
+            if (!page) return -ENOMEM;
+            for (int i = 0; i < 512; i++) page[i] = 0;
+            int off = (int)(va - vaddr) + (int)offset;
+            int got = (pf->handle == -2)
+                ? procfs_pid_read(pf->name, (char *)page, 4096, off)
+                : procfs_read(pf->handle, (char *)page, 4096, off);
+            (void)got;
+            if (map_user_page(p->pml4, va, virt_to_phys(page), prot) < 0)
+                return -ENOMEM;
+        }
         return (long)vaddr;
     }
 
