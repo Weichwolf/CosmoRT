@@ -396,18 +396,39 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [ ] `EXECVE_MAX_*` → 128KB-Buffer ist Linux-kompatibel (`ARG_MAX`), keine Aktion noetig.
 - [ ] `EQ_LOCK_MAX=512` → struktureller Umbau, per-thread Lock.
 - [ ] `_Static_assert` auf kritische Slab-Struct-Groessen.
+- [ ] `EXT4_OPEN_MAX=256` (`fs/vfs.c:283`) → lineare Suche unter Lock. Hash-Table oder in `struct ext4_inode`-Cache integrieren. Aus 7.4-Audit abgeleitet.
 
 **RLIMIT-Infrastruktur:**
 
 - [x] `prlimit64` implementiert fuer `RLIMIT_NOFILE`, `RLIMIT_STACK`, `RLIMIT_DATA`, `RLIMIT_AS`. Enforcement fuer `RLIMIT_NOFILE` in `fd_alloc`.
 - [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
 
-### 7.4 Lock-Granularität
+### 7.4 Lock-Granularität — audit-only, deferred bis SMP-N
 
-- [ ] Per-CPU Page Freelists (`mm/page_alloc.c`): `buddy_lock` → per-CPU + Steal
-- [ ] Per-Inode `rw_semaphore` (`fs/vfs.c`): `fs_lock` aufbrechen
-- [ ] Per-Block atomare Flags (`fs/bcache.c`): globales Lock eliminieren
-- [ ] Per-CPU Slab-Freelist (`mm/slab.c`): Magazine-Pattern
+`SMP_MAX_CORES=1` hart verdrahtet (`include/kernel/config.h:33`). Alle vier Locks sind
+im aktuellen Single-Core-Kontext **unkritisch** (keine Contention möglich). Migration
+ohne SMP-N ist reiner Mock: per-CPU-Strukturen degenerieren zum globalen State, Split-
+Varianten (z.B. per-order buddy_lock) führen Deadlock-Potential ein ohne messbaren
+Gewinn. Follow-up nach Phase 9 (aarch64-Port) sobald SMP-N aktiviert wird.
+
+**Audit (Reihenfolge nach Kosten bei SMP-N-Aktivierung):**
+
+| Lock | Datei | Callsites | Op-Dauer | Linux-Referenz | Migration-Aufwand |
+|------|-------|-----------|----------|----------------|-------------------|
+| `buddy_lock` | `mm/page_alloc.c:27` | 8 (alloc/free/huge) | O(Order-Listen-Op) + Bitmap-Scan | `mm/page_alloc.c`: PCP (per-CPU pageset) für Order-0 hot/cold; `zone->lock` für Buddy-Merge | ~200 LOC: `struct per_cpu_pages`, refill/drain von Order-0-Batches, Fallback auf globalen Lock für Order≥1 und Merge |
+| `fs_lock` | `fs/ext4.c:27` | 7 (block/inode alloc/free) | O(Group-Count × Bitmap-Byte-Scan) | `struct inode.i_rwsem` + `block_group.bg_lock` | ~300 LOC: per-Block-Group-Lock für Bitmap-Scans, per-Inode rwsem für read/write. Erfordert ext4-Inode-Cache-Refactor. |
+| `cache_lock` | `fs/bcache.c:23` | 4 (get/put/sync/write) | O(Hash-Chain + LRU-Move) | `struct buffer_head.b_state` (atomic bits) + Hash-Bucket-Locks | ~200 LOC: pro-Hash-Bucket-Lock, atomic `BH_Lock` für I/O-Flag, separate LRU-Lock. Racy-LRU-Mutation vermeiden. |
+| `s->lock` (slab) | `mm/slab.c`:`slab_t` | pro Slab-Instanz | O(1) Free-List-Op | `struct kmem_cache_cpu` Magazine (Solaris-Pattern) | ~150 LOC pro Slab: per-CPU Magazine mit lockfree Push/Pop, shared Depot-Lock nur bei Refill. |
+
+**Migration-Trigger:** Erst nach Phase 9 (aarch64-Port) und `SMP_MAX_CORES > 1`.
+Reihenfolge dann: slab magazine (lokal testbar) → buddy PCP (Hot-Path-Messbar) →
+bcache bucket-locks → fs_lock per-inode. Jeder Lock erhält in der Migration eigenen
+Commit mit Microbenchmark-Messung gegen SMP-1-Baseline.
+
+**Verifizierbarer Nebenbefund bei Audit:** `ext4_open_lock` (`fs/vfs.c:284`) ist
+nicht in dieser Liste, hat aber **lineare Suche** über `EXT4_OPEN_MAX=256`-Array
+unter Lock. Separat aufzulösen durch Hash-Table — wird zu Phase 7.3 Mittel-Hoch
+hinzugefügt, nicht zu 7.4.
 
 ### 7.5 RCU-Vollendung ✓ done
 
