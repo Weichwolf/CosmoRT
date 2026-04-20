@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2427/0** (Phase 8.3 abgeschlossen, Varianz 0), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest **2427/0** (Phase 8.3 abgeschlossen, Varianz 0), musl 462/10, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -492,13 +492,17 @@ Commits `0a96060`..`f6b79d1`:
 
 ## Non-Kernel (nach Phase 1-6 abarbeiten)
 
-### musl libc-test (20 FAIL)
+### musl libc-test (10 FAIL)
 
-- [ ] `sem_open`: MAP_SHARED-Kohärenz
-- [ ] `pthread_robust`: Robust-Futex-Cleanup bei Thread-Exit
-- [ ] `malloc-brk-fail`: brk VMA-Overlap-Check
-- [ ] `fma`/`fmal`/`powf`/`remquol`: FPU-State Preservation (Kernel-Kontext-Switch)
-- [ ] `tls_get_new-dtv`: dlopen/TLS-Setup
+- [x] `sem_open`: war tmpfs-Mount-Dispatch mit falschem Pfad (Commits `e31ff40`, `d630392`)
+- [x] `pthread_robust`: war fd_cleanup_entry ohne flags → pipe wakeup kaputt (Commit `d630392`)
+- [ ] `malloc-brk-fail` (1): t_vmfill reicht nicht aus, 4GB RAM erschoepfen um OOM zu triggern
+- [ ] `fma`/`fmal`/`powf`/`remquol` (4): QEMU-softfloat Abweichung, kein Kernel-Fehler
+- [ ] `tls_get_new-dtv` (1): dlopen-Szenario, Segfault im musl dynamic-TLS-Alloc
+- [ ] `pthread_atfork-errno-clobber` (2): errno-Pfad im fork() mit mehreren Threads
+- [ ] `rlimit-open-files` (2): setrlimit(RLIMIT_NOFILE) + FD-Verhalten
+
+Zuerst von 26 auf 16 (Mount/Pipe/Kernel-Regression), dann auf 10 (tmpfs abspath).
 
 ### LTP (87 FAIL)
 
