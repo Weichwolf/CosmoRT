@@ -1,350 +1,373 @@
 # CosmoRT — TODO
 
-Stand: ktest 2090/182, musl 452/20, LTP 11/87
-
-## ktest Failures (193) — nach Root Cause
-
-### B. FD-Typ-Dispatch — 13 Failures
-
-sock_from_fd gibt NULL bei Non-Socket → EBADF statt ENOTSOCK.
-Fix: zweistufig — erst fd_lookup (EBADF), dann type-check (ENOTSOCK).
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 18 | accept file ENOTSOCK | -9 | -88 | Kein FD-Typ-Check |
-| 19 | accept dir ENOTSOCK | -9 | -88 | (gleich) |
-| 20 | accept pipe ENOTSOCK | -9 | -88 | (gleich) |
-| 21 | accept epoll ENOTSOCK | -9 | -88 | (gleich) |
-| 22 | accept eventfd ENOTSOCK | -9 | -88 | (gleich) |
-| 23 | accept timerfd ENOTSOCK | -9 | -88 | (gleich) |
-| 24 | accept inotify ENOTSOCK | -9 | -88 | (gleich) |
-| 25 | accept memfd ENOTSOCK | -9 | -88 | (gleich) |
-| 26 | accept ENOTSOCK (libc) | -9 | -88 | (gleich) |
-| 27 | bind file ENOTSOCK | -9 | -88 | (gleich) |
-| 28 | bind pipe ENOTSOCK | -9 | -88 | (gleich) |
-| 29 | connect file ENOTSOCK | -9 | -88 | (gleich) |
-| 30 | accept UDP EOPNOTSUPP | -22 | -95 | SOCK_DGRAM nicht EOPNOTSUPP |
-
-- [ ] sock_from_fd → fd_lookup + type==FD_SOCKET
-- [ ] accept auf SOCK_DGRAM → EOPNOTSUPP
-
-### C. Loopback-Netzwerk — 11 Failures (TIMEOUT)
-
-Kein Loopback-Device. Gateway-Check blockiert bei net_gw_ip==0.
-Loopback: Pakete an 127.0.0.0/8 direkt an net_rx. Vorbild: Linux `drivers/net/loopback.c`.
-
-| # | Test | Cause |
-|---|------|-------|
-| 31 | net/accept-loopback | Kein Loopback |
-| 32 | net/accept4-flags | (gleich) |
-| 33 | ltp/accept02-loopback | (gleich) |
-| 34 | ltp/accept4-noflags | (gleich) |
-| 35 | ltp/accept4-both | (gleich) |
-| 36 | ltp/accept4-nonblock | (gleich) |
-| 37 | ltp/accept4-cloexec | (gleich) |
-| 38 | ltp/connect01-econnrefused | (gleich) |
-| 39 | ltp/connect02 | (gleich) |
-| 40 | ltp/connect-eisconn | (gleich) |
-| 41 | net/tcp_hash_multi | (gleich) |
-
-- [ ] Loopback-Device implementieren
-- [ ] Gateway-Check fuer 127.0.0.0/8 ueberspringen
-
-### D. epoll Event-Delivery — 14 Failures
-
-fd_poll_readiness pollt einmalig, Datenquellen rufen epoll_wake_all nicht auf.
-Linux: jeder struct file hat poll-Callback, Datenquelle ruft wake_up bei Events.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 42 | epoll_wait EPOLLIN returns 1 | 0 | 1 | pipe→epoll Wakeup fehlt |
-| 43 | epoll_wait after ADD returns >=1 | 0 | >=1 | Initial readiness nicht geprueft |
-| 44 | ET first wait returns 1 | 0 | 1 | EPOLLET Wakeup fehlt |
-| 45 | oneshot first wait returns 1 | 0 | 1 | EPOLLONESHOT Delivery |
-| 46 | epoll_pwait data ready returns 1 | 0 | 1 | epoll_pwait Readiness |
-| 47 | epoll_pwait with sigmask returns 1 | 0 | 1 | (gleich) |
-| 48 | ltp/epoll_wait01-in | TIMEOUT | | pipe→epoll Wakeup |
-| 49 | ltp/epoll_wait07 | TIMEOUT | | EPOLLONESHOT |
-| 50 | ltp/epoll_ctl01 | TIMEOUT | | epoll_ctl mit pipe |
-| 51 | ltp/epoll_pwait01 | TIMEOUT | | epoll_pwait |
-| 52 | ltp/epoll_pwait02 | TIMEOUT | | (gleich) |
-| 53 | ltp/epoll_pwait05 | TIMEOUT | | (gleich) |
-| 54 | fd==epfd EINVAL | 0 | -22 | epfd als Target nicht abgelehnt |
-| 55 | epoll_wait on pipe EINVAL | -9 | -22 | Non-Epoll-FD nicht erkannt |
-
-- [ ] pipe_write/pipe_close → epoll_wake_all
-- [ ] socket accept/connect/recv → epoll_wake_all
-- [ ] epoll_ctl ADD: Initial readiness pruefen
-- [ ] epoll_ctl: fd==epfd → EINVAL
-- [ ] epoll_wait: Non-Epoll-FD → EINVAL statt EBADF
-
-### E. fadvise64 — Stub return 0 — 19 Failures
-
-do_fadvise64 ist `return 0`. Implementieren nach Linux `mm/fadvise.c`.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 56-61 | fadvise64 bad fd (6x) | 0 | -9 | Kein fd-Lookup |
-| 62-68 | fadvise64 invalid advice (7x) | 0 | -22 | Kein advice-Check |
-| 69-74 | fadvise64 pipe ESPIPE (6x) | 0 | -29 | Kein Typ-Check |
-
-- [ ] fadvise64: fd-Lookup, advice-Validierung, Pipe/Socket → ESPIPE
-
-### F. chmod/fchmod/creat Mode-Bits — 10 Failures
-
-Mode-Bits werden nicht korrekt gesetzt. creat ignoriert mode. suid/sgid bei chown nicht geloescht.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 75 | mode 0000 | 493 | 0 | chmod setzt vfs_node.mode nicht |
-| 76 | mode 0444 | 493 | 292 | (gleich) |
-| 77 | mode 0644 | 493 | 420 | (gleich) |
-| 78 | mode 0700 | 493 | 448 | (gleich) |
-| 79-80 | mode bits (2x) | 384/448 | 0 | fchmod setzt mode nicht |
-| 81-82 | suid/sgid cleared (2x) | 3072 | 0 | chown loescht suid/sgid nicht |
-| 83 | read on creat fd EBADF | 0 | -9 | creat-fd read auf O_WRONLY |
-| 84 | access X_OK EACCES | 0 | -13 | Execute-Bit nicht geprueft |
-
-- [ ] do_chmod/do_fchmod: vfs_node.mode = new_mode & 07777
-- [ ] do_chown: SUID/SGID Bits loeschen (Linux `fs/attr.c:notify_change`)
-- [ ] creat: mode-Argument durchreichen
-- [ ] read auf O_WRONLY fd → EBADF
-- [ ] access X_OK: i_mode & S_IXUSR/S_IXGRP/S_IXOTH pruefen
-
-### G. chown/fchown uid/gid — 14 Failures
-
-vfs_node hat keine uid/gid Felder. chown ist No-Op. Werte muessen gespeichert
-und in stat zurueckgegeben werden (auch wenn Single-User keine Permissions prueft).
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 85-86 | uid (2x) | 0 | 1000 | uid nicht gespeichert |
-| 87-88 | gid (2x) | 0 | 1000 | gid nicht gespeichert |
-| 89-92 | uid 700/702/nop/unchanged | 0 | 700-702 | (gleich) |
-| 93-96 | gid 701/704/nop/unchanged | 0 | 701-704 | (gleich) |
-| 97-98 | link uid/gid | 0 | 1000 | hard link erbt uid/gid |
+Stand: ktest 2335/79, musl 452/20, LTP 11/87. Branch: `ltp`.
 
-- [ ] uid/gid Felder in vfs_node
-- [ ] do_chown/do_fchown/do_fchownat: uid/gid setzen
-- [ ] do_stat/do_fstat: uid/gid zurueckgeben
+Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
-### H. acct — Stub return 0 — 4 Failures
-
-do_acct ist `return 0`. Muss Pfad validieren. Accounting selbst darf ENOSYS sein.
+## Phasen-Übersicht
 
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 99 | acct(".") EISDIR | 0 | -21 | Kein Pfad-Check |
-| 100 | acct ENOENT | 0 | -2 | (gleich) |
-| 101 | acct ENOTDIR | 0 | -20 | (gleich) |
-| 102 | acct EFAULT | 0 | -14 | Kein user_ok Check |
+| # | Phase | Fails adressiert | Aufwand | Risiko | Blocker für |
+|---|-------|------------------|---------|--------|-------------|
+| 0 | Build-Infrastruktur (Header-Deps) | indirekt | 0.5 Tag | — | alle folgenden |
+| 1 | Syscall-Validierung (Klasse D) | ~10 | 1 Tag | niedrig | — |
+| 2 | VFS-Metadaten (Klasse B) | ~25 | 3 Tage | niedrig | — |
+| 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
+| 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
+| 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
+| 6 | Race/Signal-Pfad (Klasse E) | ~10 | 4 Tage | **hoch** | — |
+| 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
+| 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
 
-- [ ] do_acct: EFAULT, Pfad-Lookup, EISDIR, ENOENT, ENOTDIR, dann -ENOSYS
+---
 
-### I. capget/capset — Stub return -1 — 10 Failures
+## Phase 0 — Build-Infrastruktur
 
-Nicht implementiert. Linux: Version-Header parsen, Capability-Sets lesen/schreiben.
-Single-User: alle Capabilities gesetzt. Vorbild: `kernel/capability.c`.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 103-106 | capget v1/v2/v3/before-set | -1 | 0 | Nicht implementiert |
-| 107 | capset same caps | -1 | 0 | (gleich) |
-| 108 | bad version EINVAL (2x) | -1 | -22 | (gleich) |
-| 109 | kernel sets v3 | 0 | 537396514 | (gleich) |
-| 110 | nonexistent pid ESRCH | -1 | -3 | (gleich) |
-| 111 | pid=-1 EINVAL | -1 | -22 | (gleich) |
-| 112 | NULL data EFAULT | -1 | -14 | (gleich) |
+**Begründung:** `Makefile` trackt keine Header-Dependencies. `_Static_assert(offsetof(thread_t, kstack_rsp) == 232)` in `sched.c` fängt den Context-Switch-Bug, aber wenn ein Header geändert wird und nur eine `.c` rekompiliert, greift der Assert nur dort. Stale-`.o`-Korruption ist heute möglich. Erklärt das Gefühl "Bugs kommen zurück".
 
-- [ ] capget/capset implementieren nach Linux kernel/capability.c
+- [ ] `Makefile`: `-MMD -MP` in allen `.o`-Rules
+- [ ] `build/deps/`-Layout für `.d`-Files
+- [ ] `-include $(wildcard build/deps/**/*.d)` am Makefile-Ende
+- [ ] Validierung: `thread_t`-Offset ändern, `make` muss alle abhängigen `.o` neu bauen
+- [ ] `make clean` auch `.d`-Files löschen
 
-### J. clone/clone3 Flag-Validierung — 8 Failures
+---
 
-Flag-Kombinationen nicht validiert. Linux `kernel/fork.c:copy_process` hat >20 Regeln.
+## Phase 1 — Syscall-Input-Validierung
 
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 113-114 | clone NULL stack EINVAL | 0/586 | -22 | CLONE_VM ohne Stack |
-| 115-116 | CLONE_SIGHAND w/o CLONE_VM | 0/567 | -22 | Flag-Abhaengigkeit |
-| 117 | CLONE_THREAD w/o CLONE_SIGHAND | 0 | -22 | (gleich) |
-| 118-119 | no stack but stack_size | 0/560 | -22 | clone3 Stack-Args |
-| 120 | short size EINVAL | 569 | -22 | clone3 size < min |
+Low-risk, mechanisch. Jede Box ≤ 10 Zeilen Code.
 
-- [ ] clone: Flag-Checks aus Linux kernel/fork.c:copy_process
-- [ ] clone3: size-Validierung, Stack-Args-Validierung
+### 1.1 Flag-/Argument-Checks
 
-### K. chroot — Stub return 0 — 4 Failures
+- [ ] `close_range`: unknown flags → `-EINVAL`
+- [ ] `dup3`: `flags & ~O_CLOEXEC` → `-EINVAL`, O_CLOEXEC anwenden
+- [ ] `fchmodat2`: unknown flags → `-EINVAL`
+- [ ] `fchownat`: unknown flags → `-EINVAL`
+- [ ] `fdatasync` auf pipe/socket → `-EINVAL`
+- [ ] `epoll_create`: `size <= 0` → `-EINVAL`
+- [ ] `epoll_create1`: unknown flags → `-EINVAL`
+- [ ] `epoll_ctl`: `fd == epfd` → `-EINVAL`
+- [ ] `epoll_wait` auf Non-Epoll-FD → `-EINVAL` statt `-EBADF`
+- [ ] `epoll_pwait2`: `tv_sec<0 | tv_nsec<0 | tv_nsec>=1e9` → `-EINVAL`
+- [ ] `clone`: `CLONE_VM` ohne user-stack → `-EINVAL`
+- [ ] `clone`: `CLONE_SIGHAND` ohne `CLONE_VM` → `-EINVAL`
+- [ ] `clone`: `CLONE_THREAD` ohne `CLONE_SIGHAND` → `-EINVAL`
+- [ ] `clone3`: `size < sizeof(clone_args_min)` → `-EINVAL`
+- [ ] `clock_settime`: `CLOCK_MONOTONIC/BOOTTIME` → `-EINVAL`
+- [ ] `clock_settime`: `clock_id` Range-Check
+- [ ] `clock_settime`/`clock_nanosleep`: `timespec` (`tv_sec<0`, `tv_nsec<0|>=1e9`) validieren
+- [ ] `clock_settime`: NULL `timespec` → `-EFAULT`
+- [ ] `adjtimex`: NULL `timex` → `-EFAULT`
+- [ ] `adjtimex`: `mode` Flag-Validierung
+- [ ] `adjtimex`: `tick` Range (900_000..1_100_000)
+- [ ] `bind` doppelt → `-EINVAL`
+- [ ] `chmod`/`chown` leerer Pfad → `-ENOENT`
+- [ ] `eventfd` write: `counter + val >= UINT64_MAX` → `-EAGAIN` (non-block) / blockieren
+- [ ] `fallocate`: `mode & ~(KEEP_SIZE|PUNCH_HOLE|...)` → `-EOPNOTSUPP`
+- [ ] `read` auf O_WRONLY-fd → `-EBADF`
+- [ ] `write` auf O_RDONLY-fd → `-EBADF`
 
-do_chroot ist `return 0`. Muss Pfad-Lookup + process.root setzen.
-Vorbild: `fs/open.c:ksys_chroot`.
+### 1.2 FD-Typ-Dispatch (`sock_from_fd`)
 
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 121 | chroot ENOENT | 0 | -2 | Nicht implementiert |
-| 122 | chroot ENOTDIR | 0 | -20 | (gleich) |
-| 123 | chroot ELOOP | 0 | -40 | (gleich) |
-| 124 | chroot ENAMETOOLONG | 0 | -36 | (gleich) |
+`sock_from_fd` liefert NULL bei Non-Socket → `-EBADF` statt `-ENOTSOCK`. Zweistufig: erst `fd_lookup` (`-EBADF`), dann `type == FD_SOCKET` (`-ENOTSOCK`).
 
-- [ ] do_chroot: Pfad-Lookup, Typ-Pruefung, process.root setzen
+- [ ] `sock_from_fd` umbauen
+- [ ] `accept` auf `SOCK_DGRAM` → `-EOPNOTSUPP` (nicht `-EINVAL`)
 
-### L. clock_settime/adjtimex Validierung — 16 Failures
+### 1.3 Permissions
 
-clock_settime akzeptiert alles. adjtimex prueft tick/mode/EFAULT nicht.
-Vorbild: `kernel/time/posix-timers.c`, `kernel/time/ntp.c`.
+- [ ] `access(X_OK)`: `i_mode & (S_IXUSR|S_IXGRP|S_IXOTH)` prüfen
 
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 125 | CLOCK_MONOTONIC EINVAL | 0 | -22 | Monotonic nicht ablehnbar |
-| 126 | CLOCK_BOOTTIME EINVAL | 0 | -22 | (gleich) |
-| 127-128 | invalid clock (4x) | 0 | -22 | clock_id nicht validiert |
-| 129-132 | tv_sec/nsec invalid (4x) | 0 | -22 | timespec nicht validiert |
-| 133 | negative tv_nsec | 0 | -22 | clock_nanosleep |
-| 134 | NULL timespec EFAULT | 0 | -14 | NULL nicht geprueft |
-| 135-136 | NULL timex EFAULT (2x) | 0 | -14 | (gleich) |
-| 137 | invalid mode EINVAL | 0 | -22 | adjtimex mode |
-| 138-139 | tick high/low (2x) | 0 | -22 | adjtimex tick range |
-| 140 | time advanced >= 9s | 0 | >=9 | clock_settime wirkt nicht |
+---
 
-- [ ] clock_settime: clock_id, timespec validieren, CLOCK_MONOTONIC/BOOTTIME → EINVAL
-- [ ] clock_settime: Zeit tatsaechlich aendern
-- [ ] adjtimex: EFAULT, mode, tick-range validieren
+## Phase 2 — VFS-Metadaten
 
-### M. alarm Runner-Interference — 4 Failures
+`vfs_node` hat keine vollständigen POSIX-Inode-Felder. Eine Wurzel, ~25 Tests.
 
-Test-Runner setzt alarm(5) im Child. Alarm-Tests sehen Restwert.
-Kein Kernel-Bug — Runner-Timeout muss parent-seitig werden.
+### 2.1 `vfs_node`-Erweiterung
 
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 141 | alarm(1) old=0 | 5 | 0 | Runner-alarm im Child |
-| 142-144 | alarm returns 0 (3x) | 5 | 0 | (gleich) |
+- [ ] Felder: `uid_t i_uid`, `gid_t i_gid`, `mode_t i_mode` (nur 07777-Bits), `int64_t atime_ns`, `int64_t mtime_ns`, `int64_t ctime_ns`, `nlink_t i_nlink`
+- [ ] Slab-allokiert bleiben (kein statischer Zuwachs)
 
-- [ ] Test-Runner: Timeout parent-seitig (fork watchdog) statt alarm im Child
+### 2.2 Syscall-Durchreichung
 
-### N. Signal-Delivery bei Blocking — 2 Failures
-
-nanosleep gibt -EINTR bevor Handler laeuft. Handler laeuft erst in
-check_pending_signals NACH Syscall-Return.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 145 | parent got SIGALRM | 0 | 1 | Handler nach -EINTR |
-| 146 | clock_nanosleep mono | -4 | 0 | EINTR bei CLOCK_MONOTONIC |
-
-- [ ] Signal-Handler VOR Syscall-Return ausfuehren wenn -EINTR
-
-### O. flock — Stub — 7 Failures
-
-do_flock ist Stub. Keine Lock-Semantik. Implementieren nach Linux `fs/locks.c`.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 147 | flock(-1) EBADF | 0 | -9 | Nicht implementiert |
-| 148 | SH\|EX EINVAL | 0 | -22 | (gleich) |
-| 149 | LOCK_NB alone EINVAL | 0 | -22 | (gleich) |
-| 150 | child SH ok, EX blocked | | | (gleich) |
-| 151 | child SH+EX both blocked | | | (gleich) |
-| 152 | child got EWOULDBLOCK | | | (gleich) |
-| 153 | fd2 EX denied | 0 | -11 | (gleich) |
-
-- [ ] flock implementieren nach Linux fs/locks.c
-
-### P. fcntl Locks — 5 Failures
-
-F_SETLK auf Pipe akzeptiert, bad lock type akzeptiert, partial unlock falsch.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 154-155 | F_SETLK pipe EINVAL (2x) | 0 | -22 | Pipe nicht abgelehnt |
-| 156 | F_SETLK bad type EINVAL | 0 | -22 | Lock-Typ nicht validiert |
-| 157 | partial unlock correct | 1 | 0 | Partial unlock falsch |
-| 158 | ltp/fcntl15 TIMEOUT | | | F_SETLKW weckt nicht |
-
-- [ ] F_SETLK: Pipe → EINVAL, Lock-Typ validieren
-- [ ] Partial unlock korrekt implementieren
-- [ ] F_SETLKW: Blocking + Signal-Wakeup
-
-### Q. eventfd Semantik — 5 Failures
-
-write UINT64_MAX nicht abgelehnt, EFD_SEMAPHORE Modus nicht implementiert.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 159 | write UINT64_MAX EINVAL | 8 | -22 | Overflow nicht geprueft |
-| 160 | sem value 1 (3x) | 3 | 1 | EFD_SEMAPHORE fehlt |
-| 161-162 | sem read (2x) | -11 | 8 | (gleich) |
-
-- [ ] eventfd write: val >= UINT64_MAX - counter → EINVAL/EAGAIN
-- [ ] EFD_SEMAPHORE: read gibt 1 statt counter, decrementiert um 1
-
-### R. epoll_create Validierung — 4 Failures
-
-Ungueltige Argumente nicht abgelehnt.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 163-164 | epoll_create(0/-1) | 3 | -22 | size <= 0 akzeptiert |
-| 165-166 | epoll_create1 bad flags | 3 | -22 | flags nicht validiert |
-
-- [ ] epoll_create: size <= 0 → EINVAL
-- [ ] epoll_create1: unbekannte flags → EINVAL
-
-### S. execveat — Return -ENOSYS — 4 Failures
-
-Nicht implementiert. Vorbild: `fs/exec.c:do_execveat_common`.
-
-| # | Test | Got | Expected | Cause |
-|---|------|-----|----------|-------|
-| 167 | execveat bad dirfd EBADF | -38 | -9 | Nicht implementiert |
-| 168 | execveat invalid flags | -38 | -22 | (gleich) |
-| 169 | execveat notdir ENOTDIR | -38 | -20 | (gleich) |
-| 170 | execveat symlink ELOOP | -38 | -40 | (gleich) |
-
-- [ ] execveat implementieren (dirfd-relative execve)
-
-### T. Einzelfehler — 23 Failures
-
-| # | Test | Got | Expected | Cause | Resolution |
-|---|------|-----|----------|-------|------------|
-| 171 | close_range bad flags | 0 | -22 | Flags nicht validiert | Flag-Check |
-| 172 | fdatasync(pipe) | 0 | -22 | Pipe akzeptiert | FD-Typ pruefen |
-| 173 | dup3 invalid flags | 52 | -22 | Flags nicht validiert | Flag-Check |
-| 174 | fchmodat2 EINVAL | 0 | -22 | Flags nicht validiert | Flag-Check |
-| 175 | fchownat EINVAL | 0 | -22 | Flags nicht validiert | Flag-Check |
-| 176 | double bind EINVAL | 0 | -22 | Doppel-Bind akzeptiert | already-bound Check |
-| 177 | invalid flags EINVAL | 0 | -22 | Flags nicht validiert | Flag-Check |
-| 178-179 | atime/mtime 64-bit | 0 | 4294967296 | 32-bit Truncation | int64_t timestamps |
-| 180 | chmod empty ENOENT | 0 | -2 | Leerer Pfad akzeptiert | Pfad-Validierung |
-| 181 | FD_CLOEXEC set | | | dup3 O_CLOEXEC ignoriert | dup3 flags anwenden |
-| 182 | fd still open | | | close_range wirkt nicht | close_range implementieren |
-| 183 | data matches | | | copy_file_range Daten falsch | copy_file_range fixen |
-| 184 | fallocate KEEP_SIZE | -95 | 0 | KEEP_SIZE → ENOSYS | fallocate Flags |
-| 185 | regular file EPERM | 0 | -1 | acct auf regular file | acct Typ-Check |
-| 186 | flistxattr zero-size | | | flistxattr fehlt | xattr Subsystem |
-| 187 | child exit code | 2 | 0 | clone child Exit falsch | clone Exit-Path |
-| 188 | child terminated by signal | | | Kein SIGSEGV bei Kernel-Read | Kernel-Memory Protection |
-| 189 | child exited normally | | | Kein Guard Page Hit | Stack Guard Page |
-| 190 | EBADF rdonly | 0 | -9 | read auf O_WRONLY | O_WRONLY Check bei read |
-| 191 | read /proc/stat | | | /proc/stat unvollstaendig | procfs cpu Zeilen |
-| 192 | access X_OK EACCES | 0 | -13 | Execute-Bit nicht geprueft | access: X_OK vs i_mode |
-| 193 | mono: woke at or after target | | | clock_nanosleep Timing | TSC Praezision |
-
-## Lock-Granularitaet: Globale Locks → Linux-Vorbild
-
-- [ ] Per-CPU Page Lists (page_alloc.c): buddy_lock → per-CPU Freelists
-- [ ] Per-Inode Lock (ext2.c, vfs.c): fs_lock → rw_semaphore in vfs_node
-- [ ] Per-Block Locking (bcache.c): Globales Lock → per-Block atomare Flags
-- [ ] Per-CPU Slab (slab.c): Globale Freelist → per-CPU partial lists
-
-## musl libc-test (20 FAIL)
-
-- [ ] sem_open: MAP_SHARED Kohaerenz
-- [ ] pthread_robust: Robust-Futex-Cleanup bei Thread-Exit
-- [ ] malloc-brk-fail: brk VMA-Overlap-Check
-- [ ] fma/fmal/powf/remquol: FPU-State Preservation
-- [ ] tls_get_new-dtv: dlopen/TLS-Setup
-
-## LTP (87 FAIL)
-
-- [ ] execve: Execute-Bit pruefen (blockiert 60+ Tests)
-- [ ] VMA/TLB Race: Atomarer VMA-Update + TLB-Shootdown
+- [ ] `do_chmod`/`do_fchmod`/`do_fchmodat`: `i_mode = new_mode & 07777`
+- [ ] `do_chown`/`do_fchown`/`do_fchownat`: `i_uid/i_gid` setzen, SUID/SGID löschen (Linux: `fs/attr.c:notify_change`)
+- [ ] `do_creat`: `mode & ~umask` durchreichen statt ignorieren
+- [ ] `do_stat`/`do_fstat`/`do_lstat`/`do_fstatat`: `uid/gid/mode/times` zurückgeben
+- [ ] `fill_stat`/`fill_symlink_stat`: Single Source of Truth
+- [ ] Hard-Link (`link`, `linkat`): `uid/gid` vererben, `i_nlink++`
+- [ ] `atime`/`mtime` 64-bit: int64_t durchgehend, keine 32-bit-Truncation
+
+---
+
+## Phase 3 — `sched_preempt`-Refactor
+
+**Begründung:** Blockiert Diagnose der Phase-6-Races. `sched_preempt` hat zwei Frame-Save-Pfade, Frame-Sync ist in vier Stellen dupliziert (sched.c ×2, irq.c ×3 für INT 0x80 / SIGSEGV / Exception). Magic-Indices `f[18] & 3`. FS_BASE asymmetrisch. XSAVE implizit safe nur wegen `-mgeneral-regs-only`.
+
+### 3.1 Frame-Sync-Primitive
+
+- [ ] `static void irq_frame_to_thread(const irq_frame_t *f, thread_t *t)` in `core/frame.c` (neu)
+- [ ] `static void thread_to_irq_frame(const thread_t *t, irq_frame_t *f)`
+- [ ] `_Static_assert` auf `irq_frame_t`-Layout (alle Offsets die Nutzer brauchen)
+- [ ] Typed `irq_frame_t*` durch `sched_preempt` statt `void*`
+- [ ] Magic-Index `f[18] & 3` → `f->cs & 3`, Helper `frame_is_user(f)`
+
+### 3.2 Duplikate eliminieren
+
+- [ ] `sched.c:237-251` → `irq_frame_to_thread` + Signal-Delivery + `thread_to_irq_frame`
+- [ ] `sched.c:270-290` → dieselben Helper
+- [ ] `irq.c:170-196` (INT 0x80) → Helper
+- [ ] `irq.c:573-596` (SIGSEGV) → Helper
+- [ ] `irq.c:686-710` (Exception-Pfad) → Helper
+
+### 3.3 `sched_preempt` entmüllen
+
+`sched_preempt` ist God-Function für Signals + RCU + Alarm + epoll + VT. Nur Reschedule-Kern behalten, Rest via Callback-Registry (Phase 7.1).
+
+- [ ] FPU-Save/Restore explizit machen oder Invariante dokumentieren (Kernel kein SSE → FPU-berührungsfrei)
+- [ ] FS_BASE-Sicherung symmetrisch machen oder Invariante dokumentieren
+- [ ] Per-Process-Alarm-Scan `O(PID_TABLE_MAX)` pro Tick → timer_wheel oder RB-Tree
+
+---
+
+## Phase 4 — Stub-Implementierungen
+
+Jede Sektion eigenständig.
+
+### 4.1 File-Locks (7+5 Failures)
+
+`fs/locks.c` nach Linux-Vorbild. `do_flock` ist no-op. F_SETLK validiert nicht.
+
+- [ ] `fs/locks.c` + `fs/locks.h` neu
+- [ ] `struct file_lock` pro VFS-Node (per-inode list)
+- [ ] `flock`: LOCK_SH / LOCK_EX / LOCK_UN / LOCK_NB
+- [ ] `flock`: `LOCK_SH|LOCK_EX` → `-EINVAL`
+- [ ] `flock`: `LOCK_NB` alleine → `-EINVAL`
+- [ ] `flock(-1, ...)` → `-EBADF`
+- [ ] `fcntl F_SETLK`: Lock-Typ validieren, Pipe → `-EINVAL`
+- [ ] `fcntl F_SETLK` partial-unlock korrekt (range-splitting)
+- [ ] `fcntl F_SETLKW`: blockieren + Signal-Wakeup → `-EINTR`
+- [ ] `close` löscht alle Locks des Prozesses auf dem Inode
+
+### 4.2 Capabilities (10 Failures)
+
+Nach `kernel/capability.c`. Single-User: alle Caps gesetzt, trotzdem korrekte ABI.
+
+- [ ] `do_capget`/`do_capset` implementieren (bisher `-EPERM`-Stub)
+- [ ] Version-Header-Parsing (`_LINUX_CAPABILITY_VERSION_1/2/3`)
+- [ ] `kernel_cap_t` in `task_struct` (effective/permitted/inheritable/bounding/ambient)
+- [ ] Bad version → `-EINVAL`, Kernel-expected-version zurückgeben
+- [ ] `pid < -1` → `-EINVAL`
+- [ ] nonexistent pid → `-ESRCH`
+- [ ] NULL `data` → `-EFAULT`
+
+### 4.3 `execveat` (4 Failures)
+
+- [ ] `fs/exec.c:do_execveat_common`-Equivalent
+- [ ] dirfd-Resolution (AT_FDCWD, absoluter Pfad, relativer Pfad)
+- [ ] AT_EMPTY_PATH / AT_SYMLINK_NOFOLLOW
+- [ ] Invalid flags → `-EINVAL`
+- [ ] Bad dirfd → `-EBADF`
+- [ ] `notdir` → `-ENOTDIR`
+- [ ] Symlink-Loop → `-ELOOP`
+
+### 4.4 `fallocate` Flags (Klasse A + T.184)
+
+- [ ] `FALLOC_FL_KEEP_SIZE`: File-Size konstant, Block allokieren
+- [ ] `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`: Range auf 0 setzen
+- [ ] `FALLOC_FL_ZERO_RANGE`
+- [ ] `regular file EPERM` wenn Mode nicht unterstützt → `-EOPNOTSUPP`
+
+### 4.5 xattr (2+ Failures)
+
+Heute global `-ENODATA` in `dispatch.c:202-206`.
+
+- [ ] Per-fd-Dispatch: FS-Typ-spezifisch
+- [ ] `setxattr`/`getxattr`/`listxattr`/`removexattr`: `-EOPNOTSUPP` statt `-ENODATA` wenn FS nicht unterstützt
+- [ ] `flistxattr` zero-size return (benötigte Buffer-Größe)
+- [ ] tmpfs: in-memory xattr (optional, minimaler Pfad: `-EOPNOTSUPP` für alle)
+
+### 4.6 eventfd EFD_SEMAPHORE (5 Failures)
+
+- [ ] Eigener Read-Pfad: bei `EFD_SEMAPHORE` read liefert `1`, decrementiert counter um 1
+- [ ] write-Overflow: `val > UINT64_MAX - counter - 1` → `-EINVAL` (nicht `-EAGAIN`, das ist non-block-Fall)
+
+### 4.7 `chroot` (4 Failures)
+
+- [ ] `fs/open.c:ksys_chroot`-Equivalent
+- [ ] Pfad-Lookup, Typ-Prüfung (muss Directory sein)
+- [ ] `process.root` Feld setzen, alle Pfad-Resolves berücksichtigen
+- [ ] ENOENT / ENOTDIR / ELOOP / ENAMETOOLONG korrekt
+
+### 4.8 `acct` (4 Failures)
+
+- [ ] Pfad-Lookup, Typ-Validierung
+- [ ] EFAULT bei bad ptr, EISDIR bei directory, ENOENT, ENOTDIR
+- [ ] Danach `-ENOSYS` (Accounting selbst nicht implementiert — OK)
+- [ ] Bei regular file → `-EPERM` (nicht erlaubter Pfad)
+
+### 4.9 `fadvise64` Validierung
+
+Heute `return 0` (Stub). Kein Impact auf Verhalten, aber Fehlerpfade müssen korrekt sein.
+
+- [ ] fd-Lookup → `-EBADF`
+- [ ] advice-Range-Check → `-EINVAL`
+- [ ] Pipe/Socket → `-ESPIPE`
+- [ ] Dann: `return 0` (Hints sind optional)
+
+---
+
+## Phase 5 — Loopback-Vollendung
+
+Commit `7b85a5f` hat Loopback begonnen, Tests failen weiterhin. Audit benötigt.
+
+- [ ] `net/lo.c` auf aktuelle `netif`-API portieren
+- [ ] 127.0.0.0/8 Routing: direkter `net_rx`, kein Gateway-Check
+- [ ] `connect` lokaler listener: TCP-Statemachine durch Loopback
+- [ ] `connect` auf unbekannten Port → `-ECONNREFUSED` (Linux-konform)
+- [ ] `connect` auf bereits verbundenen Socket → `-EISCONN`
+- [ ] Tests: `net/accept-loopback`, `ltp/accept02-loopback`, `ltp/connect*`, `net/tcp_hash_multi`
+
+---
+
+## Phase 6 — Race/Signal-Pfad
+
+**Setzt Phase 3 voraus.** Ohne vereinheitlichten Frame-Sync sind diese Bugs nicht reproduzierbar diagnostizierbar.
+
+### 6.1 Signal-Delivery-Reihenfolge
+
+- [ ] Nach `-EINTR` aus blocking syscall: Handler **vor** userspace-return ausführen
+- [ ] `SA_RESTART`-Rewind nur noch an einer Stelle (Phase 3 Frame-Sync)
+- [ ] `parent got SIGALRM`-Test: Handler läuft vor Test-Code
+
+### 6.2 Timing
+
+- [ ] `time advanced >= 9s`: `clock_settime` muss wall-clock tatsächlich vorspulen
+- [ ] `clock_nanosleep CLOCK_MONOTONIC`: nicht `-EINTR` bei Timer-Expiry, nur bei Signal
+- [ ] TSC-Präzision: `woke at or after target`-Regression
+
+### 6.3 Fork/Clone
+
+- [ ] `process_fork.c:217-241` Sibling-Freeze: IPI-basiert, nicht manuelles State-Setzen
+- [ ] `clone` child exit code: Exit-Pfad durchreichen
+- [ ] Fork-Memory-Vererbung: CoW-Verifikation
+
+### 6.4 Memory-Protection
+
+- [ ] Stack-Guard-Page (1 Page unterhalb jedes user-Stacks, `PROT_NONE`)
+- [ ] Test `stack_clash` darf SIGSEGV auslösen
+- [ ] `meltdown`-Test: Kernel-Memory-Read aus userspace → SIGSEGV
+
+---
+
+## Phase 7 — Architektur-Schulden
+
+Kontinuierlich, parallel zu Phasen 4-6.
+
+### 7.1 Timer-Tick-Callback-Registry
+
+`sched_preempt` und `timer_handler` haben `extern void`-Salat: `epoll_check_timeouts`, `check_alarm_timers`, `vt_flush`, `serial_bridge_poll`, `net_rx_poll`, `net_tx_poll`. Linux-Modell: registrierte Callbacks.
+
+- [ ] `core/tick.c`: `tick_register(fn, interval_ns)`
+- [ ] Subsysteme registrieren sich in ihren `*_init()`-Funktionen
+- [ ] `timer_handler` iteriert Registry, ruft fällige Callbacks
+- [ ] `sched_preempt` verliert alle `extern void` außer Reschedule-Kern
+
+### 7.2 HAL: echt oder löschen
+
+`hal_cpu.c:17-44` ist Pure-Forwarding. `src/kernel/` ruft `arch_*` direkt 7× (sched.c). Entweder HAL ernst nehmen (Kernel ruft nur `hal_*`) oder Layer löschen.
+
+- [ ] Entscheidung: HAL behalten und durchsetzen, oder HAL entfernen?
+- [ ] Wenn behalten: jeden `arch_*`-Call in `src/kernel/` durch `hal_*` ersetzen
+- [ ] Wenn entfernen: `hal/`-Layer komplett, alle `arch_*` direkt exponieren
+
+### 7.3 Fixe Pools → Slab + RLIMIT
+
+CLAUDE.md verbietet `#define FOO_MAX` + `foo_t pool[FOO_MAX]`. Verstöße:
+
+| Pool | Größe | Datei | Fix |
+|------|-------|-------|-----|
+| `FD_MAX=1024` | per-proc Array | `event/fd.h:33` | RLIMIT_NOFILE, dynamische `fd_entry_t`-Tabelle |
+| `PIPE_MAX=32` | systemweit | `sys/sys_ipc.c` | Slab + RLIMIT |
+| `NET_TCP_MAX=256` | systemweit | `net/tcp.h:16` | Slab |
+| `USOCK_MAX=32` | systemweit | `net/unix_socket.h:17` | Slab |
+| `ACCEPT_QUEUE_MAX=8` | per-socket | `net/socket.h:18` | dynamisch per `listen()`-backlog |
+| `UDP_POOL_SIZE=128` | systemweit | `net/udp.h` | Slab |
+| `MOUNT_MAX=16` | systemweit | `fs/vfs.h:138` | Slab-Liste |
+| `PID_TABLE_MAX=4096` | systemweit | `proc/process.h:105` | Radix-Tree oder dynamic array |
+| `EQ_MAX_EVENTS=16` | per-thread Ring | `core/event_queue.h:39` | Ring-Wachstum bei Overflow |
+| `EQ_LOCK_MAX=512` | systemweit | `core/event_queue.c:19` | per-thread Lock statt Hash-Fallback |
+
+- [ ] Slab-Cache für jede Struktur
+- [ ] RLIMIT-Mechanismus wo Process-bounded sinnvoll
+- [ ] Static_assert-gesicherte Struktur-Größen
+
+### 7.4 Lock-Granularität
+
+- [ ] Per-CPU Page Freelists (`mm/page_alloc.c`): `buddy_lock` → per-CPU + Steal
+- [ ] Per-Inode `rw_semaphore` (`fs/vfs.c`): `fs_lock` aufbrechen
+- [ ] Per-Block atomare Flags (`fs/bcache.c`): globales Lock eliminieren
+- [ ] Per-CPU Slab-Freelist (`mm/slab.c`): Magazine-Pattern
+
+### 7.5 RCU-Vollendung
+
+- [ ] Callback-Execution aus `rcu_gp_complete` in dedizierten Kernel-Thread (aktuell: synchron im caller-Kontext, kann `synchronize_rcu`-Pfad blockieren)
+- [ ] `rcu_state.cpu[i]` Range-Check auf `SMP_MAX_CORES` (`rcu.c:262,283,297`)
+
+### 7.6 Layer-Verstöße
+
+- [ ] `src/kernel/sys/sys_proc.c:235-236`: inline-asm `lidt`/`int3` für reboot in `arch/x86_64/` verschieben
+- [ ] `src/kernel/hw/serial.c`: inline-asm `outb/inb` → `hal_io`
+- [ ] Jeden `arch_*`-Call in `src/kernel/` auditieren (sched.c:150,157,162,163,166,243,275)
+
+---
+
+## Phase 8 — Fehlende Subsysteme
+
+### 8.1 Audio — Kern-Identität
+
+`notes/NOTES.md` sagt 0%. CosmoRT ist Audio-Realtime-Kernel.
+
+- [ ] `drivers/audio/hda.c`: Intel HDA-Treiber
+- [ ] `drivers/audio/virtio_snd.c`: QEMU virtio-sound
+- [ ] `drivers/audio/audio.c`: Ring-Buffer, `/dev/snd/*`
+- [ ] ALSA-ABI oder eigene minimal-API (`notes/AUDIO.md` entscheiden)
+- [ ] RT-Scheduling-Pfad bis Audio-Thread bounded
+
+### 8.2 Test-Runner-Robustheit
+
+- [ ] Timeout parent-seitig (fork-watchdog), **nicht** `alarm()` im child
+- [ ] Löst 4 alarm-Tests (ehemalige Klasse M), kein Kernel-Bug
+
+### 8.3 procfs-Vervollständigung
+
+- [ ] `/proc/stat`: CPU-Zeilen vollständig (user/nice/sys/idle/iowait/irq/softirq)
+- [ ] `/proc/<pid>/status`, `/proc/<pid>/stat`: fehlende Felder
+
+---
+
+## Non-Kernel (nach Phase 1-6 abarbeiten)
+
+### musl libc-test (20 FAIL)
+
+- [ ] `sem_open`: MAP_SHARED-Kohärenz
+- [ ] `pthread_robust`: Robust-Futex-Cleanup bei Thread-Exit
+- [ ] `malloc-brk-fail`: brk VMA-Overlap-Check
+- [ ] `fma`/`fmal`/`powf`/`remquol`: FPU-State Preservation (Kernel-Kontext-Switch)
+- [ ] `tls_get_new-dtv`: dlopen/TLS-Setup
+
+### LTP (87 FAIL)
+
+- [ ] `execve`: Execute-Bit prüfen (blockiert 60+ Tests) — erledigt sich mit Phase 1.3
+- [ ] VMA/TLB Race: Atomarer VMA-Update + TLB-Shootdown (mit Phase 6.3 kompatibel)
+
+---
+
+## Erledigt (Archiv)
+
+- context_switch Unification (Commits `a6d6cd4`, `dd75276`, `b1031a4`, `9271aaf`, `50472c5`) — einziger Pfad in `arch/x86_64/cpu/context.S`
+- Preemptible RCU (Commit `781dfd9`) — Linux PREEMPT_RCU-Modell
+- VFS Refactoring, ext4, Netzwerk-Basis (Merge `6395591`) — 2260/79
+- Loopback-Basis (Commit `7b85a5f`) — halb fertig, siehe Phase 5
+- fadvise64 Validierung (wenn diese Klasse aus aktuellem Fail-Stand verschwunden ist)
+- epoll Event-Delivery (alte Klasse D, 14 → aktuell ~6 Fails) — Wakeup-Verdrahtung teilweise erfolgt, Rest in Phase 1.1
