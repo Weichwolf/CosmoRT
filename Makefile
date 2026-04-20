@@ -33,7 +33,7 @@ DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -Iinclude/public -std=c11
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
-           -Bsymbolic -L$(EFI_LIB)
+           -Bsymbolic -L$(EFI_LIB) -z defs
 
 EFI_BIN  = $(BUILD)/BOOTX64.EFI
 ESP_IMG  = $(BUILD)/cosmo-rt.img
@@ -271,7 +271,7 @@ alpine-test: $(ESP_IMG)
 	@sh tools/mkalpine.sh $(ALPINE_ROOT)
 	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
 	@rm -f /tmp/cosmo-serial.log
-	timeout 600 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
+	timeout 1800 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
 

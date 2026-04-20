@@ -1,4 +1,9 @@
 #!/bin/sh
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc none /proc 2>/dev/null || true
+mount -t sysfs none /sys 2>/dev/null || true
+mount -t tmpfs none /tmp 2>/dev/null || true
+mkdir -p /tmp 2>/dev/null || true
 echo "========================================"
 echo "  CosmoRT Boot Test"
 echo "  $(uname -a)"
