@@ -264,25 +264,34 @@ long do_adjtimex(void *tx) {
     return 0; /* TIME_OK */
 }
 
-/* chroot: single-user, no real chroot */
 long do_chroot(const char *path) {
-    char kpath[PATH_MAX];
-    int len = copy_path_from_user(kpath, path, PATH_MAX);
+    char kpath_raw[PATH_MAX];
+    int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
     if (len < 0) return len;
-    /* NAME_MAX check */
     int comp = 0;
     for (int i = 0; i < len; i++) {
-        if (kpath[i] == '/') comp = 0;
+        if (kpath_raw[i] == '/') comp = 0;
         else if (++comp > 255) return -ENAMETOOLONG;
     }
-    /* Validate: path must exist and be a directory */
+    /* Resolve via existing mechanics (respects current chroot) */
+    char kpath[PATH_MAX];
+    resolve_path(kpath_raw, kpath, PATH_MAX);
+
     extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
     int lerr = -ENOENT;
     struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
     if (!node) return lerr;
     if (node->inode->type != VFS_DIR) return -ENOTDIR;
-    /* Check for symlink loops (simplified: path with >40 symlinks) */
-    return 0; /* accept but no-op: single-root filesystem */
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    int i = 0;
+    while (kpath[i] && i < (int)sizeof(p->root) - 1) { p->root[i] = kpath[i]; i++; }
+    p->root[i] = '\0';
+    /* cwd is now implicitly relative to the new root; reset to "/" */
+    p->cwd[0] = '/';
+    p->cwd[1] = '\0';
+    return 0;
 }
 
 /* acct: no-op */

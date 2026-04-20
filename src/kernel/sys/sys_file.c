@@ -4,19 +4,18 @@
 #include "core/event_queue.h"
 
 /* Resolve a relative path against CWD, handling "." and ".." components.
- * Result written to out (max outsize bytes). Returns 0 on success. */
+ * chroot root (p->root) prepended to absolute paths; ".." above root
+ * stays at root (Linux fs/namei.c path_init). */
 int resolve_path(const char *path, char *out, int outsize) {
     if (!path || !out || outsize < 2) return -EINVAL;
 
-    /* Start from CWD for relative paths */
+    process_t *p = proc_current();
     int oi = 0;
     if (path[0] != '/') {
-        process_t *p = proc_current();
         const char *cwd = p ? p->cwd : "/";
         while (*cwd && oi < outsize - 1) out[oi++] = *cwd++;
         if (oi > 1 && out[oi - 1] != '/' && oi < outsize - 1) out[oi++] = '/';
     }
-    /* Append path */
     while (*path && oi < outsize - 1) out[oi++] = *path++;
     out[oi] = '\0';
 
@@ -36,9 +35,27 @@ int resolve_path(const char *path, char *out, int outsize) {
         }
     }
     if (w == out) *w++ = '/'; /* root */
-    /* Remove trailing slash (unless root) */
     if (w > out + 1 && w[-1] == '/') w--;
     *w = '\0';
+
+    /* Apply chroot: prepend p->root to the absolute path */
+    if (p && p->root[0]) {
+        char buf[PATH_MAX];
+        int bi = 0;
+        const char *rp = p->root;
+        while (*rp && bi < PATH_MAX - 1) buf[bi++] = *rp++;
+        /* out is "/foo"; just concatenate */
+        const char *op = out;
+        if (op[0] == '/' && op[1] == '\0') {
+            /* out is exactly "/" → result is p->root */
+        } else {
+            while (*op && bi < PATH_MAX - 1) buf[bi++] = *op++;
+        }
+        buf[bi] = '\0';
+        int ci = 0;
+        while (buf[ci] && ci < outsize - 1) { out[ci] = buf[ci]; ci++; }
+        out[ci] = '\0';
+    }
     return 0;
 }
 

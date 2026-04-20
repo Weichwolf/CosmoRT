@@ -76,6 +76,10 @@ typedef struct process {
     /* Working directory */
     char        cwd[256];
 
+    /* Chroot jail: "" = system root; all path lookups rewritten
+     * "/x" -> "<root>/x". fork() inherits, execve() preserves. */
+    char        root[256];
+
     /* File descriptors */
     fd_table_t  fds;
 
