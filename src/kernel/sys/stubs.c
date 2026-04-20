@@ -294,8 +294,10 @@ long do_chroot(const char *path) {
     return 0;
 }
 
-/* acct: no-op */
-long do_acct(void) { return 0; }
+long do_acct(const char *path) {
+    (void)path;
+    return 0;
+}
 
 /* settimeofday: no-op */
 long do_settimeofday(void) { return 0; }
