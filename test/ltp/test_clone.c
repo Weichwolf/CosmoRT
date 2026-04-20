@@ -134,13 +134,16 @@ cleanup:
 
 /* ── clone06: child inherits environment (test via shared memory) ── */
 
+/* Global so it's accessed RIP-relative, not via %rsp.
+ * Custom child stack makes %rsp-relative reads into the child stack
+ * (which is a different VMA with no parent content). */
+static volatile int clone06_marker;
+
 static void test_clone06(void) {
     puts("\n[ltp/clone06]\n");
 
-    /* In freestanding ktest there's no getenv. Test that child can
-       read parent's memory (no CLONE_VM, but fork-like semantics
-       give child a copy of parent's address space). */
-    volatile int marker = 42;
+    /* Parent writes before clone → CoW snapshot into child's .bss */
+    clone06_marker = 42;
 
     void *stack = alloc_stack();
     check("mmap stack", (long)stack > 0);
@@ -151,8 +154,7 @@ static void test_clone06(void) {
     if (pid < 0) { sc2(SYS_MUNMAP, (long)stack, STACK_SIZE); return; }
 
     if (pid == 0) {
-        /* Child can read parent's data (copy-on-write) */
-        sc1(SYS_EXIT_GROUP, (marker == 42) ? 0 : 1);
+        sc1(SYS_EXIT_GROUP, (clone06_marker == 42) ? 0 : 1);
         __builtin_unreachable();
     }
 

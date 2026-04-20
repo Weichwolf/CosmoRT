@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2414/5 (5× identisch nach Phase 6.4 Stack-Guard-Page), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2415/4 (5× identisch nach Phase 6.3 Fork-CoW-Verifikation), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -232,9 +232,9 @@ Commits `9543eae`, `9606617`, `b10a495`, `0188169`. Test-Delta 2403/16 → 2405/
 
 ### 6.3 Fork/Clone
 
-- [ ] `process_fork.c:217-241` Sibling-Freeze: IPI-basiert, nicht manuelles State-Setzen
+- [ ] `process_fork.c:217-241` Sibling-Freeze: IPI-basiert, nicht manuelles State-Setzen (→ Phase 7, SMP-1 nicht triggernd)
 - [ ] `clone` child exit code: Exit-Pfad durchreichen
-- [ ] Fork-Memory-Vererbung: CoW-Verifikation
+- [x] Fork-Memory-Vererbung: CoW-Verifikation. `thp/fork`, `COW multi-fork`, `COW fork write`, `THP COW split`, `madv_free fork` alle grün — lazy CoW funktioniert (Parent-PTE read-only stamp + PTE_COW bit + Page-Refcount, do_wp_page im IRQ-Handler `irq.c:366-411`). `ltp/clone06`-Fail war Test-Design-Bug: `volatile int marker = 42` auf Stack gelegt, vom Compiler via `%rsp`-relativ adressiert; bei clone mit custom child-stack zeigt Child-`%rsp` ins frisch allozierte Stack-VMA (leer, nicht in Parent-Frame). Fix: marker als static-global → RIP-relativer Load → testet echte .bss-CoW-Inheritance. Delta 2414/5 → 2415/4.
 
 ### 6.4 Memory-Protection — Stack-Guard-Page (teilweise ✓)
 
