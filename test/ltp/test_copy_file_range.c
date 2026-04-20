@@ -2,7 +2,7 @@
 #include "ktest.h"
 
 #define CONTENT     "ABCDEFGHIJKLMNOPQRSTUVWXYZ12345\n"
-#define CONTSIZE    31
+#define CONTSIZE    (sizeof(CONTENT) - 1)
 
 /* ── copy_file_range01: basic copy, data integrity ── */
 
@@ -31,7 +31,7 @@ static void test_cfr_basic(void) {
     char buf[64] = {0};
     long n = sc3(SYS_READ, fd_dst, (long)buf, CONTSIZE);
     check_val("read back length", n, CONTSIZE);
-    check("data matches", buf[0] == 'A' && buf[30] == '\n');
+    check("data matches", buf[0] == 'A' && buf[CONTSIZE - 1] == '\n');
 
     sc1(SYS_CLOSE, fd_src);
     sc1(SYS_CLOSE, fd_dst);
