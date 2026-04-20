@@ -90,19 +90,28 @@ void sock_free(socket_t *s) {
     spin_unlock_irq(&sock_lock, flags);
 }
 
-int sock_has_listener(uint16_t local_port_host) {
+socket_t *sock_find_listener(uint16_t local_port_host) {
     uint16_t be = bswap16(local_port_host);
     uint64_t flags;
-    int found = 0;
+    socket_t *found = 0;
     spin_lock_irq(&sock_lock, &flags);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
         if (o->state == SOCK_LISTENING && o->local_port == be) {
-            found = 1;
+            found = o;
             break;
         }
     }
     spin_unlock_irq(&sock_lock, flags);
     return found;
+}
+
+int sock_has_listener(uint16_t local_port_host) {
+    return sock_find_listener(local_port_host) != 0;
+}
+
+net_tcp_t *sock_listener_tcp(uint16_t local_port_host) {
+    socket_t *s = sock_find_listener(local_port_host);
+    return s ? &s->tcp : 0;
 }
 
 static socket_t *sock_from_fd(int fd) {
@@ -720,37 +729,41 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     }
 
     uint16_t host_port = bswap16(ls->local_port);
-    uint64_t accept_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
+    /* Linux accept() blocks until connection. Honor SO_RCVTIMEO
+     * (ls->tcp.rcv_timeo_ms) or block indefinitely. Per-listener
+     * wait_thread avoids the dangling-pointer hazard of a global slot. */
+    uint64_t timeo_ms = ls->tcp.rcv_timeo_ms;
+    uint64_t accept_deadline = timeo_ms ? (timer_ms() + timeo_ms) : 0;
     thread_t *at = thread_current();
     for (;;) {
-        __atomic_store_n(&q_tcp_wait_thread, at, __ATOMIC_RELEASE);
         __atomic_store_n(&ls->tcp.wait_thread, at, __ATOMIC_RELEASE);
         int r = net_tcp_accept(&ls->tcp, host_port, 0);
         if (r != -11) {
             if (r < 0) { ls->tcp.state = TCP_CLOSED;
-                         __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+                         ls->tcp.wait_thread = 0;
                          return -EAGAIN; }
             break;
         }
-        if (timer_ms() >= accept_deadline) {
-            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
-            return -EAGAIN;
-        }
-        int remain = (int)(accept_deadline - timer_ms());
-        if (remain <= 0) {
-            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
-            return -EAGAIN;
+        int remain;
+        if (accept_deadline) {
+            if (timer_ms() >= accept_deadline) {
+                ls->tcp.wait_thread = 0;
+                return -EAGAIN;
+            }
+            remain = (int)(accept_deadline - timer_ms());
+        } else {
+            remain = -1;
         }
         event_t ev;
         int wr = event_wait(&at->eq, &ev, remain);
         if (wr == -4) {
-            __atomic_store_n(&q_tcp_wait_thread, (thread_t *)0, __ATOMIC_RELEASE);
+            ls->tcp.wait_thread = 0;
             return -EINTR;
         }
     }
+    ls->tcp.wait_thread = 0;
 
     /* Handshake complete — allocate new socket */
-    q_tcp_wait_thread = 0;
     socket_t *ns = sock_alloc();
     if (!ns) return -EMFILE;
 

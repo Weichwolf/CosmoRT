@@ -10,8 +10,11 @@
 #include "mm/page_alloc.h"
 #include "core/event_queue.h"
 
-/* From socket.c — checks for SOCK_LISTENING on a port (host order). */
+/* From socket.c — listener lookup (host-order port). Returns the
+ * listening socket's embedded tcp state, or NULL. Used by tcp_input to
+ * deliver wakeups to the listening socket without a global slot. */
 extern int sock_has_listener(uint16_t local_port_host);
+extern net_tcp_t *sock_listener_tcp(uint16_t local_port_host);
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -728,19 +731,25 @@ void tcp_input(const uint8_t *pkt, int len) {
     net_tcp_t *c = tcp_find(dport, sport, src_ip);
     if (!c) {
         uint8_t in_flags = pkt[47];
-        /* SYN to closed port -> RST+ACK (ECONNREFUSED on connect side).
-         * Only for a pure SYN; existing RST must never be mirrored (loop). */
-        if ((in_flags & 0x3F) == 0x02) {
-            if (!sock_has_listener(dport)) {
-                send_rst_to(pkt);
-                return;
-            }
-        }
         /* RST to nowhere: silently drop, never bounce */
         if (in_flags & 0x04) return;
+
+        net_tcp_t *ltcp = sock_listener_tcp(dport);
+        /* SYN to closed port -> RST+ACK (ECONNREFUSED on connect side).
+         * Only for a pure SYN; RST never mirrored (loop). */
+        if ((in_flags & 0x3F) == 0x02 && !ltcp) {
+            send_rst_to(pkt);
+            return;
+        }
+
         q_push(&q_tcp, pkt, len);
-        struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 9 /* EQ_SOCKET_CONNECT */, 0);
+        /* Wake the accepting thread. Per-listener wait_thread has
+         * socket-scoped lifetime (cleared in do_accept4 on return);
+         * avoids the dangling-pointer hazard of a global slot. */
+        if (ltcp) {
+            struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
+            if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
+        }
         return;
     }
 
@@ -989,7 +998,11 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     if (!found) return -11;
     uint8_t fl = pkt[47];
 
+    /* mzero clobbers wait_thread; preserve so recursive tcp_input paths
+     * (send_syn -> loopback -> q_push -> event_post) can still wake us. */
+    struct thread *saved_wt = c->wait_thread;
     mzero(c, sizeof(*c));
+    c->wait_thread = saved_wt;
     rxring_init(&c->rx);
     mcpy(c->dst_mac, pkt + 6, 6);
     mcpy(c->dst_ip, pkt + 26, 4);
@@ -1041,7 +1054,11 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     }
     if (c->got_rst) return -1;
 
+    /* Preserve wait_thread across mzero: caller (do_connect) set it for
+     * recursive loopback wakeup via send_syn -> tcp_input. */
+    struct thread *saved_wt = c->wait_thread;
     mzero(c, sizeof(*c));
+    c->wait_thread = saved_wt;
     rxring_init(&c->rx);
     mcpy(c->dst_ip, dst_ip, 4);
     c->remote_port = port;

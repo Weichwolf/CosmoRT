@@ -99,6 +99,9 @@ void sock_free(socket_t *s);
  * else 0. Used by tcp_input to decide RST-on-closed-port (Linux semantics). */
 int sock_has_listener(uint16_t local_port_host);
 
+/* Returns the listening socket for local_port (host order), or NULL. */
+socket_t *sock_find_listener(uint16_t local_port_host);
+
 /* Called from do_read/do_write/do_close for FD_SOCKET */
 long socket_read(int fd, void *buf, long count);
 long socket_write(int fd, const void *buf, long count);
