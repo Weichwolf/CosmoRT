@@ -20,6 +20,7 @@ SECTIONS
   {
    _text = .;
    *(.text)
+   *(.text.fixup)
    *(.text.*)
    *(.gnu.linkonce.t.*)
    *(.plt)
