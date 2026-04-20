@@ -9,6 +9,7 @@
 #include "hw/serial.h"
 #include "config.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include <stdint.h>
 
 extern uint64_t pml4[];
@@ -67,8 +68,8 @@ void paging_map_2mb(uint64_t phys_addr) {
 
     all_pd[global_pdpt][pd_idx] = aligned | PAGE_MMIO;
 
-    arch_invlpg(aligned);
-    arch_invlpg(aligned + PHYS_OFFSET);
+    hal_mmu_flush(aligned);
+    hal_mmu_flush(aligned + PHYS_OFFSET);
 }
 
 void paging_init(struct boot_info *info) {
@@ -181,7 +182,7 @@ void paging_init(struct boot_info *info) {
       all_pd[pi][di] = 0xFEE00000ULL | PAGE_MMIO; }
 
     /* Flush TLB */
-    arch_set_cr3(virt_to_phys(pml4));
+    hal_mmu_switch(virt_to_phys(pml4));
 
     serial_puts("Paging: ");
     serial_dec(highest_phys / (1024 * 1024));

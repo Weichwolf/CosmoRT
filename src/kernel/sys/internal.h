@@ -28,6 +28,7 @@
 #include "vt/pty.h"
 #include "vt/vt.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */

@@ -147,8 +147,8 @@ int copy_address_space(process_t *child, process_t *parent) {
     };
     vma_walk(parent->vma_root, copy_one_vma, &ctx);
 
-    /* Parent PTEs were modified (WRITE removed, COW set) — flush TLB */
-    arch_flush_tlb();
+    /* Parent PTEs were modified (WRITE removed, COW set) - flush TLB */
+    hal_mmu_flush_all();
     tlb_shootdown(virt_to_phys(parent->pml4));
 
     return ctx.err ? -1 : 0;

@@ -8,24 +8,24 @@ long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_FS) {
         thread_t *t = thread_current();
         if (t) t->fs_base = addr;
-        arch_set_fs_base(addr);
+        hal_cpu_set_tls(addr);
         return 0;
     }
     if (code == ARCH_SET_GS) {
         /* TODO: store user GS in thread context, restore on sysret.
-         * Can't use KERNEL_GS_BASE — that holds percpu after swapgs. */
+         * Can't use KERNEL_GS_BASE - that holds percpu after swapgs. */
         return -EINVAL;
     }
     if (code == ARCH_GET_GS) {
         /* TODO: return saved user GS-base from thread context.
-         * Currently returns 0 (unset) — callers like glibc probe this. */
+         * Currently returns 0 (unset) - callers like glibc probe this. */
         uint64_t val = 0;
         int r = copy_to_user((void *)addr, &val, 8);
         if (r) return r;
         return 0;
     }
     if (code == ARCH_GET_FS) {
-        uint64_t val = arch_get_fs_base();
+        uint64_t val = hal_cpu_get_tls();
         int r = copy_to_user((void *)addr, &val, 8);
         if (r) return r;
         return 0;
@@ -130,13 +130,13 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
 
 void do_exit(int status) {
     thread_t *t = thread_current();
-    if (!t) { arch_cli_halt(); return; }
+    if (!t) { hal_cpu_halt_noirq(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
 
     /* Robust Mutex Cleanup: walk userspace robust_list, mark dead-owner futexes */
     if (t->robust_list && p) {
-        arch_set_cr3(virt_to_phys(p->pml4));
+        hal_mmu_switch(virt_to_phys(p->pml4));
         /* robust_list_head: { next_ptr, futex_offset, list_op_pending } */
         struct { void *next; long futex_offset; void *pending; } khead;
         if (!copy_from_user(&khead, t->robust_list, sizeof(khead))) {
@@ -179,7 +179,7 @@ void do_exit(int status) {
     /* CLONE_CHILD_CLEARTID: clear tid + futex_wake for pthread_join */
     if (t->clear_child_tid && p) {
         /* Ensure user page tables for user memory access */
-        arch_set_cr3(virt_to_phys(p->pml4));
+        hal_mmu_switch(virt_to_phys(p->pml4));
         if (!copy_to_user(t->clear_child_tid, &(int){0}, 4)) {
             long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
             (void)wr;
@@ -199,20 +199,20 @@ void do_exit(int status) {
     }
 
     extern uint64_t pml4[];
-    arch_set_cr3(virt_to_phys(pml4));
+    hal_mmu_switch(virt_to_phys(pml4));
     schedule();
     __builtin_unreachable();
 }
 
 void do_exit_group(int status) {
     thread_t *t = thread_current();
-    if (!t) { arch_cli_halt(); return; }
+    if (!t) { hal_cpu_halt_noirq(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
     if (p) exit_kill_process(t, p, status);
 
     extern uint64_t pml4[];
-    arch_set_cr3(virt_to_phys(pml4));
+    hal_mmu_switch(virt_to_phys(pml4));
     schedule();
     __builtin_unreachable();
 }
@@ -226,15 +226,11 @@ long do_reboot(int magic1, int magic2, int cmd) {
     case LINUX_REBOOT_CMD_POWER_OFF:
     case LINUX_REBOOT_CMD_HALT:
         serial_puts("HALT\n");
-        arch_shutdown();
-        arch_cli_halt();
+        hal_cpu_shutdown();
+        hal_cpu_halt_noirq();
         return 0; /* unreachable */
     case LINUX_REBOOT_CMD_RESTART:
-        /* Triple fault → CPU reset */
-        arch_cli();
-        __asm__ volatile("lidt %0" :: "m"((struct { uint16_t l; uint64_t b; }){0, 0}));
-        __asm__ volatile("int3");
-        arch_cli_halt();
+        hal_cpu_reset();
         return 0;
     default:
         return -EINVAL;

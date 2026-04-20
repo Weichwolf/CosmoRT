@@ -209,7 +209,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
     /* Save live FS_BASE so deliver_signal stores correct TLS in ucontext */
-    t->fs_base = arch_get_fs_base();
+    t->fs_base = hal_cpu_get_tls();
 
     /* SA_RESTART: if syscall returned -EINTR and the about-to-be-delivered
      * signal has SA_RESTART, set up registers so rt_sigreturn restarts the

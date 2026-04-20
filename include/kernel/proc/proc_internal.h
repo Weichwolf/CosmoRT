@@ -21,6 +21,7 @@
 #include "core/event_queue.h"
 #include "net/socket.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 
 /* Page table flags */
 #define PTE_PRESENT   (1ULL << 0)

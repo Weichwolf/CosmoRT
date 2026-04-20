@@ -13,8 +13,8 @@ static uint64_t elf_aslr_rand(void) {
     uint64_t r;
     extern int random_get(void *buf, size_t len);
     if (random_get(&r, sizeof(r)) == 0) return r;
-    /* Fallback to RDTSC if CSPRNG not yet initialized */
-    return arch_rdtsc();
+    /* Fallback to TSC if CSPRNG not yet initialized */
+    return hal_cpu_timestamp();
 }
 
 /* Map PT_LOAD segments from an ELF into user address space.

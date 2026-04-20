@@ -266,7 +266,7 @@ uint64_t aslr_rand(void) {
     uint64_t r;
     extern int random_get(void *buf, size_t len);
     if (random_get(&r, sizeof(r)) == 0) return r;
-    return arch_rdtsc();
+    return hal_cpu_timestamp();
 }
 
 /* ── Process creation ───────────────────────────── */

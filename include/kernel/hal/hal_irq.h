@@ -8,14 +8,17 @@
 
 #include <stdint.h>
 
-typedef void (*irq_handler_t)(int irq, void *data);
+/* irq_handler_t defined in core/irq.h (int vector signature).
+ * CosmoRT handler uses the full frame via separate dispatcher -
+ * no opaque data pointer needed at the HAL boundary. */
+#include "core/irq.h"
 
 /* Init interrupt controller (APIC/GIC) + IDT/vector table */
 void hal_irq_init(void);
 
 /* Register/unregister IRQ handler */
-void hal_irq_register(int irq, irq_handler_t fn, void *data);
-void hal_irq_unregister(int irq);
+void hal_irq_register(int vector, irq_handler_t fn);
+void hal_irq_unregister(int vector);
 
 /* Enable/disable specific IRQ line */
 void hal_irq_enable(int irq);

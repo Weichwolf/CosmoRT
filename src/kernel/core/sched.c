@@ -19,7 +19,7 @@
 #include "spinlock.h"
 #include "config.h"
 #include "core/timer.h"
-#include "arch/arch.h"
+#include "hal/hal.h"
 
 _Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 232,
                "kstack_rsp offset mismatch with context.asm THREAD_KSTACK_RSP");
@@ -164,23 +164,23 @@ void schedule(void) {
     /* Save prev per-thread state (skip idle and dead threads) */
     if (prev && prev != &idle_thread && prev->state != THREAD_DEAD) {
         prev->saved_user_rsp = cpu->user_rsp;
-        prev->fs_base = arch_get_fs_base();
-        arch_fpstate_save(prev->xsave_area);
+        prev->fs_base = hal_cpu_get_tls();
+        hal_cpu_fpu_save(prev->xsave_area);
     }
 
     /* Load next state */
     if (next != &idle_thread) {
         next->state = THREAD_RUNNING;
-        arch_set_cr3(virt_to_phys(next->proc->pml4));
+        hal_mmu_switch(virt_to_phys(next->proc->pml4));
         tss_set_rsp0(next->kstack_top);
         cpu->kernel_rsp = next->kstack_top;
         cpu->user_rsp = next->saved_user_rsp;
         cpu->syscall_frame = next->kstack_top - 15 * 8;
-        arch_set_fs_base(next->fs_base);
-        arch_fpstate_restore(next->xsave_area);
+        hal_cpu_set_tls(next->fs_base);
+        hal_cpu_fpu_restore(next->xsave_area);
     } else {
         uint64_t idle_top = (uint64_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
-        arch_set_cr3(virt_to_phys(pml4));
+        hal_mmu_switch(virt_to_phys(pml4));
         tss_set_rsp0(idle_top);
         cpu->kernel_rsp = idle_top;
     }
@@ -218,7 +218,7 @@ void sched_preempt(irq_frame_t *f) {
             /* Snapshot FS_BASE so deliver_signal's sigframe captures the
              * right TLS pointer. Not restored here: deliver_signal may set
              * a fresh FS_BASE via sigframe, sigreturn restores original. */
-            cur->fs_base = arch_get_fs_base();
+            cur->fs_base = hal_cpu_get_tls();
             check_pending_signals();
             thread_to_irq_frame(cur, f);
             cpu->in_preempt = 0;
@@ -242,7 +242,7 @@ void sched_preempt(irq_frame_t *f) {
 
     /* Save current thread context from interrupt frame */
     irq_frame_to_thread(f, cur);
-    cur->fs_base = arch_get_fs_base();
+    cur->fs_base = hal_cpu_get_tls();
 
     /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
     lapic_eoi();
@@ -283,8 +283,7 @@ void sched_loop(void) {
         idle_thread.state = THREAD_RUNNING;
         cpu->current_thread = &idle_thread;
 
-        arch_sti();
-        arch_halt();
-        arch_cli();
+        hal_cpu_halt();
+        hal_cpu_cli();
     }
 }

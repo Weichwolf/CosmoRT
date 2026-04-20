@@ -150,7 +150,7 @@ void deliver_signal(thread_t *t, int signo) {
     int has_restorer = (sa->sa_flags & SA_RESTORER) && sa->sa_restorer;
 
     /* Save full FPU/SSE/AVX state to thread (consistent snapshot) */
-    arch_fpstate_save(t->xsave_area);
+    hal_cpu_fpu_save(t->xsave_area);
 
     /* Frame layout: fpstate (64-byte aligned) above base frame.
      * fpstate_size is the actual XSAVE area size, 64-byte aligned. */
@@ -245,8 +245,8 @@ void deliver_signal(thread_t *t, int signo) {
     }
 
     /* Write signal frame + fpstate to user stack.
-     * STAC/CLAC bracket for SMAP. */
-    arch_stac();
+     * SMAP bracket: kernel temporarily allowed to touch user pages. */
+    hal_cpu_user_access_begin();
     *(uint64_t *)new_rsp = restorer_addr;
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_SIGINFO), &si, sizeof(si));
     kmemcpy((void *)(new_rsp + SIGFRAME_OFF_UCONTEXT), &uc, sizeof(uc));
@@ -254,7 +254,7 @@ void deliver_signal(thread_t *t, int signo) {
     kmemcpy((void *)fpstate_user_addr, t->xsave_area, xsave_size);
     if (!has_restorer)
         kmemcpy((void *)(new_rsp + SIGFRAME_OFF_TRAMPOLINE), sig_trampoline, sizeof(sig_trampoline));
-    arch_clac();
+    hal_cpu_user_access_end();
 
     /* Set up thread to enter handler */
     t->rip = (uint64_t)sa->sa_handler;
@@ -321,7 +321,7 @@ long do_rt_sigreturn(void) {
         uint32_t mxcsr_mask = *(uint32_t *)(t->xsave_area + 28);
         if (mxcsr_mask == 0) mxcsr_mask = 0x0000FFBF;
         *(uint32_t *)(t->xsave_area + 24) = mxcsr & mxcsr_mask;
-        arch_fpstate_restore(t->xsave_area);
+        hal_cpu_fpu_restore(t->xsave_area);
     }
 
     /* Restore registers from ucontext gregset into syscall frame.
@@ -356,7 +356,7 @@ long do_rt_sigreturn(void) {
         if (fs >= 0x800000000000ULL) fs = 0;
         if (fs) {
             t->fs_base = fs;
-            arch_set_fs_base(fs);
+            hal_cpu_set_tls(fs);
         }
     }
 

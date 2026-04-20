@@ -52,12 +52,12 @@ void save_user_state_for_block(thread_t *t, long return_value) {
     t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
 
-    /* Read current FS_BASE from MSR — may differ from t->fs_base
+    /* Read current FS_BASE from MSR - may differ from t->fs_base
      * if arch_prctl(SET_FS) was called since last context switch */
-    t->fs_base = arch_get_fs_base();
+    t->fs_base = hal_cpu_get_tls();
 
     /* Save FPU/SSE/AVX state so fork/clone get a consistent snapshot */
-    arch_fpstate_save(t->xsave_area);
+    hal_cpu_fpu_save(t->xsave_area);
 }
 
 /* ── Cold-path error helpers (keep strings out of hot dispatch) ── */

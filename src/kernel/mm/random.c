@@ -9,6 +9,7 @@
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "memops.h"
 
 /* ── ChaCha20 core ─────────────────────────────── */
@@ -60,8 +61,8 @@ static void entropy_mix(uint64_t val) {
 /* ── Init ──────────────────────────────────────── */
 
 void random_init(struct boot_info *info) {
-    /* RDTSC — high resolution, unique per boot */
-    entropy_mix(arch_rdtsc());
+    /* Timestamp counter - high resolution, unique per boot */
+    entropy_mix(hal_cpu_timestamp());
 
     /* UEFI memory map (physical addresses vary per boot) */
     entropy_mix(info->mmap_addr);
@@ -73,15 +74,16 @@ void random_init(struct boot_info *info) {
     entropy_mix(timer_tsc_per_ms);
 
     /* Stack address */
-    entropy_mix(arch_get_rsp());
+    entropy_mix(hal_cpu_stack_ptr());
 
     /* RSDP address */
     entropy_mix(info->rsdp_addr);
 
-    /* RDRAND if available */
-    if (memops_has_rdrand) {
-        entropy_mix(arch_rdrand());
-        entropy_mix(arch_rdrand());
+    /* Hardware RNG if available */
+    {
+        uint64_t r;
+        if (hal_cpu_hwrand(&r)) entropy_mix(r);
+        if (hal_cpu_hwrand(&r)) entropy_mix(r);
     }
 
     /* ChaCha20 constants: "expand 32-byte k" */
@@ -98,9 +100,9 @@ void random_init(struct boot_info *info) {
     csprng_state[12] = 0;
     csprng_state[13] = 0;
 
-    /* Nonce from another RDTSC sample */
+    /* Nonce from another timestamp sample */
     {
-        uint64_t tsc = arch_rdtsc();
+        uint64_t tsc = hal_cpu_timestamp();
         csprng_state[14] = (uint32_t)tsc;
         csprng_state[15] = (uint32_t)(tsc >> 32);
     }
@@ -163,13 +165,13 @@ void random_add_interrupt_entropy(void) {
     static uint32_t irq_count;
     if ((++irq_count & 63) != 0) return;
 
-    /* RDTSC jitter (always available) */
-    entropy_mix(arch_rdtsc());
+    /* Timestamp jitter (always available) */
+    entropy_mix(hal_cpu_timestamp());
 
-    /* RDRAND — primary entropy source when available */
-    if (memops_has_rdrand) {
+    /* Hardware RNG - primary entropy source when available */
+    {
         uint64_t r;
-        if (arch_rdrand_checked(&r)) entropy_mix(r);
+        if (hal_cpu_hwrand(&r)) entropy_mix(r);
     }
 
     /* Re-key CSPRNG with fresh entropy — under lock to avoid race with random_get */

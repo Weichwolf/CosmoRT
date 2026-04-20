@@ -66,7 +66,7 @@ int lazyfree_reclaim(int count) {
                 if ((pte & PTE_PRESENT) && (pte & PTE_LAZYFREE) && !(pte & PTE_DIRTY)) {
                     uint64_t phys = pte & PTE_ADDR_MASK;
                     pt[pti] = 0;
-                    arch_invlpg(va);
+                    hal_mmu_flush(va);
                     page_free(phys_to_virt(phys));
                     freed++;
                 }

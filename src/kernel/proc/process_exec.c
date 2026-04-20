@@ -449,7 +449,7 @@ shebang_retry:;
 
     /* Switch to kernel PML4 before freeing current address space
      * (we're currently running with p->pml4 in CR3) */
-    arch_set_cr3(virt_to_phys(pml4));
+    hal_mmu_switch(virt_to_phys(pml4));
 
     /* Free current address space */
     uint64_t exec_irqf;
@@ -465,7 +465,7 @@ shebang_retry:;
         pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
-        arch_set_cr3(virt_to_phys(pml4));
+        hal_mmu_switch(virt_to_phys(pml4));
         schedule();
         __builtin_unreachable();
     }
@@ -490,7 +490,7 @@ shebang_retry:;
         pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
-        arch_set_cr3(virt_to_phys(pml4));
+        hal_mmu_switch(virt_to_phys(pml4));
         schedule();
         __builtin_unreachable();
     }
@@ -554,7 +554,7 @@ shebang_retry:;
         pages_free(strbuf, EXECVE_BUF_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
-        arch_set_cr3(virt_to_phys(pml4));
+        hal_mmu_switch(virt_to_phys(pml4));
         schedule();
         __builtin_unreachable();
     }
@@ -657,17 +657,17 @@ shebang_retry:;
         *(uint64_t *)(cur->xsave_area + 512) = xsave_xcr0; /* XSTATE_BV */
 
     /* Load new page tables and jump to userspace */
-    arch_set_cr3(virt_to_phys(p->pml4));
+    hal_mmu_switch(virt_to_phys(p->pml4));
 
     extern void tss_set_rsp0(uint64_t rsp0);
     tss_set_rsp0(cur->kstack_top);
     percpu_self()->kernel_rsp = cur->kstack_top;
 
-    /* Clear FS_BASE — new process has no TLS yet (libc sets it via arch_prctl) */
-    arch_set_fs_base(0);
+    /* Clear TLS - new process has no TLS yet (libc sets it via arch_prctl) */
+    hal_cpu_set_tls(0);
 
     /* Restore clean FPU state */
-    arch_fpstate_restore(cur->xsave_area);
+    hal_cpu_fpu_restore(cur->xsave_area);
 
     proc_enter_ring3(cur);
     /* unreachable */
