@@ -297,14 +297,15 @@ Commits `2eaad4f`, `57a2952`, `6421623`, `7e53d07`, `88b6e3a`, `5d3ba99`, `0741c
 
 Kontinuierlich, parallel zu Phasen 4-6.
 
-### 7.1 Timer-Tick-Callback-Registry
+### 7.1 Timer-Tick-Callback-Registry ✓ done
 
-`sched_preempt` und `timer_handler` haben `extern void`-Salat: `epoll_check_timeouts`, `check_alarm_timers`, `vt_flush`, `serial_bridge_poll`, `net_rx_poll`, `net_tx_poll`. Linux-Modell: registrierte Callbacks.
+Commits `7cc77de`, `7277835`, `e53b8f8`, `4ccad5f`. 2425/1 stabil (5×, Varianz 0).
 
-- [ ] `core/tick.c`: `tick_register(fn, interval_ns)`
-- [ ] Subsysteme registrieren sich in ihren `*_init()`-Funktionen
-- [ ] `timer_handler` iteriert Registry, ruft fällige Callbacks
-- [ ] `sched_preempt` verliert alle `extern void` außer Reschedule-Kern
+- [x] `core/tick.c`: `tick_register(cb, fn, interval_ns)` + `tick_run(now_ns)`
+- [x] Registriert: `epoll_check_timeouts`, `check_alarm_timers`, `vt_flush`-Wrapper, `serial_bridge_poll`, `net_rx_poll`-Wrapper, `net_tx_poll`-Wrapper
+- [x] `timer_handler` iteriert Registry via `tick_run(ticks * 1e6)`; läuft bei Vektor 32 VOR `sched_preempt`, damit Signal-Delivery-Latenz 1 Tick bleibt
+- [x] `sched_preempt` reduziert auf Signal-Delivery + RCU + Timeslice + `schedule()`. Zeilenzahl 331 → 290.
+- [ ] Folge-Arbeit: Per-Prozess-Alarm-Scan in `check_alarm_timers` ist weiterhin O(PID_TABLE_MAX)=4096 pro Tick — Timer-Wheel/RB-Tree ist Phase 7.3-Nachbar.
 
 ### 7.2 HAL: echt oder löschen
 
