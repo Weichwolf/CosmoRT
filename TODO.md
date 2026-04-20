@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2335/79, musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2341/78, musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -8,7 +8,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 
 | # | Phase | Fails adressiert | Aufwand | Risiko | Blocker für |
 |---|-------|------------------|---------|--------|-------------|
-| 0 | Build-Infrastruktur (Header-Deps) | indirekt | 0.5 Tag | — | alle folgenden |
+| 0 | Build-Infrastruktur (Header-Deps) | **✓ done** (Commit `5d17930`, 2335/79 → 2341/78) | — | — | — |
 | 1 | Syscall-Validierung (Klasse D) | ~10 | 1 Tag | niedrig | — |
 | 2 | VFS-Metadaten (Klasse B) | ~25 | 3 Tage | niedrig | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
@@ -20,15 +20,15 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 
 ---
 
-## Phase 0 — Build-Infrastruktur
+## Phase 0 — Build-Infrastruktur ✓ abgeschlossen
 
-**Begründung:** `Makefile` trackt keine Header-Dependencies. `_Static_assert(offsetof(thread_t, kstack_rsp) == 232)` in `sched.c` fängt den Context-Switch-Bug, aber wenn ein Header geändert wird und nur eine `.c` rekompiliert, greift der Assert nur dort. Stale-`.o`-Korruption ist heute möglich. Erklärt das Gefühl "Bugs kommen zurück".
+Commit `5d17930`. Test-Stand direkt nach sauberem Rebuild von 2335/79 auf 2341/78 gestiegen — stale-`.o`-Bug war real, 6 Tests fälschlich rot.
 
-- [ ] `Makefile`: `-MMD -MP` in allen `.o`-Rules
-- [ ] `build/deps/`-Layout für `.d`-Files
-- [ ] `-include $(wildcard build/deps/**/*.d)` am Makefile-Ende
-- [ ] Validierung: `thread_t`-Offset ändern, `make` muss alle abhängigen `.o` neu bauen
-- [ ] `make clean` auch `.d`-Files löschen
+- [x] `-MMD -MP` in KCFLAGS/EFI_CFLAGS/DRVFLAGS/ASFLAGS + test TCFLAGS/KCFLAGS_NO_BUILD
+- [x] `.d`-Files neben `.o` (kein separates `build/deps/`-Layout — unnötige Indirektion)
+- [x] `-include $(ALL_OBJ:.o=.d)` am Makefile-Ende (root + test)
+- [x] Validierung: `touch thread.h` → 48 Kernel-`.o` rebuild, `touch ktest.h` → 163/163 Test-`.o`; idempotent
+- [x] `make clean` löscht `$(BUILD)` komplett (inkl. `.d`)
 
 ---
 
@@ -283,24 +283,66 @@ Kontinuierlich, parallel zu Phasen 4-6.
 
 ### 7.3 Fixe Pools → Slab + RLIMIT
 
-CLAUDE.md verbietet `#define FOO_MAX` + `foo_t pool[FOO_MAX]`. Verstöße:
+CLAUDE.md `Ressource-Design` (Wurzel): fixe systemweite Pools sind **verboten**. Jede Ressource muss Slab-allokiert, per-Prozess gecapped (RLIMIT), on-demand wachsend sein. "Pool vergrößern" ist keine Option — bleibt Angriffsvektor.
 
-| Pool | Größe | Datei | Fix |
-|------|-------|-------|-----|
-| `FD_MAX=1024` | per-proc Array | `event/fd.h:33` | RLIMIT_NOFILE, dynamische `fd_entry_t`-Tabelle |
-| `PIPE_MAX=32` | systemweit | `sys/sys_ipc.c` | Slab + RLIMIT |
-| `NET_TCP_MAX=256` | systemweit | `net/tcp.h:16` | Slab |
-| `USOCK_MAX=32` | systemweit | `net/unix_socket.h:17` | Slab |
-| `ACCEPT_QUEUE_MAX=8` | per-socket | `net/socket.h:18` | dynamisch per `listen()`-backlog |
-| `UDP_POOL_SIZE=128` | systemweit | `net/udp.h` | Slab |
-| `MOUNT_MAX=16` | systemweit | `fs/vfs.h:138` | Slab-Liste |
-| `PID_TABLE_MAX=4096` | systemweit | `proc/process.h:105` | Radix-Tree oder dynamic array |
-| `EQ_MAX_EVENTS=16` | per-thread Ring | `core/event_queue.h:39` | Ring-Wachstum bei Overflow |
-| `EQ_LOCK_MAX=512` | systemweit | `core/event_queue.c:19` | per-thread Lock statt Hash-Fallback |
+#### Kritisch (systemweit, DoS-anfällig)
 
-- [ ] Slab-Cache für jede Struktur
-- [ ] RLIMIT-Mechanismus wo Process-bounded sinnvoll
-- [ ] Static_assert-gesicherte Struktur-Größen
+Einzelner Prozess kann alle Slots aufbrauchen → blockiert alle anderen.
+
+| Pool | Wert | Datei | Linux-Äquivalent | Fix |
+|------|------|-------|------------------|-----|
+| `FD_MAX` | 1024 | `event/fd.h:33` | `expand_fdtable()` 32→256→∞ | dynamisch, RLIMIT_NOFILE |
+| `PIPE_MAX` | 32, Buf 4KB | `sys/sys_ipc.c:9` | Slab, Default 64KB | Slab, Buffer 64KB, RLIMIT |
+| `NET_TCP_MAX` | 256 | `net/tcp.h:16` | unbegrenzt, adaptive OOO | Slab |
+| `NET_MAX_SOCKETS` | 256 | `net/socket.h:8` | unbegrenzt | Slab |
+| `USOCK_MAX` | 32 | `net/unix_socket.h:17` | unbegrenzt, skb-Queues | Slab |
+| `ACCEPT_QUEUE_MAX` | 8 | `net/socket.h:18` | Default 128, per `listen()` | dynamisch per listen-backlog |
+| TCP OOO-Queue | 4 Slots | `net/tcp.h` | adaptive | Slab pro Connection |
+
+#### Mittel-Hoch (funktional einschränkend)
+
+| Pool | Wert | Datei | Linux-Äquivalent | Fix |
+|------|------|-------|------------------|-----|
+| `PID_TABLE_MAX` | 4096 | `proc/process.c:18` | IDR/IDA bis 4M | Radix-Tree |
+| `VMA_MAX` | 8192 | `mm/vma.c:7` | dyn. Slab, unbegrenzt | Slab-Wachstum |
+| `PTY_MAX` | 12 | `vt/pty.h:13` | dyn., typisch 256+ | Slab |
+| `UDP_POOL_SIZE` | 128 | `net/udp.h:13` | unbegrenzt | Slab |
+| `TW_MAX_TIMERS` | 256 | `core/timer_wheel.h:15` | hier. Wheel unbegrenzt | Wheel-Wachstum |
+| `EQ_MAX_EVENTS` | 16 Ring/Thread | `core/event_queue.h:39` | unbegrenzte Wake-Lists | Ring-Wachstum bei Overflow |
+| `MOUNT_MAX` | 16 | `fs/vfs.h:138` | dyn. Mount-Tree | Slab-Liste |
+| `ARP_POOL_SIZE` | 128, Hash 64 | `net/arp.h:11` | `neigh_table`: Slab+Hash, gc_thresh1/2/3=128/512/1024 | Slab + adaptive Hash, GC-Thresholds |
+| `EXECVE_MAX_ARGS/ENVS/STRLEN` | 256/256/**4KB total** | `proc/proc_internal.h:58-60` | ~131072 args, 128KB/string, MB total | **Refactor**: Stack-Arrays → page-by-page-Kopie auf User-Stack-Page |
+| `HW_MAX_HANDLERS_PER_IRQ` | 4 | `hw/cosmort.c:125` | `irqaction`-Liste unbegrenzt | verkettete Liste pro IRQ |
+| `EQ_LOCK_MAX` | 512 | `core/event_queue.c:19` | per-thread Lock | per-thread Lock statt Hash |
+
+#### Niedrig (Ausnahmen erlaubt)
+
+CLAUDE.md-Ausnahmen: Hardware-erzwungen oder POSIX-definiert. Bleiben wie sie sind, aber dokumentieren.
+
+| Limit | Wert | Begründung |
+|-------|------|------------|
+| Signal-Actions | 64 | Linux-ABI (`_NSIG=64`, signals 1-64) |
+| IDT | 256 | x86_64 ISA-Vorgabe |
+| IRQ-Handler-Tabelle | 256 | IDT-Vektor-indiziert, Hardware |
+| Hostname | 64 | Linux `HOST_NAME_MAX=64` |
+
+#### Umsetzungs-Reihenfolge
+
+Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
+
+- [ ] `FD_MAX` → expand_fdtable + RLIMIT_NOFILE
+- [ ] `PIPE_MAX` → Slab + 64KB-Buffer + RLIMIT_NOFILE (FDs zählen die Pipes)
+- [ ] `NET_MAX_SOCKETS` + `NET_TCP_MAX` + TCP-OOO → Slab
+- [ ] `USOCK_MAX` → Slab
+- [ ] `ACCEPT_QUEUE` → listen-backlog-Argument respektieren, dyn. Array
+- [ ] `PID_TABLE_MAX` → Radix-Tree/IDR
+- [ ] `VMA_MAX`, `PTY_MAX`, `UDP_POOL_SIZE`, `TW_MAX_TIMERS`, `EQ_MAX_EVENTS`, `MOUNT_MAX` → Slab-Wachstum
+- [ ] `ARP_POOL_SIZE` → Slab + adaptive Hash nach `neigh_table`-Modell, gc_thresh-sysctl, Test `test_arp_cache.c` anpassen (Pool-Overflow-Test wird bedeutungslos)
+- [ ] `EXECVE_MAX_*` → Linux-Modell: argv/envp page-by-page aus User kopieren in eine Übergangs-Page, dann in neuen Prozess-Stack. Kernel-Stack-Arrays raus. Limits: `ARG_MAX` = min(128KB, RLIMIT_STACK/4)
+- [ ] `HW_MAX_HANDLERS_PER_IRQ` → `irqaction`-Liste (list_head) pro Vektor, `request_irq`/`free_irq`-Semantik
+- [ ] `EQ_LOCK_MAX` → per-thread Lock (struktureller Umbau, nicht Slab)
+- [ ] RLIMIT-Infrastruktur: `setrlimit`/`getrlimit`/`prlimit64` verdrahten (heute Stub?)
+- [ ] `_Static_assert` auf kritische Slab-Struct-Größen (Cache-Line-Alignment)
 
 ### 7.4 Lock-Granularität
 
