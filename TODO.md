@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2425/1 (5× identisch nach Phase 6.2 Timing + procfs-smp-fix), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest **2427/0** (Phase 8.3 abgeschlossen, Varianz 0), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -463,10 +463,12 @@ Mit Phase 7.2 erledigt:
 
 Nach dem Netz-Audit vorgezogen. Inhalt in Phase 0.5 dokumentiert.
 
-### 8.3 procfs-Vervollständigung
+### 8.3 procfs-Vervollständigung — abgeschlossen
 
-- [ ] `/proc/stat`: CPU-Zeilen vollständig (user/nice/sys/idle/iowait/irq/softirq)
-- [ ] `/proc/<pid>/status`, `/proc/<pid>/stat`: fehlende Felder
+- [x] procfs mmap-Pfad: FD_PROCFS -> eager copy in anonyme Pages (fix: `mmap file`)
+- [x] `/proc/stat`: 10 CPU-Felder + intr/procs_running/procs_blocked/softirq
+- [x] `/proc/<pid>/status`: 21 Felder (Tgid, Uid, Gid, VmRSS, VmData, VmStk, VmExe, Sig*)
+- [x] `/proc/<pid>/stat`: 52 Linux-Felder (vsize/rss/startstack/start_brk/exit_signal)
 
 ---
 
