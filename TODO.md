@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2361/58, musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2364/56 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -11,7 +11,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 0 | Build-Infrastruktur (Header-Deps) | **✓ done** (Commit `5d17930`, 2335/79 → 2341/78) | — | — | — |
 | 1 | Syscall-Validierung (Klasse D) | **✓ done** (2334/79 → 2349/65) | — | — | — |
 | 2 | VFS-Metadaten (Klasse B) | **✓ done** (2354/65 → 2361/58, Commit `560157d`) | — | — | — |
-| **0.5** | **Test-Runner-Watchdog (vorziehen)** | Test-Count-Varianz (±5) → 0 | 1 Tag | niedrig | 6.5-Diagnose |
+| 0.5 | Test-Runner-Watchdog | **✓ done** (2361/58 → 2364/56, Varianz ±14 → ±2) | — | — | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
@@ -105,28 +105,19 @@ Commit `560157d`. Test-Stand 2354/65 → 2361/58. POSIX-Inode-Felder (uid/gid/mo
 
 ---
 
-## Phase 0.5 — Test-Runner-Watchdog (vorziehen, blockiert 6.5-Diagnose)
+## Phase 0.5 — Test-Runner-Watchdog ✓ abgeschlossen
 
-`make test-hw` 5× sequentiell gelaufen (Netz-Audit nach Phase 2):
+Parent-seitiger Watchdog via SIGALRM-Handler + blocking `wait4`. Handler setzt Flag und `kill(-pgid, SIGKILL)`. Child setzt `setsid()` für Process-Group-Isolation. `alarm()` im Child entfernt — LTP-alarm02..07 nicht mehr blockiert.
 
-| Test | PASS-Quote |
-|------|-----------|
-| `net/nonblock-connect` | 2/5 |
-| `net/nonblock-read` | 2/5 |
-| `net/nonblock-write` | 0/5 (stabil rot) |
-| `ltp/accept02-loopback` | 4/5 |
+Varianz 5×: Pre-Fix 2348..2362 (±14), Post-Fix 2363..2365 (±2). Reststreuung: `net/connect EISCONN` (4/5) aus Phase 6.5, `SIGCONT: WIFCONTINUED` (1/5) — echter Kernel-Race SIGSTOP→SIGCONT→SIGKILL auf Grandchild, vorher von alarm(5) maskiert. Null-Varianz erfordert Phase 6.5 + Kernel-Signal-Fix, beides out-of-scope.
 
-Runner setzt `alarm(5)` im Child (`test/main.c:54`). Kernel-Busy-Waits in `net_arp_resolve` (bis 3s, `arp.c:209`) + `dhcp.c:39` (3s Retry). Summiert mit slirp-NAT-Delay → SIGALRM-Race **vor** echter Kernel-Fehlschlag sichtbar wird.
+Poll-Loop mit `nanosleep(10ms)` erprobt, verworfen: nanosleep hängt deterministisch nach bestimmten SIGSTOP/SIGCONT-Sequenzen (`test_job_control`). Blocking-wait4-Pfad umgeht den defekten Codepfad. Root-Cause im Scheduler/Event-Queue, nicht im Runner.
 
-Ohne diesen Fix sind 6.5-Kandidaten als "Flake" getarnt. Mit Fix wird der echte Bug deterministisch rot.
-
-- [ ] Parent-seitiger `fork`+`waitpid`-Watchdog mit `SIGKILL` on timeout
-- [ ] `alarm()` im Child entfernen
-- [ ] Timeout pro Kategorie konfigurierbar (unit=2s, net=10s, fork=5s)
-- [ ] Löst die 4 alarm-Tests (ehemalige Klasse M)
-- [ ] Test-Count-Varianz muss auf 0 fallen (5× Run-Delta = 0)
-
-**Nicht** in Phase 8.2 — zu früh nötig für die Netz-Diagnose.
+- [x] Parent-seitiger SIGALRM-Watchdog mit `kill(-pgid, SIGKILL)` on timeout
+- [x] `alarm()` im Child entfernt
+- [x] Timeout pro Kategorie: net=10s, crash/fuzz=15s, default=5s (unit=2s zu eng für fork+sleep-Tests wie `sig-bug3-per-thread-mask`)
+- [x] Löst die 5 LTP-alarm-Tests (alarm02/03/05/06/07)
+- [~] Test-Count-Varianz: ±2 statt ±14 (Rest: 2 Tests, beide Kernel-Bugs nicht Runner)
 
 ---
 
