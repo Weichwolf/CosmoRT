@@ -11,6 +11,7 @@
 #include "spinlock.h"
 #include "proc/thread.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 
 extern void sched_add(thread_t *t);
 
@@ -132,7 +133,7 @@ int ipc_recv(int ep_id, ipc_msg_t *msg) {
 
     /* Spin briefly then return EAGAIN — caller retries */
     for (int i = 0; i < 100; i++) {
-        arch_pause();
+        hal_cpu_relax();
         spin_lock_irq(ep_lock(ep), &flags);
         if (ep->notify_word || ep->state == EP_SEND_WAIT) {
             spin_unlock_irq(ep_lock(ep), flags);
@@ -198,7 +199,7 @@ int ipc_wait_any(const ipc_wait_set_t *set, ipc_msg_t *msg) {
             if (ipc_try_recv(set->ep_ids[i], msg) == 0)
                 return i;
         }
-        if (round == 0) arch_pause();
+        if (round == 0) hal_cpu_relax();
     }
     return -1;
 }

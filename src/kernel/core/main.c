@@ -22,6 +22,7 @@
 #include "cosmort.h"
 #include "random.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "vt/vt.h"
 #include "vt/fb.h"
 #include "vt/input.h"
@@ -30,9 +31,7 @@
 
 
 
-/* XSAVE state — set at boot, read everywhere */
-uint64_t xsave_xcr0 = XSTATE_FP | XSTATE_SSE;  /* default: x87+SSE */
-uint32_t xsave_size = 512;                       /* default: FXSAVE */
+/* XSAVE globals (xsave_xcr0 / xsave_size) defined in arch/x86_64/cpu/hal_features.c */
 
 /* ISR stacks now in sched.c (per-core idle_stacks) */
 
@@ -118,77 +117,9 @@ void kernel_main(struct boot_info *info) {
         info->mmap_size,
         info->mmap_desc_size);
 
-    /* Enable SSE/SSE2 + detect XSAVE for AVX/AVX-512 */
-    {
-        uint64_t cr0 = arch_get_cr0();
-        cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
-        cr0 &= ~(1ULL << 3);  /* clear CR0.TS (allow FPU/SSE without #NM) */
-        cr0 |=  (1ULL << 1);  /* set CR0.MP (monitor coprocessor) */
-        arch_set_cr0(cr0);
-        uint64_t cr4 = arch_get_cr4();
-        cr4 |= (1 << 9) | (1 << 10); /* CR4.OSFXSR + CR4.OSXMMEXCPT */
-
-        /* SMEP + SMAP: prevent kernel from executing/accessing user pages.
-         * Check CPUID.07H:EBX — bit 7 = SMEP, bit 20 = SMAP. */
-        uint32_t eax, ebx, ecx, edx;
-        arch_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
-        if (ebx & (1U << 7)) {
-            cr4 |= (1ULL << 20);  /* CR4.SMEP */
-            serial_puts("sec: SMEP enabled\n");
-        }
-        if (ebx & (1U << 20)) {
-            cr4 |= (1ULL << 21);  /* CR4.SMAP */
-            serial_puts("sec: SMAP enabled\n");
-        }
-
-        /* XSAVE: detect via CPUID.01H:ECX bit 26 (OSXSAVE-capable).
-         * If present: enable CR4.OSXSAVE, query supported components via
-         * CPUID.0DH, configure XCR0, read save area size.
-         * Like Linux: eager FPU, XSAVE on every context switch. */
-        arch_cpuid(1, &eax, &ebx, &ecx, &edx);
-        if (ecx & (1U << 26)) { /* XSAVE supported */
-            cr4 |= (1ULL << 18);  /* CR4.OSXSAVE */
-            arch_set_cr4(cr4);
-
-            /* Query max supported XCR0 from CPUID.0DH:EAX (subleaf 0) */
-            uint32_t x_eax, x_ebx, x_ecx, x_edx;
-            arch_cpuid_count(0x0D, 0, &x_eax, &x_ebx, &x_ecx, &x_edx);
-            uint64_t hw_xcr0 = ((uint64_t)x_edx << 32) | x_eax;
-
-            /* Enable components we support: x87 + SSE always,
-             * plus AVX and AVX-512 if hardware supports them */
-            uint64_t want = XSTATE_FP | XSTATE_SSE;
-            if (hw_xcr0 & XSTATE_AVX)       want |= XSTATE_AVX;
-            if ((hw_xcr0 & XSTATE_AVX512_OP) &&
-                (hw_xcr0 & XSTATE_AVX512_HI) &&
-                (hw_xcr0 & XSTATE_AVX512_EX))
-                want |= XSTATE_AVX512_OP | XSTATE_AVX512_HI | XSTATE_AVX512_EX;
-
-            arch_xsetbv(0, want);
-            xsave_xcr0 = want;
-
-            /* Re-query with our XCR0 to get actual save area size */
-            arch_cpuid_count(0x0D, 0, &x_eax, &x_ebx, &x_ecx, &x_edx);
-            xsave_size = x_ebx; /* EBX = size required for enabled components */
-            if (xsave_size > XSAVE_MAX_SIZE) xsave_size = XSAVE_MAX_SIZE;
-            if (xsave_size < 512) xsave_size = 512;
-
-            serial_puts("xsave: enabled (");
-            if (want & XSTATE_AVX512_OP) serial_puts("AVX-512");
-            else if (want & XSTATE_AVX)  serial_puts("AVX");
-            else                         serial_puts("SSE");
-            serial_puts(")\n");
-        } else {
-            /* No XSAVE — FXSAVE fallback (512 bytes, x87+SSE only) */
-            xsave_xcr0 = XSTATE_FP | XSTATE_SSE;
-            xsave_size = 512;
-            arch_set_cr4(cr4);
-            serial_puts("fpu: FXSAVE (no XSAVE)\n");
-        }
-
-        /* Ensure AC flag is clear (CLAC) — default kernel state */
-        arch_clac();
-    }
+    /* Enable SSE/SSE2 + detect XSAVE for AVX/AVX-512. x86-specific, in arch/ */
+    extern void arch_fpu_boot_init(void);
+    arch_fpu_boot_init();
 
     /* Exception table: sort fault/fixup pairs so the page-fault handler can
      * binary-search. Must run before any syscall/user-access path. */
@@ -357,7 +288,7 @@ void kernel_main(struct boot_info *info) {
                 net_dhcp_send_discover();
                 last_discover = timer_ms();
             }
-            arch_halt(); /* sleep until next IRQ */
+            hal_cpu_halt(); /* sleep until next IRQ */
         }
 
         if (dhcp_ok) {
@@ -437,7 +368,7 @@ void kernel_main(struct boot_info *info) {
     int pid = proc_create_elf(init_bin, init_bin_size);
     if (pid < 0) {
         serial_puts("FATAL: failed to load init\n");
-        arch_cli_halt();
+        hal_cpu_halt_noirq();
     }
 
     /* PTY redirect handled by vt_shell for qemu-gui, not here */

@@ -12,6 +12,7 @@
 #include "uaccess.h"
 #include "mm/vma.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "linux/abi.h"
 
 /* PTE flags (from sys/internal.h) */
@@ -853,7 +854,7 @@ long do_shmdt(const void *shmaddr) {
             uint64_t phys = pt[pti] & PHYS_MASK;
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
-            arch_invlpg(va);
+            hal_mmu_flush(va);
         }
     }
 

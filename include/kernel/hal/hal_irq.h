@@ -34,4 +34,8 @@ void hal_irq_mask_all(void);
 void hal_irq_send_ipi(int target_cpu, int vector);
 void hal_irq_send_ipi_all(int vector);
 
+/* Install vector table pointer (LIDT on x86, VBAR_EL1 on aarch64).
+ * desc format is arch-private; kernel only passes an opaque token. */
+void hal_irq_install_vector_table(const void *desc);
+
 #endif

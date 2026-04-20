@@ -14,6 +14,7 @@
 #include "core/smp.h"
 #include "spinlock.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "memops.h"
 #include "mm/extable.h"
 #include "core/tick.h"
@@ -122,7 +123,7 @@ static void pf_kernel_panic(uint64_t cr2, uint64_t error, uint64_t rip) {
     serial_puts(" rip=");
     serial_hex64(rip);
     serial_puts(" KERNEL PANIC\n");
-    arch_cli_halt();
+    hal_cpu_halt_noirq();
     __builtin_unreachable();
 }
 
@@ -176,7 +177,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
     /* Page fault (vector 14): demand paging */
     if (vector == 14) {
-        uint64_t cr2 = arch_get_cr2();
+        uint64_t cr2 = hal_mmu_fault_address();
         uint64_t error = frame->error;
 
         /* Kernel-mode fault (bit 2 = 0): try demand paging for user addresses */
@@ -257,7 +258,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                 int krc = page_refcount(old_phys);
                                 if (krc <= 1) {
                                     if (map_user_page(kp->pml4, kpage_addr, old_phys, kprot) == 0) {
-                                        arch_invlpg(kpage_addr);
+                                        hal_mmu_flush(kpage_addr);
                                         return;
                                     }
                                 } else {
@@ -266,7 +267,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                         kmemcpy(knew, phys_to_virt(old_phys), 4096);
                                         if (map_user_page(kp->pml4, kpage_addr,
                                                           virt_to_phys(knew), kprot) == 0) {
-                                            arch_invlpg(kpage_addr);
+                                            hal_mmu_flush(kpage_addr);
                                             page_free(phys_to_virt(old_phys));
                                             return;
                                         }
@@ -301,7 +302,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     serial_putchar('\n');
                     extern void do_exit_group(int status);
                     extern uint64_t pml4[];
-                    arch_set_cr3(virt_to_phys(pml4));
+                    hal_mmu_switch(virt_to_phys(pml4));
                     kft2->proc->exit_signal = 11;
                     do_exit_group(128 + 11);
                 }
@@ -351,7 +352,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if ((pte & 1) && !(pte & PTE_COW_IRQ)) {
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
                         if (map_user_page(p->pml4, page_addr, phys, cow_prot) == 0) {
-                            arch_invlpg(page_addr);
+                            hal_mmu_flush(page_addr);
                             return;
                         }
                         goto kill_process;
@@ -362,7 +363,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         if (rc <= 1) {
                             /* Last reference: just restore write + remove COW */
                             if (map_user_page(p->pml4, page_addr, old_phys, cow_prot) == 0) {
-                                arch_invlpg(page_addr);
+                                hal_mmu_flush(page_addr);
                                 return;
                             }
                         } else {
@@ -372,7 +373,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                                 kmemcpy(new_page, phys_to_virt(old_phys), 4096);
                                 if (map_user_page(p->pml4, page_addr,
                                                   virt_to_phys(new_page), cow_prot) == 0) {
-                                    arch_invlpg(page_addr);
+                                    hal_mmu_flush(page_addr);
                                     /* Notify dedup: old hash invalidated, new page diverged */
                                     /* page_free handles refcount: decrements and
                                      * only returns to buddy when count reaches 0 */
@@ -396,7 +397,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if (pte & 1) {
                         uint64_t phys = pte & 0x000FFFFFFFFFF000ULL;
                         if (map_user_page(p->pml4, page_addr, phys, nx_prot) == 0) {
-                            arch_invlpg(page_addr);
+                            hal_mmu_flush(page_addr);
                             return; /* resume execution */
                         }
                     }
@@ -556,7 +557,7 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
         segfault_log(cr2, frame->rip, error, (t && t->proc) ? (int)t->proc->pid : -1);
         if (t && t->proc) {
             extern void do_exit_group(int status);
-            arch_set_cr3(virt_to_phys(t->proc->pml4));
+            hal_mmu_switch(virt_to_phys(t->proc->pml4));
             t->proc->exit_signal = 11;
             do_exit_group(128 + 11); /* SIGSEGV */
         }
@@ -635,7 +636,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(signo))) {
                 irq_frame_to_thread(frame, t);
                 /* PF: fault addr = CR2. Other traps: fault addr = faulting RIP. */
-                t->fault_addr = (vector == 14) ? arch_get_cr2() : frame->rip;
+                t->fault_addr = (vector == 14) ? hal_mmu_fault_address() : frame->rip;
 
                 extern void deliver_signal(thread_t *t, int signo);
                 deliver_signal(t, signo);
@@ -657,7 +658,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_hex64(frame->rsp);
 
     if (vector == 14) {
-        uint64_t cr2 = arch_get_cr2();
+        uint64_t cr2 = hal_mmu_fault_address();
         serial_puts(" CR2="); serial_hex64(cr2);
     }
 
@@ -681,11 +682,11 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         serial_puts("\n  r13="); serial_hex64(frame->r13);
         serial_puts(" r14="); serial_hex64(frame->r14);
         serial_puts(" r15="); serial_hex64(frame->r15);
-        serial_puts(" fs=");  serial_hex64(arch_get_fs_base());
+        serial_puts(" fs=");  serial_hex64(hal_cpu_get_tls());
         serial_puts(" killed\n");
         /* Use do_exit_group to properly close FDs, wake parent, etc. */
         extern void do_exit_group(int status);
-        arch_set_cr3(virt_to_phys(t->proc->pml4));
+        hal_mmu_switch(virt_to_phys(t->proc->pml4));
         t->proc->exit_signal = vector;
         do_exit_group(128 + vector);
     }
@@ -697,7 +698,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
         serial_putchar('\n');
         extern void do_exit_group(int status);
         extern uint64_t pml4[];
-        arch_set_cr3(virt_to_phys(pml4));
+        hal_mmu_switch(virt_to_phys(pml4));
         t->proc->exit_signal = vector;
         do_exit_group(128 + vector);
     }
@@ -714,7 +715,7 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     }
 
     serial_puts(" KERNEL PANIC\n");
-    arch_cli_halt();
+    hal_cpu_halt_noirq();
 }
 
 __attribute__((cold))
@@ -725,7 +726,7 @@ static void default_exception(int vector) {
     serial_putchar('0' + vector / 10);
     serial_putchar('0' + vector % 10);
     serial_puts(" KERNEL PANIC\n");
-    arch_cli_halt();
+    hal_cpu_halt_noirq();
 }
 
 /* ── TLB Shootdown IPI ─────────────────────────────── */
@@ -740,12 +741,12 @@ static void tlb_shootdown_handler(int vector) {
      * pml4==0 (unconditional flush, e.g. from free_address_space). */
     uint64_t target = shootdown_pml4;
     if (target == 0) {
-        arch_flush_tlb();
+        hal_mmu_flush_all();
     } else {
         percpu_t *cpu = percpu_self();
         thread_t *t = cpu->current_thread;
         if (t && t->proc && virt_to_phys(t->proc->pml4) == target)
-            arch_flush_tlb();
+            hal_mmu_flush_all();
     }
     __sync_fetch_and_add(&shootdown_ack, 1);
     /* EOI handled by irq_dispatch — do NOT double-EOI */
@@ -760,7 +761,7 @@ void tlb_shootdown(uint64_t pml4_phys) {
 
     shootdown_ack = 0;
     shootdown_pml4 = pml4_phys;
-    arch_mfence();
+    hal_cpu_mfence();
 
     /* Send IPI to all other cores: all-excluding-self shorthand, vector 0xFE */
     volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
@@ -771,7 +772,7 @@ void tlb_shootdown(uint64_t pml4_phys) {
     for (int i = 0; i < 10000000; i++) {
         if (__sync_val_compare_and_swap(&shootdown_ack, expected, expected) >= expected)
             break;
-        arch_pause();
+        hal_cpu_relax();
     }
 
     spin_unlock_irq(&shootdown_lock, flags);
@@ -805,7 +806,7 @@ static void resched_ipi_handler(int vector) {
 
 __attribute__((cold))
 void irq_init(void) {
-    arch_cli();
+    hal_cpu_cli();
 
     /* ISR stub addresses are identity-mapped (EFI relocations).
      * Add PHYS_OFFSET so they resolve via direct map in user PML4. */
@@ -827,7 +828,7 @@ void irq_init(void) {
 
     idtp.limit = sizeof(idt) - 1;
     idtp.base = ensure_high((uint64_t)(uintptr_t)&idt);
-    arch_lidt(&idtp);
+    hal_irq_install_vector_table(&idtp);
     serial_puts("IRQ: IDT loaded\n");
 
     for (int i = 0; i < 24; i++) {
@@ -845,5 +846,5 @@ void irq_init(void) {
     lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) — RT-Core */
     serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
 
-    arch_sti();
+    hal_cpu_sti();
 }

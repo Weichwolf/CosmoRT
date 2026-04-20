@@ -12,6 +12,7 @@
 #include "core/percpu.h"
 #include "core/timer.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "spinlock.h"
 
 /* Per-thread producer lock — indexed by TID.
@@ -39,11 +40,11 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     uint32_t t = eq->tail;
 
     if (h - t >= EQ_MAX_EVENTS)
-        arch_store_release(&eq->tail, t + 1);
+        hal_cpu_store_release(&eq->tail, t + 1);
 
     eq->events[h & EQ_MASK].type = type;
     eq->events[h & EQ_MASK].data = data;
-    arch_store_release(&eq->head, h + 1);
+    hal_cpu_store_release(&eq->head, h + 1);
 
     spin_unlock_irq(lk, irqf);
 
@@ -127,12 +128,12 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         }
 
         /* Fast path: event available */
-        uint32_t h = arch_load_acquire(&eq->head);
+        uint32_t h = hal_cpu_load_acquire(&eq->head);
         uint32_t t = eq->tail;
 
         if (h != t) {
             *out = eq->events[t & EQ_MASK];
-            arch_store_release(&eq->tail, t + 1);
+            hal_cpu_store_release(&eq->tail, t + 1);
             if (has_timer) hrtimer_cancel(&timer);
             return 0;
         }
@@ -154,8 +155,8 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         cur->state = THREAD_BLOCKED;
 
         /* Close race: event arrived between fast-path and BLOCKED */
-        __asm__ volatile("mfence" ::: "memory");
-        if (arch_load_acquire(&eq->head) != eq->tail) {
+        hal_cpu_mfence();
+        if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
             cur->state = THREAD_RUNNING;
             continue;
         }
@@ -167,10 +168,10 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             hrtimer_cancel(&timer);
             /* Check queue one last time (event might have arrived with timeout) */
-            h = arch_load_acquire(&eq->head);
+            h = hal_cpu_load_acquire(&eq->head);
             if (h != eq->tail) {
                 *out = eq->events[eq->tail & EQ_MASK];
-                arch_store_release(&eq->tail, eq->tail + 1);
+                hal_cpu_store_release(&eq->tail, eq->tail + 1);
                 return 0;
             }
             return -11; /* EAGAIN (timeout) */

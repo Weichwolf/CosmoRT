@@ -70,7 +70,7 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
                 /* Free all 512 sub-pages via page_free (respects refcount) */
                 for (int i = 0; i < 512; i++) {
                     page_free(phys_to_virt(phys + (uint64_t)i * 4096));
-                    arch_invlpg(huge_base + (uint64_t)i * 4096);
+                    hal_mmu_flush(huge_base + (uint64_t)i * 4096);
                 }
                 va = huge_base + HUGE_PAGE_SIZE;
                 continue;
@@ -90,7 +90,7 @@ static void unmap_range(uint64_t *user_pml4, uint64_t start, uint64_t end) {
             uint64_t phys = pt[pti] & PHYS_MASK;
             pt[pti] = 0;
             page_free(phys_to_virt(phys));
-            arch_invlpg(va);
+            hal_mmu_flush(va);
         }
         va += 4096;
     }
@@ -138,7 +138,7 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
                 uint64_t phys = pd[pdi] & HUGE_PAGE_MASK;
                 pd[pdi] = phys | new_flags | PTE_PS;
                 for (uint64_t a = huge_base; a < huge_base + HUGE_PAGE_SIZE; a += 4096)
-                    arch_invlpg(a);
+                    hal_mmu_flush(a);
                 va = huge_base + HUGE_PAGE_SIZE;
                 continue;
             }
@@ -156,7 +156,7 @@ static void update_pte_prot(uint64_t *user_pml4, uint64_t start, uint64_t end, i
         uint64_t phys = pt[pti] & PHYS_MASK;
         if (phys) {
             pt[pti] = phys | new_flags;
-            arch_invlpg(va);
+            hal_mmu_flush(va);
         }
         va += 4096;
     }
@@ -337,7 +337,7 @@ long do_brk(unsigned long addr) {
         if (bv && bv->start == p->brk_base) bv->end = new_end;
         unmap_range(p->pml4, new_end, old_end);
         tlb_shootdown(virt_to_phys(p->pml4));
-        arch_flush_tlb();
+        hal_mmu_flush_all();
     }
 
     /* Update brk VMA (for grow cases — shrink already handled above) */
@@ -527,7 +527,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         }
         /* Unmap old PTEs so demand paging sees the new VMA's file_offset */
         unmap_range(p->pml4, vaddr, vaddr + length);
-        arch_flush_tlb();
+        hal_mmu_flush_all();
         tlb_shootdown(virt_to_phys(p->pml4));
 
         /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
@@ -695,7 +695,7 @@ long do_munmap(unsigned long addr, size_t length) {
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
     /* TLB flush: local + remote cores sharing this address space */
-    arch_flush_tlb();
+    hal_mmu_flush_all();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
@@ -762,7 +762,7 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     update_pte_prot(p->pml4, start, end, prot);
 
     /* TLB flush: local + remote cores sharing this address space */
-    arch_flush_tlb();
+    hal_mmu_flush_all();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Update VMA prot flags, splitting if needed */
@@ -847,7 +847,7 @@ static void mark_lazyfree_range(uint64_t *user_pml4, uint64_t start, uint64_t en
         if (pt[pti] & PTE_PRESENT) {
             /* Set LAZYFREE, clear Dirty (so reclaim knows page is untouched) */
             pt[pti] = (pt[pti] | PTE_LAZYFREE) & ~PTE_DIRTY;
-            arch_invlpg(va);
+            hal_mmu_flush(va);
         }
         va += 4096;
     }
@@ -886,7 +886,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
             }
             va = v->end;
         }
-        arch_flush_tlb();
+        hal_mmu_flush_all();
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
         spin_unlock_irq(&p->lock, irqf);
@@ -918,7 +918,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
             return -ENOMEM;
         }
         /* TLB flush to ensure Dirty bit is cleared in all TLBs */
-        arch_flush_tlb();
+        hal_mmu_flush_all();
         extern void tlb_shootdown(uint64_t pml4_phys);
         tlb_shootdown(virt_to_phys(p->pml4));
         spin_unlock_irq(&p->lock, irqf);
@@ -1015,7 +1015,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
         copy_user_pages(p->pml4, new_addr, old_addr, old_size < new_size ? old_size : new_size, v_prot);
         unmap_range(p->pml4, old_addr, old_addr + old_size);
-        arch_flush_tlb();
+        hal_mmu_flush_all();
         tlb_shootdown(virt_to_phys(p->pml4));
 
         vma_t *old_v = vma_find(p->vma_root, old_addr);
@@ -1034,7 +1034,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
         uint64_t trim_end = old_addr + old_size;
         unmap_range(p->pml4, trim_start, trim_end);
         tlb_shootdown(virt_to_phys(p->pml4));
-        arch_flush_tlb();
+        hal_mmu_flush_all();
         v->end = old_addr + new_size;
         spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;
@@ -1080,7 +1080,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
     /* Unmap old region */
     unmap_range(p->pml4, old_addr, old_addr + old_size);
-    arch_flush_tlb();
+    hal_mmu_flush_all();
     tlb_shootdown(virt_to_phys(p->pml4));
 
     /* Remove old VMA (re-find since tree may have changed) */
@@ -1129,7 +1129,7 @@ static void writeback_dirty_pages(uint64_t *user_pml4, uint64_t start, uint64_t 
                               phys_to_virt(phys), (size_t)foff, 4096);
             /* Clear dirty bit — page is now clean */
             pt[pti] = pte & ~PTE_DIRTY;
-            arch_invlpg(va);
+            hal_mmu_flush(va);
         }
     }
 }

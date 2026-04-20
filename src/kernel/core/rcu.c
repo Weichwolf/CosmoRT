@@ -15,6 +15,7 @@
 #include "spinlock.h"
 #include "hw/serial.h"
 #include "config.h"
+#include "hal/hal.h"
 
 /* ── Scheduler/process externs (file scope) ──── */
 
@@ -206,7 +207,7 @@ void rcu_read_lock(void) {
     struct thread *t = thread_current();
     if (__builtin_expect(t != 0, 1))
         t->rcu_read_nesting++;
-    arch_wmb();
+    hal_cpu_wmb();
 }
 
 static void rcu_read_unlock_special(struct thread *t) {
@@ -226,7 +227,7 @@ static void rcu_read_unlock_special(struct thread *t) {
 
 __attribute__((hot))
 void rcu_read_unlock(void) {
-    arch_wmb();
+    hal_cpu_wmb();
     struct thread *t = thread_current();
     if (__builtin_expect(t == 0, 0))
         return;

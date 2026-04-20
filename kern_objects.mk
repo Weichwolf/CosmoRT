@@ -101,6 +101,7 @@ KERN_VT   = $(BUILD)/kernel/vt/vt.o \
 
 KERN_HAL  = $(BUILD)/arch/x86_64/cpu/hal_cpu.o \
             $(BUILD)/arch/x86_64/cpu/hal_mmu.o \
+            $(BUILD)/arch/x86_64/cpu/hal_irq.o \
             $(BUILD)/arch/x86_64/cpu/hal_features.o \
             $(BUILD)/arch/x86_64/timer/hal_timer.o
 

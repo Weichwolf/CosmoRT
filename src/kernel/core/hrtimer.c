@@ -9,6 +9,7 @@
 #include "core/rbtree.h"
 #include "core/timer.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 
@@ -120,7 +121,7 @@ void hrtimer_init_subsystem(void) {
     uint64_t tsc_start = timer_tsc_now();
     uint64_t tsc_10ms = timer_tsc_per_ms * 10;
     while (timer_tsc_now() - tsc_start < tsc_10ms)
-        arch_pause();
+        hal_cpu_relax();
 
     uint32_t cur = lapic_read(LAPIC_TIMER_CUR);
     lapic_write(LAPIC_TIMER_INIT, 0); /* stop */
