@@ -218,7 +218,11 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if (spin_trylock_irq(&kp->lock, &kflags)) {
                         vma_t *kvma = vma_find(kp->vma_root, cr2);
                         int kprot = kvma ? kvma->prot : 0;
-                        int knp = kvma && !(error & 1);
+                        /* PROT_NONE VMAs must never be demand-paged — access
+                         * from kernel context (e.g. copy_*_user on a bad
+                         * pointer) falls through to extable/legacy recovery. */
+                        int knp = kvma && !(error & 1) &&
+                                  (kprot & (PROT_READ | PROT_WRITE | PROT_EXEC));
                         int kcow = kvma && (error & 1) && (error & 2) && (kprot & PROT_WRITE);
                         uint64_t k_file_ino = kvma ? kvma->file_ino : 0;
                         uint64_t k_file_offset = kvma ? kvma->file_offset : 0;

@@ -1,17 +1,34 @@
 /* CosmoRT Process — execve */
 
 #include "proc/proc_internal.h"
+#include "mm/extable.h"
 
 /* ── execve helpers ──────────────────────────────── */
 
-/* Copy user path string to kernel buffer.
- * Duplicated here because process_exec.c is a separate compilation unit. */
 #define PATH_MAX_PROC 4096
+
+/* Copy user path string to kernel buffer. Each byte load is annotated via
+ * _ASM_EXTABLE so a fault on an unmapped user page unwinds to the fixup
+ * label returning -EFAULT — no thread-state corruption. */
 static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     if ((uint64_t)upath >= 0x800000000000ULL) return -EFAULT;
     for (size_t i = 0; i < max; i++) {
         if ((uint64_t)(upath + i) >= 0x800000000000ULL) return -EFAULT;
-        kbuf[i] = upath[i];
+        int ret = 0;
+        uint8_t tmp;
+        __asm__ volatile(
+            "1: movb (%[src]), %[tmp]\n"
+            "2:\n"
+            _ASM_EXTABLE(1b, 3f)
+            ".pushsection .text.fixup, \"ax\"\n"
+            "3: movl %[efault], %[ret]\n"
+            "   jmp 2b\n"
+            ".popsection\n"
+            : [ret] "+r"(ret), [tmp] "=q"(tmp)
+            : [src] "r"(&upath[i]), [efault] "i"(-EFAULT)
+            : "memory");
+        if (__builtin_expect(ret < 0, 0)) return ret;
+        kbuf[i] = (char)tmp;
         if (kbuf[i] == '\0') return (int)i;
     }
     return -ENAMETOOLONG;

@@ -2,15 +2,37 @@
 
 #include "internal.h"
 #include "syscall_table.h"
+#include "mm/extable.h"
+
+/* Load one user byte into *dst with extable fault recovery.
+ * Returns 0 on success, -EFAULT if the page is not mapped. */
+__attribute__((hot))
+static inline int get_user_byte(char *dst, const char *usrc) {
+    int ret = 0;
+    uint8_t tmp;
+    __asm__ volatile(
+        "1: movb (%[src]), %[tmp]\n"
+        "2:\n"
+        _ASM_EXTABLE(1b, 3f)
+        ".pushsection .text.fixup, \"ax\"\n"
+        "3: movl %[efault], %[ret]\n"
+        "   jmp 2b\n"
+        ".popsection\n"
+        : [ret] "+r"(ret), [tmp] "=q"(tmp)
+        : [src] "r"(usrc), [efault] "i"(-EFAULT)
+        : "memory");
+    *dst = (char)tmp;
+    return ret;
+}
 
 /* Copy user path string to kernel buffer with full bounds checking.
  * Returns string length (excluding NUL) or negative errno. */
 int copy_path_from_user(char *kbuf, const char *upath, size_t max) {
     if (__builtin_expect(!user_ok((uint64_t)upath, max), 0)) return -EFAULT;
-    if (__builtin_expect(upath[0] == '\0', 0)) { kbuf[0] = '\0'; return -ENOENT; }
     for (size_t i = 0; i < max; i++) {
-        kbuf[i] = upath[i];
-        if (kbuf[i] == '\0') return (int)i;
+        int r = get_user_byte(&kbuf[i], &upath[i]);
+        if (__builtin_expect(r < 0, 0)) return r;
+        if (kbuf[i] == '\0') return i == 0 ? -ENOENT : (int)i;
     }
     return -ENAMETOOLONG;
 }
