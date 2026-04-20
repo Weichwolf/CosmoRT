@@ -6,6 +6,9 @@
 #include "net/netif.h"
 #include "net/net_util.h"
 #include "hw/serial.h"
+#include "core/tick.h"
+
+#define NET_POLL_MAX_WORK   64
 
 /* ── NIC Registration (legacy bridge to netif) ─────── */
 
@@ -87,9 +90,20 @@ int q_pop(pkt_queue_t *q, uint8_t *buf, int bufsize) {
 
 extern void lo_init(void);
 
+extern int net_rx_poll(int max_work);
+extern int net_tx_poll(int max_work);
+
+static void net_rx_tick(void) { (void)net_rx_poll(NET_POLL_MAX_WORK); }
+static void net_tx_tick(void) { (void)net_tx_poll(NET_POLL_MAX_WORK); }
+
+static struct tick_callback net_rx_cb;
+static struct tick_callback net_tx_cb;
+
 int net_init(void) {
     lo_init();
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
+    tick_register(&net_rx_cb, net_rx_tick, TICK_EVERY);
+    tick_register(&net_tx_cb, net_tx_tick, TICK_EVERY);
     return 0;
 }

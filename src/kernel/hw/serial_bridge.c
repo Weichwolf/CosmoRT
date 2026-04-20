@@ -9,14 +9,18 @@
 #include "hw/serial.h"
 #include "vt/pty.h"
 #include "vt/vt.h"
+#include "core/tick.h"
 
 /* Which VT is attached to serial. -1 = detached (dmesg only). */
 static int serial_vt = 0;
 static int esc_pending;  /* saw Ctrl-A, waiting for next byte */
 
+static struct tick_callback serial_bridge_cb;
+
 void serial_bridge_init(void) {
     serial_vt = 0;
     esc_pending = 0;
+    tick_register(&serial_bridge_cb, serial_bridge_poll, TICK_EVERY);
     serial_puts("serial: bridge attached to VT0\n");
 }
 

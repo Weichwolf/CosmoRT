@@ -196,13 +196,6 @@ void schedule(void) {
 /* ── Timer preemption ────────────────────────────── */
 
 void sched_preempt(irq_frame_t *f) {
-    /* VT flush */
-    {
-        extern void vt_flush(int vt_id);
-        extern int vt_active(void);
-        vt_flush(vt_active());
-    }
-
     percpu_t *cpu = percpu_self();
     thread_t *cur = cpu->current_thread;
     if (!cur || cur == &idle_thread || cur->state != THREAD_RUNNING) return;

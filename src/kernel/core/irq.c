@@ -787,14 +787,6 @@ static void timer_handler(int vector) {
     extern void random_add_interrupt_entropy(void);
     random_add_interrupt_entropy();
     tick_run(ticks * TICK_NS_PER_MS);
-    /* Poll serial RX → PTY input (serial console bridge) */
-    extern void serial_bridge_poll(void);
-    serial_bridge_poll();
-    /* I/O polling: network + timer wheel */
-    extern int net_rx_poll(int max_work);
-    extern int net_tx_poll(int max_work);
-    net_rx_poll(64);
-    net_tx_poll(64);
     /* Fire expired high-resolution timers + reprogram LAPIC one-shot */
     extern void hrtimer_run_expired(void);
     hrtimer_run_expired();

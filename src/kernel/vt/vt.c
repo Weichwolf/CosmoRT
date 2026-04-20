@@ -13,6 +13,7 @@
 #include "hw/serial.h"
 #include "memops.h"
 #include "mm/page_alloc.h"
+#include "core/tick.h"
 #include "gen/font_atlas.h"
 
 #define VT_MAX 12
@@ -681,6 +682,8 @@ void vt_flush(int vt_id) {
 /* ── Query ─────────────────────────────────────────── */
 
 int vt_active(void) { return active_vt; }
+
+static void vt_tick_flush(void) { vt_flush(active_vt); }
 int vt_cols(void) { return grid_cols; }
 int vt_rows(void) { return grid_rows; }
 int vt_pty_id(int vt_id) {
@@ -753,6 +756,9 @@ void vt_init(struct boot_info *info) {
     }
 
     active_vt = 0;
+
+    static struct tick_callback vt_flush_cb;
+    tick_register(&vt_flush_cb, vt_tick_flush, TICK_EVERY);
 
     serial_puts("vt: ");
     serial_putchar('0' + VT_MAX);
