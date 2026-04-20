@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2400/19 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2403/16 (Median 5×, Varianz 0), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -15,7 +15,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | **✓ done** (2365/55 → 2400/19, +35; 4.8 nach Phase 6.6) | — | — | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
-| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup** + **6.6 Page-Fault-Recovery (extable) ✓** | ~10 + 4 Netz + 4 acct | 4+3+2 Tage | **hoch** | 4.8 (acct) ✓ |
+| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup ✓** + **6.6 Page-Fault-Recovery (extable) ✓** | ~10 + 4 Netz ✓ + 4 acct ✓ | 4+3+2 Tage | **hoch** | 4.8 (acct) ✓ |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
 | 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
 
@@ -235,23 +235,20 @@ Commit `7b85a5f` hat Loopback begonnen, Tests failen weiterhin. Audit benötigt.
 - [ ] Test `stack_clash` darf SIGSEGV auslösen
 - [ ] `meltdown`-Test: Kernel-Memory-Read aus userspace → SIGSEGV
 
-### 6.5 Socket-Readiness-Wakeup
+### 6.5 Socket-Readiness-Wakeup ✓ done
 
-**Wurzel (Netz-Audit, Stand `3d26a2e`):** `tcp_input` (`net/tcp.c:747`) postet Events nur an `c->wait_thread` — dieser Slot wird aber nur von blocking `do_connect`/`do_recv` gesetzt. Für `O_NONBLOCK + poll(POLLOUT|POLLIN)` weiß der Input-Pfad nichts vom Poller → `do_poll` (`sys_event.c:97`) schläft bis zur Deadline, während SYN-ACK/Daten längst da sind.
+Commits `0dda997`, `0fc6741`. Test-Delta 2400/19 (±3) → 2403/16 (Varianz = 0, 5× identisch).
 
-Zweite Wurzel: `net_arp_resolve` busy-waits 3s ohne Signal-Check (`arp.c:190`). Linux: Paket queuen, async auflösen.
+Design-Entscheidung: Kein neuer `sock_wq` per-Socket — bestehende `epoll_wake_all`-Infrastruktur (globale per-core sleeper-Liste in `event/epoll.c`) wiederverwendet. Linux hat per-sk `wait_queue_head_t`; CosmoRT nutzt globale Liste mit fd-readiness-scan nach wakeup. Funktional äquivalent für SMP-1, spart per-socket-Lock-Ordering.
 
-Betroffene Tests: `net/nonblock-connect`, `-read`, `-write` (stabil rot), `ltp/accept02-loopback`. Alle vier zusammen durch 6.5 lösbar, da gemeinsame Infrastruktur.
-
-Linux-Vorbild: `struct sock.sk_wq` + `sock_def_readable`/`sock_def_write_space` + `poll_wait()` im `file_operations.poll`-Hook + `wait_event_interruptible_timeout`.
-
-- [ ] Per-Socket Wait-Queue (`sk_wq`-Äquivalent), Multi-Waiter-Liste, statt Single-Slot `wait_thread`
-- [ ] `tcp_input`/`udp_input`/Loopback-RX wecken **alle** registrierten Poller (`sock_wake_all`)
-- [ ] `do_poll` registriert sich via `sock_poll_wait_register(sk, t)` **vor** Readiness-Check, deregistriert vor Return
-- [ ] Accept-Pfad nutzt dieselbe Queue (ersetzt `q_tcp_wait_thread` globalen Slot in `net.c:55`)
-- [ ] `net_arp_resolve` non-blocking: bei Miss Paket in Queue + TTL, `-EAGAIN` zurück
-- [ ] TX-Pfad identisch: Completion weckt wartende Writer statt Busy-Wait
-- [ ] Test-Varianz-Check: 5× `make test-hw` muss identische PASS/FAIL-Liste produzieren
+- [x] `do_poll` (`sys_event.c`) registriert sich via `epoll_sleeper_add_ext` **vor** readiness-check; `epoll_sleeper_remove_ext` am Return (iteriert alle Cores wg. Thread-Migration)
+- [x] `epoll_sleeper_add`: dup-check verhindert Listen-Wachstum bei Loop-Iteration
+- [x] `lo_send` ruft `epoll_wake_all()` — vorher weckte Loopback-RX nur `c->wait_thread`, kein Poll-Signal
+- [x] Accept-Pfad: TCP-Hash-Eintrag sauber von `ls->tcp` auf `ns->tcp` übertragen (`tcp_unregister` + `kmemcpy` + `tcp_register` + `kmemset`, IRQ-disabled). Ohne Fix zeigte der Hash nach `kmemset` auf genullte struct → Folgepakete verloren
+- [x] Socket-blocking-Pfade (`connect`/`accept`/`recv`/`recvfrom`/DGRAM-recv): prepare_to_wait-Pattern — `wait_thread` **vor** readiness-check setzen. Behebt lost-wakeup wenn Daten zwischen check und `event_wait` ankommen
+- [x] `net_arp_resolve`: Per-Iteration signal-check. Pending deliverable signal → `-1` statt weiter busy-waiten. Timeout bei 3s belassen (NIC-tests brauchen das). Vollständige non-blocking neighbour-cache: Phase 5.
+- [x] Validierung: 5× `make test-hw` → identisch 2403/16, Varianz = 0.
+- [x] `net/nonblock-connect`, `-read`, `-write` stabil PASS; `ltp/accept02-loopback` 5/5.
 
 ### 6.6 Page-Fault-Recovery via Exception-Table ✓ done
 
