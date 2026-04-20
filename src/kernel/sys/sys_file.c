@@ -1392,7 +1392,7 @@ long do_fadvise64(int fd, long offset, long len, int advice) {
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
-    if (advice < 0 || advice > 5) return -EINVAL;
+    if (advice < POSIX_FADV_NORMAL || advice > POSIX_FADV_NOREUSE) return -EINVAL;
     if (fde->type == FD_PIPE || fde->type == FD_SOCKET ||
         fde->type == FD_UNIX_SOCK) return -ESPIPE;
     return 0; /* hint accepted, no page cache action */

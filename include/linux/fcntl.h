@@ -78,4 +78,12 @@ struct k_flock {
 #define RENAME_EXCHANGE       (1 << 1)
 #define RENAME_WHITEOUT       (1 << 2)
 
+/* posix_fadvise(2) */
+#define POSIX_FADV_NORMAL     0
+#define POSIX_FADV_RANDOM     1
+#define POSIX_FADV_SEQUENTIAL 2
+#define POSIX_FADV_WILLNEED   3
+#define POSIX_FADV_DONTNEED   4
+#define POSIX_FADV_NOREUSE    5
+
 #endif /* COSMO_LINUX_FCNTL_H */
