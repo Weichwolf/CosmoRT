@@ -10,6 +10,11 @@
 #include "core/smp.h"
 #include "core/timer.h"
 #include "memops.h"
+#include "config.h"
+#include "proc/proc_internal.h"
+#include "mm/vma.h"
+
+#define PROCFS_HUGE_PAGE (2ULL * 1024 * 1024)
 
 /* ── Entry table ─────────────────────────────────── */
 
@@ -313,12 +318,57 @@ void procfs_fd_free(procfs_fd_t *pf) {
 
 /* ── /proc/pid/status ──────────────────────────── */
 
-/* VMA walk to sum virtual size */
 static uint64_t vma_sum_size(vma_t *node) {
     if (!node) return 0;
     return vma_sum_size(node->left)
          + (node->end - node->start)
          + vma_sum_size(node->right);
+}
+
+static uint64_t vma_sum_data(vma_t *node) {
+    if (!node) return 0;
+    uint64_t sum = vma_sum_data(node->left) + vma_sum_data(node->right);
+    if ((node->flags & MAP_ANONYMOUS) && (node->prot & PROT_WRITE) &&
+        !(node->flags & VMA_GROWSDOWN))
+        sum += node->end - node->start;
+    return sum;
+}
+
+static uint64_t vma_sum_stack(vma_t *node) {
+    if (!node) return 0;
+    uint64_t sum = vma_sum_stack(node->left) + vma_sum_stack(node->right);
+    if (node->flags & VMA_GROWSDOWN)
+        sum += node->end - node->start;
+    return sum;
+}
+
+static uint64_t vma_sum_exe(vma_t *node) {
+    if (!node) return 0;
+    uint64_t sum = vma_sum_exe(node->left) + vma_sum_exe(node->right);
+    if (node->prot & PROT_EXEC) sum += node->end - node->start;
+    return sum;
+}
+
+static uint64_t proc_count_rss(process_t *p) {
+    if (!p->pml4) return 0;
+    uint64_t rss = 0;
+    uint64_t *pml4 = p->pml4;
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT)) continue;
+                if (pd[k] & PTE_PS) { rss += PROCFS_HUGE_PAGE; continue; }
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
+                for (int l = 0; l < 512; l++)
+                    if (pt[l] & PTE_PRESENT) rss += 4096;
+            }
+        }
+    }
+    return rss;
 }
 
 static int procfs_pid_status(char *buf, int size, int offset, void *ctx) {
@@ -332,29 +382,56 @@ static int procfs_pid_status(char *buf, int size, int offset, void *ctx) {
     default:          state_str = "S (sleeping)"; break;
     }
 
-    /* Compute VmSize from VMA tree */
-    uint64_t vm_bytes = 0;
+    uint64_t vm_bytes, data_bytes, stk_bytes, exe_bytes, rss_bytes;
     uint64_t irqf;
     spin_lock_irq(&p->lock, &irqf);
-    vm_bytes = vma_sum_size(p->vma_root);
+    vm_bytes   = vma_sum_size(p->vma_root);
+    data_bytes = vma_sum_data(p->vma_root);
+    stk_bytes  = vma_sum_stack(p->vma_root);
+    exe_bytes  = vma_sum_exe(p->vma_root);
+    rss_bytes  = proc_count_rss(p);
     spin_unlock_irq(&p->lock, irqf);
-    long vm_kb = (long)(vm_bytes / 1024);
 
-    char tmp[512];
+    char tmp[1024];
     int pos = 0;
-    pos = append_str(tmp, pos, 512, "Name:\t");
-    pos = append_str(tmp, pos, 512, p->comm[0] ? p->comm : "?");
-    pos = append_str(tmp, pos, 512, "\nState:\t");
-    pos = append_str(tmp, pos, 512, state_str);
-    pos = append_str(tmp, pos, 512, "\nPid:\t");
-    pos = append_int(tmp, pos, 512, (long)p->pid);
-    pos = append_str(tmp, pos, 512, "\nPPid:\t");
-    pos = append_int(tmp, pos, 512, (long)p->parent_pid);
-    pos = append_str(tmp, pos, 512, "\nThreads:\t");
-    pos = append_int(tmp, pos, 512, (long)p->thread_count);
-    pos = append_str(tmp, pos, 512, "\nVmSize:\t");
-    pos = append_int(tmp, pos, 512, vm_kb);
-    pos = append_str(tmp, pos, 512, " kB\n");
+    pos = append_str(tmp, pos, 1024, "Name:\t");
+    pos = append_str(tmp, pos, 1024, p->comm[0] ? p->comm : "?");
+    pos = append_str(tmp, pos, 1024, "\nUmask:\t0");
+    pos = append_int(tmp, pos, 1024, (long)((p->umask_val >> 6) & 7));
+    pos = append_int(tmp, pos, 1024, (long)((p->umask_val >> 3) & 7));
+    pos = append_int(tmp, pos, 1024, (long)(p->umask_val & 7));
+    pos = append_str(tmp, pos, 1024, "\nState:\t");
+    pos = append_str(tmp, pos, 1024, state_str);
+    pos = append_str(tmp, pos, 1024, "\nTgid:\t");
+    pos = append_int(tmp, pos, 1024, (long)p->pid);
+    pos = append_str(tmp, pos, 1024, "\nPid:\t");
+    pos = append_int(tmp, pos, 1024, (long)p->pid);
+    pos = append_str(tmp, pos, 1024, "\nPPid:\t");
+    pos = append_int(tmp, pos, 1024, (long)p->parent_pid);
+    pos = append_str(tmp, pos, 1024, "\nTracerPid:\t0");
+    pos = append_str(tmp, pos, 1024, "\nUid:\t0\t0\t0\t0");
+    pos = append_str(tmp, pos, 1024, "\nGid:\t0\t0\t0\t0");
+    pos = append_str(tmp, pos, 1024, "\nFDSize:\t");
+    pos = append_int(tmp, pos, 1024, (long)p->fds.max_fd);
+    pos = append_str(tmp, pos, 1024, "\nGroups:\t");
+    pos = append_str(tmp, pos, 1024, "\nVmPeak:\t");
+    pos = append_int(tmp, pos, 1024, (long)(vm_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nVmSize:\t");
+    pos = append_int(tmp, pos, 1024, (long)(vm_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nVmRSS:\t");
+    pos = append_int(tmp, pos, 1024, (long)(rss_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nVmData:\t");
+    pos = append_int(tmp, pos, 1024, (long)(data_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nVmStk:\t");
+    pos = append_int(tmp, pos, 1024, (long)(stk_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nVmExe:\t");
+    pos = append_int(tmp, pos, 1024, (long)(exe_bytes / 1024));
+    pos = append_str(tmp, pos, 1024, " kB\nThreads:\t");
+    pos = append_int(tmp, pos, 1024, (long)p->thread_count);
+    pos = append_str(tmp, pos, 1024, "\nSigPnd:\t0000000000000000");
+    pos = append_str(tmp, pos, 1024, "\nSigBlk:\t0000000000000000");
+    pos = append_str(tmp, pos, 1024, "\nSigIgn:\t0000000000000000");
+    pos = append_str(tmp, pos, 1024, "\nSigCgt:\t0000000000000000\n");
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
@@ -368,27 +445,76 @@ static int procfs_pid_stat(char *buf, int size, int offset, void *ctx) {
     process_t *p = ctx ? (process_t *)ctx : proc_current();
     if (!p) return 0;
 
-    char tmp[256];
+    char state_c;
+    switch (p->state) {
+    case PROC_ALIVE:  state_c = 'R'; break;
+    case PROC_ZOMBIE: state_c = 'Z'; break;
+    default:          state_c = 'S'; break;
+    }
+
+    uint64_t vsize_b = 0;
+    uint64_t rss_pages = 0;
+    uint64_t irqf;
+    spin_lock_irq(&p->lock, &irqf);
+    vsize_b = vma_sum_size(p->vma_root);
+    rss_pages = proc_count_rss(p) / 4096;
+    spin_unlock_irq(&p->lock, irqf);
+
+    char tmp[512];
     int pos = 0;
-    pos = append_int(tmp, pos, 256, (long)p->pid);
-    pos = append_str(tmp, pos, 256, " (");
-    pos = append_str(tmp, pos, 256, p->comm[0] ? p->comm : "?");
-    pos = append_str(tmp, pos, 256, ") R ");
-    pos = append_int(tmp, pos, 256, (long)p->parent_pid);
-    /* pgid sid tty_nr tpgid flags minflt cminflt majflt cmajflt
-     * utime stime cutime cstime priority nice num_threads itrealvalue
-     * starttime vsize rss ... */
-    pos = append_str(tmp, pos, 256, " ");
-    pos = append_int(tmp, pos, 256, (long)p->pgid);
-    pos = append_str(tmp, pos, 256, " ");
-    pos = append_int(tmp, pos, 256, (long)p->sid);
-    pos = append_str(tmp, pos, 256, " 0 0 0 0 0 0 0 0 0 0 0 20 0 ");
-    pos = append_int(tmp, pos, 256, (long)p->thread_count);
-    pos = append_str(tmp, pos, 256, " 0 0 0 0");
-    /* Fill remaining fields with zeros */
-    for (int i = 0; i < 20 && pos < 250; i++)
-        pos = append_str(tmp, pos, 256, " 0");
-    pos = append_str(tmp, pos, 256, "\n");
+    /* 1=pid 2=(comm) 3=state 4=ppid */
+    pos = append_int(tmp, pos, 512, (long)p->pid);
+    pos = append_str(tmp, pos, 512, " (");
+    pos = append_str(tmp, pos, 512, p->comm[0] ? p->comm : "?");
+    pos = append_str(tmp, pos, 512, ") ");
+    if (pos < 511) tmp[pos++] = state_c;
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)p->parent_pid);
+    /* 5=pgrp 6=session */
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)p->pgid);
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)p->sid);
+    /* 7..13: tty_nr tpgid flags minflt cminflt majflt cmajflt */
+    pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0 0");
+    /* 14..17: utime stime cutime cstime (clock ticks, 0=no accounting) */
+    pos = append_str(tmp, pos, 512, " 0 0 0 0");
+    /* 18=priority 19=nice 20=num_threads 21=itrealvalue */
+    pos = append_str(tmp, pos, 512, " 20 0 ");
+    pos = append_int(tmp, pos, 512, (long)p->thread_count);
+    pos = append_str(tmp, pos, 512, " 0");
+    /* 22=starttime (jiffies since boot) */
+    pos = append_str(tmp, pos, 512, " 0");
+    /* 23=vsize 24=rss 25=rsslim */
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)vsize_b);
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)rss_pages);
+    pos = append_str(tmp, pos, 512, " 18446744073709551615");
+    /* 26=startcode 27=endcode 28=startstack 29=kstkesp 30=kstkeip */
+    pos = append_str(tmp, pos, 512, " 0 0 ");
+    pos = append_int(tmp, pos, 512, (long)p->stack_top);
+    pos = append_str(tmp, pos, 512, " 0 0");
+    /* 31..34: signal blocked sigignore sigcatch */
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)p->sig_pending);
+    pos = append_str(tmp, pos, 512, " 0 0 0");
+    /* 35=wchan 36=nswap 37=cnswap 38=exit_signal */
+    pos = append_str(tmp, pos, 512, " 0 0 0 ");
+    pos = append_int(tmp, pos, 512, (long)(p->notify_signal ? p->notify_signal : 17));
+    /* 39=processor 40=rt_priority 41=policy 42=delayacct_blkio_ticks */
+    pos = append_str(tmp, pos, 512, " 0 0 0 0");
+    /* 43=guest_time 44=cguest_time */
+    pos = append_str(tmp, pos, 512, " 0 0");
+    /* 45=start_data 46=end_data 47=start_brk */
+    pos = append_str(tmp, pos, 512, " 0 0 ");
+    pos = append_int(tmp, pos, 512, (long)p->brk_base);
+    /* 48..51: arg_start arg_end env_start env_end — not tracked */
+    pos = append_str(tmp, pos, 512, " 0 0 0 0");
+    /* 52=exit_code */
+    pos = append_str(tmp, pos, 512, " ");
+    pos = append_int(tmp, pos, 512, (long)p->exit_code);
+    pos = append_str(tmp, pos, 512, "\n");
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
@@ -437,24 +563,26 @@ static int procfs_global_stat(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     extern uint64_t timer_ms(void);
     uint64_t ms = timer_ms();
-    /* Fake: all time as idle. user=0 nice=0 sys=0 idle=uptime irq=0 ... */
-    long jiffies = (long)(ms / 10); /* centiseconds */
+    /* All tracked time as idle — no user/sys accounting yet. 10 Linux fields:
+     * user nice system idle iowait irq softirq steal guest guest_nice. */
+    long jiffies = (long)(ms / 10);
 
-    char tmp[512];
+    char tmp[1024];
     int pos = 0;
-    pos = append_str(tmp, pos, 512, "cpu  0 0 0 ");
-    pos = append_int(tmp, pos, 512, jiffies);
-    pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0\n");
-    /* Per-core lines */
+    pos = append_str(tmp, pos, 1024, "cpu  0 0 0 ");
+    pos = append_int(tmp, pos, 1024, jiffies);
+    pos = append_str(tmp, pos, 1024, " 0 0 0 0 0 0\n");
     int ncores = smp_num_cores();
-    for (int c = 0; c < ncores && pos < 480; c++) {
-        pos = append_str(tmp, pos, 512, "cpu");
-        pos = append_int(tmp, pos, 512, (long)c);
-        pos = append_str(tmp, pos, 512, " 0 0 0 ");
-        pos = append_int(tmp, pos, 512, jiffies / ncores);
-        pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0\n");
+    for (int c = 0; c < ncores && pos < 900; c++) {
+        pos = append_str(tmp, pos, 1024, "cpu");
+        pos = append_int(tmp, pos, 1024, (long)c);
+        pos = append_str(tmp, pos, 1024, " 0 0 0 ");
+        pos = append_int(tmp, pos, 1024, jiffies / ncores);
+        pos = append_str(tmp, pos, 1024, " 0 0 0 0 0 0\n");
     }
-    pos = append_str(tmp, pos, 512, "ctxt 0\nbtime 0\nprocesses 1\n");
+    pos = append_str(tmp, pos, 1024, "intr 0\nctxt 0\nbtime 0\nprocesses ");
+    pos = append_int(tmp, pos, 1024, (long)proc_count_alive());
+    pos = append_str(tmp, pos, 1024, "\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n");
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
