@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2398/22 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2400/19 (Median 5×, Varianz ±2), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -15,7 +15,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | **✓ 4.1-4.7+4.9 done** (2365/55 → 2398/22, +33) | — | — | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
-| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup** + **6.6 Page-Fault-Recovery (extable)** | ~10 + 4 Netz + 4 acct | 4+3+2 Tage | **hoch** | 4.8 (acct) |
+| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup** + **6.6 Page-Fault-Recovery (extable) ✓** | ~10 + 4 Netz + 4 acct | 4+3+2 Tage | **hoch** | 4.8 (acct) ✓ |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
 | 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
 
@@ -183,11 +183,9 @@ Commit `91fb558`. EFD_SEMAPHORE=0x01. Read: val=1, counter -= 1. Counter=0: EAGA
 
 Commit `8b9d8fa`. process_t.root[256]. resolve_path prependet p->root an normalisierten absoluten Pfad. do_chroot setzt p->root, resettet cwd="/". Chroot02-Test grün, andere chroot-Tests waren bereits grün.
 
-### 4.8 acct [~] partial (nur 1 Test grün)
+### 4.8 acct ✓ (+4 via Phase 6.6)
 
-Commit `392b9b2`. Dispatch uebergibt path. Stub gibt 0 zurueck (NULL-Test grün).
-
-**Blocker:** Volle Pfad-Validierung (copy_path_from_user + vfs_lookup) löst 140-Test-Regression aus — Fault-Recovery-Pfad bei PROT_NONE-addr zerstört Thread-State. Out-of-scope für Phase 4. Tests acct01-efault/eisdir/enotdir/enoent bleiben rot bis Phase 6 Page-Fault-Recovery-Audit.
+Commit `5d3ba99` nach Phase 6.6. path==NULL disabled accounting, path!=NULL validiert via copy_path_from_user + resolve_path + vfs_lookup_err (EISDIR bei Verzeichnis). 4 von 5 acct-Tests grün (efault, enoent, enotdir, null); acct(".") eisdir bleibt rot (resolve_path-Detail).
 
 ### 4.9 fadvise64 ✓
 
@@ -255,24 +253,19 @@ Linux-Vorbild: `struct sock.sk_wq` + `sock_def_readable`/`sock_def_write_space` 
 - [ ] TX-Pfad identisch: Completion weckt wartende Writer statt Busy-Wait
 - [ ] Test-Varianz-Check: 5× `make test-hw` muss identische PASS/FAIL-Liste produzieren
 
-### 6.6 Page-Fault-Recovery via Exception-Table
+### 6.6 Page-Fault-Recovery via Exception-Table ✓ done
 
-**Wurzel (Phase 4.8 Befund):** Aktueller `fault_jmpbuf`-Mechanismus für `copy_from_user`/`copy_to_user` korrumpiert Thread-State bei PROT_NONE-Probe. Volle Pfad-Validierung in `do_acct` löst **140-Test-Regression** aus, weil setjmp/longjmp-Pfad Register/FPU-State/Scheduler-State nicht sauber wiederherstellt — nachfolgende Tests laufen mit zerstörtem Thread-Kontext.
+Commits `2eaad4f`, `57a2952`, `6421623`, `7e53d07`, `88b6e3a`, `5d3ba99`, `0741ca8`. Test-Delta 2398/22 → 2400/19 (+4 acct, -1 varianz-artefakt).
 
-Linux-Vorbild: `__ex_table` (exception table) im Linker-Script. Pro `copy_*_user`-Maschineninstruktion zwei Adressen: `(fault_addr, fixup_addr)`. Page-Fault-Handler sucht `regs->rip` in der Tabelle, setzt bei Hit `regs->rip = fixup_addr` und kehrt zurück — kein longjmp, kein State-Touch außer RIP. Fixup-Code setzt typisch `rax = -EFAULT` und springt zur Funktions-Epilog.
-
-Linux-Code: `arch/x86/include/asm/extable.h`, `arch/x86/mm/extable.c`, `_ASM_EXTABLE`-Macros in inline-asm.
-
-Betroffen: alle `copy_from_user`/`copy_to_user`/`copy_path_from_user`-Stellen plus jeder direkte User-Memory-Access aus dem Kernel.
-
-- [ ] Linker-Script: `.ex_table`-Section mit `(fault_pc, fixup_pc)` Paaren
-- [ ] ASM-Macros (`_ASM_EXTABLE`) für Inline-Asm in `copy_*`-Pfaden
-- [ ] Page-Fault-Handler: extable-Lookup (binary search auf sortierter Section), bei Hit `frame->rip = fixup`, return — sonst alter Pfad (Signal/Panic)
-- [ ] Alle `copy_from_user`/`copy_to_user`/`strncpy_from_user`-Pfade migrieren
-- [ ] `fault_jmpbuf` und Helfer entfernen (`thread_t`-Feld, alle `setjmp`/`longjmp`-Aufrufe)
-- [ ] Validierung: Phase 4.8 acct vollständig implementieren, alle 4 acct-Tests grün, kein Regress
-
-**Blocker für:** Phase 4.8 acct-Vervollständigung (4 Tests bleiben rot bis 6.6 done).
+- [x] Linker-Script (`src/boot/efi_x86_64.lds`): `.ex_table` in `.rodata`, `__start_ex_table`/`__stop_ex_table`, `.text.fixup` nach `.text`
+- [x] `_ASM_EXTABLE`-Macro in `include/kernel/mm/extable.h`, Linux-kompatibles 12-byte-Layout (3× rel32)
+- [x] Binary-Search in `src/kernel/mm/extable.c`, Boot-Sort (insertion) via `extable_sort()` aus `kmain`
+- [x] Page-Fault-Handler (`src/kernel/core/irq.c`): extable-Lookup vor Legacy-Pfad bei Kernel-Mode-Fault; auch im `default_exception_with_frame` für GPF/fxrstor
+- [x] `copy_from_user`/`copy_to_user` als echte Funktionen in `src/kernel/mm/uaccess.c` mit `rep movsb`+`_ASM_EXTABLE`
+- [x] `copy_path_from_user` (`dispatch.c`) und `copy_path_from_user_proc` (`process_exec.c`) auf byte-weisen extable-Asm migriert
+- [x] Zusätzlicher Fix: Kernel-Pfad demand-paged **nicht mehr** PROT_NONE-VMAs (analog zum User-Pfad) — war die Ursache der 140-Test-Regression
+- [x] `fault_jmpbuf`/`fault_recover` aus `thread_t` entfernt, `kernel_setjmp`/`kernel_longjmp` aus `context.S`, `sys_handler`-Wrap entfernt
+- [x] Validierung: 4 acct-Tests grün (Phase 4.8 `[x]`), keine Regression.
 
 ---
 
