@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2415/4 (5× identisch nach Phase 6.3 Fork-CoW-Verifikation), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2420/3 (6× identisch nach Phase 6.1 Signal-Delivery-Verifikation), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -220,11 +220,15 @@ Commits `9543eae`, `9606617`, `b10a495`, `0188169`. Test-Delta 2403/16 → 2405/
 
 **Setzt Phase 3 voraus.** Ohne vereinheitlichten Frame-Sync sind diese Bugs nicht reproduzierbar diagnostizierbar.
 
-### 6.1 Signal-Delivery-Reihenfolge
+### 6.1 Signal-Delivery-Reihenfolge ✓ done
 
-- [ ] Nach `-EINTR` aus blocking syscall: Handler **vor** userspace-return ausführen
-- [ ] `SA_RESTART`-Rewind nur noch an einer Stelle (Phase 3 Frame-Sync)
-- [ ] `parent got SIGALRM`-Test: Handler läuft vor Test-Code
+Test-Delta 2416/3 → 2420/3 (+4 PASS aus `ltp/alarm07b`, Varianz = 0 über 6× `make test-hw`).
+
+Audit-Ergebnis: Die strukturellen Subtasks waren bereits durch frühere Phasen erschlagen — Phase 6.1 ist eine Verifikation, kein Refactor.
+
+- [x] Handler **vor** userspace-return: `sys_handler` (`dispatch.c:265`) ruft `check_signals_syscall_path` nach jedem Syscall-Dispatch, vor SYSRET. Legacy `INT 0x80`-Pfad (`irq.c:163-172`) delivert ebenso via `check_pending_signals`. Timer-Preempt (`sched.c:243-259`) delivert für den laufenden User-Thread.
+- [x] `SA_RESTART`-Rewind an einer Stelle: nur `signal_handler.c:209-222`. `grep -rn SA_RESTART src/` bestätigt — keine Duplikate in `irq.c`, `sched.c`, `signal_frame.c`.
+- [x] `parent got SIGALRM` grün: `ltp/alarm07b` war als "hangs" deaktiviert (`test_alarm.c:191`). Nach Reaktivierung läuft der Test durch — `do_nanosleep` (`sys_time.c:64-80`) prüft `deliverable` vor/nach `thread_block_ms`; `check_alarm_timers` (`signal_handler.c:144-149`) weckt den blockierten Thread via `sched_wake`.
 
 ### 6.2 Timing
 

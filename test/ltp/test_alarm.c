@@ -187,5 +187,4 @@ TEST("ltp/alarm03",  test_alarm03);
 TEST("ltp/alarm05",  test_alarm05);
 TEST("ltp/alarm06",  test_alarm06);
 TEST("ltp/alarm07",  test_alarm07);
-/* DISABLED: hangs — requires SIGALRM to interrupt nanosleep (TODO N) */
-/* TEST("ltp/alarm07b", test_alarm07b); */
+TEST("ltp/alarm07b", test_alarm07b);
