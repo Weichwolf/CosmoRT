@@ -1,6 +1,7 @@
 /* CosmoRT Interrupt handling — APIC + IDT, thread-aware */
 
 #include "core/irq.h"
+#include "core/frame.h"
 #include "hw/serial.h"
 #include "proc/thread.h"
 #include "proc/process.h"
@@ -105,13 +106,6 @@ static void idt_set_entry_user(int n, uint64_t handler) {
 }
 
 /* ── Helpers ───────────────────────────────────────── */
-
-typedef struct {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t vector, error;
-    uint64_t rip, cs, rflags, rsp, ss;
-} irq_frame_t;
 
 /* Forward declaration */
 static void default_exception_with_frame(int vector, irq_frame_t *frame);
