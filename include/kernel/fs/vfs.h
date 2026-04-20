@@ -55,11 +55,12 @@ struct vfs_inode {
     size_t size;
     size_t capacity;
     uint64_t ino;
-    uint32_t mode;
+    uint32_t mode;          /* permission bits (07777 + suid/sgid/sticky); type separate */
     uint32_t uid, gid;
+    uint32_t nlink;
     uint64_t atime, mtime, ctime;
     char symlink_target[256];
-    int refcount;
+    int refcount;           /* in-memory refs (open fds + dentries); not POSIX nlink */
     struct vfs_node *children;  /* tmpfs dir entries */
 };
 

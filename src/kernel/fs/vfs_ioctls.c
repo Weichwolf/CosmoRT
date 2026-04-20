@@ -12,25 +12,23 @@
 void fill_stat(struct vfs_inode *inode, struct k_stat *buf) {
     kmemset(buf, 0, sizeof(struct k_stat));
     buf->st_ino = inode->ino;
-    buf->st_nlink = 1;
+    buf->st_nlink = inode->nlink ? inode->nlink : 1;
     buf->st_size = (int64_t)inode->size;
     buf->st_blksize = 4096;
     buf->st_blocks = (int64_t)((inode->size + 511) / 512);
     buf->st_uid = inode->uid;
     buf->st_gid = inode->gid;
 
-    if (inode->type == VFS_DIR)
-        buf->st_mode = S_IFDIR | (inode->mode ? inode->mode : S_IRWXU);
-    else if (inode->type == VFS_FILE)
-        buf->st_mode = S_IFREG | (inode->mode ? inode->mode : (S_IRUSR | S_IWUSR));
-    else if (inode->type == VFS_PIPE)
-        buf->st_mode = S_IFIFO | (S_IRUSR | S_IWUSR);
-    else if (inode->type == VFS_SYMLINK)
-        buf->st_mode = S_IFLNK | 0777;
+    uint32_t type_bits = 0;
+    if (inode->type == VFS_DIR)          type_bits = S_IFDIR;
+    else if (inode->type == VFS_FILE)    type_bits = S_IFREG;
+    else if (inode->type == VFS_PIPE)    type_bits = S_IFIFO;
+    else if (inode->type == VFS_SYMLINK) type_bits = S_IFLNK;
+    buf->st_mode = type_bits | (inode->mode & 07777);
 
-    buf->st_atime_sec = inode->atime;
-    buf->st_mtime_sec = inode->mtime;
-    buf->st_ctime_sec = inode->ctime;
+    buf->st_atime_sec = (int64_t)inode->atime;
+    buf->st_mtime_sec = (int64_t)inode->mtime;
+    buf->st_ctime_sec = (int64_t)inode->ctime;
 }
 
 void fill_ext4_stat(uint32_t ino, struct ext4_inode *ip, struct k_stat *buf) {

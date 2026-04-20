@@ -22,22 +22,6 @@ static int tmpfs_op_lstat(struct mount *mnt, const char *relpath, struct k_stat 
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
     if (!node) return err;
-    if (node->inode->type == VFS_SYMLINK) {
-        kmemset(buf, 0, sizeof(struct k_stat));
-        buf->st_ino = node->inode->ino;
-        buf->st_nlink = 1;
-        buf->st_uid = node->inode->uid;
-        buf->st_gid = node->inode->gid;
-        int tlen = kstrlen(node->inode->symlink_target);
-        buf->st_size = (int64_t)tlen;
-        buf->st_blksize = 4096;
-        buf->st_blocks = (int64_t)((tlen + 511) / 512);
-        buf->st_mode = S_IFLNK | 0777;
-        buf->st_atime_sec = (int64_t)node->inode->atime;
-        buf->st_mtime_sec = (int64_t)node->inode->mtime;
-        buf->st_ctime_sec = (int64_t)node->inode->ctime;
-        return 0;
-    }
     fill_stat(node->inode, buf);
     return 0;
 }
@@ -74,6 +58,7 @@ static int tmpfs_op_unlink(struct mount *mnt, const char *relpath) {
     if (node->inode->type == VFS_DIR) return -EISDIR;
     if (!node->parent) return -EINVAL;
     unlink_child(node->parent, node);
+    if (node->inode->nlink > 0) node->inode->nlink--;
     inode_decref(node->inode);
     slab_free(&node_slab, node);
     inotify_event(relpath, IN_DELETE);
@@ -117,6 +102,7 @@ static int tmpfs_op_symlink(struct mount *mnt, const char *target, const char *r
     if (!n) return -ENOMEM;
     n->inode->type = VFS_SYMLINK;
     kstrncpy(n->inode->symlink_target, target, 256);
+    n->inode->size = (size_t)kstrlen(target);
     return 0;
 }
 
@@ -149,13 +135,22 @@ static int tmpfs_op_link(struct mount *mnt, const char *oldrel, const char *newr
     struct vfs_node *n = node_alloc(basename, old_node->inode->type);
     if (!n) return -ENOMEM;
     /* Share inode */
-    inode_decref(n->inode); /* free the one node_alloc created */
+    inode_decref(n->inode);
     n->inode = old_node->inode;
     n->inode->refcount++;
+    n->inode->nlink++;
     n->parent = parent;
     n->next = parent->inode->children;
     parent->inode->children = n;
     return 0;
+}
+
+static void inode_drop_suid_sgid(struct vfs_inode *inode) {
+    if (inode->type == VFS_DIR) return;
+    if (inode->mode & S_ISUID)
+        inode->mode &= ~(uint32_t)S_ISUID;
+    if ((inode->mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP))
+        inode->mode &= ~(uint32_t)S_ISGID;
 }
 
 static int tmpfs_op_chmod(struct mount *mnt, const char *relpath, uint32_t mode) {
@@ -163,7 +158,9 @@ static int tmpfs_op_chmod(struct mount *mnt, const char *relpath, uint32_t mode)
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_err(relpath, &err);
     if (!node) return err;
+    extern uint32_t timer_epoch_sec(void);
     node->inode->mode = mode & 07777;
+    node->inode->ctime = timer_epoch_sec();
     inotify_event(relpath, IN_ATTRIB);
     return 0;
 }
@@ -174,9 +171,11 @@ static int tmpfs_op_chown(struct mount *mnt, const char *relpath,
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_err(relpath, &err);
     if (!node) return err;
+    extern uint32_t timer_epoch_sec(void);
     if (uid != (uint32_t)-1) node->inode->uid = uid;
     if (gid != (uint32_t)-1) node->inode->gid = gid;
-    node->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inode_drop_suid_sgid(node->inode);
+    node->inode->ctime = timer_epoch_sec();
     inotify_event(relpath, IN_ATTRIB);
     return 0;
 }
@@ -187,9 +186,11 @@ static int tmpfs_op_lchown(struct mount *mnt, const char *relpath,
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_nofollow(relpath, &err);
     if (!node) return err;
+    extern uint32_t timer_epoch_sec(void);
     if (uid != (uint32_t)-1) node->inode->uid = uid;
     if (gid != (uint32_t)-1) node->inode->gid = gid;
-    node->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inode_drop_suid_sgid(node->inode);
+    node->inode->ctime = timer_epoch_sec();
     inotify_event(relpath, IN_ATTRIB);
     return 0;
 }
@@ -367,15 +368,19 @@ static int tmpfs_op_ftruncate(struct vfs_file *f, int64_t length) {
 
 static int tmpfs_op_fchmod(struct vfs_file *f, uint32_t mode) {
     if (!f->inode) return -EBADF;
+    extern uint32_t timer_epoch_sec(void);
     f->inode->mode = mode & 07777;
+    f->inode->ctime = timer_epoch_sec();
     return 0;
 }
 
 static int tmpfs_op_fchown(struct vfs_file *f, uint32_t uid, uint32_t gid) {
     if (!f->inode) return -EBADF;
+    extern uint32_t timer_epoch_sec(void);
     if (uid != (uint32_t)-1) f->inode->uid = uid;
     if (gid != (uint32_t)-1) f->inode->gid = gid;
-    f->inode->mode &= ~(uint32_t)(04000 | 02000);
+    inode_drop_suid_sgid(f->inode);
+    f->inode->ctime = timer_epoch_sec();
     return 0;
 }
 

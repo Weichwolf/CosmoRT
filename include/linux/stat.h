@@ -12,4 +12,8 @@
 #define S_IFLNK         0120000
 #define S_IFSOCK        0140000
 
+#define S_ISUID         04000
+#define S_ISGID         02000
+#define S_ISVTX         01000
+
 #endif /* COSMO_LINUX_STAT_H */

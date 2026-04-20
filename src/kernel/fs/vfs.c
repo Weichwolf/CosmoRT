@@ -235,14 +235,17 @@ struct vfs_node *node_alloc(const char *name, int type) {
     ino->size = 0;
     ino->capacity = 0;
     ino->ino = vfs_next_ino++;
-    ino->mode = 0755;
+    ino->mode = (type == VFS_DIR) ? 0755
+              : (type == VFS_SYMLINK) ? 0777
+              : 0644;
     ino->uid = 0;
     ino->gid = 0;
+    ino->nlink = 1;
     { extern uint32_t timer_epoch_sec(void);
       uint32_t now = timer_epoch_sec();
       ino->atime = now; ino->mtime = now; ino->ctime = now; }
     ino->symlink_target[0] = 0;
-    ino->refcount = 1;    /* 1 = directory entry (nlink). open adds more. */
+    ino->refcount = 1;
     ino->children = 0;
 
     /* Dentry */
@@ -612,12 +615,10 @@ not_pts:
     if (node && (flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
 
     if (!node && (flags & O_CREAT) && verr == -ENOENT) {
-        ensure_dirs(path);
         node = vfs_create(path, VFS_FILE);
-        if (node) {
-            node->inode->mode = mode ? (mode & 07777) : 0644;
-            inotify_event(path, IN_CREATE);
-        }
+        if (!node) return -ENOENT;
+        node->inode->mode = mode & 07777;
+        inotify_event(path, IN_CREATE);
     }
     if (!node) return verr;
 
