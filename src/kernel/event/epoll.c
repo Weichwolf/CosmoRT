@@ -214,17 +214,38 @@ static struct {
 };
 
 static void epoll_sleeper_add(thread_t *t) {
-    /* Add to CURRENT core's list — no cross-core lock acquisition. */
     int cpu = percpu_self()->core_id;
     uint64_t irqf;
     spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+    for (int i = 0; i < core_sleepers[cpu].count; i++) {
+        if (core_sleepers[cpu].threads[i] == t) {
+            spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+            return;
+        }
+    }
     if (core_sleepers[cpu].count < EPOLL_SLEEPER_MAX)
         core_sleepers[cpu].threads[core_sleepers[cpu].count++] = t;
     spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
 }
 
-/* External entry point for do_poll in socket.c */
+static void epoll_sleeper_remove(thread_t *t) {
+    int ncores = smp_num_cores();
+    for (int cpu = 0; cpu < ncores; cpu++) {
+        uint64_t irqf;
+        spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
+        for (int i = 0; i < core_sleepers[cpu].count; i++) {
+            if (core_sleepers[cpu].threads[i] == t) {
+                core_sleepers[cpu].threads[i] =
+                    core_sleepers[cpu].threads[--core_sleepers[cpu].count];
+                i--;
+            }
+        }
+        spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
+    }
+}
+
 void epoll_sleeper_add_ext(thread_t *t) { epoll_sleeper_add(t); }
+void epoll_sleeper_remove_ext(thread_t *t) { epoll_sleeper_remove(t); }
 
 /* Wake all blocked epoll/poll sleepers across ALL cores. IRQ-safe.
  * Rare path: called from IRQ handlers (NIC rx, pty write, eventfd, etc). */

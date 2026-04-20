@@ -94,15 +94,18 @@ struct k_pollfd { int fd; short events; short revents; };
 #define POLLIN  0x0001
 #define POLLOUT 0x0004
 
-long do_poll(void *fds_ptr, int nfds, int timeout) {
-    if (nfds <= 0 || nfds > 256) return -EINVAL;
-    struct k_pollfd kfds[256];
-    { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
+extern void epoll_sleeper_add_ext(thread_t *t);
+extern void epoll_sleeper_remove_ext(thread_t *t);
 
+static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
+                      int timeout, thread_t *t) {
     int infinite = (timeout < 0);
     uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
 
     for (;;) {
+        t->wake_at = infinite ? 0 : deadline;
+        epoll_sleeper_add_ext(t);
+
         int ready = 0;
         for (int i = 0; i < nfds; i++) {
             kfds[i].revents = 0;
@@ -123,17 +126,26 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
         if (timeout == 0) return 0;
         if (!infinite && timer_ms() >= deadline) return 0;
 
-        /* Block via event_wait — hrtimer handles timeout. */
-        {
-            thread_t *t = thread_current();
-            if (!t) return -EFAULT;
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) return 0;
-            event_t ev;
-            { int wr = event_wait(&t->eq, &ev, timeout_ms);
-            if (wr == -4) return -EINTR; }
-        }
+        int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
+        if (timeout_ms <= 0 && !infinite) return 0;
+        event_t ev;
+        int wr = event_wait(&t->eq, &ev, timeout_ms);
+        if (wr == -4) return -EINTR;
     }
+}
+
+long do_poll(void *fds_ptr, int nfds, int timeout) {
+    if (nfds <= 0 || nfds > 256) return -EINVAL;
+    struct k_pollfd kfds[256];
+    { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd)); if (r) return r; }
+
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+
+    long ret = poll_loop(kfds, nfds, fds_ptr, timeout, t);
+    epoll_sleeper_remove_ext(t);
+    t->wake_at = 0;
+    return ret;
 }
 
 /* ── ppoll (271) ── */

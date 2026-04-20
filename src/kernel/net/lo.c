@@ -12,6 +12,7 @@
 extern void tcp_input(const uint8_t *pkt, int len);
 extern int  udp_input(const uint8_t *pkt, int len);
 extern void sched_wake(struct thread *t);
+extern void epoll_wake_all(void);
 
 static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
     (void)nif;
@@ -21,9 +22,6 @@ static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
 
     uint8_t proto = buf[23];
     if (proto == 6) {
-        /* Try tcp_input first for established connections.
-         * tcp_input pushes unmatched packets (SYNs) to q_tcp internally.
-         * This handles SYN-ACK/ACK/data on loopback correctly. */
         tcp_input(buf, len);
     } else if (proto == 1) {
         q_push(&q_icmp, buf, len);
@@ -34,6 +32,7 @@ static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
         else if (!udp_input(buf, len))
             q_push(&q_udp_dns, buf, len);
     }
+    epoll_wake_all();
 }
 
 static uint8_t lo_mac[6] = {0, 0, 0, 0, 0, 0};
