@@ -504,10 +504,13 @@ Commits `0a96060`..`f6b79d1`:
 
 Zuerst von 26 auf 16 (Mount/Pipe/Kernel-Regression), dann auf 10 (tmpfs abspath).
 
-### LTP (87 FAIL)
+### LTP — Baseline im Fluss
 
-- [ ] `execve`: Execute-Bit prüfen (blockiert 60+ Tests) — erledigt sich mit Phase 1.3
+- [x] `execve` Execute-Bit: erledigt durch Phase 1.3 (Commit-Serie bis `bcff1c4`).
+- [x] Build-Haerte: `-z defs` aktiviert (Commit `6d10e1c`), keine undefined Symbols mehr im Link.
+- [ ] Baseline-Messung: `make alpine-test` laeuft ~30 min durch (Timeout erhoeht von 600s → 1800s). Laufende Session zeigt: alle functional/regression/pthread musl-Tests PASS (250+ PASS, 4 FAIL nach 10 min — nur `fma`/`fmal` Math-Praezisions-Bugs, nicht Kernel). `sem_open`, `socket`, `stat`, `pthread_robust` sind jetzt PASS (waren im alten Log FAIL). **Die "87 FAIL"-Zahl ist veraltet**. Neue Messung fehlt vollstaendig, weil Test-Runner > 30 min braucht.
 - [ ] VMA/TLB Race: Atomarer VMA-Update + TLB-Shootdown (mit Phase 6.3 kompatibel)
+- [ ] tools/boot-test.sh: PATH/tmpfs-mount robuster gemacht (Commit `6d10e1c`) — Voraussetzung fuer reproduzierbare Tests.
 
 ---
 
