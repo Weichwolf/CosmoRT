@@ -88,10 +88,6 @@ typedef struct thread {
     /* ── Per-thread percpu state (saved/restored by schedule()) ── */
     uint64_t saved_user_rsp;     /* percpu->user_rsp: sysret needs it per-thread */
 
-    /* ── Fault recovery (per-thread, used by syscall page-fault handler) ── */
-    uint64_t fault_jmpbuf[8];
-    int      fault_recover;
-
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
 

@@ -301,38 +301,18 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                             }
                         }
                     }
-                    /* trylock failed → fall through to fault_recover */
+                    /* trylock failed → fall through to extable */
                 }
             }
             /* Kernel accessed unmapped user address (e.g. bad pointer from
-             * syscall). First try the exception table: inline-asm user-access
-             * sequences register (fault_pc, fixup_pc) pairs at compile time.
-             * On hit, only RIP is rewritten — no register/stack/FPU touch. */
+             * syscall). Exception table maps each inline-asm user-access
+             * instruction to its fixup. On hit, only RIP is rewritten —
+             * no register/stack/FPU touch. */
             if (cr2 < 0x800000000000ULL) {
                 uintptr_t fixup = extable_lookup((uintptr_t)frame->rip);
                 if (fixup) {
                     frame->rip = (uint64_t)fixup;
                     return;
-                }
-            }
-            /* Fallback: legacy setjmp/longjmp fault recovery (to be removed
-             * once all user-access sites migrate to extable). */
-            {
-                thread_t *kft = percpu_self()->current_thread;
-                if (kft && kft->fault_recover && cr2 < 0x800000000000ULL) {
-                    kft->fault_recover = 0;
-                    /* jmpbuf layout: [rbx, rbp, r12, r13, r14, r15, rsp, rip] */
-                    uint64_t *jb = kft->fault_jmpbuf;
-                    frame->rbx = jb[0];
-                    frame->rbp = jb[1];
-                    frame->r12 = jb[2];
-                    frame->r13 = jb[3];
-                    frame->r14 = jb[4];
-                    frame->r15 = jb[5];
-                    frame->rsp = jb[6] + 8; /* +8: skip return addr (not popped by ret) */
-                    frame->rip = jb[7];
-                    frame->rax = 1; /* setjmp return value */
-                    return; /* IRET will resume at setjmp return */
                 }
             }
             /* Kernel fault: kill process if in syscall, skip if in IRQ */
@@ -662,23 +642,12 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     thread_t *t = cpu->current_thread;
 
     /* Kernel-mode exception during syscall: the kernel faulted on user-
-     * supplied data (e.g. fxrstor with garbage). First try extable — pure
-     * RIP rewrite, no register touch. Fall back to legacy longjmp path. */
+     * supplied data (e.g. fxrstor with garbage). Extable maps the faulting
+     * instruction to its fixup — pure RIP rewrite, no register touch. */
     if (!(frame->cs & 3)) {
         uintptr_t fixup = extable_lookup((uintptr_t)frame->rip);
         if (fixup) {
             frame->rip = (uint64_t)fixup;
-            return;
-        }
-        if (t && t->fault_recover) {
-            t->fault_recover = 0;
-            uint64_t *jb = t->fault_jmpbuf;
-            frame->rbx = jb[0]; frame->rbp = jb[1];
-            frame->r12 = jb[2]; frame->r13 = jb[3];
-            frame->r14 = jb[4]; frame->r15 = jb[5];
-            frame->rsp = jb[6] + 8;
-            frame->rip = jb[7];
-            frame->rax = 1;
             return;
         }
     }
