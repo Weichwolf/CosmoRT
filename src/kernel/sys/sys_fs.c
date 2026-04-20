@@ -135,7 +135,7 @@ long do_ftruncate(int fd, int64_t length) {
 /* ── SYS_fchmodat (268) ─────────────────────────── */
 
 long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
-    (void)flags;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     char kpath[PATH_MAX];
     int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
