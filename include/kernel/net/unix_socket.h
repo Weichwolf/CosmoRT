@@ -13,9 +13,6 @@
 /* Ring buffer size per direction */
 #define USOCK_BUF_SIZE    (64 * 1024)
 
-/* Max simultaneous AF_UNIX sockets */
-#define USOCK_MAX         32
-
 /* Max pending connections in accept queue */
 #define USOCK_BACKLOG_MAX 8
 
@@ -49,6 +46,11 @@ struct unix_socket {
 
     /* Blocked reader (waiting for data) */
     void     *blocked_reader;   /* thread_t* — blocked in read() */
+
+    /* Global active list (intrusive) — replaces static pool scan for
+     * bind-name-collision/connect-path-lookup. */
+    unix_socket_t *next_active;
+    unix_socket_t *prev_active;
 };
 
 /* Syscall implementations */

@@ -14,33 +14,62 @@
 #include "cosmort.h"
 #include "arch/arch.h"
 #include "core/event_queue.h"
+#include "mm/slab.h"
 
 extern long send_sigpipe(void);
 
-/* ── Pool ─────────────────────────────────────── */
+/* ── Slab + active list ───────────────────────── */
 
-static unix_socket_t usock_pool[USOCK_MAX];
+static slab_t usock_slab;
+static int usock_slab_inited;
+static unix_socket_t *usock_active_head;
 static spinlock_t usock_lock = SPINLOCK_INIT;
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
 
+static void usock_slab_ensure(void) {
+    if (__sync_bool_compare_and_swap(&usock_slab_inited, 0, 1))
+        slab_init_dynamic(&usock_slab, (int)sizeof(unix_socket_t), 0);
+}
+
+/* Caller holds usock_lock */
+static void usock_list_add(unix_socket_t *s) {
+    s->prev_active = 0;
+    s->next_active = usock_active_head;
+    if (usock_active_head) usock_active_head->prev_active = s;
+    usock_active_head = s;
+}
+
+/* Caller holds usock_lock */
+static void usock_list_del(unix_socket_t *s) {
+    if (s->prev_active) s->prev_active->next_active = s->next_active;
+    else                usock_active_head = s->next_active;
+    if (s->next_active) s->next_active->prev_active = s->prev_active;
+    s->next_active = 0;
+    s->prev_active = 0;
+}
+
 static unix_socket_t *usock_alloc(void) {
+    usock_slab_ensure();
+    unix_socket_t *s = (unix_socket_t *)slab_alloc(&usock_slab);
+    if (!s) return 0;
+    /* slab_alloc zeroes */
+    s->state = USOCK_CREATED;
+    s->refcount = 1;
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
-    for (int i = 0; i < USOCK_MAX; i++) {
-        if (usock_pool[i].state == USOCK_UNUSED) {
-            /* Zero the struct */
-            for (int j = 0; j < (int)sizeof(unix_socket_t); j++)
-                ((uint8_t *)&usock_pool[i])[j] = 0;
-            usock_pool[i].state = USOCK_CREATED;
-            usock_pool[i].refcount = 1;
-            spin_unlock_irq(&usock_lock, flags);
-            return &usock_pool[i];
-        }
-    }
+    usock_list_add(s);
     spin_unlock_irq(&usock_lock, flags);
-    return 0;
+    return s;
+}
+
+static void usock_release(unix_socket_t *s) {
+    uint64_t flags;
+    spin_lock_irq(&usock_lock, &flags);
+    usock_list_del(s);
+    spin_unlock_irq(&usock_lock, flags);
+    slab_free(&usock_slab, s);
 }
 
 unix_socket_t *usock_from_fd(int fd) {
@@ -75,11 +104,11 @@ void usock_decref(void *obj) {
             spin_unlock_irq(&usock_lock, irqf);
             s->peer = 0;
         }
-        s->state = USOCK_UNUSED;
         if (reader) {
             extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
         }
+        usock_release(s);
     }
 }
 
@@ -117,7 +146,7 @@ long usock_socket(int type) {
     if (!s) return -EMFILE;
 
     process_t *p = proc_current();
-    if (!p) { s->state = USOCK_UNUSED; return -EFAULT; }
+    if (!p) { usock_release(s); return -EFAULT; }
 
     int fd_flags = 0x02; /* O_RDWR */
     if (type & 0x80000) fd_flags |= 0x80000;  /* SOCK_CLOEXEC */
@@ -125,7 +154,7 @@ long usock_socket(int type) {
     s->flags = type & (0x80000 | 0x800);
 
     int fd = fd_alloc(&p->fds, FD_UNIX_SOCK, s, fd_flags);
-    if (fd < 0) { s->state = USOCK_UNUSED; return -EMFILE; }
+    if (fd < 0) { usock_release(s); return -EMFILE; }
     return fd;
 }
 
@@ -140,7 +169,7 @@ long usock_socketpair(int type, int *sv) {
     unix_socket_t *a = usock_alloc();
     if (!a) return -EMFILE;
     unix_socket_t *b = usock_alloc();
-    if (!b) { a->state = USOCK_UNUSED; return -EMFILE; }
+    if (!b) { usock_release(a); return -EMFILE; }
 
     /* Cross-connect */
     a->peer = b;
@@ -151,20 +180,20 @@ long usock_socketpair(int type, int *sv) {
     b->flags = type & (0x80000 | 0x800);
 
     process_t *p = proc_current();
-    if (!p) { a->state = USOCK_UNUSED; b->state = USOCK_UNUSED; return -EFAULT; }
+    if (!p) { usock_release(a); usock_release(b); return -EFAULT; }
 
     int fd_flags = 0x02; /* O_RDWR */
     if (type & 0x80000) fd_flags |= 0x80000;
     if (type & 0x800)   fd_flags |= 0x800;
 
     int fd0 = fd_alloc(&p->fds, FD_UNIX_SOCK, a, fd_flags);
-    if (fd0 < 0) { a->state = USOCK_UNUSED; b->state = USOCK_UNUSED; return -EMFILE; }
+    if (fd0 < 0) { usock_release(a); usock_release(b); return -EMFILE; }
 
     int fd1 = fd_alloc(&p->fds, FD_UNIX_SOCK, b, fd_flags);
     if (fd1 < 0) {
         fd_close(&p->fds, fd0);
-        a->state = USOCK_UNUSED;
-        b->state = USOCK_UNUSED;
+        usock_release(a);
+        usock_release(b);
         return -EMFILE;
     }
 
@@ -195,22 +224,19 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     kmemcpy(s->path, k_addr.sun_path, (size_t)path_len);
     s->path[path_len] = '\0';
 
-    /* Check for name collision */
+    /* Check for name collision via active list */
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
-    for (int i = 0; i < USOCK_MAX; i++) {
-        if (&usock_pool[i] == s) continue;
-        if (usock_pool[i].state != USOCK_UNUSED && usock_pool[i].path[0]) {
-            /* Compare paths */
-            int match = 1;
-            for (int j = 0; j < 108; j++) {
-                if (usock_pool[i].path[j] != s->path[j]) { match = 0; break; }
-                if (s->path[j] == '\0') break;
-            }
-            if (match) {
-                spin_unlock_irq(&usock_lock, flags);
-                return -EADDRINUSE;
-            }
+    for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
+        if (o == s || !o->path[0]) continue;
+        int match = 1;
+        for (int j = 0; j < 108; j++) {
+            if (o->path[j] != s->path[j]) { match = 0; break; }
+            if (s->path[j] == '\0') break;
+        }
+        if (match) {
+            spin_unlock_irq(&usock_lock, flags);
+            return -EADDRINUSE;
         }
     }
     spin_unlock_irq(&usock_lock, flags);
@@ -257,14 +283,14 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     client->state = USOCK_CONNECTED;
 
     process_t *p = proc_current();
-    if (!p) { server->state = USOCK_UNUSED; return -EFAULT; }
+    if (!p) { usock_release(server); return -EFAULT; }
 
     int fd_flags = 0x02;
     if (flags & 0x80000) fd_flags |= 0x80000;  /* SOCK_CLOEXEC */
     if (flags & 0x800)   fd_flags |= 0x800;    /* SOCK_NONBLOCK */
 
     int new_fd = fd_alloc(&p->fds, FD_UNIX_SOCK, server, fd_flags);
-    if (new_fd < 0) { server->state = USOCK_UNUSED; return -EMFILE; }
+    if (new_fd < 0) { usock_release(server); return -EMFILE; }
     return new_fd;
 }
 
@@ -289,18 +315,18 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     kmemcpy(target, k_addr.sun_path, (size_t)path_len);
     target[path_len] = '\0';
 
-    /* Find listening socket with matching path */
+    /* Find listening socket with matching path via active list */
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     unix_socket_t *listener = 0;
-    for (int i = 0; i < USOCK_MAX; i++) {
-        if (usock_pool[i].state != USOCK_LISTENING) continue;
+    for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
+        if (o->state != USOCK_LISTENING) continue;
         int match = 1;
         for (int j = 0; j < 108; j++) {
-            if (usock_pool[i].path[j] != target[j]) { match = 0; break; }
+            if (o->path[j] != target[j]) { match = 0; break; }
             if (target[j] == '\0') break;
         }
-        if (match) { listener = &usock_pool[i]; break; }
+        if (match) { listener = o; break; }
     }
     if (!listener) {
         spin_unlock_irq(&usock_lock, flags);
