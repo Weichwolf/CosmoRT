@@ -294,8 +294,22 @@ long do_chroot(const char *path) {
     return 0;
 }
 
+/* acct(2): path==NULL disables process accounting (always succeeds).
+ * path!=NULL: full validation via copy_path_from_user + vfs_lookup.
+ * CosmoRT does not persist accounting records — the path is validated
+ * for errno-compatibility, then discarded. */
 long do_acct(const char *path) {
-    (void)path;
+    if (!path) return 0;
+    char kpath_raw[PATH_MAX];
+    int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
+    if (len < 0) return len;
+    char kpath[PATH_MAX];
+    resolve_path(kpath_raw, kpath, PATH_MAX);
+    extern struct vfs_node *vfs_lookup_err(const char *p, int *err);
+    int lerr = -ENOENT;
+    struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
+    if (!node) return lerr;
+    if (node->inode->type == VFS_DIR) return -EISDIR;
     return 0;
 }
 
