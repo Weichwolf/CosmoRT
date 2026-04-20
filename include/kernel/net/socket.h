@@ -5,8 +5,6 @@
 #include "net/net.h"
 #include "mm/slab.h"
 
-#define SOCK_SLAB_CAP NET_MAX_SOCKETS
-
 /* Socket state */
 #define SOCK_UNUSED    0
 #define SOCK_CREATED   1

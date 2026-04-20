@@ -37,8 +37,7 @@ struct k_sockaddr_in {
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
 
-/* Socket pool — slab-backed with active list */
-static socket_t sock_pool[SOCK_SLAB_CAP];
+/* Socket pool — dynamic slab grows on demand, active list for listener lookup */
 slab_t sock_slab;
 socket_t *sock_active_head;
 static spinlock_t sock_lock = SPINLOCK_INIT;
@@ -46,7 +45,7 @@ static int sock_slab_inited;
 
 static void sock_slab_ensure_init(void) {
     if (__builtin_expect(sock_slab_inited, 1)) return;
-    slab_init(&sock_slab, sock_pool, (int)sizeof(socket_t), SOCK_SLAB_CAP);
+    slab_init_dynamic(&sock_slab, (int)sizeof(socket_t), 0);
     sock_active_head = 0;
     sock_slab_inited = 1;
 }
