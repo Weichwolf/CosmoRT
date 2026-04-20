@@ -10,6 +10,9 @@
 #include "mm/page_alloc.h"
 #include "core/event_queue.h"
 
+/* From socket.c — checks for SOCK_LISTENING on a port (host order). */
+extern int sock_has_listener(uint16_t local_port_host);
+
 /* ── Constants ────────────────────────────────────── */
 
 #define MSS           1460
@@ -669,6 +672,50 @@ static void cc_on_loss(net_tcp_t *c) {
     c->cwnd = c->ssthresh;
 }
 
+/* ── TCP Reset to Closed Port (RFC 793 §3.4) ─────── */
+
+/* Build and send an RST+ACK in response to a SYN for which no listener
+ * exists. Uses source MAC/IP from the incoming packet as destination.
+ * Linux: tcp_v4_send_reset() — triggers ECONNREFUSED on connect() side. */
+static void send_rst_to(const uint8_t *in_pkt) {
+    uint8_t pkt[54];
+    mzero(pkt, sizeof(pkt));
+
+    mcpy(pkt, in_pkt + 6, 6);          /* dst MAC = source of SYN */
+    mcpy(pkt + 6, net_my_mac, 6);
+    put16(pkt + 12, 0x0800);
+    pkt[14] = 0x45; pkt[15] = 0;
+    put16(pkt + 16, 40);
+    put16(pkt + 18, 0);
+    put16(pkt + 20, 0x4000);
+    pkt[22] = 64; pkt[23] = 6;
+    pkt[24] = 0; pkt[25] = 0;
+    const uint8_t *their_ip = in_pkt + 26;
+    const uint8_t *our_ip   = in_pkt + 30;
+    mcpy(pkt + 26, our_ip, 4);
+    mcpy(pkt + 30, their_ip, 4);
+    uint16_t ic = ip_cksum(pkt + 14, 20);
+    pkt[24] = (uint8_t)(ic >> 8); pkt[25] = (uint8_t)ic;
+
+    uint16_t sp = get16(in_pkt + 34);
+    uint16_t dp = get16(in_pkt + 36);
+    uint32_t seq_in = get32(in_pkt + 38);
+    put16(pkt + 34, dp);                /* src port = our (target) port */
+    put16(pkt + 36, sp);                /* dst port = their source */
+    put32(pkt + 38, 0);                 /* RST seq = 0 when no ACK field */
+    put32(pkt + 42, seq_in + 1);        /* ACK the SYN */
+    pkt[46] = (20 / 4) << 4;
+    pkt[47] = 0x14;                     /* RST+ACK */
+    put16(pkt + 48, 0);                 /* window */
+    put16(pkt + 50, 0);
+    put16(pkt + 52, 0);
+    uint16_t ck = tcp_cksum(our_ip, their_ip, pkt + 34, 20);
+    pkt[50] = (uint8_t)(ck >> 8);
+    pkt[51] = (uint8_t)ck;
+
+    net_send_raw(pkt, 54);
+}
+
 /* ── TCP Input (from dispatcher) ───────────────────── */
 
 void tcp_input(const uint8_t *pkt, int len) {
@@ -680,6 +727,17 @@ void tcp_input(const uint8_t *pkt, int len) {
 
     net_tcp_t *c = tcp_find(dport, sport, src_ip);
     if (!c) {
+        uint8_t in_flags = pkt[47];
+        /* SYN to closed port -> RST+ACK (ECONNREFUSED on connect side).
+         * Only for a pure SYN; existing RST must never be mirrored (loop). */
+        if ((in_flags & 0x3F) == 0x02) {
+            if (!sock_has_listener(dport)) {
+                send_rst_to(pkt);
+                return;
+            }
+        }
+        /* RST to nowhere: silently drop, never bounce */
+        if (in_flags & 0x04) return;
         q_push(&q_tcp, pkt, len);
         struct thread *wt = __atomic_load_n(&q_tcp_wait_thread, __ATOMIC_ACQUIRE);
         if (wt) event_post(wt, 9 /* EQ_SOCKET_CONNECT */, 0);

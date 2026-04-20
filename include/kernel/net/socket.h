@@ -95,6 +95,10 @@ extern socket_t *sock_active_head;
 socket_t *sock_alloc(void);
 void sock_free(socket_t *s);
 
+/* Returns 1 if any socket is in SOCK_LISTENING state on local_port (host order),
+ * else 0. Used by tcp_input to decide RST-on-closed-port (Linux semantics). */
+int sock_has_listener(uint16_t local_port_host);
+
 /* Called from do_read/do_write/do_close for FD_SOCKET */
 long socket_read(int fd, void *buf, long count);
 long socket_write(int fd, const void *buf, long count);

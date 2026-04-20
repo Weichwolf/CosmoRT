@@ -21,6 +21,11 @@ extern long send_sigpipe(void);
 
 /* sock_block_thread eliminated — all blocking uses event_wait now */
 
+/* Byte-swap helper (used by sock_has_listener + elsewhere) */
+static inline uint16_t bswap16(uint16_t v) {
+    return (uint16_t)((v >> 8) | (v << 8));
+}
+
 /* sockaddr_in layout (user-space struct, 16 bytes) */
 struct k_sockaddr_in {
     uint16_t sin_family;
@@ -85,6 +90,21 @@ void sock_free(socket_t *s) {
     spin_unlock_irq(&sock_lock, flags);
 }
 
+int sock_has_listener(uint16_t local_port_host) {
+    uint16_t be = bswap16(local_port_host);
+    uint64_t flags;
+    int found = 0;
+    spin_lock_irq(&sock_lock, &flags);
+    for (socket_t *o = sock_active_head; o; o = o->next_active) {
+        if (o->state == SOCK_LISTENING && o->local_port == be) {
+            found = 1;
+            break;
+        }
+    }
+    spin_unlock_irq(&sock_lock, flags);
+    return found;
+}
+
 static socket_t *sock_from_fd(int fd) {
     process_t *p = proc_current();
     if (!p) return 0;
@@ -115,11 +135,6 @@ static void sock_finalize_connect(socket_t *s) {
         s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
         s->tcp.wait_thread = 0;
     }
-}
-
-/* Byte-swap helpers */
-static inline uint16_t bswap16(uint16_t v) {
-    return (uint16_t)((v >> 8) | (v << 8));
 }
 
 /* ── SYS_SOCKET (41) ─────────────────────────────── */
@@ -251,6 +266,8 @@ long do_connect(int fd, const void *addr, int addrlen) {
             continue;
         }
         s->tcp.wait_thread = 0;
+        /* RST during SYN_SENT = no listener = ECONNREFUSED (Linux semantics) */
+        if (s->tcp.got_rst) return -ECONNREFUSED;
         return -ETIMEDOUT;
     }
 }
