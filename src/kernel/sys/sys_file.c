@@ -525,7 +525,7 @@ long do_dup3(int oldfd, int newfd, int flags) {
         extern void vfs_file_incref(struct vfs_file *f);
         vfs_file_incref((struct vfs_file *)old->obj);
     } else if (old->obj) {
-        fd_obj_incref(old->type, old->obj);
+        fd_obj_incref(old->type, old->obj, old->flags);
     }
     if (flags & O_CLOEXEC)
         p->fds.entries[newfd].flags |= O_CLOEXEC;

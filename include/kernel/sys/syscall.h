@@ -14,8 +14,9 @@
  * fde_type: FD type, fde_obj: kernel object pointer. */
 void fd_cleanup_entry(int fde_type, void *fde_obj);
 
-/* Increment refcount on a non-file FD object (for fork/dup) */
-void fd_obj_incref(int fde_type, void *fde_obj);
+/* Increment refcount on a non-file FD object (for fork/dup).
+ * fde_flags needed to distinguish read/write end for FD_PIPE. */
+void fd_obj_incref(int fde_type, void *fde_obj, int fde_flags);
 
 /* Main syscall dispatcher — called from ASM entry and INT 0x80 */
 long sys_handler(long num, long a1, long a2, long a3, long a4, long a5, long a6);

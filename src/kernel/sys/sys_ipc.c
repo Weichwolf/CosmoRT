@@ -7,7 +7,6 @@
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
 #define PIPE_BUF_SIZE 4096
-#define PIPE_MAX      32
 
 struct pipe {
     uint8_t buf[PIPE_BUF_SIZE];
@@ -18,15 +17,12 @@ struct pipe {
     spinlock_t lock;
 };
 
-static struct pipe pipe_pool[PIPE_MAX];
 static slab_t pipe_slab;
 static int pipe_slab_inited;
 
 static void pipe_slab_ensure(void) {
-    if (__sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1)) {
-        extern void slab_init(slab_t *, void *, int, int);
-        slab_init(&pipe_slab, pipe_pool, (int)sizeof(struct pipe), PIPE_MAX);
-    }
+    if (__sync_bool_compare_and_swap(&pipe_slab_inited, 0, 1))
+        slab_init_dynamic(&pipe_slab, (int)sizeof(struct pipe), 0);
 }
 
 long pipe_read(struct pipe *pp, void *buf, size_t count) {
@@ -207,14 +203,13 @@ long do_pipe2(int *fds, int flags) {
 
     int rfd = fd_alloc(&p->fds, FD_PIPE, pp, rflags);
     if (rfd < 0) { slab_free(&pipe_slab, pp); return -EMFILE; }
-    int wfd = fd_alloc(&p->fds, FD_PIPE, (void *)((uint8_t *)pp + 1), wflags);
+    int wfd = fd_alloc(&p->fds, FD_PIPE, pp, wflags);
     if (wfd < 0) {
         fd_close(&p->fds, rfd);
         slab_free(&pipe_slab, pp);
         return -EMFILE;
     }
-    /* Mark write-end fd: we encode read/write via pointer offset.
-     * Read end: obj == pp. Write end: obj == pp+1 (non-aligned marker). */
+    /* Read vs. write end encoded in fde->flags (O_RDONLY/O_WRONLY). */
 
     {
         /* Linux ABI: int[2]. But ktest uses long[2] via raw syscall wrappers.
@@ -225,25 +220,12 @@ long do_pipe2(int *fds, int flags) {
     return 0;
 }
 
-/* Helper: get pipe struct + is_write from fd */
+/* Helper: get pipe struct + is_write from fd.
+ * Read/write end distinguished via fde->flags (O_RDONLY=0, O_WRONLY=1). */
 struct pipe *pipe_from_fd(fd_entry_t *fde, int *is_write) {
     if (!fde || fde->type != FD_PIPE || !fde->obj) return 0;
-    /* Read end: obj is aligned to struct pipe. Write end: obj = pp + 1 byte */
-    uintptr_t addr = (uintptr_t)fde->obj;
-    /* Check if addr is within pipe_pool + offset 1 (write end) */
-    uintptr_t base = (uintptr_t)pipe_pool;
-    uintptr_t end = base + sizeof(pipe_pool);
-    if (addr >= base && addr < end) {
-        uintptr_t off = (addr - base) % sizeof(struct pipe);
-        if (off == 0) {
-            *is_write = 0;
-            return (struct pipe *)addr;
-        } else if (off == 1) {
-            *is_write = 1;
-            return (struct pipe *)(addr - 1);
-        }
-    }
-    return 0;
+    *is_write = (fde->flags & O_WRONLY) ? 1 : 0;
+    return (struct pipe *)fde->obj;
 }
 
 long pipe_close(fd_entry_t *fde) {
@@ -330,19 +312,16 @@ void fd_cleanup_entry(int fde_type, void *fde_obj) {
 
 /* ── fd_obj_incref — bump refcount for fork/dup of non-file FDs ── */
 
-void fd_obj_incref(int fde_type, void *fde_obj) {
+void fd_obj_incref(int fde_type, void *fde_obj, int fde_flags) {
     if (!fde_obj) return;
     if (fde_type == FD_PIPE) {
-        int is_write = 0;
-        fd_entry_t tmp = { FD_PIPE, fde_obj, 0 };
-        struct pipe *pp = pipe_from_fd(&tmp, &is_write);
-        if (pp) {
-            uint64_t flags;
-            spin_lock_irq(&pp->lock, &flags);
-            if (is_write) pp->write_open++;
-            else          pp->read_open++;
-            spin_unlock_irq(&pp->lock, flags);
-        }
+        struct pipe *pp = (struct pipe *)fde_obj;
+        int is_write = (fde_flags & O_WRONLY) ? 1 : 0;
+        uint64_t flags;
+        spin_lock_irq(&pp->lock, &flags);
+        if (is_write) pp->write_open++;
+        else          pp->read_open++;
+        spin_unlock_irq(&pp->lock, flags);
     }
     if (fde_type == FD_SOCKET) {
         socket_t *s = (socket_t *)fde_obj;

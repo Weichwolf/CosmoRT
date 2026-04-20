@@ -175,7 +175,8 @@ static void dup_fd_table(process_t *child, process_t *parent) {
             else if (ft == FD_PIPE || ft == FD_SOCKET || ft == FD_EPOLL ||
                      ft == FD_EVENTFD || ft == FD_TIMERFD ||
                      ft == FD_INOTIFY || ft == FD_UNIX_SOCK)
-                fd_obj_incref(ft, parent->fds.entries[i].obj);
+                fd_obj_incref(ft, parent->fds.entries[i].obj,
+                              parent->fds.entries[i].flags);
         }
     }
     child->fds.max_fd = parent->fds.max_fd;
