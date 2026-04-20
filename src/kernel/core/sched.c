@@ -13,6 +13,7 @@
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
+#include "core/frame.h"
 #include "core/rcu.h"
 #include "hw/serial.h"
 #include "spinlock.h"
@@ -194,7 +195,7 @@ void schedule(void) {
 
 /* ── Timer preemption ────────────────────────────── */
 
-void sched_preempt(void *frame_ptr) {
+void sched_preempt(irq_frame_t *f) {
     /* timerfd expiry + epoll wakeups (still needed until timerfd uses hrtimer) */
     {
         extern void epoll_check_timeouts(void);
@@ -235,9 +236,8 @@ void sched_preempt(void *frame_ptr) {
     thread_t *cur = cpu->current_thread;
     if (!cur || cur == &idle_thread || cur->state != THREAD_RUNNING) return;
 
-    uint64_t *f = (uint64_t *)frame_ptr;
-
-    if ((f[18] & 3) != 3) return; /* kernel mode — don't preempt */
+    /* Kernel mode — don't preempt, IRQ interrupted kernel code path. */
+    if (!frame_is_user(f)) return;
 
     /* Signal delivery (without context switch) */
     extern void check_pending_signals(void);
@@ -247,18 +247,13 @@ void sched_preempt(void *frame_ptr) {
         int alarm_due = p && p->alarm_deadline_ms > 0 && timer_ms() >= p->alarm_deadline_ms;
         if (deliverable || alarm_due) {
             cpu->in_preempt = 1;
-            cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
-            cur->r11 = f[4]; cur->r10 = f[5]; cur->r9 = f[6];  cur->r8 = f[7];
-            cur->rbp = f[8]; cur->rdi = f[9]; cur->rsi = f[10]; cur->rdx = f[11];
-            cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
-            cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
+            irq_frame_to_thread(f, cur);
+            /* Snapshot FS_BASE so deliver_signal's sigframe captures the
+             * right TLS pointer. Not restored here: deliver_signal may set
+             * a fresh FS_BASE via sigframe, sigreturn restores original. */
             cur->fs_base = arch_get_fs_base();
             check_pending_signals();
-            f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;
-            f[4] = cur->r11; f[5] = cur->r10; f[6] = cur->r9;  f[7] = cur->r8;
-            f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
-            f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
-            f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
+            thread_to_irq_frame(cur, f);
             cpu->in_preempt = 0;
         }
     }
@@ -279,11 +274,7 @@ void sched_preempt(void *frame_ptr) {
     }
 
     /* Save current thread context from interrupt frame */
-    cur->r15 = f[0]; cur->r14 = f[1]; cur->r13 = f[2]; cur->r12 = f[3];
-    cur->r11 = f[4]; cur->r10 = f[5]; cur->r9 = f[6];  cur->r8 = f[7];
-    cur->rbp = f[8]; cur->rdi = f[9]; cur->rsi = f[10]; cur->rdx = f[11];
-    cur->rcx = f[12]; cur->rbx = f[13]; cur->rax = f[14];
-    cur->rip = f[17]; cur->rflags = f[19]; cur->rsp = f[20];
+    irq_frame_to_thread(f, cur);
     cur->fs_base = arch_get_fs_base();
 
     /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
@@ -295,11 +286,7 @@ void sched_preempt(void *frame_ptr) {
     /* Returned: we've been rescheduled.
      * schedule() already loaded our CR3, TSS, FPU, FS_BASE.
      * Restore user regs from thread_t to IRQ frame. */
-    f[0] = cur->r15; f[1] = cur->r14; f[2] = cur->r13; f[3] = cur->r12;
-    f[4] = cur->r11; f[5] = cur->r10; f[6] = cur->r9;  f[7] = cur->r8;
-    f[8] = cur->rbp; f[9] = cur->rdi; f[10] = cur->rsi; f[11] = cur->rdx;
-    f[12] = cur->rcx; f[13] = cur->rbx; f[14] = cur->rax;
-    f[17] = cur->rip; f[19] = cur->rflags; f[20] = cur->rsp;
+    thread_to_irq_frame(cur, f);
 }
 
 /* ── Init + scheduler loop ───────────────────────── */

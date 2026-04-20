@@ -619,14 +619,14 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
 
     /* Timer (vector 32): RT scheduler preemption */
     if (vector == 32) {
-        extern void sched_preempt(void *frame);
+        extern void sched_preempt(irq_frame_t *frame);
         sched_preempt(frame);
     }
 
     /* Reschedule IPI (vector 0xFD): preempt immediately instead of
      * waiting for next timer tick. Gives <1ms wake-up latency. */
     if (vector == 0xFD) {
-        extern void sched_preempt(void *frame);
+        extern void sched_preempt(irq_frame_t *frame);
         sched_preempt(frame);
     }
 
