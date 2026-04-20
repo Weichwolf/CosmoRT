@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2341/78, musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2349/65, musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -9,7 +9,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | # | Phase | Fails adressiert | Aufwand | Risiko | Blocker für |
 |---|-------|------------------|---------|--------|-------------|
 | 0 | Build-Infrastruktur (Header-Deps) | **✓ done** (Commit `5d17930`, 2335/79 → 2341/78) | — | — | — |
-| 1 | Syscall-Validierung (Klasse D) | ~10 | 1 Tag | niedrig | — |
+| 1 | Syscall-Validierung (Klasse D) | **✓ done** (2334/79 → 2349/65) | — | — | — |
 | 2 | VFS-Metadaten (Klasse B) | ~25 | 3 Tage | niedrig | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
@@ -38,44 +38,46 @@ Low-risk, mechanisch. Jede Box ≤ 10 Zeilen Code.
 
 ### 1.1 Flag-/Argument-Checks
 
-- [ ] `close_range`: unknown flags → `-EINVAL`
-- [ ] `dup3`: `flags & ~O_CLOEXEC` → `-EINVAL`, O_CLOEXEC anwenden
-- [ ] `fchmodat2`: unknown flags → `-EINVAL`
-- [ ] `fchownat`: unknown flags → `-EINVAL`
-- [ ] `fdatasync` auf pipe/socket → `-EINVAL`
-- [ ] `epoll_create`: `size <= 0` → `-EINVAL`
-- [ ] `epoll_create1`: unknown flags → `-EINVAL`
-- [ ] `epoll_ctl`: `fd == epfd` → `-EINVAL`
-- [ ] `epoll_wait` auf Non-Epoll-FD → `-EINVAL` statt `-EBADF`
-- [ ] `epoll_pwait2`: `tv_sec<0 | tv_nsec<0 | tv_nsec>=1e9` → `-EINVAL`
-- [ ] `clone`: `CLONE_VM` ohne user-stack → `-EINVAL`
-- [ ] `clone`: `CLONE_SIGHAND` ohne `CLONE_VM` → `-EINVAL`
-- [ ] `clone`: `CLONE_THREAD` ohne `CLONE_SIGHAND` → `-EINVAL`
-- [ ] `clone3`: `size < sizeof(clone_args_min)` → `-EINVAL`
-- [ ] `clock_settime`: `CLOCK_MONOTONIC/BOOTTIME` → `-EINVAL`
-- [ ] `clock_settime`: `clock_id` Range-Check
-- [ ] `clock_settime`/`clock_nanosleep`: `timespec` (`tv_sec<0`, `tv_nsec<0|>=1e9`) validieren
-- [ ] `clock_settime`: NULL `timespec` → `-EFAULT`
-- [ ] `adjtimex`: NULL `timex` → `-EFAULT`
-- [ ] `adjtimex`: `mode` Flag-Validierung
-- [ ] `adjtimex`: `tick` Range (900_000..1_100_000)
-- [ ] `bind` doppelt → `-EINVAL`
-- [ ] `chmod`/`chown` leerer Pfad → `-ENOENT`
-- [ ] `eventfd` write: `counter + val >= UINT64_MAX` → `-EAGAIN` (non-block) / blockieren
-- [ ] `fallocate`: `mode & ~(KEEP_SIZE|PUNCH_HOLE|...)` → `-EOPNOTSUPP`
-- [ ] `read` auf O_WRONLY-fd → `-EBADF`
-- [ ] `write` auf O_RDONLY-fd → `-EBADF`
+- [x] `close_range`: unknown flags → `-EINVAL`
+- [x] `dup3`: `flags & ~O_CLOEXEC` → `-EINVAL`, O_CLOEXEC anwenden
+- [x] `fchmodat2`: unknown flags → `-EINVAL`
+- [x] `fchownat`: unknown flags → `-EINVAL`
+- [x] `fdatasync` auf pipe/socket → `-EINVAL`
+- [x] `epoll_create`: `size <= 0` → `-EINVAL`
+- [x] `epoll_create1`: unknown flags → `-EINVAL`
+- [x] `epoll_ctl`: `fd == epfd` → `-EINVAL`
+- [x] `epoll_wait` auf Non-Epoll-FD → `-EINVAL` statt `-EBADF`
+- [x] `epoll_pwait2`: `tv_sec<0 | tv_nsec<0 | tv_nsec>=1e9` → `-EINVAL`
+- [x] `clone`: `CLONE_VM` ohne user-stack → `-EINVAL`
+- [x] `clone`: `CLONE_SIGHAND` ohne `CLONE_VM` → `-EINVAL`
+- [x] `clone`: `CLONE_THREAD` ohne `CLONE_SIGHAND` → `-EINVAL`
+- [x] `clone3`: `size < sizeof(clone_args_min)` → `-EINVAL` (CLONE_ARGS_SIZE_VER0=64)
+- [x] `clock_settime`: `CLOCK_MONOTONIC/BOOTTIME` → `-EINVAL`
+- [x] `clock_settime`: `clock_id` Range-Check
+- [x] `clock_settime`/`clock_nanosleep`: `timespec` (`tv_sec<0`, `tv_nsec<0|>=1e9`) validieren
+- [x] `clock_settime`: NULL `timespec` → `-EFAULT`
+- [x] `adjtimex`: NULL `timex` → `-EFAULT`
+- [x] `adjtimex`: `mode` Flag-Validierung
+- [x] `adjtimex`: `tick` Range (900_000..1_100_000)
+- [x] `bind` doppelt → `-EINVAL`
+- [ ] `chmod`/`chown` leerer Pfad → `-ENOENT` (Phase 2, im VFS-Lookup)
+- [x] `eventfd` write: `val == UINT64_MAX` → `-EINVAL` (per man eventfd)
+- [x] `fallocate`: `mode & ~(KEEP_SIZE|PUNCH_HOLE|...)` → `-EOPNOTSUPP`
+- [x] `read` auf O_WRONLY-fd → `-EBADF`
+- [x] `write` auf O_RDONLY-fd → `-EBADF`
 
 ### 1.2 FD-Typ-Dispatch (`sock_from_fd`)
 
-`sock_from_fd` liefert NULL bei Non-Socket → `-EBADF` statt `-ENOTSOCK`. Zweistufig: erst `fd_lookup` (`-EBADF`), dann `type == FD_SOCKET` (`-ENOTSOCK`).
+Neuer `sock_lookup(fd, &err)`: EBADF bei Non-FD, ENOTSOCK bei Non-Socket.
+Umgebaut: sendto, recvfrom, setsockopt, getsockopt, getsockname,
+getpeername, shutdown.
 
-- [ ] `sock_from_fd` umbauen
-- [ ] `accept` auf `SOCK_DGRAM` → `-EOPNOTSUPP` (nicht `-EINVAL`)
+- [x] `sock_from_fd` umbauen (→ `sock_lookup`)
+- [x] `accept` auf `SOCK_DGRAM` → `-EOPNOTSUPP` (bereits vorher vorhanden)
 
 ### 1.3 Permissions
 
-- [ ] `access(X_OK)`: `i_mode & (S_IXUSR|S_IXGRP|S_IXOTH)` prüfen
+- [x] `access(X_OK)`: `i_mode & (S_IXUSR|S_IXGRP|S_IXOTH)` prüfen
 
 ---
 
