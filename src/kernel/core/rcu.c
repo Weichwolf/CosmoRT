@@ -11,6 +11,7 @@
 
 #include "core/rcu.h"
 #include "core/percpu.h"
+#include "core/tick.h"
 #include "proc/thread.h"
 #include "spinlock.h"
 #include "hw/serial.h"
@@ -45,6 +46,8 @@ typedef struct rcu_data {
     rcu_head_t     *cb_wait_tail;
     rcu_head_t     *cb_next_head;   /* callbacks queued after GP start */
     rcu_head_t     *cb_next_tail;
+    rcu_head_t     *cb_done_head;   /* GP ended, awaiting deferred execution */
+    rcu_head_t     *cb_done_tail;
     int             cb_count;
 } rcu_data_t;
 
@@ -59,7 +62,9 @@ typedef struct rcu_state {
     uint64_t        gp_seq;         /* odd=active, even=idle */
     rcu_node_t      node;
     rcu_data_t      cpu[SMP_MAX_CORES];
-    rcu_sync_node_t *sync_head;     /* synchronize_rcu waiter list */
+    rcu_sync_node_t *sync_head;     /* synchronize_rcu active waiter list */
+    rcu_sync_node_t *sync_ready;    /* waiters detached by gp_complete, awaiting wake */
+    volatile int    defer_pending;  /* tick picks up deferred callbacks + wakes */
 } rcu_state_t;
 
 static rcu_state_t rcu_state;
@@ -104,14 +109,21 @@ static void blkd_remove(rcu_node_t *rnp, struct thread *t) {
     rnp->blkd_count--;
 }
 
-/* ── Callback processing (per-CPU) ──────────── */
+/* ── Deferred callback execution ─────────────
+ *
+ * gp_complete detaches finished callbacks into cb_done_* and sets defer_pending.
+ * rcu_tick_deferred() drains cb_done_* on the current CPU and wakes sync waiters.
+ * This keeps callbacks off the synchronize_rcu / schedule() / rcu_read_unlock
+ * call paths that triggered GP completion. */
 
-static void rcu_process_callbacks(int cpu_id) {
+static void rcu_drain_done(int cpu_id) {
     rcu_data_t *rdp = &rcu_state.cpu[cpu_id];
 
-    rcu_head_t *head = rdp->cb_wait_head;
-    rdp->cb_wait_head = 0;
-    rdp->cb_wait_tail = 0;
+    uint64_t flags = irq_save();
+    rcu_head_t *head = rdp->cb_done_head;
+    rdp->cb_done_head = 0;
+    rdp->cb_done_tail = 0;
+    irq_restore(flags);
 
     while (head) {
         rcu_head_t *next = head->next;
@@ -121,6 +133,32 @@ static void rcu_process_callbacks(int cpu_id) {
         head = next;
     }
 }
+
+static void rcu_tick_deferred(void) {
+    if (__builtin_expect(!READ_ONCE(rcu_state.defer_pending), 1))
+        return;
+
+    rcu_state.defer_pending = 0;
+
+    for (int i = 0; i < SMP_MAX_CORES; i++) {
+        if (rcu_state.cpu[i].cb_done_head)
+            rcu_drain_done(i);
+    }
+
+    uint64_t flags;
+    spin_lock_irq(&rcu_state.gp_lock, &flags);
+    rcu_sync_node_t *waiters = rcu_state.sync_ready;
+    rcu_state.sync_ready = 0;
+    spin_unlock_irq(&rcu_state.gp_lock, flags);
+
+    while (waiters) {
+        rcu_sync_node_t *next = waiters->next;
+        sched_wake(waiters->waiter);
+        waiters = next;
+    }
+}
+
+static struct tick_callback rcu_tick_cb;
 
 /* ── Grace period start ────────────────────── */
 
@@ -182,31 +220,44 @@ static void rcu_gp_complete(void) {
     rcu_state.gp_seq++;
     rnp->gp_seq = rcu_state.gp_seq;
 
-    /* Detach all synchronize_rcu waiters */
-    rcu_sync_node_t *waiters = rcu_state.sync_head;
-    rcu_state.sync_head = 0;
-
-    spin_unlock_irq(&rcu_state.gp_lock, flags);
-
-    /* Process callbacks on originating CPU only */
-    int cpu_id = rcu_cpu_of_self();
-    rcu_process_callbacks(cpu_id);
-
-    /* Wake all synchronize_rcu waiters */
-    while (waiters) {
-        rcu_sync_node_t *next = waiters->next;
-        sched_wake(waiters->waiter);
-        waiters = next;
+    /* Move finished cb_wait → cb_done per CPU (FIFO append).
+     * done-queue belongs to the tick; callbacks run there, not here. */
+    for (int i = 0; i < SMP_MAX_CORES; i++) {
+        rcu_data_t *rdp = &rcu_state.cpu[i];
+        if (!rdp->cb_wait_head)
+            continue;
+        if (rdp->cb_done_tail)
+            rdp->cb_done_tail->next = rdp->cb_wait_head;
+        else
+            rdp->cb_done_head = rdp->cb_wait_head;
+        rdp->cb_done_tail = rdp->cb_wait_tail;
+        rdp->cb_wait_head = 0;
+        rdp->cb_wait_tail = 0;
     }
 
-    /* Chain: start next GP if callbacks still pending */
+    /* Move active synchronize_rcu waiters → sync_ready (deferred wake). */
+    rcu_sync_node_t *waiters = rcu_state.sync_head;
+    rcu_state.sync_head = 0;
+    if (waiters) {
+        rcu_sync_node_t *tail = waiters;
+        while (tail->next) tail = tail->next;
+        tail->next = rcu_state.sync_ready;
+        rcu_state.sync_ready = waiters;
+    }
+
+    rcu_state.defer_pending = 1;
+
+    /* Chain: start next GP if callbacks queued while GP was in flight. */
     int need_gp = 0;
     for (int i = 0; i < SMP_MAX_CORES; i++) {
-        if (rcu_state.cpu[i].cb_next_head || rcu_state.cpu[i].cb_wait_head) {
+        if (rcu_state.cpu[i].cb_next_head) {
             need_gp = 1;
             break;
         }
     }
+
+    spin_unlock_irq(&rcu_state.gp_lock, flags);
+
     if (need_gp)
         rcu_gp_start();
 }
@@ -354,6 +405,8 @@ void rcu_init(void) {
     rcu_state.gp_seq = 0;
     rcu_state.gp_lock = (spinlock_t)SPINLOCK_INIT;
     rcu_state.sync_head = 0;
+    rcu_state.sync_ready = 0;
+    rcu_state.defer_pending = 0;
 
     rcu_node_t *rnp = &rcu_state.node;
     rnp->lock = (spinlock_t)SPINLOCK_INIT;
@@ -373,8 +426,12 @@ void rcu_init(void) {
         rdp->cb_wait_tail = 0;
         rdp->cb_next_head = 0;
         rdp->cb_next_tail = 0;
+        rdp->cb_done_head = 0;
+        rdp->cb_done_tail = 0;
         rdp->cb_count = 0;
     }
+
+    tick_register(&rcu_tick_cb, rcu_tick_deferred, TICK_EVERY);
 
     serial_puts("rcu: preemptible RCU init (");
     char t[4]; int ti = 0, v = SMP_MAX_CORES;
