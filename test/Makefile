@@ -34,7 +34,7 @@ KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
 
 EFI_LIB  = /usr/lib
 EFI_CRT  = $(EFI_LIB)/crt0-efi-x86_64.o
-EFI_LDS  = $(EFI_LIB)/elf_x86_64_efi.lds
+EFI_LDS  = $(SRC)/boot/efi_x86_64.lds
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
            -Bsymbolic -L$(EFI_LIB)

@@ -190,6 +190,11 @@ void kernel_main(struct boot_info *info) {
         arch_clac();
     }
 
+    /* Exception table: sort fault/fixup pairs so the page-fault handler can
+     * binary-search. Must run before any syscall/user-access path. */
+    extern void extable_sort(void);
+    extable_sort();
+
     /* Interrupts + Timer */
     irq_init();
     timer_init();
