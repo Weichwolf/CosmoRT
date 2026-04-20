@@ -1,64 +1,61 @@
-/* CosmoRT VFS — mount table and path dispatch */
+/* CosmoRT VFS — mount table and path dispatch
+ *
+ * Slab-allocated mount entries linked in a list sorted by pathlen descending,
+ * so longest-prefix match is simply a forward scan. */
 
 #include "fs/vfs.h"
 #include "hw/serial.h"
+#include "mm/slab.h"
 
-/* ── Static mount table ─────────────────────────── */
+static slab_t mount_slab;
+static int    mount_slab_inited;
+static struct mount *mount_head;
+static int    mount_count;
 
-static struct mount mounts[MOUNT_MAX];
-static int mount_count;
+static void mount_slab_ensure(void) {
+    if (__sync_bool_compare_and_swap(&mount_slab_inited, 0, 1))
+        slab_init_dynamic(&mount_slab, (int)sizeof(struct mount), 0);
+}
 
 int vfs_mount(const char *path, struct super_ops *s_ops,
               struct inode_ops *i_ops, struct file_ops *f_ops, void *fs_data) {
-    if (mount_count >= MOUNT_MAX) return -ENOMEM;
+    mount_slab_ensure();
 
     /* Compute path length (exclude trailing slash unless root) */
     int len = 0;
     while (path[len]) len++;
     if (len > 1 && path[len - 1] == '/') len--;
 
-    /* Insert sorted by pathlen descending (longest prefix first) */
-    int pos = mount_count;
-    for (int i = 0; i < mount_count; i++) {
-        if (len > mounts[i].pathlen) { pos = i; break; }
-    }
-    for (int i = mount_count; i > pos; i--)
-        mounts[i] = mounts[i - 1];
+    struct mount *m = (struct mount *)slab_alloc(&mount_slab);
+    if (!m) return -ENOMEM;
 
-    mounts[pos].path    = path;
-    mounts[pos].pathlen = len;
-    mounts[pos].s_ops   = s_ops;
-    mounts[pos].i_ops   = i_ops;
-    mounts[pos].f_ops   = f_ops;
-    mounts[pos].fs_data = fs_data;
+    m->path    = path;
+    m->pathlen = len;
+    m->s_ops   = s_ops;
+    m->i_ops   = i_ops;
+    m->f_ops   = f_ops;
+    m->fs_data = fs_data;
+
+    /* Insert sorted by pathlen descending (longest prefix first) */
+    struct mount **pp = &mount_head;
+    while (*pp && (*pp)->pathlen >= len)
+        pp = &(*pp)->next;
+    m->next = *pp;
+    *pp = m;
     mount_count++;
 
     serial_puts("vfs: mount ");
     serial_puts(path);
     serial_puts(" (");
-    if (i_ops) {
-        /* Walk the extern names to find a label — cheap hack for debug */
-        serial_puts("ok");
-    }
+    if (i_ops) serial_puts("ok");
     serial_puts(")\n");
     return 0;
 }
 
 /* Longest-prefix match. Returns mount entry and sets *relpath to
- * the path relative to the mount point (always starts with '/').
- *
- * Example: path="/proc/self/maps", mount="/proc"
- *   → relpath="/self/maps", returns &mounts[proc]
- *
- * path="/tmp/foo", mount="/tmp" (tmpfs)
- *   → relpath="/foo"
- *
- * path="/bin/sh", mount="/" (ext4)
- *   → relpath="/bin/sh"
- */
+ * the path relative to the mount point (always starts with '/'). */
 struct mount *vfs_resolve_mount(const char *abspath, const char **relpath) {
-    for (int i = 0; i < mount_count; i++) {
-        struct mount *m = &mounts[i];
+    for (struct mount *m = mount_head; m; m = m->next) {
         int plen = m->pathlen;
 
         /* Root "/" matches everything */
@@ -77,7 +74,6 @@ struct mount *vfs_resolve_mount(const char *abspath, const char **relpath) {
         /* After prefix: must be end-of-string or '/' */
         char next = abspath[plen];
         if (next == 0) {
-            /* Exact match: relpath is "/" */
             *relpath = "/";
             return m;
         }
@@ -92,8 +88,10 @@ struct mount *vfs_resolve_mount(const char *abspath, const char **relpath) {
 
 /* Get mount by index (for iteration, e.g. /proc/mounts) */
 struct mount *vfs_get_mount(int idx) {
-    if (idx < 0 || idx >= mount_count) return 0;
-    return &mounts[idx];
+    if (idx < 0) return 0;
+    struct mount *m = mount_head;
+    while (m && idx > 0) { m = m->next; idx--; }
+    return m;
 }
 
 int vfs_mount_count(void) {

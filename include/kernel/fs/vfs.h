@@ -138,9 +138,9 @@ struct file_ops {
 
 /* ── Mount entry ────────────────────────────────── */
 
-#define MOUNT_MAX 16
-
+/* Slab-allocated, linked in a list sorted by pathlen (longest-first). */
 struct mount {
+    struct mount *next;         /* list linkage */
     const char *path;
     int pathlen;
     struct super_ops *s_ops;
