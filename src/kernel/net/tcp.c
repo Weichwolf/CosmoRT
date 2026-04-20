@@ -965,8 +965,22 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
 /* ── TCP Connect ───────────────────────────────────── */
 
 int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
-    if (c->state == TCP_ESTABLISHED) return 0;
-    if (c->state == TCP_SYN_SENT) return -11;
+    /* Any state past SYN_SENT means the 3-way handshake succeeded at some
+     * point. Subsequent peer FIN moves us to CLOSE_WAIT; that is still
+     * "connected" for connect(2) purposes (returns 0, not a new handshake). */
+    switch (c->state) {
+    case TCP_ESTABLISHED:
+    case TCP_FIN_WAIT1:
+    case TCP_FIN_WAIT2:
+    case TCP_CLOSE_WAIT:
+    case TCP_CLOSING:
+    case TCP_LAST_ACK:
+    case TCP_TIME_WAIT:
+        return 0;
+    case TCP_SYN_SENT:
+        return -11;
+    default: break;
+    }
     if (c->got_rst) return -1;
 
     mzero(c, sizeof(*c));
