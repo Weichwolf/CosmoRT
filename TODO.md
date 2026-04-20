@@ -13,7 +13,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 2 | VFS-Metadaten (Klasse B) | **✓ done** (2354/65 → 2361/58, Commit `560157d`) | — | — | — |
 | 0.5 | Test-Runner-Watchdog | **✓ done** (2361/58 → 2364/56, Varianz ±14 → ±2) | — | — | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
-| 4 | Stub-Implementierungen (Klasse A) | **✓ 4.1-4.7+4.9 done** (2365/55 → 2398/22, +33) | — | — | — |
+| 4 | Stub-Implementierungen (Klasse A) | **✓ done** (2365/55 → 2400/19, +35; 4.8 nach Phase 6.6) | — | — | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
 | 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup** + **6.6 Page-Fault-Recovery (extable) ✓** | ~10 + 4 Netz + 4 acct | 4+3+2 Tage | **hoch** | 4.8 (acct) ✓ |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
@@ -263,7 +263,8 @@ Commits `2eaad4f`, `57a2952`, `6421623`, `7e53d07`, `88b6e3a`, `5d3ba99`, `0741c
 - [x] Page-Fault-Handler (`src/kernel/core/irq.c`): extable-Lookup vor Legacy-Pfad bei Kernel-Mode-Fault; auch im `default_exception_with_frame` für GPF/fxrstor
 - [x] `copy_from_user`/`copy_to_user` als echte Funktionen in `src/kernel/mm/uaccess.c` mit `rep movsb`+`_ASM_EXTABLE`
 - [x] `copy_path_from_user` (`dispatch.c`) und `copy_path_from_user_proc` (`process_exec.c`) auf byte-weisen extable-Asm migriert
-- [x] Zusätzlicher Fix: Kernel-Pfad demand-paged **nicht mehr** PROT_NONE-VMAs (analog zum User-Pfad) — war die Ursache der 140-Test-Regression
+- [x] **Kern-Fix (Wurzel-Korrektur)**: Page-Fault-Handler Kernel-Mode demand-paged **nicht mehr** PROT_NONE-VMAs — das war die tatsächliche Ursache der 140-Test-Regression, **nicht** die in dieser TODO angenommene setjmp/longjmp-State-Corruption. User-Pfad (`irq.c:443`) hatte den Guard, Kernel-Pfad (`:220`) fehlte ihn. Kernel-Zugriff auf PROT_NONE-User-Page allozierte Page mit `prot=0` ins User-VMA → kaskadierende fork/COW-Alloc-Failures. Einzeiler `knp &&= (kprot & (PROT_READ|PROT_WRITE|PROT_EXEC))`.
+- [x] extable-Refactor ist unabhängige Struktur-Sanierung (sauberer als setjmp/longjmp, robuster für künftige `copy_*_user`-Pfade), aber allein hätte er die Regression nicht gelöst.
 - [x] `fault_jmpbuf`/`fault_recover` aus `thread_t` entfernt, `kernel_setjmp`/`kernel_longjmp` aus `context.S`, `sys_handler`-Wrap entfernt
 - [x] Validierung: 4 acct-Tests grün (Phase 4.8 `[x]`), keine Regression.
 
@@ -393,6 +394,12 @@ Nach dem Netz-Audit vorgezogen. Inhalt in Phase 0.5 dokumentiert.
 
 - [ ] `/proc/stat`: CPU-Zeilen vollständig (user/nice/sys/idle/iowait/irq/softirq)
 - [ ] `/proc/<pid>/status`, `/proc/<pid>/stat`: fehlende Felder
+
+---
+
+## Restaufgaben (Einzelfixes)
+
+- [ ] `acct(".")` → `-EISDIR`: aktuell `-ENOENT`. `resolve_path`-Detail bei CWD="/" + path=".": liefert Pfad den `vfs_lookup_err` nicht findet statt den Root-Inode. Kein 6.6-Issue, isolierter VFS-Lookup-Bug.
 
 ---
 
