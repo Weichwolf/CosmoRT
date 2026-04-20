@@ -12,6 +12,7 @@
 #include "config.h"
 #include "mm/page_alloc.h"
 #include "mm/paging.h"
+#include "mm/slab.h"
 #include "core/irq.h"
 #include "proc/process.h"
 #include "mm/vma.h"
@@ -119,47 +120,47 @@ void cosmo_dma_free(void *virt, size_t len) {
     pages_free(virt, npages);
 }
 
-/* ── IRQ Registration (shared IRQ support) ───────── */
+/* ── IRQ Registration (shared IRQ support via linux-like irqaction list) ─── */
 
 #define HW_MAX_IRQ 24
-#define HW_MAX_HANDLERS_PER_IRQ 4
 
-static struct {
+typedef struct irqaction {
     void (*handler)(void *);
     void *ctx;
-} irq_table[HW_MAX_IRQ][HW_MAX_HANDLERS_PER_IRQ];
+    struct irqaction *next;
+} irqaction_t;
 
-static spinlock_t irq_table_lock = SPINLOCK_INIT;
+static irqaction_t *irq_actions[HW_MAX_IRQ];
+static slab_t      irqaction_slab;
+static int         irqaction_slab_inited;
+static spinlock_t  irq_table_lock = SPINLOCK_INIT;
+
+static void irqaction_slab_ensure(void) {
+    if (__sync_bool_compare_and_swap(&irqaction_slab_inited, 0, 1))
+        slab_init_dynamic(&irqaction_slab, (int)sizeof(irqaction_t), 0);
+}
 
 /* Internal IRQ dispatcher — calls ALL registered handlers for this IRQ */
 static void hw_irq_dispatch(int vector) {
     int irq = vector - 32;  /* APIC vectors start at 32 */
     if (irq < 0 || irq >= HW_MAX_IRQ) return;
-    for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
-        if (irq_table[irq][i].handler)
-            irq_table[irq][i].handler(irq_table[irq][i].ctx);
-    }
+    for (irqaction_t *a = irq_actions[irq]; a; a = a->next)
+        a->handler(a->ctx);
 }
 
 int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
     if (irq < 0 || irq >= HW_MAX_IRQ || !handler) return -1;
 
+    irqaction_slab_ensure();
+    irqaction_t *a = (irqaction_t *)slab_alloc(&irqaction_slab);
+    if (!a) { serial_puts("hw: irqaction OOM\n"); return -1; }
+    a->handler = handler;
+    a->ctx = ctx;
+
     uint64_t flags;
     spin_lock_irq(&irq_table_lock, &flags);
-
-    /* Find free slot for this IRQ */
-    int slot = -1;
-    for (int i = 0; i < HW_MAX_HANDLERS_PER_IRQ; i++) {
-        if (!irq_table[irq][i].handler) { slot = i; break; }
-    }
-    if (slot < 0) {
-        spin_unlock_irq(&irq_table_lock, flags);
-        serial_puts("hw: IRQ table full for IRQ\n");
-        return -1;
-    }
-
-    irq_table[irq][slot].handler = handler;
-    irq_table[irq][slot].ctx = ctx;
+    a->next = irq_actions[irq];
+    irq_actions[irq] = a;
 
     /* Route I/O APIC IRQ to vector 32+irq.
      * PCI uses level-triggered, active-low interrupts.
@@ -279,11 +280,7 @@ uint64_t hw_ms(void) {
 /* ── Init ────────────────────────────────────────── */
 
 void hw_init(void) {
-    for (int i = 0; i < HW_MAX_IRQ; i++)
-        for (int j = 0; j < HW_MAX_HANDLERS_PER_IRQ; j++) {
-            irq_table[i][j].handler = 0;
-            irq_table[i][j].ctx = 0;
-        }
+    for (int i = 0; i < HW_MAX_IRQ; i++) irq_actions[i] = 0;
     serial_puts("hw: 5 primitives ready\n");
 }
 
