@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2405/14 (5× Median, Varianz ±1 durch externen HTTP-Test `net/tcp_hash_multi`), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2413/6 (2× identisch nach Einzelbug-Sweep `0a96060`..`f6b79d1`), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -403,7 +403,19 @@ Nach dem Netz-Audit vorgezogen. Inhalt in Phase 0.5 dokumentiert.
 
 ## Restaufgaben (Einzelfixes)
 
-- [ ] `acct(".")` → `-EISDIR`: aktuell `-ENOENT`. `resolve_path`-Detail bei CWD="/" + path=".": liefert Pfad den `vfs_lookup_err` nicht findet statt den Root-Inode. Kein 6.6-Issue, isolierter VFS-Lookup-Bug.
+- [x] `acct(".")` → `-EISDIR`: Commit `e5f8d3a` (resolve_path-Fix am Root).
+- [ ] `ltp/copy_file_range-basic` "data matches": 31 Bytes geschrieben via copy_file_range, nach lseek(0) read liefert 31 Bytes, aber buf[0]!='A' || buf[30]!='\n'. tmpfs_op_pwrite + tmpfs_op_read sehen korrekt aus; `copy_file_range-offsets` + `copy_file_range03` (parallel code paths) sind grün. Unklare Ursache — ohne trace-Daten nicht lokal.
+
+## Einzelbug-Sweep — 2405/14 → 2413/6 (+8, 5 Bugs)
+
+Commits `0a96060`..`f6b79d1`:
+- `adjtimex03`: ADJ_ADJTIME ohne ADJ_OFFSET_SINGLESHOT/SS_READ → EINVAL
+- `faccessat202` invalid flags: faccessat2 flag-Validierung
+- `epoll_create1-cloexec`, `close_range-cloexec`: CLOEXEC-Propagation + Modus
+- `epoll_wait07`: EPOLLONESHOT-Handling (Flags nach Delivery löschen)
+- `epoll_ctl02-eperm`: FD_FILE als Target → EPERM
+- `execve03-eacces`: Execute-Bit-Check vor ELF-Parse
+- `acct("."` EISDIR: resolve_path Dot-Normalisierung am Root
 
 ---
 
