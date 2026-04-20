@@ -649,3 +649,68 @@ shebang_retry:;
     /* unreachable */
     return 0;
 }
+
+/* ── execveat(2) ─────────────────────────────────── */
+
+long do_execveat(int dirfd, const char *path, char *const argv[],
+                 char *const envp[], int flags) {
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) return -EINVAL;
+
+    char kpath[PATH_MAX_PROC];
+    int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
+    if (plen < 0) return plen;
+
+    if (plen == 0) {
+        if (!(flags & AT_EMPTY_PATH)) return -ENOENT;
+        thread_t *cur = thread_current();
+        if (!cur || !cur->proc) return -EFAULT;
+        process_t *p = cur->proc;
+        if (dirfd == AT_FDCWD) return -ENOENT;
+        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type != FD_FILE) return -EACCES;
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (!f || !f->path[0]) return -EBADF;
+        if (f->type == VFS_DIR) return -EACCES;
+        return do_execve(f->path, argv, envp);
+    }
+
+    if (kpath[0] != '/') {
+        if (dirfd == AT_FDCWD) {
+            /* Fall through: do_execve resolves relative via CWD */
+        } else {
+            thread_t *cur = thread_current();
+            if (!cur || !cur->proc) return -EFAULT;
+            process_t *p = cur->proc;
+            fd_entry_t *fde = fd_get(&p->fds, dirfd);
+            if (!fde || fde->type == FD_NONE) return -EBADF;
+            if (fde->type != FD_FILE) return -ENOTDIR;
+            struct vfs_file *f = (struct vfs_file *)fde->obj;
+            if (!f || f->type != VFS_DIR) return -ENOTDIR;
+            if (!f->path[0]) return -EBADF;
+            char combined[PATH_MAX_PROC];
+            int di = 0;
+            const char *dp = f->path;
+            while (*dp && di < PATH_MAX_PROC - 2) combined[di++] = *dp++;
+            if (di > 0 && combined[di - 1] != '/') combined[di++] = '/';
+            const char *rp = kpath;
+            while (*rp && di < PATH_MAX_PROC - 1) combined[di++] = *rp++;
+            combined[di] = '\0';
+            if (flags & AT_SYMLINK_NOFOLLOW) {
+                extern struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
+                int err = 0;
+                struct vfs_node *n = vfs_lookup_nofollow(combined, &err);
+                if (n && n->inode && n->inode->type == VFS_SYMLINK) return -ELOOP;
+            }
+            return do_execve(combined, argv, envp);
+        }
+    }
+
+    if (flags & AT_SYMLINK_NOFOLLOW) {
+        extern struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
+        int err = 0;
+        struct vfs_node *n = vfs_lookup_nofollow(kpath, &err);
+        if (n && n->inode && n->inode->type == VFS_SYMLINK) return -ELOOP;
+    }
+    return do_execve(kpath, argv, envp);
+}

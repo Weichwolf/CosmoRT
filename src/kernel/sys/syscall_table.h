@@ -406,7 +406,7 @@
     X(SYS_OPEN_BY_HANDLE_AT, open_by_handle_at, -ENOSYS) \
     X(SYS_SCHED_SETATTR, sched_setattr, -ENOSYS) \
     X(SYS_SCHED_GETATTR, sched_getattr, -ENOSYS) \
-    X(SYS_EXECVEAT, execveat, -ENOSYS) \
+    X(SYS_EXECVEAT, execveat, do_execveat((int)a1, (const char *)a2, (char *const *)a3, (char *const *)a4, (int)a5)) \
     X(SYS_QUOTACTL_FD, quotactl_fd, -ENOSYS) \
     /* Return -EPERM: privileged ops */ \
     X(SYS_IOPL, iopl, -EPERM) \

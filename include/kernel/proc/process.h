@@ -145,6 +145,8 @@ long do_fork(unsigned long flags, void *child_stack,
 long do_vfork(unsigned long flags, void *child_stack,
               int *parent_tid, int *child_tid, unsigned long tls);
 long do_execve(const char *path, char *const argv[], char *const envp[]);
+long do_execveat(int dirfd, const char *path, char *const argv[],
+                 char *const envp[], int flags);
 long do_wait4(int pid, int *wstatus, int options, void *rusage);
 
 /* Process cleanup */
