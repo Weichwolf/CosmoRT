@@ -294,6 +294,44 @@ static int ext4_vfs_utimensat(struct mount *mnt, const char *relpath,
     return 0;
 }
 
+int vfs_futimensat_ext4(uint64_t ino64, const int64_t times[4]) {
+    #define UTIME_NOW_FD_  ((1L << 30) - 1L)
+    #define UTIME_OMIT_FD_ ((1L << 30) - 2L)
+    uint32_t ino = (uint32_t)ino64;
+    struct ext4_inode ip;
+    if (ext4_inode_read(ino, &ip) < 0) return -EIO;
+    struct ext4_inode_extra extra;
+    int has_extra = (ext4_read_extra(ino, &extra) == 0);
+    if (!has_extra) kmemset(&extra, 0, sizeof(extra));
+    uint64_t now64 = (uint64_t)timer_epoch_sec();
+    if (times) {
+        int64_t atime_nsec = times[1], mtime_nsec = times[3];
+        if (atime_nsec != UTIME_OMIT_FD_) {
+            uint64_t ts = (atime_nsec == UTIME_NOW_FD_) ? now64 : (uint64_t)times[0];
+            uint32_t base, ex;
+            ext4_encode_ts(ts, &base, &ex);
+            ip.i_atime = base; extra.i_atime_extra = ex;
+        }
+        if (mtime_nsec != UTIME_OMIT_FD_) {
+            uint64_t ts = (mtime_nsec == UTIME_NOW_FD_) ? now64 : (uint64_t)times[2];
+            uint32_t base, ex;
+            ext4_encode_ts(ts, &base, &ex);
+            ip.i_mtime = base; extra.i_mtime_extra = ex;
+        }
+    } else {
+        uint32_t base, ex;
+        ext4_encode_ts(now64, &base, &ex);
+        ip.i_atime = base; extra.i_atime_extra = ex;
+        ip.i_mtime = base; extra.i_mtime_extra = ex;
+    }
+    ext4_inode_write(ino, &ip);
+    if (has_extra) {
+        extra.i_extra_isize = 28;
+        ext4_write_extra(ino, &extra);
+    }
+    return 0;
+}
+
 static int ext4_vfs_link(struct mount *mnt, const char *oldrel, const char *newrel) {
     (void)mnt;
     int oerr = -ENOENT;
