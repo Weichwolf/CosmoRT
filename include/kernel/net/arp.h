@@ -10,8 +10,8 @@
 
 /* ── ARP Cache Config ─────────────────────────────── */
 
-#define ARP_POOL_SIZE         128   /* max cached neighbours          */
 #define ARP_HASH_SIZE          64   /* buckets, must be power of 2    */
+/* ARP cache entries are dynamically slab-allocated (no systemwide cap). */
 #define ARP_PENDING_PER_ENTRY   3   /* queued frames per NUD_INCOMPLETE */
 #define ARP_PENDING_PKT_SIZE 1536   /* max frame size                 */
 #define ARP_INCOMPLETE_TTL_MS 30000 /* drop stuck INCOMPLETE entries  */

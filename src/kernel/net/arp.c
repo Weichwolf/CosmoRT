@@ -23,15 +23,14 @@ static inline uint32_t ip_to_u32(const uint8_t *ip) {
            ((uint32_t)ip[2] << 8)  |  (uint32_t)ip[3];
 }
 
-/* ── Slab Pool ────────────────────────────────────── */
+/* ── Slab Pool (dynamic — grows on demand) ───────── */
 
-static arp_entry_t arp_pool[ARP_POOL_SIZE];
 static slab_t      arp_slab;
 static int         arp_slab_inited;
 
 static void arp_slab_ensure_init(void) {
     if (__builtin_expect(arp_slab_inited, 1)) return;
-    slab_init(&arp_slab, arp_pool, (int)sizeof(arp_entry_t), ARP_POOL_SIZE);
+    slab_init_dynamic(&arp_slab, (int)sizeof(arp_entry_t), 0);
     arp_slab_inited = 1;
 }
 
@@ -53,10 +52,18 @@ static arp_entry_t *arp_find_entry(uint32_t key) {
 /* ── Cache Reset ──────────────────────────────────── */
 
 void arp_cache_reset(void) {
-    for (int i = 0; i < ARP_HASH_SIZE; i++)
+    /* Walk all buckets, slab-free each entry. Slab itself stays allocated
+     * (dynamic regions cannot be collapsed without tracking occupancy). */
+    for (int i = 0; i < ARP_HASH_SIZE; i++) {
+        arp_entry_t *e = arp_hash[i];
+        while (e) {
+            arp_entry_t *next = e->hash_next;
+            slab_free(&arp_slab, e);
+            e = next;
+        }
         arp_hash[i] = 0;
+    }
     arp_evict_bucket = 0;
-    arp_slab_inited = 0;
     arp_slab_ensure_init();
 }
 
