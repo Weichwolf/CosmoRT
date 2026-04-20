@@ -13,9 +13,10 @@ struct thread; /* forward declaration for wait_thread */
 
 /* ── Config ────────────────────────────────────────── */
 
-#define NET_TCP_MAX       256
-#define NET_TCP_OOO_SLOTS 4
-#define NET_TFO_CACHE_MAX 64
+/* TCP connections themselves are sock_slab-allocated (dynamic, on-demand).
+ * Per-connection limits below are per-socket caps, not system-wide pools. */
+#define NET_TCP_OOO_SLOTS 4    /* out-of-order segments per connection */
+#define NET_TFO_CACHE_MAX 64   /* TFO-cookie cache (global, server-IP keyed) */
 
 /* ── TCP States (RFC 793) ─────────────────────────── */
 
