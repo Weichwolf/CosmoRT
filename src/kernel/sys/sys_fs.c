@@ -507,8 +507,9 @@ long do_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *ne
     return do_renameat2(olddirfd, oldpath, newdirfd, newpath, 0);
 }
 
-/* ── SYS_faccessat2 (439) — delegate to faccessat ── */
+/* ── SYS_faccessat2 (439) — validate flags, delegate to faccessat ── */
 
 long do_faccessat2(int dirfd, const char *path, int mode, int flags) {
+    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     return do_faccessat(dirfd, path, mode, flags);
 }
