@@ -64,6 +64,17 @@ typedef struct rcu_state {
 
 static rcu_state_t rcu_state;
 
+/* Defensive: clamp core_id to a valid rcu_state.cpu[] slot.
+ * Out-of-range indicates early-boot race or corrupt percpu — attributing the
+ * callback to CPU 0 keeps the GP-contract intact (callbacks still fire after
+ * GP end); only per-CPU accounting is imprecise. */
+static inline int rcu_cpu_of_self(void) {
+    int id = percpu_self()->core_id;
+    if (__builtin_expect((unsigned)id >= (unsigned)SMP_MAX_CORES, 0))
+        id = 0;
+    return id;
+}
+
 /* ── Blocked reader list (doubly-linked, O(1) ops) ── */
 
 static void blkd_append(rcu_node_t *rnp, struct thread *t) {
@@ -178,7 +189,7 @@ static void rcu_gp_complete(void) {
     spin_unlock_irq(&rcu_state.gp_lock, flags);
 
     /* Process callbacks on originating CPU only */
-    int cpu_id = percpu_self()->core_id;
+    int cpu_id = rcu_cpu_of_self();
     rcu_process_callbacks(cpu_id);
 
     /* Wake all synchronize_rcu waiters */
@@ -246,7 +257,7 @@ void rcu_note_context_switch(struct thread *prev) {
         return;
 
     rcu_node_t *rnp = &rcu_state.node;
-    int cpu_id = percpu_self()->core_id;
+    int cpu_id = rcu_cpu_of_self();
 
     if (prev->rcu_read_nesting > 0) {
         /* Preempted inside read-side CS → blocked reader list */
@@ -281,7 +292,7 @@ void rcu_note_context_switch(struct thread *prev) {
 
 __attribute__((hot))
 void rcu_check_callbacks(void) {
-    int cpu_id = percpu_self()->core_id;
+    int cpu_id = rcu_cpu_of_self();
     rcu_data_t *rdp = &rcu_state.cpu[cpu_id];
 
     if ((rdp->cb_next_head || rdp->cb_wait_head) &&
@@ -295,7 +306,7 @@ void call_rcu(rcu_head_t *head, void (*func)(rcu_head_t *)) {
     head->func = func;
     head->next = 0;
 
-    int cpu_id = percpu_self()->core_id;
+    int cpu_id = rcu_cpu_of_self();
     rcu_data_t *rdp = &rcu_state.cpu[cpu_id];
 
     uint64_t flags = irq_save();
