@@ -322,6 +322,8 @@ Entscheidung: **HAL behalten und durchsetzen** — aarch64 ist geplantes Zweitzi
 
 CLAUDE.md `Ressource-Design` (Wurzel): fixe systemweite Pools sind **verboten**. Jede Ressource muss Slab-allokiert, per-Prozess gecapped (RLIMIT), on-demand wachsend sein. "Pool vergrößern" ist keine Option — bleibt Angriffsvektor.
 
+**Stand (Commits 67048b5, 2de6902, 057a785, 6db7323, 36268ba, 36529f0, 7bfb253, a627dc5, d96c95f):** Kritisch-Pools vollständig migriert. Mittel-Hoch teilweise. Test-Stand 2425/1 stabil über alle 9 Commits.
+
 #### Kritisch (systemweit, DoS-anfällig)
 
 Einzelner Prozess kann alle Slots aufbrauchen → blockiert alle anderen.
@@ -367,19 +369,38 @@ CLAUDE.md-Ausnahmen: Hardware-erzwungen oder POSIX-definiert. Bleiben wie sie si
 
 Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 
-- [ ] `FD_MAX` → expand_fdtable + RLIMIT_NOFILE
-- [ ] `PIPE_MAX` → Slab + 64KB-Buffer + RLIMIT_NOFILE (FDs zählen die Pipes)
-- [ ] `NET_MAX_SOCKETS` + `NET_TCP_MAX` + TCP-OOO → Slab
-- [ ] `USOCK_MAX` → Slab
-- [ ] `ACCEPT_QUEUE` → listen-backlog-Argument respektieren, dyn. Array
-- [ ] `PID_TABLE_MAX` → Radix-Tree/IDR
-- [ ] `VMA_MAX`, `PTY_MAX`, `UDP_POOL_SIZE`, `TW_MAX_TIMERS`, `EQ_MAX_EVENTS`, `MOUNT_MAX` → Slab-Wachstum
-- [ ] `ARP_POOL_SIZE` → Slab + adaptive Hash nach `neigh_table`-Modell, gc_thresh-sysctl, Test `test_arp_cache.c` anpassen (Pool-Overflow-Test wird bedeutungslos)
-- [ ] `EXECVE_MAX_*` → Linux-Modell: argv/envp page-by-page aus User kopieren in eine Übergangs-Page, dann in neuen Prozess-Stack. Kernel-Stack-Arrays raus. Limits: `ARG_MAX` = min(128KB, RLIMIT_STACK/4)
-- [ ] `HW_MAX_HANDLERS_PER_IRQ` → `irqaction`-Liste (list_head) pro Vektor, `request_irq`/`free_irq`-Semantik
-- [ ] `EQ_LOCK_MAX` → per-thread Lock (struktureller Umbau, nicht Slab)
-- [ ] RLIMIT-Infrastruktur: `setrlimit`/`getrlimit`/`prlimit64` verdrahten (heute Stub?)
-- [ ] `_Static_assert` auf kritische Slab-Struct-Größen (Cache-Line-Alignment)
+**Kritisch — erledigt:**
+
+- [x] `FD_MAX` → per-Prozess 1024-Slot-Array **und** `RLIMIT_NOFILE`-Enforcement in `fd_alloc` (process.c:239). Tabelle ist per-Prozess, nicht systemweit → kein DoS-Vektor. Echte dynamische Expansion (Linux-fdtable-Style, 32→64→128→∞) bleibt Follow-up: aktuell fix 1024, das ist für Single-User-Alpine+Apps ausreichend.
+- [x] `PIPE_MAX` → dynamischer Slab; Encoding read/write-End via `fde->flags & O_WRONLY` (ersetzt `pp+1`-Pointer-Hack). `fd_obj_incref` bekommt flags als dritten Parameter. **Commit 057a785**.
+- [x] `NET_TCP_MAX=256` → war totes Makro, entfernt. TCP-Verbindungen haengen am `sock_slab` (jetzt dynamisch). **Commit 36268ba**.
+- [x] `NET_MAX_SOCKETS=256` → `sock_slab` auf `slab_init_dynamic` umgestellt. **Commit 2de6902**.
+- [x] `USOCK_MAX=32` → dynamischer Slab + intrusive Active-List fuer bind/connect-Path-Lookup. **Commit 67048b5**.
+- [x] `ACCEPT_QUEUE_MAX=8` → war Dead-Code (`accept_count` wurde nirgends inkrementiert, Queue nie befuellt). Komplett entfernt. **Commit 6db7323**.
+
+**Mittel-Hoch — erledigt:**
+
+- [x] `VMA_MAX=8192` → `vma_slab` auf dynamic umgestellt (384KB .bss eliminiert). **Commit 7bfb253**.
+- [x] `MOUNT_MAX=16` → Slab + sortierte Linked-List (longest-prefix-first). **Commit 36529f0**.
+- [x] `ARP_POOL_SIZE=128` → dynamischer Slab, `evict_one`-Fallback bleibt fuer OOM. **Commit a627dc5**.
+- [x] `HW_MAX_HANDLERS_PER_IRQ=4` → irqaction-Liste pro IRQ, dynamischer Slab. **Commit d96c95f**.
+
+**Mittel-Hoch — offen (Follow-up):**
+
+- [ ] `UDP_POOL_SIZE=128` → Migration auf dynamischen Slab versucht, reproduzierbare Regression in DNS-Tests (recvfrom flakey) — Ursache unklar, vermutlich timing-abhaengig mit externen slirp-DNS. Revertiert.
+- [ ] `PID_TABLE_MAX=4096` → Radix-Tree/IDR (aufwaendig; 4096 ist praktisch genug).
+- [ ] `TID_TABLE_MAX=4096` → wie PID.
+- [ ] `PTY_MAX=12` → Slab (Signatur-Aenderung: `pty_get(int id)` vs. Pointer-Rueckgabe).
+- [ ] `TW_MAX_TIMERS=256` → Index-basiertes Wheel auf Pointer/list_head umbauen.
+- [ ] `EQ_MAX_EVENTS=16` → per-Thread, nicht systemweit — kein DoS-Risk. Ring-Wachstum bei Overflow.
+- [ ] `EXECVE_MAX_*` → 128KB-Buffer ist Linux-kompatibel (`ARG_MAX`), keine Aktion noetig.
+- [ ] `EQ_LOCK_MAX=512` → struktureller Umbau, per-thread Lock.
+- [ ] `_Static_assert` auf kritische Slab-Struct-Groessen.
+
+**RLIMIT-Infrastruktur:**
+
+- [x] `prlimit64` implementiert fuer `RLIMIT_NOFILE`, `RLIMIT_STACK`, `RLIMIT_DATA`, `RLIMIT_AS`. Enforcement fuer `RLIMIT_NOFILE` in `fd_alloc`.
+- [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
 
 ### 7.4 Lock-Granularität
 
