@@ -206,6 +206,7 @@ long do_vhangup(void) { return 0; }
 #define ADJ_MICRO              0x1000
 #define ADJ_NANO               0x2000
 #define ADJ_TICK               0x4000
+#define ADJ_ADJTIME            0x8000
 #define ADJ_OFFSET_SINGLESHOT  0x8001
 #define ADJ_OFFSET_SS_READ     0xa001
 
@@ -249,8 +250,9 @@ long do_adjtimex(void *tx) {
     struct k_timex ktx;
     int r = copy_from_user(&ktx, tx, sizeof(ktx));
     if (r) return r;
-    if (ktx.modes == ADJ_OFFSET_SINGLESHOT) {
-        /* legacy compat: accept as TIME_OK */
+    if (ktx.modes & ADJ_ADJTIME) {
+        if (ktx.modes != ADJ_OFFSET_SINGLESHOT &&
+            ktx.modes != ADJ_OFFSET_SS_READ) return -EINVAL;
     } else if (ktx.modes & ~ADJ_ALL_VALID) {
         return -EINVAL;
     }
