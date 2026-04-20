@@ -69,7 +69,9 @@ long do_epoll_create1(int flags) {
     ep->refcount = 1;
     ep->lock = (spinlock_t)SPINLOCK_INIT;
 
-    int fd = fd_alloc(&p->fds, FD_EPOLL, ep, O_RDWR);
+    int fd_flags = O_RDWR;
+    if (flags & EPOLL_CLOEXEC) fd_flags |= O_CLOEXEC;
+    int fd = fd_alloc(&p->fds, FD_EPOLL, ep, fd_flags);
     if (fd < 0) {
         slab_free(&epoll_slab, ep);
         return -EMFILE;
@@ -95,6 +97,9 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     if (op != EPOLL_CTL_DEL) {
         fd_entry_t *tgt = fd_get(&p->fds, fd);
         if (!tgt || tgt->type == FD_NONE) return -EBADF;
+
+        /* Regular files and directories do not implement poll → EPERM (Linux) */
+        if (tgt->type == FD_FILE) return -EPERM;
 
         /* Check epoll nesting depth + circular reference (ADD only) */
         if (op == EPOLL_CTL_ADD && tgt->type == FD_EPOLL) {
@@ -372,7 +377,8 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         int nready = 0;
         for (int i = 0; i < ep->count && nready < maxevents; i++) {
             epoll_entry_t *ent = &ep->entries[i];
-            uint32_t interest = ent->events & ~EPOLLET;
+            uint32_t interest = ent->events & ~(EPOLLET | EPOLLONESHOT);
+            if (!interest) continue;
             uint32_t r = fd_poll_readiness(ent->fd, interest);
             if (r) {
                 struct epoll_event ev;
@@ -388,6 +394,8 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
                     ev.data = ent->data;
                     copy_to_user(&events[nready], &ev, sizeof(ev));
                     nready++;
+                    if (ent->events & EPOLLONESHOT)
+                        ent->events &= ~(EPOLLIN | EPOLLOUT | EPOLLRDHUP);
                 }
             } else {
                 if (ent->events & EPOLLET)
