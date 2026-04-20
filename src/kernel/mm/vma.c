@@ -4,13 +4,15 @@
 #include "mm/slab.h"
 #include "hw/serial.h"
 
-#define VMA_MAX 8192  /* 384KB — mprotect splits multiply VMA count */
-static vma_t vma_pool[VMA_MAX];
+/* VMAs are slab-allocated dynamically: mprotect-splits multiply VMA count
+ * arbitrarily, so a fixed systemwide cap would become DoS vector for any
+ * process. Linux has no VMA cap either (sysctl vm.max_map_count is
+ * per-process). */
 static slab_t vma_slab;
 
 void vma_init(void) {
-    slab_init(&vma_slab, vma_pool, sizeof(vma_t), VMA_MAX);
-    serial_puts("vma: init (slab)\n");
+    slab_init_dynamic(&vma_slab, (int)sizeof(vma_t), 0);
+    serial_puts("vma: init (dynamic slab)\n");
 }
 
 vma_t *vma_alloc_raw(void) {
