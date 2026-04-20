@@ -19,9 +19,11 @@ int resolve_path(const char *path, char *out, int outsize) {
     while (*path && oi < outsize - 1) out[oi++] = *path++;
     out[oi] = '\0';
 
-    /* Normalize: collapse "//" , resolve "/." and "/.." in-place */
+    /* Normalize: collapse "//", resolve "/." and "/.." in-place.
+     * Rules match r[0]=='/' — don't consume the leading '/', let the loop
+     * handle it so "/." / "/.." as first component also normalize
+     * (e.g. CWD="/" + path="." → "/"). */
     char *w = out, *r = out;
-    if (*r == '/') *w++ = *r++;
     while (*r) {
         if (r[0] == '/' && r[1] == '/') {
             r++; /* skip duplicate slash */
@@ -1338,6 +1340,15 @@ long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
     if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) return -EINVAL;
     if (first > last) return -EINVAL;
     if (last >= FD_MAX) last = FD_MAX - 1;
+    if (flags & CLOSE_RANGE_CLOEXEC) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        for (unsigned int fd = first; fd <= last; fd++) {
+            fd_entry_t *fde = fd_get(&p->fds, (int)fd);
+            if (fde) fde->flags |= O_CLOEXEC;
+        }
+        return 0;
+    }
     for (unsigned int fd = first; fd <= last; fd++)
         do_close((int)fd);
     return 0;
