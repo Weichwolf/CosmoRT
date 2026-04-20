@@ -121,33 +121,35 @@ Poll-Loop mit `nanosleep(10ms)` erprobt, verworfen: nanosleep hängt determinist
 
 ---
 
-## Phase 3 — `sched_preempt`-Refactor
+## Phase 3 — `sched_preempt`-Refactor ✓ Struktur-Sanierung abgeschlossen
 
-**Begründung:** Blockiert Diagnose der Phase-6-Races. `sched_preempt` hat zwei Frame-Save-Pfade, Frame-Sync ist in vier Stellen dupliziert (sched.c ×2, irq.c ×3 für INT 0x80 / SIGSEGV / Exception). Magic-Indices `f[18] & 3`. FS_BASE asymmetrisch. XSAVE implizit safe nur wegen `-mgeneral-regs-only`.
+**Begründung:** Blockiert Diagnose der Phase-6-Races. `sched_preempt` hatte zwei Frame-Save-Pfade, Frame-Sync war in fünf Stellen dupliziert (sched.c ×2, irq.c ×3 für INT 0x80 / SIGSEGV / Exception). Magic-Indices `f[18] & 3`. FS_BASE asymmetrisch. XSAVE implizit safe nur wegen `-mgeneral-regs-only`.
 
-### 3.1 Frame-Sync-Primitive
+Commits `1fe111b`, `78c8ed5`, `967a550`. 5× dup Frame-Sync → 1× in `include/kernel/core/frame.h`. Zero `f[N]`-Matches in sched.c+irq.c. 2416/3 stabil, Varianz 0.
 
-- [ ] `static void irq_frame_to_thread(const irq_frame_t *f, thread_t *t)` in `core/frame.c` (neu)
-- [ ] `static void thread_to_irq_frame(const thread_t *t, irq_frame_t *f)`
-- [ ] `_Static_assert` auf `irq_frame_t`-Layout (alle Offsets die Nutzer brauchen)
-- [ ] Typed `irq_frame_t*` durch `sched_preempt` statt `void*`
-- [ ] Magic-Index `f[18] & 3` → `f->cs & 3`, Helper `frame_is_user(f)`
+### 3.1 Frame-Sync-Primitive ✓
 
-### 3.2 Duplikate eliminieren
+- [x] `irq_frame_to_thread`, `thread_to_irq_frame`, `frame_is_user` als static-inline in `include/kernel/core/frame.h`
+- [x] `_Static_assert` auf `irq_frame_t`-Layout (sizeof + alle genutzten Offsets)
+- [x] Typed `irq_frame_t*` durch `sched_preempt` statt `void*`
+- [x] Magic-Index `f[18] & 3` → `frame_is_user(f)`
 
-- [ ] `sched.c:237-251` → `irq_frame_to_thread` + Signal-Delivery + `thread_to_irq_frame`
-- [ ] `sched.c:270-290` → dieselben Helper
-- [ ] `irq.c:170-196` (INT 0x80) → Helper
-- [ ] `irq.c:573-596` (SIGSEGV) → Helper
-- [ ] `irq.c:686-710` (Exception-Pfad) → Helper
+### 3.2 Duplikate eliminieren ✓
 
-### 3.3 `sched_preempt` entmüllen
+- [x] `sched.c` Signal-Delivery (237-251) → Helper
+- [x] `sched.c` Reschedule-Save (270-290) → Helper
+- [x] `irq.c:170-196` (INT 0x80) → Helper
+- [x] `irq.c:573-596` (SIGSEGV) → Helper
+- [x] `irq.c:686-710` (Exception-Pfad) → Helper
 
-`sched_preempt` ist God-Function für Signals + RCU + Alarm + epoll + VT. Nur Reschedule-Kern behalten, Rest via Callback-Registry (Phase 7.1).
+### 3.3 `sched_preempt` entmüllen — deferred to Phase 7.1
 
-- [ ] FPU-Save/Restore explizit machen oder Invariante dokumentieren (Kernel kein SSE → FPU-berührungsfrei)
-- [ ] FS_BASE-Sicherung symmetrisch machen oder Invariante dokumentieren
-- [ ] Per-Process-Alarm-Scan `O(PID_TABLE_MAX)` pro Tick → timer_wheel oder RB-Tree
+`sched_preempt` ist weiterhin God-Function für Signals + RCU + Alarm + epoll + VT. Reschedule-Kern + typed Frame + Helper: done. Rest via Callback-Registry (Phase 7.1). Begründung: TODO-Scope war Struktur-Sanierung, Per-Process-Alarm-Scan gehört explizit zur Timer-Tick-Callback-Registry.
+
+- [x] FPU-Invariante in frame.h dokumentiert (Kernel kein SSE → keine XSAVE im Sync-Helper)
+- [x] FS_BASE-Invariante dokumentiert: schedule()-lifecycle, sigframe-Roundtrip
+- [ ] Per-Process-Alarm-Scan `O(PID_TABLE_MAX)` pro Tick → timer_wheel oder RB-Tree (Phase 7.1)
+- [ ] `sched_preempt` auf Reschedule + Callbacks schrumpfen (Phase 7.1)
 
 ---
 
