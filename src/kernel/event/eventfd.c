@@ -58,8 +58,14 @@ long eventfd_read(void *obj, void *buf, long count) {
         spin_unlock_irq(&efd->lock, irqf);
         return -EAGAIN;
     }
-    uint64_t val = efd->counter;
-    efd->counter = 0;
+    uint64_t val;
+    if (efd->flags & EFD_SEMAPHORE) {
+        val = 1;
+        efd->counter -= 1;
+    } else {
+        val = efd->counter;
+        efd->counter = 0;
+    }
     spin_unlock_irq(&efd->lock, irqf);
 
     copy_to_user(buf, &val, sizeof(val)); /* buf validated by do_read caller */
