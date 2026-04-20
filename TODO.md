@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2349/65, musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2361/58, musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -10,7 +10,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 |---|-------|------------------|---------|--------|-------------|
 | 0 | Build-Infrastruktur (Header-Deps) | **✓ done** (Commit `5d17930`, 2335/79 → 2341/78) | — | — | — |
 | 1 | Syscall-Validierung (Klasse D) | **✓ done** (2334/79 → 2349/65) | — | — | — |
-| 2 | VFS-Metadaten (Klasse B) | ~25 | 3 Tage | niedrig | — |
+| 2 | VFS-Metadaten (Klasse B) | **✓ done** (2354/65 → 2361/58, Commit `560157d`) | — | — | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | ~25 | 5 Tage | niedrig | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
@@ -81,24 +81,24 @@ getpeername, shutdown.
 
 ---
 
-## Phase 2 — VFS-Metadaten
+## Phase 2 — VFS-Metadaten ✓ abgeschlossen
 
-`vfs_node` hat keine vollständigen POSIX-Inode-Felder. Eine Wurzel, ~25 Tests.
+Commit `560157d`. Test-Stand 2354/65 → 2361/58. POSIX-Inode-Felder (uid/gid/mode/times/nlink) durchgereicht, fill_stat als Single Source of Truth, SUID/SGID-Clearing nach Linux-Spec, creat mode-0 honoriert, Parent-Dir-Check vor O_CREAT.
 
 ### 2.1 `vfs_node`-Erweiterung
 
-- [ ] Felder: `uid_t i_uid`, `gid_t i_gid`, `mode_t i_mode` (nur 07777-Bits), `int64_t atime_ns`, `int64_t mtime_ns`, `int64_t ctime_ns`, `nlink_t i_nlink`
-- [ ] Slab-allokiert bleiben (kein statischer Zuwachs)
+- [x] Felder: `uid`, `gid`, `mode` (07777+type separat), `atime/mtime/ctime` (uint64_t seconds, 64-bit durchgehend), `nlink`
+- [x] Slab-allokiert (`VFS_INODE_MAX=256`, existierender Pool)
 
 ### 2.2 Syscall-Durchreichung
 
-- [ ] `do_chmod`/`do_fchmod`/`do_fchmodat`: `i_mode = new_mode & 07777`
-- [ ] `do_chown`/`do_fchown`/`do_fchownat`: `i_uid/i_gid` setzen, SUID/SGID löschen (Linux: `fs/attr.c:notify_change`)
-- [ ] `do_creat`: `mode & ~umask` durchreichen statt ignorieren
-- [ ] `do_stat`/`do_fstat`/`do_lstat`/`do_fstatat`: `uid/gid/mode/times` zurückgeben
-- [ ] `fill_stat`/`fill_symlink_stat`: Single Source of Truth
-- [ ] Hard-Link (`link`, `linkat`): `uid/gid` vererben, `i_nlink++`
-- [ ] `atime`/`mtime` 64-bit: int64_t durchgehend, keine 32-bit-Truncation
+- [x] `do_chmod`/`do_fchmod`/`do_fchmodat`: `i_mode = new_mode & 07777` + ctime-update
+- [x] `do_chown`/`do_fchown`/`do_fchownat`: `i_uid/i_gid` setzen, SUID/SGID nach Linux `fs/attr.c` (nicht bei DIR; S_ISGID nur wenn S_IXGRP gesetzt)
+- [x] `do_creat`: mode 0 respektieren (war: ignoriert → 0644)
+- [x] `do_stat`/`do_fstat`/`do_lstat`/`do_fstatat`: `fill_stat` liest uid/gid/mode/times direkt aus vnode
+- [x] `fill_stat`: Single Source of Truth; Symlink-Size bei symlink-Create gesetzt, redundante Branches entfernt
+- [x] Hard-Link (`link`, `linkat`): `i_nlink++` in tmpfs (ext4: `ip.i_links_count++` war bereits da)
+- [x] `atime`/`mtime` 64-bit: `inode->atime/mtime` ist `uint64_t`, direkter Pass-Through nach `st_atime_sec` (`int64_t`). Test `fs/utime-64bit` mit `tv_sec = 1LL<<32` grün.
 
 ---
 
