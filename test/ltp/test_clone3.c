@@ -80,6 +80,12 @@ static void test_clone301_fs(void) {
 static void test_clone301_sigusr2(void) {
     puts("\n[ltp/clone301-sigusr2]\n");
 
+    /* exit_signal=SIGUSR2 liefert SIGUSR2 an Parent; default action terminate.
+     * LTP-Original (testcases/kernel/syscalls/clone3/clone301.c) ignoriert es
+     * vor dem Clone. */
+    struct k_sigaction ign = { .sa_handler = (void *)1, 0, 0, 0 };
+    sc4(SYS_RT_SIGACTION, SIGUSR2, (long)&ign, 0, 8);
+
     struct clone_args args;
     for (int i = 0; i < (int)sizeof(args); i++)
         ((char *)&args)[i] = 0;
@@ -98,6 +104,9 @@ static void test_clone301_sigusr2(void) {
     int wstatus = 0;
     sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
     check("child reaped", WIFEXITED(wstatus));
+
+    struct k_sigaction dfl = { 0 };
+    sc4(SYS_RT_SIGACTION, SIGUSR2, (long)&dfl, 0, 8);
 }
 
 /* ── clone302: error cases ── */
