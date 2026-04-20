@@ -49,11 +49,23 @@ uint64_t hal_cpu_get_tls(void);
 void hal_cpu_fpu_save(void *area);
 void hal_cpu_fpu_restore(const void *area);
 
-/* Kernel percpu base (KERNEL_GS_BASE / TPIDR_EL1) */
+/* Kernel percpu base.
+ * x86: KERNEL_GS_BASE (loaded by swapgs on syscall entry).
+ * aarch64: TPIDR_EL1. */
 void hal_cpu_set_percpu_base(uint64_t base);
+
+/* Active percpu base - read immediately by the running core.
+ * x86: GS_BASE (swapped with KERNEL_GS_BASE). Must be primed at BSP init
+ * before the first swapgs so percpu_self() works in early boot. */
+void hal_cpu_set_percpu_active(uint64_t base);
 
 /* Hardware entropy. Returns 1 on success, 0 if source unavailable. */
 int  hal_cpu_hwrand(uint64_t *out);
+
+/* One-shot boot init: CPU feature detection + FPU/SIMD enablement.
+ * x86: enables SSE, probes/enables XSAVE, configures XCR0, enables
+ * SMEP/SMAP. aarch64: enables FP/SIMD via CPACR_EL1, probes SVE. */
+void hal_cpu_fpu_boot_init(void);
 
 /* User-memory access window (SMAP STAC / PAN clear).
  * Must be paired strictly; no sleeping or IRQ-unsafe ops in between. */
@@ -65,5 +77,13 @@ void hal_cpu_shutdown(void);
 
 /* Force immediate system reset (triple-fault on x86, PSCI_SYSTEM_RESET on arm). */
 void hal_cpu_reset(void);
+
+/* Port I/O (x86 separate I/O space).
+ * On aarch64 these map to MMIO accesses at an architecture-specific base.
+ * Kernel drivers must not assume one or the other. */
+void     hal_io_outb(uint16_t port, uint8_t val);
+uint8_t  hal_io_inb(uint16_t port);
+void     hal_io_outl(uint16_t port, uint32_t val);
+uint32_t hal_io_inl(uint16_t port);
 
 #endif

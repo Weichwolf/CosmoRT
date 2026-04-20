@@ -48,6 +48,16 @@ void hal_cpu_fpu_restore(const void *area)  { arch_fpstate_restore(area); }
 
 void hal_cpu_set_percpu_base(uint64_t base) { arch_set_kernel_gs_base(base); }
 
+/* Set GS_BASE directly (active in kernel mode before first swapgs). */
+void hal_cpu_set_percpu_active(uint64_t base) {
+    arch_wrmsr(0xC0000101, base);  /* IA32_GS_BASE */
+}
+
+void     hal_io_outb(uint16_t port, uint8_t val)   { arch_outb(port, val); }
+uint8_t  hal_io_inb(uint16_t port)                 { return arch_inb(port); }
+void     hal_io_outl(uint16_t port, uint32_t val)  { arch_outl(port, val); }
+uint32_t hal_io_inl(uint16_t port)                 { return arch_inl(port); }
+
 int hal_cpu_hwrand(uint64_t *out) {
     extern int memops_has_rdrand;
     if (!memops_has_rdrand) return 0;

@@ -33,7 +33,7 @@ void memops_init(void) {
 /* SSE/SSE2 enable, SMEP/SMAP detect, XSAVE/FXSAVE + XCR0 programming.
  * Runs once from the BSP boot path. */
 __attribute__((cold))
-void arch_fpu_boot_init(void) {
+void hal_cpu_fpu_boot_init(void) {
     uint64_t cr0 = arch_get_cr0();
     cr0 &= ~(1ULL << 2);  /* clear CR0.EM (no x87 emulation) */
     cr0 &= ~(1ULL << 3);  /* clear CR0.TS (allow FPU/SSE without #NM) */

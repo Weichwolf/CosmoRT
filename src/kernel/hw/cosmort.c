@@ -18,7 +18,7 @@
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
-#include "arch/arch.h"
+#include "hal/hal.h"
 
 /* ── MMIO Mapping ────────────────────────────────── */
 
@@ -186,8 +186,8 @@ int cosmo_irq_register(int irq, void (*handler)(void *), void *ctx) {
 
 /* ── PCI Configuration Space ─────────────────────── */
 
-static inline void outl(uint16_t port, uint32_t val) { arch_outl(port, val); }
-static inline uint32_t inl(uint16_t port) { return arch_inl(port); }
+static inline void outl(uint16_t port, uint32_t val) { hal_io_outl(port, val); }
+static inline uint32_t inl(uint16_t port) { return hal_io_inl(port); }
 
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC

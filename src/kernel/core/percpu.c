@@ -4,15 +4,9 @@
 #include "hw/serial.h"
 #include "core/smp.h"
 #include "config.h"
-#include "arch/arch.h"
+#include "hal/hal.h"
 
 percpu_t percpu_data[SMP_MAX_CORES];
-
-static inline void wrmsr(uint32_t msr, uint64_t val) { arch_wrmsr(msr, val); }
-
-/* IA32_KERNEL_GS_BASE (MSR 0xC0000102): swapped with GS_BASE on swapgs */
-#define MSR_KERNEL_GS_BASE 0xC0000102
-#define MSR_GS_BASE        0xC0000101
 
 void percpu_init_bsp(void) {
     percpu_t *p = &percpu_data[0];
@@ -23,10 +17,11 @@ void percpu_init_bsp(void) {
     p->in_kernel = 1;
     p->self = p;
 
-    /* Set KERNEL_GS_BASE so swapgs in SYSCALL entry loads our percpu */
-    wrmsr(MSR_KERNEL_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
-    /* Also set GS_BASE so percpu_self works before first swapgs */
-    wrmsr(MSR_GS_BASE, ensure_high((uint64_t)(uintptr_t)p));
+    /* Prime both KERNEL_GS_BASE (swapgs target) and GS_BASE (active now)
+     * so percpu_self() works before the first user->kernel transition. */
+    uint64_t base = ensure_high((uint64_t)(uintptr_t)p);
+    hal_cpu_set_percpu_base(base);
+    hal_cpu_set_percpu_active(base);
 
     serial_puts("percpu: BSP init\n");
 }

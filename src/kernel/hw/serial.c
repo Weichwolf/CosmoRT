@@ -7,12 +7,12 @@
 #include "hw/serial.h"
 #include "spinlock.h"
 #include <stdint.h>
-#include "arch/arch.h"
+#include "hal/hal.h"
 
 #define COM1 0x3F8
 
-static inline void port_out8(uint16_t port, uint8_t val) { arch_outb(port, val); }
-static inline uint8_t port_in8(uint16_t port) { return arch_inb(port); }
+static inline void port_out8(uint16_t port, uint8_t val) { hal_io_outb(port, val); }
+static inline uint8_t port_in8(uint16_t port) { return hal_io_inb(port); }
 
 /* ── dmesg ring buffer ─────────────────────────────── */
 
@@ -37,7 +37,7 @@ void serial_init(void) {
 
 void serial_putchar(char c) {
     while (!(port_in8(COM1 + 5) & 0x20))
-        __asm__ volatile("pause");
+        hal_cpu_relax();
     port_out8(COM1, c);
 
     /* Append to ring buffer (multi-core safe) */
@@ -51,7 +51,7 @@ void serial_putchar(char c) {
 
 void serial_putchar_raw(char c) {
     while (!(port_in8(COM1 + 5) & 0x20))
-        __asm__ volatile("pause");
+        hal_cpu_relax();
     port_out8(COM1, c);
 }
 

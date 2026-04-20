@@ -118,8 +118,7 @@ void kernel_main(struct boot_info *info) {
         info->mmap_desc_size);
 
     /* Enable SSE/SSE2 + detect XSAVE for AVX/AVX-512. x86-specific, in arch/ */
-    extern void arch_fpu_boot_init(void);
-    arch_fpu_boot_init();
+    hal_cpu_fpu_boot_init();
 
     /* Exception table: sort fault/fixup pairs so the page-fault handler can
      * binary-search. Must run before any syscall/user-access path. */

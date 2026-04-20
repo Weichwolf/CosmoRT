@@ -12,9 +12,9 @@ KERN_ASM = $(BUILD)/kernel/entry.o \
 KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/irq.o \
             $(BUILD)/kernel/core/sched.o \
-            $(BUILD)/kernel/core/timer.o \
+            $(BUILD)/arch/x86_64/timer/timer.o \
             $(BUILD)/kernel/core/smp.o \
-            $(BUILD)/kernel/core/tss.o \
+            $(BUILD)/arch/x86_64/cpu/tss.o \
             $(BUILD)/kernel/core/percpu.o \
             $(BUILD)/kernel/core/timer_wheel.o \
             $(BUILD)/kernel/core/event_queue.o \
@@ -29,8 +29,7 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/slab.o \
             $(BUILD)/kernel/mm/random.o \
             $(BUILD)/kernel/mm/page_cache.o \
-            $(BUILD)/kernel/mm/extable.o \
-            $(BUILD)/kernel/mm/uaccess.o
+            $(BUILD)/kernel/mm/extable.o
 
 KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/process_lazy.o \
@@ -103,6 +102,7 @@ KERN_HAL  = $(BUILD)/arch/x86_64/cpu/hal_cpu.o \
             $(BUILD)/arch/x86_64/cpu/hal_mmu.o \
             $(BUILD)/arch/x86_64/cpu/hal_irq.o \
             $(BUILD)/arch/x86_64/cpu/hal_features.o \
+            $(BUILD)/arch/x86_64/cpu/uaccess.o \
             $(BUILD)/arch/x86_64/timer/hal_timer.o
 
 KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \

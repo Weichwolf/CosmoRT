@@ -27,4 +27,9 @@ int copy_from_user(void *kernel_dst, const void *user_src, size_t len);
 /* Copy LEN bytes from kernel to user. Returns 0 on success, -EFAULT on fault. */
 int copy_to_user(void *user_dst, const void *kernel_src, size_t len);
 
+/* Copy user NUL-terminated path string to kernel buffer with bounds checks.
+ * Returns length excluding NUL, -ENOENT for empty string, -ENAMETOOLONG,
+ * or -EFAULT. */
+int copy_path_from_user(char *kbuf, const char *upath, size_t max);
+
 #endif

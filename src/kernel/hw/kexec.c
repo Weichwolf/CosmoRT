@@ -23,6 +23,7 @@
 #include "mm/page_alloc.h"
 #include "boot_info.h"
 #include "arch/arch.h"
+#include "hal/hal.h"
 #include "fs/bcache.h"
 #include "fs/ext4.h"
 #include "sys/syscall.h"
@@ -135,7 +136,7 @@ static void stop_aps(void) {
 
     /* Wait for APs to enter INIT state */
     for (volatile int i = 0; i < 2000000; i++)
-        arch_pause();
+        hal_cpu_relax();
 
     serial_puts("kexec: APs stopped\n");
 }
@@ -200,12 +201,12 @@ load_and_jump(const void *kbuf, size_t len __attribute__((unused))) {
     data[1] = boot_info_phys;  /* +0x08: boot_info physical */
     data[2] = pml4_phys;       /* +0x10: PML4 physical */
 
-    arch_mfence();
+    hal_cpu_mfence();
 
     serial_puts("kexec: jumping to trampoline\n");
 
     /* Disable interrupts */
-    arch_cli();
+    hal_cpu_cli();
 
     /* Jump to trampoline at identity-mapped address.
      * We're currently in direct map (high half), but PML4[0..7] has
