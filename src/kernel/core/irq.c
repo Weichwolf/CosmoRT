@@ -165,29 +165,9 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             extern void check_pending_signals(void);
             thread_t *t = percpu_self()->current_thread;
             if (t && t->proc && (t->proc->sig_pending & ~t->sig_blocked)) {
-                /* Save irq frame → thread_t */
-                t->r15 = frame->r15; t->r14 = frame->r14;
-                t->r13 = frame->r13; t->r12 = frame->r12;
-                t->r11 = frame->r11; t->r10 = frame->r10;
-                t->r9  = frame->r9;  t->r8  = frame->r8;
-                t->rbp = frame->rbp; t->rdi = frame->rdi;
-                t->rsi = frame->rsi; t->rdx = frame->rdx;
-                t->rcx = frame->rcx; t->rbx = frame->rbx;
-                t->rax = frame->rax;
-                t->rip = frame->rip; t->rflags = frame->rflags;
-                t->rsp = frame->rsp;
+                irq_frame_to_thread(frame, t);
                 check_pending_signals();
-                /* Write back thread_t → irq frame */
-                frame->r15 = t->r15; frame->r14 = t->r14;
-                frame->r13 = t->r13; frame->r12 = t->r12;
-                frame->r11 = t->r11; frame->r10 = t->r10;
-                frame->r9  = t->r9;  frame->r8  = t->r8;
-                frame->rbp = t->rbp; frame->rdi = t->rdi;
-                frame->rsi = t->rsi; frame->rdx = t->rdx;
-                frame->rcx = t->rcx; frame->rbx = t->rbx;
-                frame->rax = t->rax;
-                frame->rip = t->rip; frame->rflags = t->rflags;
-                frame->rsp = t->rsp;
+                thread_to_irq_frame(t, frame);
             }
         }
         return;
@@ -560,36 +540,14 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
             process_t *faultp = t->proc;
             struct k_sigaction *sa = &faultp->sig_actions[11]; /* SIGSEGV=11 */
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(11))) {
-                /* User SIGSEGV handler registered and not blocked — deliver signal.
-                 * Save IRQ frame into thread_t, deliver, write back. */
+                /* User SIGSEGV handler registered and not blocked — deliver signal. */
+                irq_frame_to_thread(frame, t);
                 t->fault_addr = cr2;
-                t->rip = frame->rip;
-                t->rsp = frame->rsp;
-                t->rflags = frame->rflags;
-                t->rax = frame->rax; t->rbx = frame->rbx;
-                t->rcx = frame->rcx; t->rdx = frame->rdx;
-                t->rsi = frame->rsi; t->rdi = frame->rdi;
-                t->rbp = frame->rbp;
-                t->r8  = frame->r8;  t->r9  = frame->r9;
-                t->r10 = frame->r10; t->r11 = frame->r11;
-                t->r12 = frame->r12; t->r13 = frame->r13;
-                t->r14 = frame->r14; t->r15 = frame->r15;
 
                 extern void deliver_signal(thread_t *t, int signo);
                 deliver_signal(t, 11);
 
-                /* Write back modified registers to IRQ frame */
-                frame->rip = t->rip;
-                frame->rsp = t->rsp;
-                frame->rflags = t->rflags;
-                frame->rax = t->rax; frame->rbx = t->rbx;
-                frame->rcx = t->rcx; frame->rdx = t->rdx;
-                frame->rsi = t->rsi; frame->rdi = t->rdi;
-                frame->rbp = t->rbp;
-                frame->r8  = t->r8;  frame->r9  = t->r9;
-                frame->r10 = t->r10; frame->r11 = t->r11;
-                frame->r12 = t->r12; frame->r13 = t->r13;
-                frame->r14 = t->r14; frame->r15 = t->r15;
+                thread_to_irq_frame(t, frame);
                 return; /* resume into signal handler */
             }
         }
@@ -669,36 +627,14 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
             /* Only deliver if handler exists AND signal not already blocked
              * (blocked = we're already in the handler → avoid infinite loop) */
             if ((uint64_t)sa->sa_handler > 1 && !(t->sig_blocked & SIG_BIT(signo))) {
-                /* Deliver signal via IRQ frame → thread_t → deliver_signal → IRQ frame */
-                if (vector == 14) {
-                    t->fault_addr = arch_get_cr2();
-                } else {
-                    t->fault_addr = frame->rip;
-                }
-                t->rip = frame->rip; t->rsp = frame->rsp;
-                t->rflags = frame->rflags;
-                t->rax = frame->rax; t->rbx = frame->rbx;
-                t->rcx = frame->rcx; t->rdx = frame->rdx;
-                t->rsi = frame->rsi; t->rdi = frame->rdi;
-                t->rbp = frame->rbp;
-                t->r8  = frame->r8;  t->r9  = frame->r9;
-                t->r10 = frame->r10; t->r11 = frame->r11;
-                t->r12 = frame->r12; t->r13 = frame->r13;
-                t->r14 = frame->r14; t->r15 = frame->r15;
+                irq_frame_to_thread(frame, t);
+                /* PF: fault addr = CR2. Other traps: fault addr = faulting RIP. */
+                t->fault_addr = (vector == 14) ? arch_get_cr2() : frame->rip;
 
                 extern void deliver_signal(thread_t *t, int signo);
                 deliver_signal(t, signo);
 
-                frame->rip = t->rip; frame->rsp = t->rsp;
-                frame->rflags = t->rflags;
-                frame->rax = t->rax; frame->rbx = t->rbx;
-                frame->rcx = t->rcx; frame->rdx = t->rdx;
-                frame->rsi = t->rsi; frame->rdi = t->rdi;
-                frame->rbp = t->rbp;
-                frame->r8  = t->r8;  frame->r9  = t->r9;
-                frame->r10 = t->r10; frame->r11 = t->r11;
-                frame->r12 = t->r12; frame->r13 = t->r13;
-                frame->r14 = t->r14; frame->r15 = t->r15;
+                thread_to_irq_frame(t, frame);
                 return; /* resume into signal handler */
             }
         }
