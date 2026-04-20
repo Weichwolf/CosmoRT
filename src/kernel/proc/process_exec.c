@@ -255,6 +255,8 @@ shebang_retry:;
     struct k_stat exec_st;
     { int st_rc = vfs_stat(kpath, &exec_st);
       if (st_rc < 0) EXECVE_FAIL(st_rc); }
+    if ((exec_st.st_mode & S_IFMT) == S_IFDIR) EXECVE_FAIL(-EACCES);
+    if (!(exec_st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) EXECVE_FAIL(-EACCES);
 
     ext4_ino = vfs_ext4_lookup(kpath);
     ramfs_node = 0;
