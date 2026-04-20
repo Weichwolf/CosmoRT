@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2403/16 (Median 5×, Varianz 0), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2405/14 (5× Median, Varianz ±1 durch externen HTTP-Test `net/tcp_hash_multi`), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -14,7 +14,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 0.5 | Test-Runner-Watchdog | **✓ done** (2361/58 → 2364/56, Varianz ±14 → ±2) | — | — | — |
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | **✓ done** (2365/55 → 2400/19, +35; 4.8 nach Phase 6.6) | — | — | — |
-| 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
+| 5 | Loopback-Vollendung (Klasse C) | **✓ done** (2403/16 → 2405/14) | — | — | — |
 | 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup ✓** + **6.6 Page-Fault-Recovery (extable) ✓** | ~10 + 4 Netz ✓ + 4 acct ✓ | 4+3+2 Tage | **hoch** | 4.8 (acct) ✓ |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
 | 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
@@ -193,17 +193,24 @@ Commit `9a0a37a`. POSIX_FADV_* Konstanten aus include/linux/fcntl.h; war schon k
 
 ---
 
-## Phase 5 — Loopback-Vollendung
+## Phase 5 — Loopback-Vollendung ✓ done
 
-Commit `7b85a5f` hat Loopback begonnen, Tests failen weiterhin. Audit benötigt.
+Commits `9543eae`, `9606617`, `b10a495`, `0188169`. Test-Delta 2403/16 → 2405/14 (+2 stabil, Varianz ±1 durch externen HTTP-Test).
 
-- [ ] `net/lo.c` auf aktuelle `netif`-API portieren
-- [ ] 127.0.0.0/8 Routing: direkter `net_rx`, kein Gateway-Check
-- [ ] `connect` lokaler listener: TCP-Statemachine durch Loopback
-- [ ] `connect` auf unbekannten Port → `-ECONNREFUSED` (Linux-konform)
-- [ ] `connect` auf bereits verbundenen Socket → `-EISCONN`
-- [ ] **Accept-Deadline entfernen** (`do_accept` aktuell 1s-Timeout, `NET_TCP_TIMEOUT_MS` — Linux hat keins); blocking accept nutzt Socket-Wait-Queue aus Phase 6.5
-- [ ] Tests: `net/accept-loopback`, `ltp/accept02-loopback`, `ltp/connect*`, `net/tcp_hash_multi`
+- [x] `net/lo.c` auf aktuelle `netif`-API portieren (bereits durch frühere Commits)
+- [x] 127.0.0.0/8 Routing: direkter `netif_tx` → loopback-netif, kein Gateway-Check
+- [x] `connect` lokaler listener: TCP-Statemachine durch Loopback
+- [x] `connect` auf unbekannten Port → `-ECONNREFUSED` (RST an closed-port, Commit `9606617`)
+- [x] `connect` auf bereits verbundenen Socket → `-EISCONN` (Commit `9543eae`: post-ESTABLISHED-States in `net_tcp_connect` als „connected" behandeln statt neuen SYN-Mzero)
+- [x] **Accept-Deadline entfernt** (Commit `b10a495`): `do_accept4` honoriert `SO_RCVTIMEO`, sonst `remain=-1` = indefinite. Per-Listener `wait_thread` ersetzt globalen `q_tcp_wait_thread` — verhindert dangling pointer bei SIGKILL-killed accept.
+- [x] ARP non-blocking: NUD-State-Machine + Pending-Queue (Commit `0188169`). Sync-API (`net_arp_resolve`) bounded 250ms. Async-API (`net_arp_queue_frame`) queued das Frame, Reply-Handler flusht.
+- [x] Tests grün: `ltp/connect-eisconn`, `ltp/connect01-econnrefused`; bestehende `net/accept-loopback`, `ltp/accept02-loopback` stabil.
+
+### Gefährliche Stellen (entdeckt während der Umsetzung)
+
+- **`mzero(c, sizeof(*c))`** in `net_tcp_accept` und `net_tcp_connect` clobberte `c->wait_thread`. Recursive loopback-RX (send_syn → tcp_input → event_post) brauchte den Wert. Fix: save/restore um den mzero herum.
+- **`q_tcp_wait_thread` als globaler Slot** war latente UAF: SIGKILL-killed accept ließ den Zeiger auf eine freigegebene `thread_t` dangling. Nächster tcp_input dereferenzierte sie. Ersetzt durch per-Listener-Slot (`ls->tcp.wait_thread`) mit Socket-Lifetime.
+- **RST-Bounce-Loop**: frühe Version sendete RST auch auf RST. Fix: `in_flags & 0x04` → drop before RST-Send.
 
 ---
 
