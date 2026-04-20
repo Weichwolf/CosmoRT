@@ -13,7 +13,7 @@ ARCH_DIR = src/arch/x86_64
 EFI_INC  = /usr/include/efi
 EFI_LIB  = /usr/lib
 EFI_CRT  = $(EFI_LIB)/crt0-efi-x86_64.o
-EFI_LDS  = $(EFI_LIB)/elf_x86_64_efi.lds
+EFI_LDS  = $(SRC)/boot/efi_x86_64.lds
 
 EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
              -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
