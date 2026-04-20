@@ -93,6 +93,19 @@ static socket_t *sock_from_fd(int fd) {
     return (socket_t *)fde->obj;
 }
 
+/* Two-stage lookup: first verify fd validity (→ EBADF), then type (→ ENOTSOCK).
+ * Caller returns *err on NULL. */
+static socket_t *sock_lookup(int fd, int *err) {
+    process_t *p = proc_current();
+    if (!p) { *err = -EFAULT; return 0; }
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) { *err = -EBADF; return 0; }
+    if (fde->type != FD_SOCKET) { *err = -ENOTSOCK; return 0; }
+    socket_t *s = (socket_t *)fde->obj;
+    if (!s) { *err = -EBADF; return 0; }
+    return s;
+}
+
 /* Finalize non-blocking connect if TCP handshake completed.
  * Must be called before any read/write/send/recv on a socket
  * that may have been connected with O_NONBLOCK. */
@@ -250,8 +263,9 @@ long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen) {
     (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -EBADF;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
     if (s->shut_wr) return send_sigpipe();
 
     /* ── UDP (SOCK_DGRAM) ── */
@@ -322,8 +336,9 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
                  void *src_addr, int *addrlen) {
     (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -EBADF;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
     if (s->shut_rd) return 0; /* EOF */
 
     /* ── UDP (SOCK_DGRAM) ── */
@@ -766,8 +781,9 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 /* ── SYS_SETSOCKOPT (54) ─────────────────────────── */
 
 long do_setsockopt(int fd, int level, int optname, const void *optval, int optlen) {
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -EBADF;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
 
     if (optlen < (int)sizeof(int)) return -EINVAL;
 
@@ -864,8 +880,9 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
 /* ── SYS_GETSOCKOPT (55) ─────────────────────────── */
 
 long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -EBADF;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
 
     int val = 0;
 
@@ -938,8 +955,9 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
 /* ── SYS_GETSOCKNAME (51) ────────────────────────── */
 
 long do_getsockname(int fd, void *addr, int *addrlen) {
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -ENOTSOCK;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
 
     struct k_sockaddr_in sa;
     for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
@@ -955,8 +973,9 @@ long do_getsockname(int fd, void *addr, int *addrlen) {
 /* ── SYS_GETPEERNAME (52) ────────────────────────── */
 
 long do_getpeername(int fd, void *addr, int *addrlen) {
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -ENOTSOCK;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
     if (s->state != SOCK_CONNECTED) return -ENOTCONN;
 
     struct k_sockaddr_in sa;
@@ -973,16 +992,17 @@ long do_getpeername(int fd, void *addr, int *addrlen) {
 /* ── SYS_SHUTDOWN (48) ───────────────────────────── */
 
 long do_shutdown(int fd, int how) {
-    /* Check AF_UNIX first */
     process_t *p = proc_current();
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
-        if (fde && fde->type == FD_UNIX_SOCK)
-            return 0; /* AF_UNIX shutdown: no-op for now */
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type == FD_UNIX_SOCK) return 0;
+        if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
-    socket_t *s = sock_from_fd(fd);
-    if (!s) return -EBADF;
+    int err;
+    socket_t *s = sock_lookup(fd, &err);
+    if (!s) return err;
     if (s->state != SOCK_CONNECTED && s->state != SOCK_LISTENING)
         return -ENOTCONN;
 
