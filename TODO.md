@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest 2420/3 (6× identisch nach Phase 6.1 Signal-Delivery-Verifikation), musl 452/20, LTP 11/87. Branch: `ltp`.
+Stand: ktest 2425/1 (5× identisch nach Phase 6.2 Timing + procfs-smp-fix), musl 452/20, LTP 11/87. Branch: `ltp`.
 
 Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen setzen frühere voraus.
 
@@ -230,11 +230,16 @@ Audit-Ergebnis: Die strukturellen Subtasks waren bereits durch frühere Phasen e
 - [x] `SA_RESTART`-Rewind an einer Stelle: nur `signal_handler.c:209-222`. `grep -rn SA_RESTART src/` bestätigt — keine Duplikate in `irq.c`, `sched.c`, `signal_frame.c`.
 - [x] `parent got SIGALRM` grün: `ltp/alarm07b` war als "hangs" deaktiviert (`test_alarm.c:191`). Nach Reaktivierung läuft der Test durch — `do_nanosleep` (`sys_time.c:64-80`) prüft `deliverable` vor/nach `thread_block_ms`; `check_alarm_timers` (`signal_handler.c:144-149`) weckt den blockierten Thread via `sched_wake`.
 
-### 6.2 Timing
+### 6.2 Timing ✓ done
 
-- [ ] `time advanced >= 9s`: `clock_settime` muss wall-clock tatsächlich vorspulen
-- [ ] `clock_nanosleep CLOCK_MONOTONIC`: nicht `-EINTR` bei Timer-Expiry, nur bei Signal
-- [ ] TSC-Präzision: `woke at or after target`-Regression
+Bereits in Phase 1 (Syscall-Validierung) + Phase 6.1 erschlagen. Serial-Log-Verifikation:
+
+- [x] `clock_settime advance` PASS, `time advanced >= 9s` PASS (`ltp/clock_settime01-advance`)
+- [x] `clock_nanosleep mono` PASS, `mono: woke at or after target` PASS (`ltp/leapsec01-mono`)
+- [x] `clock_nanosleep` PASS, `woke at or after target (no early expiry)` PASS (`ltp/leapsec01`)
+- [x] 12 weitere clock_settime/clock_nanosleep-Fehlerpfad-Tests PASS (EFAULT, EINVAL, monotonic-readonly usw.)
+
+Zusätzlich im gleichen Umfeld: `tst_ncpus_proc` CRASH-Fix — `procfs_global_stat` rief `smp_core_count()` (undefiniertes extern, Linker liess NULL-Symbol durch); ersetzt durch `smp_num_cores()`. Auch `clone301-sigusr2` Test-Port-Bug: LTP-Original ignoriert SIGUSR2 vor clone3, unser Port vergass das → Parent wurde durch exit_signal=SIGUSR2 selbst getötet (status=128+12). Beide vorher: 2420/3, jetzt: 2425/1 (Delta +5, -2 Crashes + 5 Subtests).
 
 ### 6.3 Fork/Clone
 
