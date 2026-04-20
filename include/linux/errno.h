@@ -52,5 +52,6 @@
 #define EINPROGRESS     115
 #define ECONNREFUSED    111
 #define EALREADY        114
+#define EHOSTUNREACH    113
 
 #endif /* COSMO_LINUX_ERRNO_H */
