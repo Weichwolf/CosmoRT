@@ -446,8 +446,7 @@ static int procfs_global_stat(char *buf, int size, int offset, void *ctx) {
     pos = append_int(tmp, pos, 512, jiffies);
     pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0\n");
     /* Per-core lines */
-    extern int smp_core_count(void);
-    int ncores = smp_core_count();
+    int ncores = smp_num_cores();
     for (int c = 0; c < ncores && pos < 480; c++) {
         pos = append_str(tmp, pos, 512, "cpu");
         pos = append_int(tmp, pos, 512, (long)c);
