@@ -388,10 +388,10 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [ ] Per-Block atomare Flags (`fs/bcache.c`): globales Lock eliminieren
 - [ ] Per-CPU Slab-Freelist (`mm/slab.c`): Magazine-Pattern
 
-### 7.5 RCU-Vollendung
+### 7.5 RCU-Vollendung ✓ done
 
-- [ ] Callback-Execution aus `rcu_gp_complete` in dedizierten Kernel-Thread (aktuell: synchron im caller-Kontext, kann `synchronize_rcu`-Pfad blockieren)
-- [ ] `rcu_state.cpu[i]` Range-Check auf `SMP_MAX_CORES` (`rcu.c:262,283,297`)
+- [x] Callback-Execution aus `rcu_gp_complete` deferred — Tick-basiert statt dedizierter kthread: `rcu_tick_deferred` registriert via `tick_register(TICK_EVERY)`, drained `cb_done_*` pro CPU und weckt `sync_ready`-Waiter. Trennt Callbacks von `rcu_read_unlock`/`schedule`/`synchronize_rcu`-Pfaden. Max-Latenz 1 Tick.
+- [x] `rcu_cpu_of_self()` Helper clampt `core_id` auf `[0, SMP_MAX_CORES)` an allen vier Aufrufstellen (`rcu_gp_complete`, `rcu_note_context_switch`, `rcu_check_callbacks`, `call_rcu`).
 
 ### 7.6 Layer-Verstöße ✓ done
 
