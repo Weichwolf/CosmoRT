@@ -15,7 +15,7 @@ Priorisierung aus Architektur-Audit. Reihenfolge ist bindend: spätere Phasen se
 | 3 | `sched_preempt`-Refactor | 0 direkt | 3 Tage | mittel | Phase 6 |
 | 4 | Stub-Implementierungen (Klasse A) | **✓ 4.1-4.7+4.9 done** (2365/55 → 2398/22, +33) | — | — | — |
 | 5 | Loopback-Vollendung (Klasse C) | ~10 | 2 Tage | mittel | — |
-| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Readiness-Wakeup** | ~10 + 4 Netz | 4+3 Tage | **hoch** | — |
+| 6 | Race/Signal-Pfad (Klasse E) + **6.5 Socket-Wakeup** + **6.6 Page-Fault-Recovery (extable)** | ~10 + 4 Netz + 4 acct | 4+3+2 Tage | **hoch** | 4.8 (acct) |
 | 7 | Architektur-Schulden | 0 direkt | kontinuierlich | mittel | — |
 | 8 | Fehlende Subsysteme (Audio, Caps, Guard-Page) | qualitativ | lang | niedrig | — |
 
@@ -254,6 +254,25 @@ Linux-Vorbild: `struct sock.sk_wq` + `sock_def_readable`/`sock_def_write_space` 
 - [ ] `net_arp_resolve` non-blocking: bei Miss Paket in Queue + TTL, `-EAGAIN` zurück
 - [ ] TX-Pfad identisch: Completion weckt wartende Writer statt Busy-Wait
 - [ ] Test-Varianz-Check: 5× `make test-hw` muss identische PASS/FAIL-Liste produzieren
+
+### 6.6 Page-Fault-Recovery via Exception-Table
+
+**Wurzel (Phase 4.8 Befund):** Aktueller `fault_jmpbuf`-Mechanismus für `copy_from_user`/`copy_to_user` korrumpiert Thread-State bei PROT_NONE-Probe. Volle Pfad-Validierung in `do_acct` löst **140-Test-Regression** aus, weil setjmp/longjmp-Pfad Register/FPU-State/Scheduler-State nicht sauber wiederherstellt — nachfolgende Tests laufen mit zerstörtem Thread-Kontext.
+
+Linux-Vorbild: `__ex_table` (exception table) im Linker-Script. Pro `copy_*_user`-Maschineninstruktion zwei Adressen: `(fault_addr, fixup_addr)`. Page-Fault-Handler sucht `regs->rip` in der Tabelle, setzt bei Hit `regs->rip = fixup_addr` und kehrt zurück — kein longjmp, kein State-Touch außer RIP. Fixup-Code setzt typisch `rax = -EFAULT` und springt zur Funktions-Epilog.
+
+Linux-Code: `arch/x86/include/asm/extable.h`, `arch/x86/mm/extable.c`, `_ASM_EXTABLE`-Macros in inline-asm.
+
+Betroffen: alle `copy_from_user`/`copy_to_user`/`copy_path_from_user`-Stellen plus jeder direkte User-Memory-Access aus dem Kernel.
+
+- [ ] Linker-Script: `.ex_table`-Section mit `(fault_pc, fixup_pc)` Paaren
+- [ ] ASM-Macros (`_ASM_EXTABLE`) für Inline-Asm in `copy_*`-Pfaden
+- [ ] Page-Fault-Handler: extable-Lookup (binary search auf sortierter Section), bei Hit `frame->rip = fixup`, return — sonst alter Pfad (Signal/Panic)
+- [ ] Alle `copy_from_user`/`copy_to_user`/`strncpy_from_user`-Pfade migrieren
+- [ ] `fault_jmpbuf` und Helfer entfernen (`thread_t`-Feld, alle `setjmp`/`longjmp`-Aufrufe)
+- [ ] Validierung: Phase 4.8 acct vollständig implementieren, alle 4 acct-Tests grün, kein Regress
+
+**Blocker für:** Phase 4.8 acct-Vervollständigung (4 Tests bleiben rot bis 6.6 done).
 
 ---
 
