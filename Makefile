@@ -17,19 +17,19 @@ EFI_LDS  = $(EFI_LIB)/elf_x86_64_efi.lds
 
 EFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
              -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
-             -Wall -Wextra -Werror -O2 -c \
+             -Wall -Wextra -Werror -O2 -c -MMD -MP \
              -I$(EFI_INC) -I$(EFI_INC)/x86_64 -I$(EFI_INC)/protocol \
              -DGNU_EFI_USE_MS_ABI
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
-           -Wall -Wextra -Werror -O2 -c \
+           -Wall -Wextra -Werror -O2 -c -MMD -MP \
            -Iinclude/public -Iinclude/kernel -Iinclude -I$(SRC)/kernel -I$(BUILD) -std=c11
 
 # Drivers: only public headers (cosmort.h) + own subdirectory
 DRVFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
-           -Wall -Wextra -Werror -O2 -c \
+           -Wall -Wextra -Werror -O2 -c -MMD -MP \
            -Iinclude/public -std=c11
 
 LDFLAGS  = -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
@@ -95,14 +95,14 @@ $(BUILD)/kernel/hw/kexec.o: $(SRC)/kernel/hw/kexec.c $(BUILD)/gen/kexec_tramp_bi
 
 # ── CRT0: ABI-correct _start → _start_c trampoline ──
 $(BUILD)/user/crt0.o: $(SRC)/user/crt0.S | $(BUILD)/user
-	$(CC) -c -o $@ $<
+	$(CC) -c -MMD -MP -o $@ $<
 
 CRT0 = $(BUILD)/user/crt0.o
 
 # ── Init binary (embedded in kernel) ─────────────
 $(BUILD)/user/init.o: $(SRC)/user/init.c | $(BUILD)/user
 	$(CC) -ffreestanding -fno-stack-protector -fno-stack-check \
-	      -fno-plt -mno-red-zone -nostdlib -O2 -c -o $@ $<
+	      -fno-plt -mno-red-zone -nostdlib -O2 -c -MMD -MP -o $@ $<
 
 $(BUILD)/user/init: $(CRT0) $(BUILD)/user/init.o $(SRC)/user/init.ld
 	$(LD) -T $(SRC)/user/init.ld -o $@ $(CRT0) $(BUILD)/user/init.o
@@ -141,7 +141,7 @@ $(BUILD)/boot/boot.o: $(SRC)/boot/boot.c | $(BUILD)/boot
 	$(CC) $(EFI_CFLAGS) -o $@ $<
 
 # ── Architecture ASM (src/arch/x86_64/{boot,cpu,irq,syscall}/) ──
-ASFLAGS = -c -ffreestanding -mno-red-zone -nostdlib
+ASFLAGS = -c -MMD -MP -ffreestanding -mno-red-zone -nostdlib
 
 $(BUILD)/kernel/entry.o: $(ARCH_DIR)/boot/entry.S | $(BUILD)/kernel
 	$(CC) $(ASFLAGS) -o $@ $<
@@ -351,3 +351,10 @@ test-boot-disk: $(BUILD)/disk.img
 
 clean:
 	find $(BUILD) -mindepth 1 -maxdepth 1 ! -name alpine-root -exec rm -rf {} + 2>/dev/null || true
+
+# ── Header dependency tracking ──
+# -MMD -MP in CFLAGS/ASFLAGS emits .d files alongside .o. Include them so
+# a header change triggers rebuild of every .o that #includes it. Prefix `-`
+# ignores missing .d on first build.
+DEPS = $(ALL_OBJ:.o=.d) $(BUILD)/user/init.d $(BUILD)/user/crt0.d
+-include $(DEPS)

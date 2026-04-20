@@ -24,11 +24,11 @@ UCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check \
            -fno-plt -mno-red-zone -nostdlib -O2 \
            -I$(ROOT)/include/public
 
-TCFLAGS  = $(UCFLAGS) -I$(ROOT)/include/kernel -I$(ROOT)/include -I$(TESTDIR)
+TCFLAGS  = $(UCFLAGS) -MMD -MP -I$(ROOT)/include/kernel -I$(ROOT)/include -I$(TESTDIR)
 
 KCFLAGS  = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
            -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
-           -Wall -Wextra -Werror -O2 -c \
+           -Wall -Wextra -Werror -O2 -c -MMD -MP \
            -I$(ROOT)/include/public -I$(ROOT)/include/kernel -I$(ROOT)/include \
            -I$(SRC)/kernel -I$(BUILD) -std=c11
 
@@ -160,7 +160,7 @@ $(TBUILD)/fuzz/gen/init_bin.h: $(TBUILD)/ktest-fuzz | $(TBUILD)/fuzz/gen
 # KCFLAGS without -I$(BUILD) — we prepend our own variant dir instead
 KCFLAGS_NO_BUILD = -ffreestanding -fno-stack-protector -fno-stack-check -fno-plt \
                    -mno-red-zone -mno-sse -mno-mmx -mno-sse2 -mgeneral-regs-only \
-                   -Wall -Wextra -Werror -O2 -c \
+                   -Wall -Wextra -Werror -O2 -c -MMD -MP \
                    -I$(ROOT)/include/public -I$(ROOT)/include/kernel -I$(ROOT)/include \
                    -I$(SRC)/kernel -std=c11
 
@@ -248,3 +248,8 @@ fuzz: $(TBUILD)/fuzz/cosmo-rt.img
 
 clean:
 	rm -rf $(TBUILD)
+
+# ── Header dependency tracking ──
+TEST_OBJ = $(KTEST_UNIT_OBJ) $(KTEST_CRASH_OBJ) $(KTEST_FUZZ_OBJ) \
+           $(TBUILD)/hw/main_kern.o $(TBUILD)/crash/main_kern.o $(TBUILD)/fuzz/main_kern.o
+-include $(TEST_OBJ:.o=.d)
