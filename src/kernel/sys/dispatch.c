@@ -198,12 +198,36 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     /* alarm(2): per-process SIGALRM timer */
     case SYS_ALARM: return do_alarm((unsigned int)a1);
 
-    /* xattr: return -ENODATA ("no attributes") instead of -ENOSYS */
-    case SYS_SETXATTR:  case SYS_LSETXATTR:  case SYS_FSETXATTR:
-    case SYS_GETXATTR:  case SYS_LGETXATTR:  case SYS_FGETXATTR:
-    case SYS_LISTXATTR: case SYS_LLISTXATTR: case SYS_FLISTXATTR:
-    case SYS_REMOVEXATTR: case SYS_LREMOVEXATTR: case SYS_FREMOVEXATTR:
-        return -ENODATA;
+    /* xattr: no FS backend supports them. Linux-konform:
+     *   fd-based syscalls prüfen zuerst fd -> -EBADF
+     *   path-based syscalls prüfen zuerst Pfad -> Lookup-Errno
+     *   danach: -ENOTSUP (kein xattr-Support). Für listxattr mit size==0
+     *   ist Linux-Verhalten: return 0 (benötigte Buffer-Größe = 0). */
+    case SYS_FSETXATTR: case SYS_FGETXATTR: case SYS_FREMOVEXATTR:
+    case SYS_FLISTXATTR: {
+        process_t *xp = proc_current();
+        if (!xp) return -EFAULT;
+        fd_entry_t *fde = fd_get(&xp->fds, (int)a1);
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (num == SYS_FLISTXATTR && a3 == 0) return 0;
+        if (num == SYS_FGETXATTR) return -ENODATA;
+        return -ENOTSUP;
+    }
+    case SYS_SETXATTR:  case SYS_LSETXATTR:
+    case SYS_GETXATTR:  case SYS_LGETXATTR:
+    case SYS_LISTXATTR: case SYS_LLISTXATTR:
+    case SYS_REMOVEXATTR: case SYS_LREMOVEXATTR: {
+        char xpath[PATH_MAX];
+        int xlen = copy_path_from_user(xpath, (const char *)a1, PATH_MAX);
+        if (xlen < 0) return xlen;
+        int xerr = 0;
+        extern struct vfs_node *vfs_lookup_err(const char *path, int *err);
+        struct vfs_node *xn = vfs_lookup_err(xpath, &xerr);
+        if (!xn) return xerr;
+        if ((num == SYS_LISTXATTR || num == SYS_LLISTXATTR) && a3 == 0) return 0;
+        if (num == SYS_GETXATTR || num == SYS_LGETXATTR) return -ENODATA;
+        return -ENOTSUP;
+    }
 
     default: {
         process_t *dp = proc_current();
