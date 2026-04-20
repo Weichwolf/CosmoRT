@@ -14,6 +14,7 @@
 #include "spinlock.h"
 #include "arch/arch.h"
 #include "memops.h"
+#include "mm/extable.h"
 
 /* ── Local APIC ────────────────────────────────────── */
 
@@ -299,10 +300,19 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     /* trylock failed → fall through to fault_recover */
                 }
             }
-            /* Kernel accessed unmapped user address (e.g. bad pointer from syscall).
-             * If fault_recover is armed, resume execution at the setjmp return
-             * point by restoring callee-saved registers and RSP/RIP from the
-             * jmpbuf into the IRQ frame. The setjmp will return 1 (via RAX). */
+            /* Kernel accessed unmapped user address (e.g. bad pointer from
+             * syscall). First try the exception table: inline-asm user-access
+             * sequences register (fault_pc, fixup_pc) pairs at compile time.
+             * On hit, only RIP is rewritten — no register/stack/FPU touch. */
+            if (cr2 < 0x800000000000ULL) {
+                uintptr_t fixup = extable_lookup((uintptr_t)frame->rip);
+                if (fixup) {
+                    frame->rip = (uint64_t)fixup;
+                    return;
+                }
+            }
+            /* Fallback: legacy setjmp/longjmp fault recovery (to be removed
+             * once all user-access sites migrate to extable). */
             {
                 thread_t *kft = percpu_self()->current_thread;
                 if (kft && kft->fault_recover && cr2 < 0x800000000000ULL) {
@@ -647,19 +657,26 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     percpu_t *cpu = percpu_self();
     thread_t *t = cpu->current_thread;
 
-    /* Kernel-mode exception during syscall with fault_recover armed:
-     * the kernel faulted on user-supplied data (e.g. fxrstor with garbage).
-     * Recover via longjmp → sys_handler returns -EFAULT. */
-    if (!(frame->cs & 3) && t && t->fault_recover) {
-        t->fault_recover = 0;
-        uint64_t *jb = t->fault_jmpbuf;
-        frame->rbx = jb[0]; frame->rbp = jb[1];
-        frame->r12 = jb[2]; frame->r13 = jb[3];
-        frame->r14 = jb[4]; frame->r15 = jb[5];
-        frame->rsp = jb[6] + 8;
-        frame->rip = jb[7];
-        frame->rax = 1;
-        return;
+    /* Kernel-mode exception during syscall: the kernel faulted on user-
+     * supplied data (e.g. fxrstor with garbage). First try extable — pure
+     * RIP rewrite, no register touch. Fall back to legacy longjmp path. */
+    if (!(frame->cs & 3)) {
+        uintptr_t fixup = extable_lookup((uintptr_t)frame->rip);
+        if (fixup) {
+            frame->rip = (uint64_t)fixup;
+            return;
+        }
+        if (t && t->fault_recover) {
+            t->fault_recover = 0;
+            uint64_t *jb = t->fault_jmpbuf;
+            frame->rbx = jb[0]; frame->rbp = jb[1];
+            frame->r12 = jb[2]; frame->r13 = jb[3];
+            frame->r14 = jb[4]; frame->r15 = jb[5];
+            frame->rsp = jb[6] + 8;
+            frame->rip = jb[7];
+            frame->rax = 1;
+            return;
+        }
     }
 
     /* User-mode exception: try to deliver as signal before killing.
