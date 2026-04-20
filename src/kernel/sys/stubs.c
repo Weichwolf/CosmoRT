@@ -25,12 +25,6 @@ long do_rseq(void)            { return -ENOSYS; }
 long do_capget(void)          { return -EPERM; }
 long do_capset(void)          { return -EPERM; }
 
-/* advisory locks: noop, single-user */
-long do_flock(int fd, int operation) {
-    (void)fd; (void)operation;
-    return 0;
-}
-
 /* msync: moved to sys_mem.c (SH-C3: dirty tracking + write-back) */
 /* TODO: implement if needed */
 long do_sendfile(void) { return -ENOSYS; }

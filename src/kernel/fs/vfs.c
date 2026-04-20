@@ -351,6 +351,8 @@ void vfs_file_incref(struct vfs_file *f) {
 
 /* Release file resources when last refcount drops */
 static void vfs_file_release(struct vfs_file *f) {
+    extern void flock_release_file(void *vfs_file_ptr);
+    flock_release_file(f);
     if (f->f_ops && f->f_ops->close)
         f->f_ops->close(f);
 }

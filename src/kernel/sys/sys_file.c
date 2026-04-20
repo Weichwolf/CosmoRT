@@ -898,13 +898,21 @@ long do_ioctl(int fd, unsigned long request, unsigned long arg) {
 
 #define FLOCK_MAX 64
 
+/* whole-file flock(2) marker distinguishes flock from fcntl byte-range locks.
+ * flock locks conflict across fds but not across owners of the same fd-chain. */
+#define FLOCK_TYPE_FLOCK_SH  (F_RDLCK | 0x10)
+#define FLOCK_TYPE_FLOCK_EX  (F_WRLCK | 0x10)
+
 struct flock_entry {
-    uint64_t ino;       /* file identity (node ptr or disk_ino) */
-    uint32_t pid;       /* lock owner */
-    short    type;      /* F_RDLCK or F_WRLCK */
+    uint64_t ino;       /* file identity (node ptr or disk_ino), 0 = free */
+    uint32_t pid;       /* lock owner (fcntl locks) */
+    uint64_t owner;     /* flock(2): vfs_file *; fcntl: pid (broadcasted) */
+    short    type;      /* F_RDLCK or F_WRLCK (| 0x10 for flock(2)) */
     long     start;
-    long     len;       /* 0 = entire file */
+    long     end;       /* inclusive end; OFF_MAX = to EOF */
 };
+
+#define FLOCK_OFF_MAX __LONG_MAX__
 
 static struct flock_entry flock_table[FLOCK_MAX];
 
@@ -916,67 +924,174 @@ static uint64_t flock_ino(fd_entry_t *fde) {
     return (uint64_t)(uintptr_t)f->inode;
 }
 
-/* Check if two lock ranges overlap. len=0 means "to end of file". */
-static int flock_overlap(long s1, long l1, long s2, long l2) {
-    long e1 = l1 ? s1 + l1 : __LONG_MAX__;
-    long e2 = l2 ? s2 + l2 : __LONG_MAX__;
-    return s1 < e2 && s2 < e1;
+static short flock_base_type(short t) { return (short)(t & ~0x10); }
+
+static int flock_range_overlap(long s1, long e1, long s2, long e2) {
+    return s1 <= e2 && s2 <= e1;
 }
 
-/* Check for conflict: returns pointer to conflicting entry, or NULL */
-static struct flock_entry *flock_conflict(uint64_t ino, uint32_t pid,
-                                           short type, long start, long len) {
+static int flock_is_fcntl(short t) { return !(t & 0x10); }
+
+/* Check for fcntl byte-range conflict (F_RDLCK/F_WRLCK vs same) */
+static struct flock_entry *flock_fcntl_conflict(uint64_t ino, uint32_t pid,
+                                                 short type, long start, long end) {
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
-        if (!e->ino || e->ino != ino || e->pid == pid) continue;
-        if (!flock_overlap(e->start, e->len, start, len)) continue;
-        /* Read locks don't conflict with each other */
+        if (!e->ino || e->ino != ino) continue;
+        if (!flock_is_fcntl(e->type)) continue;
+        if (e->pid == pid) continue;
+        if (!flock_range_overlap(e->start, e->end, start, end)) continue;
         if (e->type == F_RDLCK && type == F_RDLCK) continue;
         return e;
     }
     return (void *)0;
 }
 
-static long flock_setlk(uint64_t ino, uint32_t pid,
-                         short type, long start, long len) {
-    if (type == F_UNLCK) {
-        /* Remove matching locks held by this pid on this inode */
-        for (int i = 0; i < FLOCK_MAX; i++) {
-            struct flock_entry *e = &flock_table[i];
-            if (e->ino == ino && e->pid == pid &&
-                flock_overlap(e->start, e->len, start, len))
-                e->ino = 0;
-        }
-        return 0;
-    }
-    /* Check for conflicts */
-    if (flock_conflict(ino, pid, type, start, len))
-        return -EAGAIN;
-    /* Replace existing lock by this pid on overlapping range, or allocate new */
-    int free_slot = -1;
+/* Allocate a new lock slot */
+static int flock_alloc_slot(void) {
+    for (int i = 0; i < FLOCK_MAX; i++)
+        if (!flock_table[i].ino) return i;
+    return -1;
+}
+
+/* Remove/split existing fcntl locks by this pid overlapping [start,end].
+ * Linux semantics: overlapping same-pid locks are consumed (unlocked range
+ * before re-lock). Returns 0 on success, -ENOLCK on split-split-OOM. */
+static int flock_remove_overlapping(uint64_t ino, uint32_t pid,
+                                     long start, long end) {
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
-        if (e->ino == ino && e->pid == pid &&
-            flock_overlap(e->start, e->len, start, len)) {
+        if (!e->ino || e->ino != ino || e->pid != pid) continue;
+        if (!flock_is_fcntl(e->type)) continue;
+        if (!flock_range_overlap(e->start, e->end, start, end)) continue;
+
+        long es = e->start, ee = e->end;
+        short et = e->type;
+        if (es < start && ee > end) {
+            /* split into two: [es, start-1] and [end+1, ee] */
+            e->end = start - 1;
+            int ns = flock_alloc_slot();
+            if (ns < 0) return -ENOLCK;
+            flock_table[ns] = (struct flock_entry){
+                .ino = ino, .pid = pid, .type = et,
+                .start = end + 1, .end = ee
+            };
+        } else if (es < start) {
+            e->end = start - 1;
+        } else if (ee > end) {
+            e->start = end + 1;
+        } else {
+            e->ino = 0;
+        }
+    }
+    return 0;
+}
+
+/* Merge adjacent/overlapping same-type locks by same pid (linux sematics) */
+static void flock_merge(uint64_t ino, uint32_t pid, short type) {
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        struct flock_entry *a = &flock_table[i];
+        if (!a->ino || a->ino != ino || a->pid != pid || a->type != type) continue;
+        for (int j = i + 1; j < FLOCK_MAX; j++) {
+            struct flock_entry *b = &flock_table[j];
+            if (!b->ino || b->ino != ino || b->pid != pid || b->type != type) continue;
+            if (a->end + 1 < b->start || b->end + 1 < a->start) continue;
+            long s = a->start < b->start ? a->start : b->start;
+            long e = a->end > b->end ? a->end : b->end;
+            a->start = s;
+            a->end = e;
+            b->ino = 0;
+        }
+    }
+}
+
+static long flock_fcntl_setlk(uint64_t ino, uint32_t pid,
+                               short type, long start, long end) {
+    if (type == F_UNLCK)
+        return flock_remove_overlapping(ino, pid, start, end);
+    if (flock_fcntl_conflict(ino, pid, type, start, end))
+        return -EAGAIN;
+    int r = flock_remove_overlapping(ino, pid, start, end);
+    if (r) return r;
+    int ns = flock_alloc_slot();
+    if (ns < 0) return -ENOLCK;
+    flock_table[ns] = (struct flock_entry){
+        .ino = ino, .pid = pid, .type = type, .start = start, .end = end
+    };
+    flock_merge(ino, pid, type);
+    return 0;
+}
+
+/* flock(2): whole-file lock, keyed by (inode, owner = vfs_file*). Distinct
+ * open(2) file descriptions of the same process conflict — see flock(2). */
+static struct flock_entry *flock_whole_conflict(uint64_t ino, uint64_t owner,
+                                                 short type) {
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        struct flock_entry *e = &flock_table[i];
+        if (!e->ino || e->ino != ino) continue;
+        if (flock_is_fcntl(e->type)) continue;
+        if (e->owner == owner) continue;
+        if (e->type == FLOCK_TYPE_FLOCK_SH && type == FLOCK_TYPE_FLOCK_SH) continue;
+        return e;
+    }
+    return (void *)0;
+}
+
+static long flock_whole_setlk(uint64_t ino, uint32_t pid, uint64_t owner,
+                               short type) {
+    if (flock_whole_conflict(ino, owner, type))
+        return -EAGAIN;
+    /* Upgrade/downgrade: replace this owner's existing whole-file lock */
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        struct flock_entry *e = &flock_table[i];
+        if (e->ino == ino && e->owner == owner && !flock_is_fcntl(e->type)) {
             e->type = type;
-            e->start = start;
-            e->len = len;
             return 0;
         }
-        if (!e->ino && free_slot < 0) free_slot = i;
     }
-    if (free_slot < 0) return -ENOLCK;
-    flock_table[free_slot] = (struct flock_entry){
-        .ino = ino, .pid = pid, .type = type, .start = start, .len = len
+    int ns = flock_alloc_slot();
+    if (ns < 0) return -ENOLCK;
+    flock_table[ns] = (struct flock_entry){
+        .ino = ino, .pid = pid, .owner = owner, .type = type,
+        .start = 0, .end = FLOCK_OFF_MAX
     };
     return 0;
 }
 
-/* Remove all locks held by pid on a given inode (called on close) */
+static void flock_whole_unlock(uint64_t ino, uint64_t owner) {
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        struct flock_entry *e = &flock_table[i];
+        if (e->ino == ino && e->owner == owner && !flock_is_fcntl(e->type))
+            e->ino = 0;
+    }
+}
+
+/* Test-only helper: kept under old name for F_GETLK (byte-range) */
+static struct flock_entry *flock_conflict(uint64_t ino, uint32_t pid,
+                                           short type, long start, long end) {
+    return flock_fcntl_conflict(ino, pid, type, start, end);
+}
+
+/* Remove all locks held by pid on a given inode (called on close).
+ * POSIX: close() releases all fcntl-style locks held by the calling process
+ * on the underlying file. flock() owner identity is the struct file, so
+ * dup'd fds share flock ownership; whole-file locks persist while any
+ * fd from the same open() is open. refcount handling happens via
+ * vfs_file lifecycle — flock_release_file() is the proper flock-path. */
 void flock_release(uint64_t ino, uint32_t pid) {
     for (int i = 0; i < FLOCK_MAX; i++) {
         struct flock_entry *e = &flock_table[i];
-        if (e->ino == ino && e->pid == pid)
+        if (e->ino == ino && e->pid == pid && flock_is_fcntl(e->type))
+            e->ino = 0;
+    }
+}
+
+/* Release flock(2) locks when a struct vfs_file is finally freed */
+void flock_release_file(void *vfs_file_ptr) {
+    uint64_t owner = (uint64_t)(uintptr_t)vfs_file_ptr;
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        struct flock_entry *e = &flock_table[i];
+        if (e->owner == owner && !flock_is_fcntl(e->type))
             e->ino = 0;
     }
 }
@@ -986,6 +1101,49 @@ void flock_release_pid(uint32_t pid) {
     for (int i = 0; i < FLOCK_MAX; i++)
         if (flock_table[i].pid == pid)
             flock_table[i].ino = 0;
+}
+
+/* ── SYS_flock (73) — whole-file advisory locking ── */
+
+long do_flock(int fd, int operation) {
+    int nb = (operation & LOCK_NB) ? 1 : 0;
+    int op = operation & ~LOCK_NB;
+
+    if (op != LOCK_SH && op != LOCK_EX && op != LOCK_UN) return -EINVAL;
+    /* LOCK_NB alone (without SH/EX/UN) is invalid */
+    if (operation == LOCK_NB) return -EINVAL;
+
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE) return -EBADF;
+    if (fde->type != FD_FILE) return -EINVAL;
+    uint64_t ino = flock_ino(fde);
+    if (!ino) return -EBADF;
+
+    uint64_t owner = (uint64_t)(uintptr_t)fde->obj;
+
+    if (op == LOCK_UN) {
+        flock_whole_unlock(ino, owner);
+        return 0;
+    }
+
+    short t = (op == LOCK_SH) ? FLOCK_TYPE_FLOCK_SH : FLOCK_TYPE_FLOCK_EX;
+    long r = flock_whole_setlk(ino, p->pid, owner, t);
+    if (r == -EAGAIN && nb) return -EAGAIN;
+    if (r != -EAGAIN) return r;
+
+    /* Blocking: poll-loop with signal wakeup */
+    while (1) {
+        thread_t *th = thread_current();
+        if (th && th->proc) {
+            uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
+            if (deliverable) return -EINTR;
+        }
+        thread_block_ms(10);
+        r = flock_whole_setlk(ino, p->pid, owner, t);
+        if (r != -EAGAIN) return r;
+    }
 }
 
 long do_fcntl(int fd, int cmd, long arg) {
@@ -1012,15 +1170,19 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_GETLK: {
         struct k_flock *fl = (struct k_flock *)arg;
         if (!user_ok((uint64_t)fl, sizeof(*fl))) return -EFAULT;
-        uint64_t ino = (fde->type == FD_FILE) ? flock_ino(fde) : 0;
+        if (fl->l_type != F_RDLCK && fl->l_type != F_WRLCK) return -EINVAL;
+        if (fde->type != FD_FILE) return -EBADF;
+        uint64_t ino = flock_ino(fde);
         if (!ino) { fl->l_type = F_UNLCK; return 0; }
+        long qstart = fl->l_start;
+        long qend = fl->l_len ? qstart + fl->l_len - 1 : FLOCK_OFF_MAX;
         struct flock_entry *c = flock_conflict(ino, p->pid,
-                                                fl->l_type, fl->l_start, fl->l_len);
+                                                fl->l_type, qstart, qend);
         if (c) {
-            fl->l_type   = c->type;
+            fl->l_type   = flock_base_type(c->type);
             fl->l_whence = 0; /* SEEK_SET */
             fl->l_start  = c->start;
-            fl->l_len    = c->len;
+            fl->l_len    = (c->end == FLOCK_OFF_MAX) ? 0 : (c->end - c->start + 1);
             fl->l_pid    = (int)c->pid;
         } else {
             fl->l_type = F_UNLCK;
@@ -1031,9 +1193,28 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_SETLKW: {
         struct k_flock *fl = (struct k_flock *)arg;
         if (!user_ok((uint64_t)fl, sizeof(*fl))) return -EFAULT;
-        uint64_t ino = (fde->type == FD_FILE) ? flock_ino(fde) : 0;
-        if (!ino) return 0; /* non-file fds: no-op */
-        return flock_setlk(ino, p->pid, fl->l_type, fl->l_start, fl->l_len);
+        if (fl->l_type != F_RDLCK && fl->l_type != F_WRLCK && fl->l_type != F_UNLCK)
+            return -EINVAL;
+        /* Pipes, sockets, and other non-seekable fds: EINVAL for F_SETLK */
+        if (fde->type != FD_FILE) return -EINVAL;
+        uint64_t ino = flock_ino(fde);
+        if (!ino) return -EBADF;
+        long start = fl->l_start;
+        long end = fl->l_len ? start + fl->l_len - 1 : FLOCK_OFF_MAX;
+        if (start < 0) return -EINVAL;
+        long r = flock_fcntl_setlk(ino, p->pid, fl->l_type, start, end);
+        if (cmd == F_SETLK) return r;
+        /* F_SETLKW: block until lock obtainable or signal */
+        while (r == -EAGAIN) {
+            thread_t *th = thread_current();
+            if (th && th->proc) {
+                uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
+                if (deliverable) return -EINTR;
+            }
+            thread_block_ms(10);
+            r = flock_fcntl_setlk(ino, p->pid, fl->l_type, start, end);
+        }
+        return r;
     }
     case F_GETOWN:
         return 0; /* no SIGIO support — always returns 0 */

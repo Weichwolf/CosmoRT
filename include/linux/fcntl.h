@@ -49,6 +49,12 @@ struct k_flock {
 #define F_WRLCK  1
 #define F_UNLCK  2
 
+/* flock(2) operations */
+#define LOCK_SH  1
+#define LOCK_EX  2
+#define LOCK_NB  4
+#define LOCK_UN  8
+
 /* Seek */
 #define SEEK_SET        0
 #define SEEK_CUR        1
