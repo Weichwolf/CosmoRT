@@ -27,6 +27,10 @@ _Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 232,
 /* Assembly: saves prev callee-saved+RFLAGS+RSP, loads next's */
 extern void context_switch(thread_t *prev, thread_t *next);
 
+/* Reschedule-Kern — deliver/ack primitives */
+extern void check_pending_signals(void);
+extern void lapic_eoi(void);
+
 /* Run queue: single-core, protected by spinlock (IRQ context) */
 static struct {
     thread_t *head;
@@ -204,7 +208,6 @@ void sched_preempt(irq_frame_t *f) {
     if (!frame_is_user(f)) return;
 
     /* Signal delivery (without context switch) */
-    extern void check_pending_signals(void);
     {
         process_t *p = cur->proc;
         uint64_t deliverable = p ? ((p->sig_pending | cur->sig_thread_pending) & ~cur->sig_blocked) : 0;
@@ -242,7 +245,6 @@ void sched_preempt(irq_frame_t *f) {
     cur->fs_base = arch_get_fs_base();
 
     /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
-    extern void lapic_eoi(void);
     lapic_eoi();
 
     schedule();
@@ -281,12 +283,6 @@ void sched_loop(void) {
         idle_thread.state = THREAD_RUNNING;
         cpu->current_thread = &idle_thread;
 
-        {
-        }
-        {
-            extern void epoll_check_timeouts(void);
-            epoll_check_timeouts();
-        }
         arch_sti();
         arch_halt();
         arch_cli();
