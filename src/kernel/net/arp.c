@@ -9,6 +9,7 @@
 #include "net/net_util.h"
 #include "core/timer.h"
 #include "mm/slab.h"
+#include "proc/process.h"
 
 /* ── Helpers ──────────────────────────────────────── */
 
@@ -188,11 +189,9 @@ void arp_input(const uint8_t *pkt, int len) {
 /* ── ARP Resolve (blocking) ───────────────────────── */
 
 int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
-    /* Cache hit? */
     if (arp_cache_lookup(ip, mac_out) == 0)
         return 0;
 
-    /* Send ARP request */
     uint8_t pkt[42];
     mzero(pkt, 42);
     for (int i = 0; i < 6; i++) pkt[i] = 0xFF;
@@ -205,11 +204,17 @@ int net_arp_resolve(const uint8_t *ip, uint8_t *mac_out) {
     mcpy(pkt + 38, ip, 4);
     ip_send_raw(pkt, 42);
 
-    /* Wait for cache to be populated by arp_input (called from dispatcher) */
-    uint64_t deadline = timer_ms() + NET_DHCP_RETRY_MS;
+    /* Bounded poll with signal-check. RT-grade: 100ms max, abort on pending
+     * signal so SIGALRM etc. don't get swallowed. Proper non-blocking
+     * neighbour-cache + pending-queue: follow-up task (Phase 5). */
+    uint64_t deadline = timer_ms() + NET_ARP_TIMEOUT_MS;
     while (timer_ms() < deadline) {
         if (arp_cache_lookup(ip, mac_out) == 0)
             return 0;
+        process_t *p = proc_current();
+        thread_t  *t = thread_current();
+        if (p && t && ((p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked))
+            return -1;
         net_idle();
     }
     return -1;
