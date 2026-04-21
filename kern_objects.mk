@@ -114,6 +114,7 @@ KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/acpi.o \
             $(BUILD)/arch/x86_64/hw/hyperv.o \
             $(BUILD)/arch/x86_64/hw/hyperv_clocksource.o \
+            $(BUILD)/arch/x86_64/hw/hyperv_stimer.o \
             $(BUILD)/arch/x86_64/hw/kvmclock.o \
             $(BUILD)/arch/x86_64/hw/qemu.o \
             $(BUILD)/arch/x86_64/sha256.o

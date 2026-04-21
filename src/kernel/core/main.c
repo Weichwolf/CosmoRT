@@ -249,6 +249,8 @@ void kernel_main(struct boot_info *info) {
         hyperv_init();
         hyperv_clocksource_init();
         hyperv_synic_init();
+        extern void hyperv_stimer_init(void);
+        hyperv_stimer_init();
         if (vmbus_init() == 0) {
             storvsc_init();     /* block device */
             netvsc_init();      /* network adapter */

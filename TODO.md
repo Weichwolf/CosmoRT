@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2526/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
+Stand: ktest **2544/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
 
 ## Offene Phasen
 
@@ -47,7 +47,7 @@ Priorität nach Aufwand × ROI (bindende Reihenfolge):
 - [x] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`). clocksource rating 250, 64-bit Main Counter, period aus GCAP. QEMU q35: 10ns period / 100MHz / 64bit. clock_event / PIT-Kalib-Ersatz nach 7.7.9. 5 neue Tests (subcases 40-44). 2531/0.
 - [ ] **7.7.4** Hyper-V TSC-Page als clocksource (`src/arch/x86_64/hw/hyperv_clocksource.c`) — trivialer Wrapper um bestehenden `hyperv_tsc_time_ns`, rating 400. Fix für latenten Bug unter Hyper-V/WSL2. ~60 LOC, 0.3d.
 - [ ] **7.7.5** KVM pvclock (`src/arch/x86_64/hw/kvmclock.c`) — `wall_clock` + `system_time` MSRs, TSC-Scale vom Host. rating 400. Läuft unter `make qemu-*`. ~200 LOC, 1d.
-- [ ] **7.7.6** Hyper-V STimer (`src/arch/x86_64/hw/hyperv_stimer.c`) — 4 synthetic timer pro vCPU, SynIC-Interrupts, hypercall-basiert. clock_event rating 400. ~400 LOC, 2d.
+- [x] **7.7.6** Hyper-V STimer — STIMER0 als clock_event rating 400. Direct-Mode präferiert (IDT-Vektor 0x33), SynIC-Fallback auf SINT4 → 0x34. AUTO_ENABLE + Min-Delta-Clamp (1000 Ticks = 100µs) gegen Past-Deadline-Storm. Oneshot only (shutdown+set_next_event). 5 neue Tests (subcases 70-74). Ohne Hyper-V degradieren 70/73/74 zu no-op success, 71/72 (CONFIG-Builder, Deadline-Konvertierung) laufen pur in Software. 2544/0.
 - [ ] **7.7.7** ACPI PM_TMR (`src/arch/x86_64/timer/acpi_pm.c`) — Fallback-clocksource rating 110, 3.579545 MHz. ~120 LOC, 0.5d.
 - [ ] **7.7.8** virtio-rtc (`src/drivers/virtio/virtio_rtc.c`) — optional, für Guest-Umgebungen. ~300 LOC, 1.5d.
 - [ ] **7.7.9** TSC-Invariant-Check (`CPUID.80000007H:EDX[8]`) + Boot-Zeit-Kalibrierung via HPET statt PIT.

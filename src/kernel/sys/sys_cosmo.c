@@ -801,6 +801,106 @@ static long kvmcs_monotonic(void) {
     return 0;
 }
 
+/* ── Hyper-V STimer selftests (subcases 70-74) ─
+ * Direct-Mode-Probe und CONFIG-Builder laufen rein CPU-lokal — getestet auch
+ * ohne Hyper-V. Register/Deadline-Cases degradieren zu no-op success wenn
+ * hyperv_stimer_available()==0, analog zu TSC-Page/kvmclock. */
+
+#define HVST_TEST_VECTOR      HV_STIMER0_DIRECT_VECTOR
+#define HVST_TEST_SINT        HV_STIMER_SINT
+#define HVST_TEST_NOW_TICKS   0x100000ULL
+#define HVST_TEST_DELTA_NS    1000000ULL          /* 1 ms */
+#define HVST_TEST_DELTA_TICKS 10000ULL            /* 1 ms / 100 ns */
+#define HVST_SUB_PAST         0ULL                /* forces min-delta clamp */
+
+static int hvst_name_equals(const char *s) {
+    const char *want = "hv-stimer";
+    while (*want) { if (*s++ != *want++) return 0; }
+    return *s == '\0';
+}
+
+static long hvst_init_no_hyperv(void) {
+    if (hyperv_detect()) return 0;
+    hyperv_stimer_init();
+    struct clock_event_device *ce = clock_event_current();
+    while (ce) {
+        if (ce->name && hvst_name_equals(ce->name)) return -1;
+        ce = ce->next;
+    }
+    return 0;
+}
+
+static long hvst_config_build(void) {
+    uint64_t direct = hyperv_stimer_build_config_direct(HVST_TEST_VECTOR, 0);
+    if (!(direct & HV_STIMER_CONFIG_ENABLE))       return -1;
+    if (!(direct & HV_STIMER_CONFIG_DIRECT_MODE))  return -2;
+    if (direct & HV_STIMER_CONFIG_PERIODIC)        return -3;
+    uint64_t vec = (direct & HV_STIMER_CONFIG_VECTOR_MASK)
+                   >> HV_STIMER_CONFIG_VECTOR_SHIFT;
+    if (vec != HVST_TEST_VECTOR)                   return -4;
+
+    uint64_t direct_per = hyperv_stimer_build_config_direct(HVST_TEST_VECTOR, 1);
+    if (!(direct_per & HV_STIMER_CONFIG_PERIODIC)) return -5;
+
+    uint64_t synic = hyperv_stimer_build_config_synic(HVST_TEST_SINT, 0);
+    if (!(synic & HV_STIMER_CONFIG_ENABLE))        return -6;
+    if (synic & HV_STIMER_CONFIG_DIRECT_MODE)      return -7;
+    uint64_t sintx = (synic & HV_STIMER_CONFIG_SINTX_MASK)
+                     >> HV_STIMER_CONFIG_SINTX_SHIFT;
+    if (sintx != HVST_TEST_SINT)                   return -8;
+
+    return 0;
+}
+
+static long hvst_deadline_convert(void) {
+    uint64_t want = HVST_TEST_NOW_TICKS + HVST_TEST_DELTA_TICKS;
+    uint64_t got  = hyperv_stimer_compute_deadline(HVST_TEST_NOW_TICKS,
+                                                   HVST_TEST_DELTA_NS);
+    if (got != want) return -1;
+
+    /* delta == 0 / past deadline must clamp to now + MIN_DELTA. */
+    uint64_t clamped = hyperv_stimer_compute_deadline(HVST_TEST_NOW_TICKS,
+                                                      HVST_SUB_PAST);
+    if (clamped != HVST_TEST_NOW_TICKS + HV_STIMER_MIN_DELTA_TICKS) return -2;
+
+    /* delta below min still clamps. */
+    uint64_t tiny = hyperv_stimer_compute_deadline(HVST_TEST_NOW_TICKS,
+                                                   HV_STIMER_TICK_NS);
+    if (tiny != HVST_TEST_NOW_TICKS + HV_STIMER_MIN_DELTA_TICKS) return -3;
+
+    return 0;
+}
+
+static long hvst_register_present(void) {
+    if (!hyperv_stimer_available()) return 0;
+    struct clock_event_device *ce = clock_event_current();
+    while (ce) {
+        if (ce->name && hvst_name_equals(ce->name)) {
+            if (ce->rating != CLOCKSOURCE_RATING_HYPERV_TSC) return -2;
+            if (!(ce->features & CLOCK_EVT_FEAT_ONESHOT))    return -3;
+            if (!ce->set_next_event)                         return -4;
+            if (!ce->shutdown)                               return -5;
+            return 0;
+        }
+        ce = ce->next;
+    }
+    return -1;
+}
+
+static long hvst_shutdown_idempotent(void) {
+    if (!hyperv_stimer_available()) return 0;
+    struct clock_event_device *ce = clock_event_current();
+    while (ce) {
+        if (ce->name && hvst_name_equals(ce->name)) {
+            if (ce->shutdown() != 0) return -1;
+            if (ce->shutdown() != 0) return -2;
+            return 0;
+        }
+        ce = ce->next;
+    }
+    return -3;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -851,6 +951,11 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 61: return kvmcs_register_present();
     case 62: return kvmcs_seqlock_retry();
     case 63: return kvmcs_monotonic();
+    case 70: return hvst_init_no_hyperv();
+    case 71: return hvst_config_build();
+    case 72: return hvst_deadline_convert();
+    case 73: return hvst_register_present();
+    case 74: return hvst_shutdown_idempotent();
     default: return -EINVAL;
     }
 }
