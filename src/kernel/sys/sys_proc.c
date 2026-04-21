@@ -105,6 +105,12 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         }
     }
 
+    /* Shared VMA pages belong to the page cache — clear PTEs (and write back
+     * dirty file-backed data) so free_address_space doesn't drop the last ref
+     * before cached pages survive for future mmap(MAP_SHARED) lookups. */
+    extern void unmap_shared_vmas(vma_t *node, uint64_t *pml4);
+    unmap_shared_vmas(p->vma_root, p->pml4);
+
     /* Free address space and VMAs — zombie doesn't need them */
     free_address_space(p->pml4);
     p->pml4 = 0;

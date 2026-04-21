@@ -258,6 +258,8 @@ struct vfs_node *node_alloc(const char *name, int type) {
 
 /* Destroy inode: free data pages + return to slab */
 void inode_destroy(struct vfs_inode *ino) {
+    extern void page_cache_invalidate_ino(uint64_t ino);
+    page_cache_invalidate_ino(ino->ino);
     if (ino->data && ino->capacity > 0) {
         int npages = (int)((ino->capacity + 4095) / 4096);
         if (npages > 0) pages_free(ino->data, npages);

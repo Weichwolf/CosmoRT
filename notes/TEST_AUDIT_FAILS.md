@@ -1,15 +1,15 @@
 # Test-Audit — Aufgedeckte Bugs
 
 Session fuer Pool-Migrations-Audit. Baseline `2429/0`, nach Test-Audit
-`2502/3`. +73 passes, +3 neue fails in neuen Tests.
+`2502/3`. +73 passes, +3 neue fails in neuen Tests. Nach Fixes `2505/0`.
 
 ## Übersicht
 
-| # | Test                                   | Klasse | Fail-Typ                   | Vermutung                                                 |
-|---|----------------------------------------|--------|----------------------------|-----------------------------------------------------------|
-| 1 | `event/flood_epoll`                    | A      | `epoll_ctl ADD` ab 65. fd scheitert | epoll hat statisches Pool-Limit 64 pro Instance    |
-| 2 | `event/flood_epoll`                    | A      | `epoll_wait` liefert nur 64 ready   | Folgefehler von #1 — nur 64 Einträge registriert   |
-| 3 | `stress/shared_mmap`                   | C      | Parent sieht 0 statt 0xCAFEF00D     | Zwei unabhängige mmap(MAP_SHARED, gleiche Datei) teilen keinen Page-Cache |
+| # | Test                                   | Klasse | Fail-Typ                   | Status |
+|---|----------------------------------------|--------|----------------------------|--------|
+| 1 | `event/flood_epoll`                    | A      | `epoll_ctl ADD` ab 65. fd scheitert | FIXED (Watch-Slab, commit 09f07ce) |
+| 2 | `event/flood_epoll`                    | A      | `epoll_wait` liefert nur 64 ready   | FIXED (Folge #1) |
+| 3 | `stress/shared_mmap`                   | C      | Parent sieht 0 statt 0xCAFEF00D     | FIXED (Page-Cache owns refs) |
 
 ## Fail-Details
 

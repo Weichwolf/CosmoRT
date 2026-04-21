@@ -5,6 +5,8 @@
 
 #include "mm/page_cache.h"
 #include "mm/slab.h"
+#include "mm/page_alloc.h"
+#include "config.h"
 #include "spinlock.h"
 
 #define PC_HASH_SIZE 1024  /* must be power of 2 */
@@ -55,6 +57,9 @@ void page_cache_insert(uint64_t ino, uint64_t offset, uint64_t phys) {
     e->offset = offset;
     e->phys = phys;
 
+    /* Cache owns a reference so the page survives when all PTEs are gone */
+    page_incref(phys);
+
     uint64_t irqf;
     spin_lock_irq(&pc_lock, &irqf);
     uint32_t idx = pc_hash_fn(ino, offset);
@@ -72,8 +77,10 @@ void page_cache_remove(uint64_t ino, uint64_t offset) {
         pc_entry_t *e = *pp;
         if (e->ino == ino && e->offset == offset) {
             *pp = e->next;
+            uint64_t phys = e->phys;
             spin_unlock_irq(&pc_lock, irqf);
             slab_free(&pc_slab, e);
+            page_free(phys_to_virt(phys));
             return;
         }
         pp = &e->next;
@@ -83,6 +90,8 @@ void page_cache_remove(uint64_t ino, uint64_t offset) {
 
 void page_cache_invalidate_ino(uint64_t ino) {
     if (!pc_slab_ready) return;
+    /* Collect victims under lock, release refs outside to avoid reentrancy */
+    pc_entry_t *victims = 0;
     uint64_t irqf;
     spin_lock_irq(&pc_lock, &irqf);
     for (uint32_t i = 0; i < PC_HASH_SIZE; i++) {
@@ -91,31 +100,20 @@ void page_cache_invalidate_ino(uint64_t ino) {
             pc_entry_t *e = *pp;
             if (e->ino == ino) {
                 *pp = e->next;
-                slab_free(&pc_slab, e);
+                e->next = victims;
+                victims = e;
             } else {
                 pp = &e->next;
             }
         }
     }
     spin_unlock_irq(&pc_lock, irqf);
+    while (victims) {
+        pc_entry_t *e = victims;
+        victims = e->next;
+        uint64_t phys = e->phys;
+        slab_free(&pc_slab, e);
+        page_free(phys_to_virt(phys));
+    }
 }
 
-void page_cache_evict(uint64_t phys) {
-    if (!pc_slab_ready) return;
-    uint64_t irqf;
-    spin_lock_irq(&pc_lock, &irqf);
-    for (uint32_t i = 0; i < PC_HASH_SIZE; i++) {
-        pc_entry_t **pp = &pc_hash[i];
-        while (*pp) {
-            pc_entry_t *e = *pp;
-            if (e->phys == phys) {
-                *pp = e->next;
-                spin_unlock_irq(&pc_lock, irqf);
-                slab_free(&pc_slab, e);
-                return; /* one phys → one entry */
-            }
-            pp = &e->next;
-        }
-    }
-    spin_unlock_irq(&pc_lock, irqf);
-}
