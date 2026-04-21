@@ -155,8 +155,48 @@ void check_alarm_timers(void) {
 
 static struct tick_callback alarm_cb;
 
+/* RLIMIT_CPU enforcement — tick-granularity CPU accounting.
+ * Timer fires at 1000Hz, so one tick ≈ 1ms of wall time. We charge the tick
+ * to the currently-running non-idle thread on this CPU (single-core).
+ * When accumulated CPU-seconds crosses a threshold:
+ *   soft limit reached         → SIGXCPU once per second
+ *   hard limit reached         → SIGKILL
+ * Linux: both are subject to sig_actions (SIGXCPU default = terminate+core). */
+#define TICKS_PER_SECOND 1000
+static struct tick_callback cpu_limit_cb;
+
+/* Runs in timer-IRQ context. Charges the current thread's tick to its process
+ * and sets signal-pending bits when RLIMIT_CPU is exceeded. Does NOT invoke
+ * kill_one() directly because that can call do_exit_group() for current — not
+ * safe in IRQ context. Delivery happens on syscall-return / preempt path. */
+static void check_cpu_limits(void) {
+    percpu_t *cpu = percpu_self();
+    thread_t *t = cpu ? cpu->current_thread : 0;
+    if (!t || !t->proc) return;
+    process_t *p = t->proc;
+    if (p->state != PROC_ALIVE) return;
+
+    uint64_t ticks = ++p->cpu_time_ticks;
+    unsigned long soft = p->rlim_cpu_soft;
+    unsigned long hard = p->rlim_cpu_hard;
+    if (!soft && !hard) return;
+
+    uint64_t secs = ticks / TICKS_PER_SECOND;
+
+    if (hard && secs >= hard) {
+        /* SIGKILL cannot be blocked/ignored — delivery happens on return. */
+        p->sig_pending |= SIG_BIT(SIGKILL);
+        return;
+    }
+    if (soft && secs >= soft && secs > p->xcpu_last_sec) {
+        p->xcpu_last_sec = secs;
+        p->sig_pending |= SIG_BIT(SIGXCPU);
+    }
+}
+
 void alarm_init(void) {
     tick_register(&alarm_cb, check_alarm_timers, TICK_EVERY);
+    tick_register(&cpu_limit_cb, check_cpu_limits, TICK_EVERY);
 }
 
 /* Check and deliver signals in the SYSCALL return path.

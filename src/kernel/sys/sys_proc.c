@@ -467,8 +467,11 @@ struct k_rlimit {
     unsigned long rlim_max;
 };
 
+#define RLIMIT_CPU     0
+#define RLIMIT_FSIZE   1
 #define RLIMIT_DATA    2
 #define RLIMIT_STACK   3
+#define RLIMIT_NPROC   6
 #define RLIMIT_NOFILE  7
 #define RLIMIT_AS      9
 #define RLIM_INFINITY  (~0UL)
@@ -503,6 +506,16 @@ long do_prlimit64(int pid, int resource,
             /* 0 or RLIM_INFINITY = unlimited (Linux default) */
             p->rlim_data = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
         }
+        if (resource == RLIMIT_NPROC && p) {
+            p->rlim_nproc = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
+        }
+        if (resource == RLIMIT_FSIZE && p) {
+            p->rlim_fsize = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
+        }
+        if (resource == RLIMIT_CPU && p) {
+            p->rlim_cpu_soft = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
+            p->rlim_cpu_hard = (knew.rlim_max == RLIM_INFINITY) ? 0 : knew.rlim_max;
+        }
     }
 
     if (old_rlim) {
@@ -523,6 +536,18 @@ long do_prlimit64(int pid, int resource,
         case RLIMIT_AS:
             krl.rlim_cur = RLIM_INFINITY;
             krl.rlim_max = RLIM_INFINITY;
+            break;
+        case RLIMIT_NPROC:
+            krl.rlim_cur = (p && p->rlim_nproc) ? p->rlim_nproc : RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
+        case RLIMIT_FSIZE:
+            krl.rlim_cur = (p && p->rlim_fsize) ? p->rlim_fsize : RLIM_INFINITY;
+            krl.rlim_max = RLIM_INFINITY;
+            break;
+        case RLIMIT_CPU:
+            krl.rlim_cur = (p && p->rlim_cpu_soft) ? p->rlim_cpu_soft : RLIM_INFINITY;
+            krl.rlim_max = (p && p->rlim_cpu_hard) ? p->rlim_cpu_hard : RLIM_INFINITY;
             break;
         default:
             krl.rlim_cur = RLIM_INFINITY;

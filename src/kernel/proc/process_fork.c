@@ -207,6 +207,11 @@ long kernel_clone(unsigned long flags, void *child_stack,
     if (is_thread) {
         child = parent;
     } else {
+        /* RLIMIT_NPROC enforcement — single-user: per-process cap applies globally.
+         * EAGAIN is the Linux errno for exceeding this limit. */
+        if (parent->rlim_nproc &&
+            (unsigned long)proc_count_alive() >= parent->rlim_nproc)
+            return -EAGAIN;
         child = proc_alloc();
         if (!child) return -ENOMEM;
         child->parent_pid = parent->pid;
@@ -248,8 +253,13 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->brk_current = parent->brk_current;
         child->mmap_next = parent->mmap_next;
         child->mlockall_flags = parent->mlockall_flags;
+        child->rlim_nofile = parent->rlim_nofile;
         child->rlim_stack = parent->rlim_stack;
         child->rlim_data = parent->rlim_data;
+        child->rlim_nproc = parent->rlim_nproc;
+        child->rlim_fsize = parent->rlim_fsize;
+        child->rlim_cpu_soft = parent->rlim_cpu_soft;
+        child->rlim_cpu_hard = parent->rlim_cpu_hard;
         child->umask_val = parent->umask_val;
         child->stack_top = parent->stack_top;
         child->is_driver = 0;

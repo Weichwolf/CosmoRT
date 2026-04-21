@@ -6,6 +6,7 @@
 
 #include "fs/vfs_internal.h"
 #include "core/timer.h"
+#include "linux/signal.h"
 
 /* ── Stat helpers (used by tmpfs + ext4_vfs) ────── */
 
@@ -203,8 +204,25 @@ int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
 
 /* ── truncate — dispatch via mount table / f_ops ── */
 
+/* RLIMIT_FSIZE enforcement for truncate/ftruncate: Linux returns -EFBIG and
+ * sends SIGXFSZ when length exceeds the limit. */
+static int fsize_check_truncate(int64_t length) {
+    process_t *p = proc_current();
+    if (!p) return 0;
+    unsigned long lim = p->rlim_fsize;
+    if (!lim) return 0;
+    if ((uint64_t)length > lim) {
+        extern long kill_one(process_t *target, int sig);
+        kill_one(p, SIGXFSZ);
+        return -EFBIG;
+    }
+    return 0;
+}
+
 int vfs_truncate(const char *path, int64_t length) {
     if (length < 0) return -EINVAL;
+    int r = fsize_check_truncate(length);
+    if (r) return r;
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (mnt && mnt->i_ops && mnt->i_ops->truncate)
@@ -214,6 +232,8 @@ int vfs_truncate(const char *path, int64_t length) {
 
 int vfs_ftruncate(int fd, int64_t length) {
     if (length < 0) return -EINVAL;
+    int r = fsize_check_truncate(length);
+    if (r) return r;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);

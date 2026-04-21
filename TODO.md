@@ -24,8 +24,10 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 - [x] `PID_TABLE_MAX=4096` + `TID_TABLE_MAX=4096` → dynamisches Pointer-Array. Initial 256 Slots (1 Page), Verdopplung via `pages_alloc` unter `pid_lock` wenn Tabelle voll ist. Obergrenze `PID_MAX_CEILING = 1<<22` (Linux-kompatibel, `/proc/sys/kernel/pid_max` Default). `pid_table_capacity()` / `tid_table_capacity()` als Iterations-API für Caller statt ehemaliger Compile-Zeit-Konstante. `alloc_next_id()` kapselt monotoner Wrap + Grow-on-Miss; Hot-Path `proc_find`/`thread_find_by_tid` bleibt O(1).
 - [x] `EXECVE_MAX_*` → Linux-konform. `EXECVE_MAX_ARGS/ENVS` 256→4096, `EXECVE_MAX_STRLEN` 4K→128K (Linux MAX_ARG_STRLEN = 32*PAGE_SIZE). Alle Pointer-Arrays (`kargv_ptrs/kenvp_ptrs/new_argv` in `do_execve`, `argv_addrs/envp_addrs` in `build_user_stack`) via `pages_alloc` heap-alloziert — bei 4096 Slots wäre jedes 32KB und würde den 16KB-Kernel-Stack sprengen. Silent-Truncation eliminiert: Overflow (argc ≥ MAX, buf voll, String > MAX_STRLEN) gibt strict `-E2BIG`; Alloc-Fehler gibt `-ENOMEM`; user-pointer-Failure gibt `-EFAULT`. Cleanup auf allen 4 Fehlerpfaden + Erfolgspfad. `_Static_assert` auf Pool-Größen + buddy-Cap. EXECVE_BUF_SIZE (128KB) unverändert = Alpine ARG_MAX = total envelope argv+envp.
 
+**Erledigt (Forts.):**
+- [x] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` verdrahtet. NPROC: Check in `kernel_clone` via `proc_count_alive()`, `-EAGAIN` bei Überschreitung. FSIZE: Check in `vfs_write`/`vfs_pwrite`/`vfs_truncate`/`vfs_ftruncate`; Partial-Write klemmt `count` auf `limit - offset`, bei `offset >= limit` -EFBIG + SIGXFSZ. O_APPEND: effektiver Offset = aktuelle Dateigröße. CPU: Tick-Callback bei 1000Hz, akkumuliert `p->cpu_time_ticks`; bei Soft-Limit SIGXCPU (1×/sec), Hard-Limit SIGKILL — beides via `sig_pending`-Bit (delivery auf Syscall-Return, nicht in IRQ-Kontext). Fork erbt jetzt auch `rlim_nofile` (war latent nicht kopiert). Defaults: alle `RLIM_INFINITY` (0 = unlimited, Linux-kompatibel).
+
 **Offen:**
-- [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
 - [ ] FD-Tabelle echte dynamische Expansion (Linux 32→64→∞). Heute fix 1024 mit RLIMIT_NOFILE, ausreichend für Single-User.
 
 ---

@@ -94,6 +94,16 @@ typedef struct process {
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
     unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
     unsigned long rlim_data;     /* RLIMIT_DATA cur (0 = unlimited, like Linux) */
+    unsigned long rlim_nproc;    /* RLIMIT_NPROC cur (0 = unlimited) */
+    unsigned long rlim_fsize;    /* RLIMIT_FSIZE cur (0 = unlimited) */
+    unsigned long rlim_cpu_soft; /* RLIMIT_CPU cur seconds (0 = unlimited) */
+    unsigned long rlim_cpu_hard; /* RLIMIT_CPU max seconds (0 = unlimited) */
+
+    /* CPU accounting (updated by scheduler tick preemption).
+     * cpu_time_ticks: accumulated ticks (1 tick = PERIODIC_TICKS_NS).
+     * xcpu_last_sec: last second SIGXCPU was sent (for 1/sec rate on soft limit). */
+    uint64_t    cpu_time_ticks;
+    uint64_t    xcpu_last_sec;
 
     /* Signal to parent on exit (clone exit_signal, 0 = none → fallback SIGCHLD) */
     int         notify_signal;
