@@ -132,6 +132,8 @@ void kernel_main(struct boot_info *info) {
     /* Interrupts + Timer */
     irq_init();
     timer_init();
+    extern void hpet_init(void);
+    hpet_init();
     rtc_init();
     extern void timer_wheel_init(void);
     timer_wheel_init();

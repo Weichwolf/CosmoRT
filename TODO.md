@@ -44,7 +44,7 @@ Priorität nach Aufwand × ROI (bindende Reihenfolge):
 
 - [x] **7.7.1** `struct clocksource`/`clock_event_device` Core (`src/kernel/core/clocksource.{c,h}`). TSC als einzige clocksource rating 300, `hal_timer_now_ns` → `clocksource_read_ns()`. 2505/0.
 - [x] **7.7.2** ACPI Table-Parser (`src/kernel/hw/acpi.{c,h}`). RSDP aus `boot_info.rsdp_addr` → XSDT/RSDT-Walk → `acpi_find_table()`. FADT/HPET/MADT-Layout + MADT-Counts. 11 neue Tests (subcases 20-30). 2526/0.
-- [ ] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`) — clocksource rating 250 + clock_event pro Comparator. Eliminiert 10ms PIT-Kalibration. ~300 LOC, 1.5d.
+- [x] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`). clocksource rating 250, 64-bit Main Counter, period aus GCAP. QEMU q35: 10ns period / 100MHz / 64bit. clock_event / PIT-Kalib-Ersatz nach 7.7.9. 5 neue Tests (subcases 40-44). 2531/0.
 - [ ] **7.7.4** Hyper-V TSC-Page als clocksource (`src/arch/x86_64/hw/hyperv_clocksource.c`) — trivialer Wrapper um bestehenden `hyperv_tsc_time_ns`, rating 400. Fix für latenten Bug unter Hyper-V/WSL2. ~60 LOC, 0.3d.
 - [ ] **7.7.5** KVM pvclock (`src/arch/x86_64/hw/kvmclock.c`) — `wall_clock` + `system_time` MSRs, TSC-Scale vom Host. rating 400. Läuft unter `make qemu-*`. ~200 LOC, 1d.
 - [ ] **7.7.6** Hyper-V STimer (`src/arch/x86_64/hw/hyperv_stimer.c`) — 4 synthetic timer pro vCPU, SynIC-Interrupts, hypercall-basiert. clock_event rating 400. ~400 LOC, 2d.

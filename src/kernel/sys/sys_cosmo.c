@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "core/clocksource.h"
 #include "hw/acpi.h"
+#include "arch/hpet.h"
 #include "config.h"
 #include "memops.h"
 
@@ -539,6 +540,117 @@ static long at_checksum_helper(void) {
     return 0;
 }
 
+/* ── HPET selftests (subcases 40-44) ─────────────────
+ * Uses hpet_override_base_for_test() to redirect MMIO access to a kernel
+ * BSS buffer shaped as an HPET register file. No real HPET required. */
+
+#define HPET_TEST_PERIOD_FS  69841279u           /* typical QEMU 14.318 MHz */
+#define HPET_TEST_BUF_WORDS  64                  /* 512 bytes — covers up to timer 4 */
+
+static uint64_t hpet_test_mmio[HPET_TEST_BUF_WORDS] __attribute__((aligned(16)));
+
+static void hpet_test_reset_buf(uint32_t period_fs, int num_comparators,
+                                int is_64bit) {
+    for (int i = 0; i < HPET_TEST_BUF_WORDS; i++) hpet_test_mmio[i] = 0;
+    uint64_t caps =
+        ((uint64_t)period_fs << HPET_GCAP_PERIOD_SHIFT) |
+        ((uint64_t)((num_comparators - 1) & HPET_GCAP_NUM_TIM_MASK)
+             << HPET_GCAP_NUM_TIM_SHIFT) |
+        (is_64bit ? HPET_GCAP_COUNT_SIZE : 0);
+    hpet_test_mmio[HPET_REG_GCAP_ID / 8] = caps;
+}
+
+static inline uint64_t *hpet_test_reg(uint32_t off) {
+    return &hpet_test_mmio[off / 8];
+}
+
+static long ht_period_to_freq(void) {
+    hpet_test_reset_buf(HPET_TEST_PERIOD_FS, 3, 1);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)hpet_test_mmio,
+                                HPET_TEST_PERIOD_FS, 1, 3);
+    long rc = 0;
+    uint64_t expected_hz = HPET_FEMTO_PER_SEC / (uint64_t)HPET_TEST_PERIOD_FS;
+    if (hpet_frequency_hz() != expected_hz) rc = -1;
+    else if (hpet_period_fs() != HPET_TEST_PERIOD_FS) rc = -2;
+    else if (!hpet_counter_is_64bit()) rc = -3;
+    else if (hpet_num_comparators() != 3) rc = -4;
+    hpet_clear_override_for_test();
+    return rc;
+}
+
+static long ht_read_counter(void) {
+    hpet_test_reset_buf(HPET_TEST_PERIOD_FS, 1, 1);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)hpet_test_mmio,
+                                HPET_TEST_PERIOD_FS, 1, 1);
+    *hpet_test_reg(HPET_REG_MAIN_CNT) = 0x1122334455667788ULL;
+    long rc = (hpet_read() == 0x1122334455667788ULL) ? 0 : -1;
+    *hpet_test_reg(HPET_REG_MAIN_CNT) = 0x00000000aabbccddULL;
+    if (!rc && hpet_read() != 0x00000000aabbccddULL) rc = -2;
+    hpet_clear_override_for_test();
+    return rc;
+}
+
+static long ht_clocksource_mask(void) {
+    hpet_test_reset_buf(HPET_TEST_PERIOD_FS, 1, 1);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)hpet_test_mmio,
+                                HPET_TEST_PERIOD_FS, 1, 1);
+    long rc = 0;
+    if (hpet_period_fs() != HPET_TEST_PERIOD_FS) rc = -1;
+    else if (!hpet_counter_is_64bit()) rc = -2;
+    hpet_clear_override_for_test();
+
+    hpet_test_reset_buf(HPET_TEST_PERIOD_FS, 1, 0);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)hpet_test_mmio,
+                                HPET_TEST_PERIOD_FS, 0, 1);
+    if (!rc && hpet_counter_is_64bit()) rc = -3;
+    hpet_clear_override_for_test();
+    return rc;
+}
+
+static long ht_mult_shift_sanity(void) {
+    hpet_test_reset_buf(HPET_TEST_PERIOD_FS, 1, 1);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)hpet_test_mmio,
+                                HPET_TEST_PERIOD_FS, 1, 1);
+    uint64_t hz = hpet_frequency_hz();
+    uint32_t mult = 0, shift = 0;
+    clocksource_calc_mult_shift(&mult, &shift, hz, CS_TEST_NS_PER_SEC, 600);
+    long rc = 0;
+    if (shift == 0 || mult == 0) rc = -1;
+    else {
+        uint64_t ns = (hz * mult) >> shift;
+        if (!cst_within_ppm(ns, CS_TEST_NS_PER_SEC, CS_TEST_TOLERANCE_PPM))
+            rc = -2;
+    }
+    hpet_clear_override_for_test();
+    return rc;
+}
+
+static long ht_boot_probe(void) {
+    /* On hosts exposing HPET via ACPI, hpet_init registered our clocksource
+     * during boot. On hosts without HPET, the driver stays inert — in that
+     * case the probe is a no-op success. */
+    if (!hpet_available()) return 0;
+    if (hpet_period_fs() < HPET_PERIOD_MIN_FS) return -1;
+    if (hpet_period_fs() > HPET_PERIOD_MAX_FS) return -2;
+    if (hpet_frequency_hz() == 0) return -3;
+    if (hpet_num_comparators() < 1) return -4;
+
+    struct clocksource *cs = clocksource_current();
+    int found = 0;
+    while (cs) {
+        if (cs->name && cs->name[0] == 'h' && cs->name[1] == 'p'
+            && cs->name[2] == 'e' && cs->name[3] == 't') { found = 1; break; }
+        cs = cs->next;
+    }
+    if (!found) return -5;
+
+    uint64_t a = hpet_read();
+    for (volatile int i = 0; i < 1000; i++) { __asm__ volatile(""); }
+    uint64_t b = hpet_read();
+    if (hpet_counter_is_64bit() && b < a) return -6;
+    return 0;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -576,6 +688,11 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 28: return at_corrupt_sdt();
     case 29: return at_duplicate_sig();
     case 30: return at_checksum_helper();
+    case 40: return ht_period_to_freq();
+    case 41: return ht_read_counter();
+    case 42: return ht_clocksource_mask();
+    case 43: return ht_mult_shift_sanity();
+    case 44: return ht_boot_probe();
     default: return -EINVAL;
     }
 }
