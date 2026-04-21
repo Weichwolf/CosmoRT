@@ -190,6 +190,36 @@ int hrtimer_cancel(hrtimer_t *t) {
     return was_active;
 }
 
+/* Drop every enqueued timer whose data pointer matches. Needed when a thread
+ * dies while blocked: its stack-allocated hrtimer_t would otherwise stay in
+ * the tree pointing into freed kstack memory.
+ * Restart-from-leftmost after each removal — rb_next() is invalidated by
+ * dequeue() because the tree shape changes. */
+int hrtimer_cancel_by_data(void *data) {
+    int removed = 0;
+    uint64_t flags;
+    spin_lock_irq(&base.lock, &flags);
+
+    for (;;) {
+        rb_node_t *n = base.tree.leftmost;
+        hrtimer_t *hit = 0;
+        while (n) {
+            hrtimer_t *t = rb_entry(n, hrtimer_t, node);
+            if (t->data == data) { hit = t; break; }
+            n = rb_next(n);
+        }
+        if (!hit) break;
+        dequeue(hit);
+        removed++;
+    }
+
+    spin_unlock_irq(&base.lock, flags);
+
+    if (removed)
+        hrtimer_reprogram();
+    return removed;
+}
+
 /* ── IRQ handler: fire expired, reprogram ──────────── */
 
 void hrtimer_run_expired(void) {

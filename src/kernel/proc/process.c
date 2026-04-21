@@ -141,6 +141,8 @@ thread_t *thread_alloc(void) {
 
 void thread_free(thread_t *t) {
     if (!t) return;
+    extern int hrtimer_cancel_by_data(void *);
+    hrtimer_cancel_by_data(t);
     if (t->tid > 0 && t->tid < tid_capacity)
         tid_table[t->tid] = 0;
     event_queue_destroy(&t->eq);

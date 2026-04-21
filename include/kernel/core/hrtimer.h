@@ -47,6 +47,10 @@ void hrtimer_start(hrtimer_t *t, uint64_t deadline_ns);
 /* Cancel a pending timer. No-op if inactive. Returns 1 if was active. */
 int hrtimer_cancel(hrtimer_t *t);
 
+/* Cancel all pending timers whose data pointer matches. Used at thread exit
+ * to drop stack-allocated hrtimers before the kstack is freed. */
+int hrtimer_cancel_by_data(void *data);
+
 /* Current monotonic time in nanoseconds (TSC-based). */
 uint64_t hrtimer_now_ns(void);
 
