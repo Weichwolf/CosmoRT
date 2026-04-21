@@ -25,7 +25,6 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 **Offen:**
 - [ ] `EXT4_OPEN_MAX=256` (`fs/vfs.c:283`) → lineare Suche unter Lock. Hash-Table. Aus 7.4-Audit abgeleitet.
-- [ ] `_Static_assert` auf kritische Slab-Struct-Größen.
 - [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
 - [ ] FD-Tabelle echte dynamische Expansion (Linux 32→64→∞). Heute fix 1024 mit RLIMIT_NOFILE, ausreichend für Single-User.
 
