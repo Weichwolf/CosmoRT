@@ -270,6 +270,25 @@ static int ext4_vfs_chown(struct mount *mnt, const char *relpath,
     return rc;
 }
 
+/* lchown: do not resolve the terminal symlink. Walks to parent then looks
+ * up basename without symlink resolution — mirrors Linux follow_last=0. */
+static int ext4_vfs_lchown(struct mount *mnt, const char *relpath,
+                           uint32_t uid, uint32_t gid) {
+    (void)mnt;
+    const char *basename;
+    int perr = -ENOENT;
+    uint64_t parent_ino64 = ext4_walk_parent_err(relpath, &basename, &perr);
+    uint32_t parent_ino = (uint32_t)parent_ino64;
+    if (parent_ino == 0) return perr;
+    uint32_t ino;
+    if (ext4_dir_lookup(parent_ino, basename, &ino) < 0) return -ENOENT;
+    struct ext4_inode ip;
+    if (ext4_inode_read(ino, &ip) < 0) return -EIO;
+    int rc = ext4_chown_common(ino, &ip, uid, gid);
+    if (rc == 0) inotify_event(relpath, IN_ATTRIB);
+    return rc;
+}
+
 static int ext4_vfs_truncate(struct mount *mnt, const char *relpath, int64_t length) {
     (void)mnt;
     if (length < 0) return -EINVAL;
@@ -551,6 +570,7 @@ struct inode_ops ext4_inode_ops = {
     .link      = ext4_vfs_link,
     .chmod     = ext4_vfs_chmod,
     .chown     = ext4_vfs_chown,
+    .lchown    = ext4_vfs_lchown,
     .truncate  = ext4_vfs_truncate,
     .utimensat = ext4_vfs_utimensat,
 };

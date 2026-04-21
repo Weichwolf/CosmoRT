@@ -250,6 +250,23 @@ static void test_eacces_path(void) {
     credtest_fork(child_eacces_path);
 }
 
+/* ── O_CREAT without MAY_WRITE on parent → EACCES ── */
+
+static void child_creat_eacces(void) {
+    sc2(SYS_MKDIR, (long)"/tmp/credtest_nowdir", 0555); /* r-x r-x r-x */
+    sc2(SYS_SETREUID, (long)-1, NOBODY);
+    long fd = sc3(SYS_OPEN, (long)"/tmp/credtest_nowdir/new",
+                  O_CREAT | O_WRONLY, 0644);
+    check_val("creat EACCES in non-writable dir", fd, -EACCES);
+    sc2(SYS_SETREUID, (long)-1, 0);
+    sc1(SYS_RMDIR, (long)"/tmp/credtest_nowdir");
+}
+
+static void test_creat_eacces(void) {
+    puts("\n[cred/creat_eacces]\n");
+    credtest_fork(child_creat_eacces);
+}
+
 /* ── fork inherits credentials ── */
 
 static void child_fork_inherit(void) {
@@ -283,4 +300,5 @@ TEST("cred/creat_owner",         test_creat_owner);
 TEST("cred/creat_sgid_inherit",  test_creat_sgid_inherit);
 TEST("cred/mkdir_sgid_inherit",  test_mkdir_sgid_inherit);
 TEST("cred/eacces_path",         test_eacces_path);
+TEST("cred/creat_eacces",        test_creat_eacces);
 TEST("cred/fork_inherit",        test_fork_inherit);

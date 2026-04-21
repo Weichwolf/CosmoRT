@@ -615,6 +615,16 @@ not_pts:
             if (ext4_inode_read(parent_ino, &pip) < 0) return -EIO;
             if ((pip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return -ENOTDIR;
 
+            {
+                process_t *pcheck = proc_current();
+                if (pcheck && pcheck->euid != 0) {
+                    int rc = cred_may_access(pcheck, pip.i_uid, pip.i_gid,
+                                             pip.i_mode,
+                                             MAY_WRITE | MAY_EXEC);
+                    if (rc < 0) return rc;
+                }
+            }
+
             process_t *pcur = proc_current();
             uint32_t cmask = pcur ? pcur->umask_val : 0022;
             uint32_t raw = mode ? (mode & 07777) : 0644;
@@ -685,6 +695,18 @@ not_pts:
     if (node && (flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
 
     if (!node && (flags & O_CREAT) && verr == -ENOENT) {
+        /* O_CREAT requires MAY_WRITE on parent directory (non-root). */
+        const char *bn;
+        struct vfs_node *parent = lookup_parent(path, &bn);
+        if (parent && parent->inode) {
+            process_t *pcheck = proc_current();
+            if (pcheck && pcheck->euid != 0) {
+                int rc = cred_may_access(pcheck, parent->inode->uid,
+                                         parent->inode->gid, parent->inode->mode,
+                                         MAY_WRITE | MAY_EXEC);
+                if (rc < 0) return rc;
+            }
+        }
         node = vfs_create(path, VFS_FILE);
         if (!node) return -ENOENT;
         process_t *pcur = proc_current();
