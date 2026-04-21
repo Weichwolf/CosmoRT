@@ -6,7 +6,7 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 | # | Phase | Status | Aufwand | Blocker für |
 |---|-------|--------|---------|-------------|
-| 7.3 Rest | 5 Pools offen | 1 in Arbeit | 1 Tag | — |
+| 7.3 Rest | 0 Pools offen | — | — | — |
 | 8.1 | Audio | neu | langer Neubau | RT-Audio-Identität |
 | 9 | aarch64-Port | neu | mehrere Sessions | Multi-Arch |
 
@@ -14,9 +14,10 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 ## Phase 7.3 — Offene Pools
 
-16 migriert, 1 offen. Einer pro Task-Session.
+17 migriert, 0 offen. Einer pro Task-Session.
 
 **Erledigt (diese Session):**
+- [x] `EXT4_OPEN_MAX=256` (`fs/vfs.c`) → chained Hash-Table. 64 Buckets (power of 2, Mask statt Modulo), Knuth-Multiplikator auf `ino`. Entries slab-dynamic (`ext4_open_slab`, initial 64). `ext4_open_inc` alloziert außerhalb des Locks mit Recheck nach Acquire (Race-Safe). Lookup/Insert/Remove O(1) average. `_Static_assert` auf power-of-2 Hash-Size. Linearer 256-Slot-Scan unter `ext4_open_lock` eliminiert.
 - [x] `EQ_MAX_EVENTS=16` → Ring-Wachstum bei Overflow. Initial 256 Events (1 Page), verdoppelt bei Bedarf via `pages_alloc` unter `eq_lock`. Events lossless (kein Overwrite mehr), bei OOM Fallback auf alten Overwrite-Pfad. `event_queue_init/destroy` aus `thread_alloc/free` + exec-Reset via `event_queue_reset`. Keine Header-Inline-Änderung am Fast-Path (eq_pop/eq_push weiter inline, Feld-basiert statt Makro-Mask).
 - [x] `PTY_MAX=12` → dynamischer Slab + linked list. `pty_alloc()` liefert auto-increment ID, `pty_get(int id)` macht Linear-Search durch Liste. `/dev/pts/N`-Namespace via neue Konstante `PTY_DEV_ID_MAX=256` begrenzt (nicht Pool-Grenze, nur valide ID-Range).
 - [x] `EQ_LOCK_MAX=512` → `spinlock_t eq_lock` in `thread_t` (ans Ende der Struct, keine ABI-Offset-Shifts). TID-Hash-Array entfernt. Lock lebt mit dem Thread, Init via `kmemset` in `thread_alloc`. thread_t-Größe unverändert 3136 (Padding absorbiert).
@@ -24,7 +25,6 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 - [x] `EXECVE_MAX_*` → Linux-konform. `EXECVE_MAX_ARGS/ENVS` 256→4096, `EXECVE_MAX_STRLEN` 4K→128K (Linux MAX_ARG_STRLEN = 32*PAGE_SIZE). Alle Pointer-Arrays (`kargv_ptrs/kenvp_ptrs/new_argv` in `do_execve`, `argv_addrs/envp_addrs` in `build_user_stack`) via `pages_alloc` heap-alloziert — bei 4096 Slots wäre jedes 32KB und würde den 16KB-Kernel-Stack sprengen. Silent-Truncation eliminiert: Overflow (argc ≥ MAX, buf voll, String > MAX_STRLEN) gibt strict `-E2BIG`; Alloc-Fehler gibt `-ENOMEM`; user-pointer-Failure gibt `-EFAULT`. Cleanup auf allen 4 Fehlerpfaden + Erfolgspfad. `_Static_assert` auf Pool-Größen + buddy-Cap. EXECVE_BUF_SIZE (128KB) unverändert = Alpine ARG_MAX = total envelope argv+envp.
 
 **Offen:**
-- [ ] `EXT4_OPEN_MAX=256` (`fs/vfs.c:283`) → lineare Suche unter Lock. Hash-Table. Aus 7.4-Audit abgeleitet.
 - [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
 - [ ] FD-Tabelle echte dynamische Expansion (Linux 32→64→∞). Heute fix 1024 mit RLIMIT_NOFILE, ausreichend für Single-User.
 

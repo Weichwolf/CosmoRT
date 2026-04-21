@@ -279,53 +279,101 @@ void node_destroy(struct vfs_node *node) {
 
 /* ── ext4 open inode tracking ────────────────────── */
 
-#define EXT4_OPEN_MAX 256
-static struct { uint32_t ino; int count; } ext4_open_tab[EXT4_OPEN_MAX];
+#define EXT4_OPEN_HASH_SIZE 64
+_Static_assert((EXT4_OPEN_HASH_SIZE & (EXT4_OPEN_HASH_SIZE - 1)) == 0,
+               "EXT4_OPEN_HASH_SIZE must be power of 2");
+
+typedef struct ext4_open_entry {
+    uint32_t ino;
+    int count;
+    struct ext4_open_entry *next;
+} ext4_open_entry_t;
+
+static ext4_open_entry_t *ext4_open_hash[EXT4_OPEN_HASH_SIZE];
 static spinlock_t ext4_open_lock = SPINLOCK_INIT;
+static slab_t ext4_open_slab;
+static int ext4_open_slab_ready;
+
+static inline uint32_t ext4_open_hash_fn(uint32_t ino) {
+    return (uint32_t)((ino * 2654435761u) & (EXT4_OPEN_HASH_SIZE - 1));
+}
+
+static void ext4_open_ensure_slab(void) {
+    if (__builtin_expect(ext4_open_slab_ready, 1)) return;
+    slab_init_dynamic(&ext4_open_slab, sizeof(ext4_open_entry_t), 64);
+    ext4_open_slab_ready = 1;
+}
 
 void ext4_open_inc(uint32_t ino) {
+    ext4_open_ensure_slab();
+    uint32_t idx = ext4_open_hash_fn(ino);
+
     uint64_t flags;
     spin_lock_irq(&ext4_open_lock, &flags);
-    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
-        if (ext4_open_tab[i].ino == ino) {
-            ext4_open_tab[i].count++;
-            spin_unlock_irq(&ext4_open_lock, flags);
-            return;
-        }
-    }
-    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
-        if (ext4_open_tab[i].ino == 0) {
-            ext4_open_tab[i].ino = ino;
-            ext4_open_tab[i].count = 1;
+    for (ext4_open_entry_t *e = ext4_open_hash[idx]; e; e = e->next) {
+        if (e->ino == ino) {
+            e->count++;
             spin_unlock_irq(&ext4_open_lock, flags);
             return;
         }
     }
     spin_unlock_irq(&ext4_open_lock, flags);
+
+    ext4_open_entry_t *ne = slab_alloc(&ext4_open_slab);
+    if (!ne) return;
+    ne->ino = ino;
+    ne->count = 1;
+
+    spin_lock_irq(&ext4_open_lock, &flags);
+    for (ext4_open_entry_t *e = ext4_open_hash[idx]; e; e = e->next) {
+        if (e->ino == ino) {
+            e->count++;
+            spin_unlock_irq(&ext4_open_lock, flags);
+            slab_free(&ext4_open_slab, ne);
+            return;
+        }
+    }
+    ne->next = ext4_open_hash[idx];
+    ext4_open_hash[idx] = ne;
+    spin_unlock_irq(&ext4_open_lock, flags);
 }
 
-/* Returns open count AFTER decrement. Clears slot at 0. */
+/* Returns open count AFTER decrement. Removes entry at 0. */
 int ext4_open_dec(uint32_t ino) {
+    if (!ext4_open_slab_ready) return 0;
+    uint32_t idx = ext4_open_hash_fn(ino);
+
     uint64_t flags;
     spin_lock_irq(&ext4_open_lock, &flags);
-    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
-        if (ext4_open_tab[i].ino == ino) {
-            int n = --ext4_open_tab[i].count;
-            if (n <= 0) ext4_open_tab[i].ino = 0;
+    ext4_open_entry_t **pp = &ext4_open_hash[idx];
+    while (*pp) {
+        ext4_open_entry_t *e = *pp;
+        if (e->ino == ino) {
+            int n = --e->count;
+            if (n <= 0) {
+                *pp = e->next;
+                spin_unlock_irq(&ext4_open_lock, flags);
+                slab_free(&ext4_open_slab, e);
+                return n;
+            }
             spin_unlock_irq(&ext4_open_lock, flags);
             return n;
         }
+        pp = &e->next;
     }
     spin_unlock_irq(&ext4_open_lock, flags);
     return 0;
 }
 
 int ext4_open_count(uint32_t ino) {
+    if (!ext4_open_slab_ready) return 0;
+    uint32_t idx = ext4_open_hash_fn(ino);
+
     uint64_t flags;
     spin_lock_irq(&ext4_open_lock, &flags);
-    for (int i = 0; i < EXT4_OPEN_MAX; i++) {
-        if (ext4_open_tab[i].ino == ino) {
-            int n = ext4_open_tab[i].count;
+    for (ext4_open_entry_t *e = ext4_open_hash[idx]; e; e = e->next) {
+        if (e->ino == ino) {
+            int n = e->count;
             spin_unlock_irq(&ext4_open_lock, flags);
             return n;
         }
