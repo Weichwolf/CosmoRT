@@ -245,6 +245,7 @@ void kernel_main(struct boot_info *info) {
     extern int virtio_net_init(void);
     extern int virtio_gpu_init(void);
     extern int virtio_input_init(void);
+    extern int virtio_rtc_init(void);
 
     if (hyperv_detect()) {
         serial_puts("Hyper-V detected\n");
@@ -261,6 +262,7 @@ void kernel_main(struct boot_info *info) {
             hv_mouse_init();    /* mouse */
             hv_utils_init();    /* heartbeat, shutdown, timesync */
         }
+        virtio_rtc_init();  /* virtio-rtc can coexist with Hyper-V timesync */
     } else {
         /* Kernel NIC drivers. e1000d (Ring 3) available at /bin/e1000d
          * but requires event-based net stack for TCP (future work). */
@@ -268,6 +270,7 @@ void kernel_main(struct boot_info *info) {
         virtio_net_init();
         virtio_gpu_init();   /* 2D framebuffer if found */
         virtio_input_init();
+        virtio_rtc_init();   /* probe only, not registered as clocksource */
     }
 
     /* Virtual Terminal — framebuffer + PTY + keyboard */

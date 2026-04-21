@@ -125,6 +125,7 @@ KERN_DRV  = $(BUILD)/drivers/virtio/virtio.o \
             $(BUILD)/drivers/virtio/virtio_blk.o \
             $(BUILD)/drivers/virtio/virtio_gpu.o \
             $(BUILD)/drivers/virtio/virtio_input.o \
+            $(BUILD)/drivers/virtio/virtio_rtc.o \
             $(BUILD)/drivers/pci/e1000.o \
             $(BUILD)/drivers/hyperv/vmbus.o \
             $(BUILD)/drivers/hyperv/storvsc.o \

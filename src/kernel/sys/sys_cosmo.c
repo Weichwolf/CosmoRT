@@ -1014,6 +1014,76 @@ static long hvst_shutdown_idempotent(void) {
     return -3;
 }
 
+/* ── virtio-rtc probe selftests (subcases 90-93) ─
+ * Probe-only driver (src/drivers/virtio/virtio_rtc.c). Tests verify the
+ * spec-mandated device/request constants, that init() is idempotent, that
+ * the boot probe picked a consistent (available,bus,slot) tuple, and that
+ * the driver stays out of the clocksource chain — the deliberate non-goal
+ * of Phase 7.7.8 (virtqueue-round-trip reads are unfit for the hot path). */
+
+#define VRTC_PCI_DEVICE_ID         0x105Du
+#define VRTC_VIRTIO_DEV_ID         29u
+#define VRTC_REQ_READ              0x0001u
+#define VRTC_REQ_READ_CROSS        0x0002u
+#define VRTC_CLOCK_UTC             0u
+#define VRTC_CLOCK_TAI             1u
+#define VRTC_CLOCK_MONOTONIC       2u
+#define VRTC_NAME_LEN              10
+
+extern int  virtio_rtc_init(void);
+extern int  virtio_rtc_available(void);
+extern void virtio_rtc_location(int *bus_out, int *slot_out);
+
+static int vrtc_name_equals(const char *s) {
+    const char *want = "virtio-rtc";
+    for (int i = 0; i < VRTC_NAME_LEN; i++) {
+        if (s[i] != want[i]) return 0;
+    }
+    return s[VRTC_NAME_LEN] == '\0';
+}
+
+static long vrtc_spec_constants(void) {
+    if (VRTC_PCI_DEVICE_ID != (0x1040u + VRTC_VIRTIO_DEV_ID)) return -1;
+    if (VRTC_REQ_READ == VRTC_REQ_READ_CROSS)                return -2;
+    if (VRTC_CLOCK_UTC == VRTC_CLOCK_MONOTONIC)              return -3;
+    if (VRTC_CLOCK_TAI == VRTC_CLOCK_MONOTONIC)              return -4;
+    return 0;
+}
+
+static long vrtc_probe_idempotent(void) {
+    int r1 = virtio_rtc_init();
+    int r2 = virtio_rtc_init();
+    if (r1 != r2) return -1;
+    int avail1 = virtio_rtc_available();
+    int avail2 = virtio_rtc_available();
+    if (avail1 != avail2)                     return -2;
+    if (avail1 && r1 != 0)                    return -3;
+    if (!avail1 && r1 == 0)                   return -4;
+    return 0;
+}
+
+static long vrtc_location_consistency(void) {
+    int bus = -2, slot = -2;
+    virtio_rtc_location(&bus, &slot);
+    if (virtio_rtc_available()) {
+        if (bus  < 0 || bus  > 255) return -1;
+        if (slot < 0 || slot > 31)  return -2;
+    } else {
+        if (bus  != -1) return -3;
+        if (slot != -1) return -4;
+    }
+    return 0;
+}
+
+static long vrtc_not_in_clocksource_chain(void) {
+    struct clocksource *cs = clocksource_current();
+    while (cs) {
+        if (cs->name && vrtc_name_equals(cs->name)) return -1;
+        cs = cs->next;
+    }
+    return 0;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -1074,6 +1144,10 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 72: return hvst_deadline_convert();
     case 73: return hvst_register_present();
     case 74: return hvst_shutdown_idempotent();
+    case 90: return vrtc_spec_constants();
+    case 91: return vrtc_probe_idempotent();
+    case 92: return vrtc_location_consistency();
+    case 93: return vrtc_not_in_clocksource_chain();
     default: return -EINVAL;
     }
 }
