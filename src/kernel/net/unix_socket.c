@@ -345,6 +345,13 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     client->peer = server;
     server->state = USOCK_CONNECTED;
     client->state = USOCK_CONNECTED;
+    /* Wake connecting thread blocked in usock_connect */
+    if (client->blocked_acceptor) {
+        thread_t *conn_thread = (thread_t *)client->blocked_acceptor;
+        client->blocked_acceptor = 0;
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(conn_thread, 9 /* EQ_SOCKET_CONNECT */, 0);
+    }
 
     process_t *p = proc_current();
     if (!p) { usock_release(server); return -EFAULT; }
@@ -415,6 +422,23 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     /* Wake select/poll waiters too */
     extern void epoll_wake_all(void);
     epoll_wake_all();
+
+    /* Block until accept() completes the handshake (transitions us to
+     * USOCK_CONNECTED). Without this, write() after connect() can race
+     * and see USOCK_CREATED -> SIGPIPE. O_NONBLOCK returns EINPROGRESS. */
+    int cnonblock = (s->flags & 0x800) ? 1 : 0;
+    if (!cnonblock) {
+        thread_t *ct = thread_current();
+        while (s->state != USOCK_CONNECTED) {
+            if (!ct) break;
+            s->blocked_acceptor = ct;
+            if (s->state == USOCK_CONNECTED) { s->blocked_acceptor = 0; break; }
+            event_t ev;
+            int wr = event_wait(&ct->eq, &ev, -1);
+            s->blocked_acceptor = 0;
+            if (wr == -4) return -EINTR;
+        }
+    }
 
     /* Connection completes when accept() dequeues us.
      * For simplicity (no blocking connect), return 0 — client
