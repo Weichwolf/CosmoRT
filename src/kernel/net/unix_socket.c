@@ -15,6 +15,10 @@
 #include "arch/arch.h"
 #include "core/event_queue.h"
 #include "mm/slab.h"
+#include "fs/vfs.h"
+
+#define USOCK_PATH_MAX_RESOLVE 4096
+extern int resolve_path(const char *path, char *out, int outsize);
 
 extern long send_sigpipe(void);
 
@@ -211,6 +215,7 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != USOCK_CREATED) return -EINVAL;
+    if (s->path[0] != '\0') return -EINVAL; /* already bound — no rebind */
 
     struct k_sockaddr_un k_addr;
     int copy_len = addrlen < (int)sizeof(k_addr) ? addrlen : (int)sizeof(k_addr);
@@ -218,27 +223,50 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 
     if (k_addr.sun_family != 1 /* AF_UNIX */) return -EINVAL;
 
-    /* Copy path */
     int path_len = copy_len - 2; /* minus sun_family */
     if (path_len <= 0 || path_len >= 108) return -EINVAL;
-    kmemcpy(s->path, k_addr.sun_path, (size_t)path_len);
-    s->path[path_len] = '\0';
 
-    /* Check for name collision via active list */
+    /* Stage path into local buffer, then commit only after collision check
+     * so a failed bind() leaves s->path untouched (Linux semantics). */
+    char new_path[108];
+    kmemcpy(new_path, k_addr.sun_path, (size_t)path_len);
+    new_path[path_len] = '\0';
+
+    /* Pathname socket (sun_path[0] != 0): verify parent directory is a dir.
+     * Abstract sockets (sun_path[0] == 0) have no filesystem presence. */
+    if (new_path[0] != '\0') {
+        int slash = -1;
+        for (int i = 0; new_path[i]; i++) if (new_path[i] == '/') slash = i;
+        if (slash > 0) {
+            char parent[USOCK_PATH_MAX_RESOLVE];
+            char resolved[USOCK_PATH_MAX_RESOLVE];
+            int i = 0;
+            for (; i < slash && i < USOCK_PATH_MAX_RESOLVE - 1; i++) parent[i] = new_path[i];
+            parent[i] = '\0';
+            if (resolve_path(parent, resolved, USOCK_PATH_MAX_RESOLVE) == 0) {
+                struct k_stat st;
+                int sr = vfs_stat(resolved, &st);
+                if (sr == 0 && (st.st_mode & S_IFMT) != S_IFDIR)
+                    return -ENOTDIR;
+            }
+        }
+    }
+
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
         if (o == s || !o->path[0]) continue;
         int match = 1;
         for (int j = 0; j < 108; j++) {
-            if (o->path[j] != s->path[j]) { match = 0; break; }
-            if (s->path[j] == '\0') break;
+            if (o->path[j] != new_path[j]) { match = 0; break; }
+            if (new_path[j] == '\0') break;
         }
         if (match) {
             spin_unlock_irq(&usock_lock, flags);
             return -EADDRINUSE;
         }
     }
+    kmemcpy(s->path, new_path, 108);
     spin_unlock_irq(&usock_lock, flags);
     return 0;
 }
