@@ -771,6 +771,10 @@ void tcp_input(const uint8_t *pkt, int len) {
         if (ltcp) {
             struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
             if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
+            /* Wake select/poll on listening socket (Linux: listen fd becomes
+             * readable when SYN arrives, before accept() runs). */
+            extern void epoll_wake_all(void);
+            epoll_wake_all();
         }
         return;
     }

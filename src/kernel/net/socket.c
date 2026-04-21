@@ -988,6 +988,31 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
 /* ── SYS_GETSOCKNAME (51) ────────────────────────── */
 
 long do_getsockname(int fd, void *addr, int *addrlen) {
+    process_t *p = proc_current();
+    if (p) {
+        fd_entry_t *fde = fd_get(&p->fds, fd);
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type == FD_UNIX_SOCK) {
+            unix_socket_t *us = (unix_socket_t *)fde->obj;
+            if (!us) return -EBADF;
+            struct k_sockaddr_un ua;
+            for (int i = 0; i < (int)sizeof(ua); i++) ((uint8_t *)&ua)[i] = 0;
+            ua.sun_family = 1; /* AF_UNIX */
+            int plen = 0;
+            for (; plen < 107 && us->path[plen]; plen++)
+                ua.sun_path[plen] = us->path[plen];
+            /* addrlen returned: sun_family (2) + path + NUL */
+            int out_len = 2 + plen + (plen > 0 ? 1 : 0);
+            int user_cap = 0;
+            if (copy_from_user(&user_cap, addrlen, sizeof(int))) return -EFAULT;
+            int copy_len = out_len < user_cap ? out_len : user_cap;
+            if (copy_to_user(addr, &ua, (size_t)copy_len)) return -EFAULT;
+            if (copy_to_user(addrlen, &out_len, sizeof(int))) return -EFAULT;
+            return 0;
+        }
+        if (fde->type != FD_SOCKET) return -ENOTSOCK;
+    }
+
     int err;
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;

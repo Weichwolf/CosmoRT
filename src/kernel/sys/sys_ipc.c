@@ -405,6 +405,12 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
                 if (rxring_used(&s->tcp.rx) > 0 || q_tcp.count > 0)
                     ready |= EPOLLIN;
             }
+            /* Listener readable: pending SYN in q_tcp for our port (Linux:
+             * select/poll wakes on incoming connection before accept()). */
+            if ((interest & EPOLLIN) && s->state == SOCK_LISTENING) {
+                extern pkt_queue_t q_tcp;
+                if (q_tcp.count > 0) ready |= EPOLLIN;
+            }
             if (interest & EPOLLOUT) {
                 if (s->state == SOCK_CONNECTED)
                     ready |= EPOLLOUT;
