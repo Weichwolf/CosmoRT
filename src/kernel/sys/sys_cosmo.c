@@ -7,6 +7,7 @@
 #include "hw/hyperv.h"
 #include "hw/kvmclock.h"
 #include "arch/hpet.h"
+#include "arch/acpi_pm.h"
 #include "config.h"
 #include "memops.h"
 
@@ -653,6 +654,118 @@ static long ht_boot_probe(void) {
     return 0;
 }
 
+/* ── ACPI PM_TMR selftests (subcases 80-84) ──────────
+ * Override-Hook leitet acpi_pm_read auf einen in-BSS uint32_t um. Reale
+ * Port-IO wird in den Tests nie ausgeloest. Subcase 84 (boot probe) ist
+ * bedingt: unter QEMU exponiert der PIIX4-PM/Q35 das Register; ohne
+ * PM_TMR bleibt der Treiber inert und die Pruefung degradiert zu no-op. */
+
+#define APM_TEST_PORT_FAKE    0xdead
+#define APM_TEST_NAME_P0      'a'
+#define APM_TEST_NAME_P1      'c'
+#define APM_TEST_NAME_P2      'p'
+#define APM_TEST_NAME_P3      'i'
+#define APM_TEST_NAME_P4      '_'
+#define APM_TEST_NAME_P5      'p'
+#define APM_TEST_NAME_P6      'm'
+
+static volatile uint32_t apm_test_src;
+
+static int apm_name_equals_acpi_pm(const char *s) {
+    return s && s[0] == APM_TEST_NAME_P0 && s[1] == APM_TEST_NAME_P1
+            && s[2] == APM_TEST_NAME_P2 && s[3] == APM_TEST_NAME_P3
+            && s[4] == APM_TEST_NAME_P4 && s[5] == APM_TEST_NAME_P5
+            && s[6] == APM_TEST_NAME_P6 && s[7] == '\0';
+}
+
+static long apm_missing_fadt(void) {
+    /* FADT entfernen: XSDT nur mit HPET → acpi_pm_init muss no-op bleiben.
+     * apm_registered schuetzt die Boot-Registrierung vor Doppel-Einhaengung
+     * beim abschliessenden acpi_pm_init(). */
+    at_build_sdt(&at_tables[0], ACPI_SIG_HPET, sizeof(struct acpi_sdt_header));
+    at_build_xsdt_with(1);
+    at_build_rsdp(&at_rsdp, ACPI_REV_2, 0, virt_to_phys(&at_xsdt));
+    if (acpi_override_rsdp_for_test(virt_to_phys(&at_rsdp)) != 0) {
+        acpi_restore_from_boot();
+        return -1;
+    }
+
+    acpi_pm_clear_override_for_test();
+    acpi_pm_init();
+    long rc = acpi_pm_available() ? -2 : 0;
+
+    acpi_restore_from_boot();
+    acpi_pm_init();
+    return rc;
+}
+
+static long apm_mask_24_vs_32(void) {
+    apm_test_src = 0x01ABCDEFu;
+    acpi_pm_override_for_test(&apm_test_src, APM_TEST_PORT_FAKE, 0);
+    long rc = 0;
+    if (acpi_pm_is_32bit())               rc = -1;
+    else if (acpi_pm_read() != 0x00ABCDEFu) rc = -2;
+    acpi_pm_clear_override_for_test();
+
+    acpi_pm_override_for_test(&apm_test_src, APM_TEST_PORT_FAKE, 1);
+    if (!rc && !acpi_pm_is_32bit())       rc = -3;
+    if (!rc && acpi_pm_read() != 0x01ABCDEFu) rc = -4;
+    acpi_pm_clear_override_for_test();
+    return rc;
+}
+
+static long apm_mult_shift_sanity(void) {
+    uint32_t mult = 0, shift = 0;
+    clocksource_calc_mult_shift(&mult, &shift, ACPI_PM_FREQ_HZ,
+                                CS_TEST_NS_PER_SEC, ACPI_PM_MAX_SEC_WINDOW);
+    if (shift == 0 || mult == 0) return -1;
+    uint64_t ns = ((uint64_t)ACPI_PM_FREQ_HZ * mult) >> shift;
+    return cst_within_ppm(ns, CS_TEST_NS_PER_SEC, CS_TEST_TOLERANCE_PPM) ? 0 : -2;
+}
+
+static long apm_monotonic(void) {
+    apm_test_src = 0;
+    acpi_pm_override_for_test(&apm_test_src, APM_TEST_PORT_FAKE, 1);
+    long rc = 0;
+    uint32_t prev = acpi_pm_read();
+    for (uint32_t step = 1; step <= 8 && !rc; step++) {
+        apm_test_src = prev + step;
+        uint32_t cur = acpi_pm_read();
+        if (cur < prev) rc = -1;
+        prev = cur;
+    }
+    acpi_pm_clear_override_for_test();
+    return rc;
+}
+
+static long apm_boot_probe(void) {
+    if (!acpi_pm_available()) return 0;
+    if (acpi_pm_port() == 0) return -1;
+
+    struct clocksource *cs = clocksource_current();
+    int found = 0;
+    while (cs) {
+        if (apm_name_equals_acpi_pm(cs->name)) {
+            if (cs->rating != CLOCKSOURCE_RATING_ACPI_PM) return -2;
+            if (cs->mask != (acpi_pm_is_32bit() ? ACPI_PM_MASK_32BIT
+                                                : ACPI_PM_MASK_24BIT))
+                return -3;
+            if (cs->mult == 0 || cs->shift == 0) return -4;
+            found = 1;
+            break;
+        }
+        cs = cs->next;
+    }
+    if (!found) return -5;
+
+    uint32_t a = acpi_pm_read();
+    for (volatile int i = 0; i < 1000; i++) { __asm__ volatile(""); }
+    uint32_t b = acpi_pm_read();
+    uint64_t mask = acpi_pm_is_32bit() ? ACPI_PM_MASK_32BIT : ACPI_PM_MASK_24BIT;
+    if ((uint64_t)a > mask || (uint64_t)b > mask) return -6;
+    return 0;
+}
+
 /* ── Hyper-V TSC clocksource selftests (subcases 50-53) ─
  * Ohne Hyper-V-Enlightenment (QEMU default) liefert hyperv_detect()==0. In
  * dem Fall degradieren Cases 51/52 zu no-op success — das spiegelt die
@@ -951,6 +1064,11 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 61: return kvmcs_register_present();
     case 62: return kvmcs_seqlock_retry();
     case 63: return kvmcs_monotonic();
+    case 80: return apm_missing_fadt();
+    case 81: return apm_mask_24_vs_32();
+    case 82: return apm_mult_shift_sanity();
+    case 83: return apm_monotonic();
+    case 84: return apm_boot_probe();
     case 70: return hvst_init_no_hyperv();
     case 71: return hvst_config_build();
     case 72: return hvst_deadline_convert();

@@ -134,6 +134,8 @@ void kernel_main(struct boot_info *info) {
     timer_init();
     extern void hpet_init(void);
     hpet_init();
+    extern void acpi_pm_init(void);
+    acpi_pm_init();
     rtc_init();
     extern void timer_wheel_init(void);
     timer_wheel_init();

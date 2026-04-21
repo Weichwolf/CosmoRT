@@ -105,7 +105,8 @@ KERN_HAL  = $(BUILD)/arch/x86_64/cpu/hal_cpu.o \
             $(BUILD)/arch/x86_64/cpu/hal_features.o \
             $(BUILD)/arch/x86_64/cpu/uaccess.o \
             $(BUILD)/arch/x86_64/timer/hal_timer.o \
-            $(BUILD)/arch/x86_64/timer/hpet.o
+            $(BUILD)/arch/x86_64/timer/hpet.o \
+            $(BUILD)/arch/x86_64/timer/acpi_pm.o
 
 KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
