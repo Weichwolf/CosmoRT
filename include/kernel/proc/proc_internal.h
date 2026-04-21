@@ -55,11 +55,15 @@ uint64_t read_pte(uint64_t *user_pml4, uint64_t va);
 void vma_free_tree(vma_t *node);
 void unmap_shared_vmas(vma_t *node, uint64_t *pml4);
 
-/* Internal helpers — defined in process_exec.c */
-#define EXECVE_MAX_ARGS    256
-#define EXECVE_MAX_ENVS    256
-#define EXECVE_MAX_STRLEN  4096
-#define EXECVE_BUF_SIZE    (128 * 1024)  /* 128KB flat string buffer */
+/* Internal helpers — defined in process_exec.c.
+ * Linux fs/exec.c: MAX_ARG_STRLEN = 32*PAGE_SIZE, MAX_ARG_STRINGS = 0x7FFFFFFF,
+ * ARG_MAX total per POSIX (typ. 128KB auf Alpine). Totals sind durch
+ * EXECVE_BUF_SIZE gebunden; Overflow liefert -E2BIG (strict POSIX). */
+#define EXECVE_MAX_ARGS    4096
+#define EXECVE_MAX_ENVS    4096
+#define EXECVE_MAX_STRLEN  (128 * 1024)
+#define EXECVE_BUF_SIZE    (128 * 1024)
+#define EXECVE_BUF_PAGES   (EXECVE_BUF_SIZE / 4096)
 uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
                           const char *const *argv, int argc,
                           const char *const *envp, int envc,

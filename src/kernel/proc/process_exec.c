@@ -14,17 +14,32 @@ static int copy_path_from_user_proc(char *kbuf, const char *upath, size_t max) {
     return n;
 }
 
+/* STK_PAGES × 4KB = user-stack scratch area mapped for argv/envp/auxv setup.
+ * 8 pages (32KB) reicht fuer typische gcc/ld Invocations. */
+#define STK_PAGES 8
+#define STK_SIZE  ((uint64_t)STK_PAGES * 4096)
+
+/* Pointer-Arrays heap-alloziert: bei EXECVE_MAX_ARGS=4096 waere jedes
+ * Array 32KB und wuerde den 16KB-Kernel-Stack sprengen. */
+#define EXECVE_PTR_PAGES \
+    ((EXECVE_MAX_ARGS * (int)sizeof(uint64_t) + 4095) / 4096)
+
+_Static_assert(EXECVE_MAX_ARGS >= 4096, "ARG_MAX-Kompat braucht >=4096 Slots");
+_Static_assert(EXECVE_MAX_ENVS >= 4096, "ARG_MAX-Kompat braucht >=4096 Slots");
+_Static_assert(EXECVE_MAX_STRLEN >= 128 * 1024, "Linux MAX_ARG_STRLEN = 128KB");
+_Static_assert(EXECVE_BUF_PAGES <= 512, "buddy cap: pages_alloc max 512");
+_Static_assert(EXECVE_PTR_PAGES <= 512, "buddy cap: pages_alloc max 512");
+_Static_assert(EXECVE_MAX_ARGS == EXECVE_MAX_ENVS, "PTR-Array shared size");
+
 /* Build user stack with argv, envp, auxv. Allocates stack pages.
  * Returns RSP value on success, 0 on error. */
+
 uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
                                  const char *const *argv, int argc,
                                  const char *const *envp, int envc,
                                  const elf_info_t *elf_info) {
-    /* Map stack pages — enough for strings + metadata.
-     * 8 pages (32KB) covers typical gcc/ld invocations. */
-    #define STK_PAGES 8
-    uint8_t *stk_kern[STK_PAGES]; /* kernel-mapped page pointers */
-    uint64_t stk_base_va = stack_top - (uint64_t)STK_PAGES * 4096;
+    uint8_t *stk_kern[STK_PAGES];
+    uint64_t stk_base_va = stack_top - STK_SIZE;
     for (int i = 0; i < STK_PAGES; i++) {
         uint64_t *pg = alloc_page();
         if (!pg) return 0;
@@ -34,21 +49,22 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
         stk_kern[i] = (uint8_t *)pg;
     }
 
-    /* Helper: write byte at offset within multi-page stack area.
-     * off is relative to stk_base_va. */
-    #define STK_SIZE ((uint64_t)STK_PAGES * 4096)
     #define STK_BYTE(off) (stk_kern[(off) >> 12][(off) & 0xFFF])
 
-    uint64_t str_off = STK_SIZE; /* write top-down */
-    uint64_t argv_addrs[EXECVE_MAX_ARGS];
-    uint64_t envp_addrs[EXECVE_MAX_ENVS];
+    uint64_t *argv_addrs = (uint64_t *)pages_alloc(EXECVE_PTR_PAGES);
+    uint64_t *envp_addrs = argv_addrs ? (uint64_t *)pages_alloc(EXECVE_PTR_PAGES) : 0;
+    if (!argv_addrs || !envp_addrs) {
+        if (argv_addrs) pages_free(argv_addrs, EXECVE_PTR_PAGES);
+        if (envp_addrs) pages_free(envp_addrs, EXECVE_PTR_PAGES);
+        return 0;
+    }
 
-    /* 16 random bytes for AT_RANDOM */
+    uint64_t str_off = STK_SIZE;
+
     str_off -= 16;
     str_off &= ~7ULL;
     uint64_t at_random_addr = stk_base_va + str_off;
     extern int random_get(void *buf, size_t len);
-    /* Write AT_RANDOM bytes page-aware */
     {
         uint8_t rnd[16];
         if (random_get(rnd, 16) != 0)
@@ -57,19 +73,19 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
             STK_BYTE(str_off + (uint64_t)i) = rnd[i];
     }
 
-    /* Environment strings */
+    uint64_t ret = 0;
+
     for (int i = envc - 1; i >= 0; i--) {
         int sl = 0; while (envp[i][sl]) sl++;
-        if (str_off < (uint64_t)(sl + 1) + 256) return 0;
+        if (str_off < (uint64_t)(sl + 1) + 256) goto out;
         str_off -= (uint64_t)(sl + 1);
         for (int j = 0; j <= sl; j++)
             STK_BYTE(str_off + (uint64_t)j) = (uint8_t)envp[i][j];
         envp_addrs[i] = stk_base_va + str_off;
     }
-    /* Argument strings */
     for (int i = argc - 1; i >= 0; i--) {
         int sl = 0; while (argv[i][sl]) sl++;
-        if (str_off < (uint64_t)(sl + 1) + 256) return 0;
+        if (str_off < (uint64_t)(sl + 1) + 256) goto out;
         str_off -= (uint64_t)(sl + 1);
         for (int j = 0; j <= sl; j++)
             STK_BYTE(str_off + (uint64_t)j) = (uint8_t)argv[i][j];
@@ -78,13 +94,12 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
 
     str_off &= ~7ULL;
 
-    /* Count qwords: argc(1) + argv(argc+1) + envp(envc+1) + auxv(8*2+2) */
-    int naux = 8; /* PHDR, PHENT, PHNUM, BASE, ENTRY, PAGESZ, RANDOM, NULL */
+    /* argc(1) + argv(argc+1) + envp(envc+1) + auxv(8*2+2) */
+    int naux = 8;
     int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
     str_off -= (uint64_t)nqwords * 8;
-    str_off &= ~0xFULL; /* 16-byte align RSP at process entry */
+    str_off &= ~0xFULL; /* 16-byte align RSP am Entry */
 
-    /* Write metadata (argc, argv, envp, auxv) as qwords */
     uint64_t wp = str_off;
     #define STK_QWORD(off, val) do { \
         uint64_t _v = (val); \
@@ -92,15 +107,11 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
             STK_BYTE((off) + (uint64_t)_b) = (uint8_t)(_v >> (_b * 8)); \
     } while(0)
 
-    /* argc */
     STK_QWORD(wp, (uint64_t)argc); wp += 8;
-    /* argv pointers */
     for (int i = 0; i < argc; i++) { STK_QWORD(wp, argv_addrs[i]); wp += 8; }
-    STK_QWORD(wp, 0); wp += 8; /* argv terminator */
-    /* envp pointers */
+    STK_QWORD(wp, 0); wp += 8;
     for (int i = 0; i < envc; i++) { STK_QWORD(wp, envp_addrs[i]); wp += 8; }
-    STK_QWORD(wp, 0); wp += 8; /* envp terminator */
-    /* auxv */
+    STK_QWORD(wp, 0); wp += 8;
     STK_QWORD(wp, AT_PHDR);   wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
     STK_QWORD(wp, AT_PHENT);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
     STK_QWORD(wp, AT_PHNUM);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
@@ -110,12 +121,14 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     STK_QWORD(wp, AT_RANDOM); wp += 8; STK_QWORD(wp, at_random_addr);                wp += 8;
     STK_QWORD(wp, AT_NULL);   wp += 8; STK_QWORD(wp, 0);                             wp += 8;
 
-    #undef STK_BYTE
     #undef STK_QWORD
-    #undef STK_SIZE
-    #undef STK_PAGES
 
-    return stk_base_va + str_off;
+    ret = stk_base_va + str_off;
+out:
+    pages_free(argv_addrs, EXECVE_PTR_PAGES);
+    pages_free(envp_addrs, EXECVE_PTR_PAGES);
+    #undef STK_BYTE
+    return ret;
 }
 
 /* Create VMAs for mapped ELF segments (using elf_info_t metadata).
@@ -161,27 +174,47 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     extern int resolve_path(const char *path, char *out, int outsize);
     resolve_path(kpath_raw, kpath, PATH_MAX_PROC);
 
-    /* Copy argv/envp from userspace into a flat page-allocated buffer.
-     * Layout: string data packed contiguously, pointer arrays on stack. */
-    #define EXECVE_BUF_PAGES (EXECVE_BUF_SIZE / 4096)
+    /* String-Buffer + Pointer-Arrays heap-alloziert: Bei Linux-kompatiblen
+     * Limits (EXECVE_MAX_ARGS=4096) waeren Stack-Arrays je 32KB und wuerden
+     * den Kernel-Stack sprengen. Jeweils pro execve-Call. */
     char *strbuf = (char *)pages_alloc(EXECVE_BUF_PAGES);
     if (!strbuf) return -ENOMEM;
+    const char **kargv_ptrs = (const char **)pages_alloc(EXECVE_PTR_PAGES);
+    const char **kenvp_ptrs = kargv_ptrs ? (const char **)pages_alloc(EXECVE_PTR_PAGES) : 0;
+    if (!kargv_ptrs || !kenvp_ptrs) {
+        pages_free(strbuf, EXECVE_BUF_PAGES);
+        if (kargv_ptrs) pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+        if (kenvp_ptrs) pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
+        return -ENOMEM;
+    }
+
+    #define EXECVE_EARLY_FAIL(err) do { \
+        pages_free(strbuf, EXECVE_BUF_PAGES); \
+        pages_free(kargv_ptrs, EXECVE_PTR_PAGES); \
+        pages_free(kenvp_ptrs, EXECVE_PTR_PAGES); \
+        return (err); \
+    } while(0)
+
     size_t buf_off = 0;
 
-    const char *kargv_ptrs[EXECVE_MAX_ARGS];
     int argc = 0;
     if (argv && (uint64_t)argv < 0x800000000000ULL) {
-        for (int i = 0; i < EXECVE_MAX_ARGS; i++) {
+        for (int i = 0; ; i++) {
+            if (i >= EXECVE_MAX_ARGS) EXECVE_EARLY_FAIL(-E2BIG);
             char *const *ap = &argv[i];
-            if ((uint64_t)ap + sizeof(char *) > 0x800000000000ULL) break;
+            if ((uint64_t)ap + sizeof(char *) > 0x800000000000ULL) EXECVE_EARLY_FAIL(-EFAULT);
             char *arg = *ap;
             if (!arg) break;
-            if ((uint64_t)arg >= 0x800000000000ULL) break;
+            if ((uint64_t)arg >= 0x800000000000ULL) EXECVE_EARLY_FAIL(-EFAULT);
             size_t avail = EXECVE_BUF_SIZE - buf_off;
-            if (avail < 2) break;
-            int r = copy_path_from_user_proc(strbuf + buf_off, arg,
-                        avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN);
-            if (r < 0) break;
+            if (avail < 2) EXECVE_EARLY_FAIL(-E2BIG);
+            size_t cap = avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN;
+            int r = copy_path_from_user_proc(strbuf + buf_off, arg, cap);
+            if (r == -ENAMETOOLONG) {
+                /* Linux: zu langer String ODER Gesamt-Buffer voll → -E2BIG. */
+                EXECVE_EARLY_FAIL(-E2BIG);
+            }
+            if (r < 0) EXECVE_EARLY_FAIL(r);
             kargv_ptrs[argc] = strbuf + buf_off;
             buf_off += (size_t)r + 1;
             argc++;
@@ -198,20 +231,21 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
         argc = 1;
     }
 
-    const char *kenvp_ptrs[EXECVE_MAX_ENVS];
     int envc = 0;
     if (envp && (uint64_t)envp < 0x800000000000ULL) {
-        for (int i = 0; i < EXECVE_MAX_ENVS; i++) {
+        for (int i = 0; ; i++) {
+            if (i >= EXECVE_MAX_ENVS) EXECVE_EARLY_FAIL(-E2BIG);
             char *const *ep = &envp[i];
-            if ((uint64_t)ep + sizeof(char *) > 0x800000000000ULL) break;
+            if ((uint64_t)ep + sizeof(char *) > 0x800000000000ULL) EXECVE_EARLY_FAIL(-EFAULT);
             char *env = *ep;
             if (!env) break;
-            if ((uint64_t)env >= 0x800000000000ULL) break;
+            if ((uint64_t)env >= 0x800000000000ULL) EXECVE_EARLY_FAIL(-EFAULT);
             size_t avail = EXECVE_BUF_SIZE - buf_off;
-            if (avail < 2) break;
-            int r = copy_path_from_user_proc(strbuf + buf_off, env,
-                        avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN);
-            if (r < 0) break;
+            if (avail < 2) EXECVE_EARLY_FAIL(-E2BIG);
+            size_t cap = avail < (size_t)EXECVE_MAX_STRLEN ? avail : (size_t)EXECVE_MAX_STRLEN;
+            int r = copy_path_from_user_proc(strbuf + buf_off, env, cap);
+            if (r == -ENAMETOOLONG) EXECVE_EARLY_FAIL(-E2BIG);
+            if (r < 0) EXECVE_EARLY_FAIL(r);
             kenvp_ptrs[envc] = strbuf + buf_off;
             buf_off += (size_t)r + 1;
             envc++;
@@ -224,8 +258,12 @@ long do_execve(const char *path, char *const argv[], char *const envp[]) {
     struct vfs_inode *ramfs_node;
     size_t elf_len;
 
-    /* Macro to free string buffer on early exit */
-    #define EXECVE_FAIL(err) do { pages_free(strbuf, EXECVE_BUF_PAGES); return (err); } while(0)
+    #define EXECVE_FAIL(err) do { \
+        pages_free(strbuf, EXECVE_BUF_PAGES); \
+        pages_free(kargv_ptrs, EXECVE_PTR_PAGES); \
+        pages_free(kenvp_ptrs, EXECVE_PTR_PAGES); \
+        return (err); \
+    } while(0)
 
     int shebang_depth = 0;
     #define SHEBANG_MAX_DEPTH 4
@@ -325,24 +363,37 @@ shebang_retry:;
                 buf_off += (size_t)alen + 1;
             }
 
-            /* Build new argv: [interp, opt_arg, script_path, orig_argv[1:]] */
-            const char *new_argv[EXECVE_MAX_ARGS];
+            /* new_argv: [interp, opt_arg?, script_path, orig_argv[1:]] — heap,
+             * weil das Array bei EXECVE_MAX_ARGS=4096 den Kernel-Stack sprengt. */
+            const char **new_argv = (const char **)pages_alloc(EXECVE_PTR_PAGES);
+            if (!new_argv) EXECVE_FAIL(-ENOMEM);
             int new_argc = 0;
 
-            /* Copy interpreter basename as argv[0] — actually use full path */
             new_argv[new_argc++] = kpath;
-            if (has_arg && new_argc < EXECVE_MAX_ARGS)
+            if (has_arg) {
+                if (new_argc >= EXECVE_MAX_ARGS) {
+                    pages_free(new_argv, EXECVE_PTR_PAGES);
+                    EXECVE_FAIL(-E2BIG);
+                }
                 new_argv[new_argc++] = shebang_arg;
-            if (new_argc < EXECVE_MAX_ARGS)
-                new_argv[new_argc++] = script_path;
+            }
+            if (new_argc >= EXECVE_MAX_ARGS) {
+                pages_free(new_argv, EXECVE_PTR_PAGES);
+                EXECVE_FAIL(-E2BIG);
+            }
+            new_argv[new_argc++] = script_path;
 
-            /* Append original argv[1:] */
-            for (int i = 1; i < argc && new_argc < EXECVE_MAX_ARGS; i++)
+            for (int i = 1; i < argc; i++) {
+                if (new_argc >= EXECVE_MAX_ARGS) {
+                    pages_free(new_argv, EXECVE_PTR_PAGES);
+                    EXECVE_FAIL(-E2BIG);
+                }
                 new_argv[new_argc++] = kargv_ptrs[i];
+            }
 
-            /* Replace argv */
             argc = new_argc;
             for (int i = 0; i < argc; i++) kargv_ptrs[i] = new_argv[i];
+            pages_free(new_argv, EXECVE_PTR_PAGES);
 
             goto shebang_retry;
         }
@@ -443,6 +494,8 @@ shebang_retry:;
     p->pml4 = create_user_pml4();
     if (!p->pml4) {
         pages_free(strbuf, EXECVE_BUF_PAGES);
+        pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+        pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         hal_mmu_switch(virt_to_phys(pml4));
@@ -468,6 +521,8 @@ shebang_retry:;
 
     if (load_rc < 0) {
         pages_free(strbuf, EXECVE_BUF_PAGES);
+        pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+        pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         hal_mmu_switch(virt_to_phys(pml4));
@@ -532,6 +587,8 @@ shebang_retry:;
                                  kargv_ptrs, argc, kenvp_ptrs, envc, &info);
     if (!stack_ptr) {
         pages_free(strbuf, EXECVE_BUF_PAGES);
+        pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+        pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
         p->state = PROC_ZOMBIE;
         cur->state = THREAD_DEAD;
         hal_mmu_switch(virt_to_phys(pml4));
@@ -567,8 +624,10 @@ shebang_retry:;
         p->comm[ci] = '\0';
     }
 
-    /* Free execve string buffer — no longer needed */
+    /* Exec-Scratch nicht mehr benoetigt — User-Stack hat alles kopiert. */
     pages_free(strbuf, EXECVE_BUF_PAGES);
+    pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+    pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
 
     /* vfork: wake blocked parent now that child has its own address space */
     if (p->vfork_parent_tid) {
