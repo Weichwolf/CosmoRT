@@ -207,6 +207,7 @@ int vfs_getcwd(char *buf, size_t size);
 int vfs_chdir(const char *path);
 
 int vfs_mkdir(const char *path);
+int vfs_mkdir_mode(const char *path, int mode);
 int vfs_rmdir(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *oldpath, const char *newpath);

@@ -25,11 +25,10 @@ long do_fstatat(int dirfd, const char *path, struct k_stat *buf, int flags) {
 /* ── SYS_mkdirat (258) — primary; mkdir delegates here via dispatch ── */
 
 long do_mkdirat(int dirfd, const char *path, int mode) {
-    (void)mode;
     char kpath[PATH_MAX];
     int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
-    return vfs_mkdir(kpath);
+    return vfs_mkdir_mode(kpath, mode);
 }
 
 /* ── SYS_unlinkat (263) — primary; unlink/rmdir delegate here via dispatch ── */

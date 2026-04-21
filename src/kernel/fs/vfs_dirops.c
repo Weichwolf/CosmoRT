@@ -23,13 +23,17 @@ int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
 
 /* ── mkdir ──────────────────────────────────────── */
 
-int vfs_mkdir(const char *path) {
+int vfs_mkdir_mode(const char *path, int mode) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (!mnt || !mnt->i_ops || !mnt->i_ops->mkdir) return -ENOENT;
     int ro = vfs_mount_writable(mnt);
     if (ro < 0) return ro;
-    return mnt->i_ops->mkdir(mnt, relpath, 0755);
+    return mnt->i_ops->mkdir(mnt, relpath, mode);
+}
+
+int vfs_mkdir(const char *path) {
+    return vfs_mkdir_mode(path, 0755);
 }
 
 /* ── rmdir ──────────────────────────────────────── */
