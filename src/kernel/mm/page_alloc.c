@@ -15,6 +15,8 @@
 #define PAGE_SHIFT  12
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
 #define MAX_ORDER   9   /* 2^9 = 512 pages = 2MB (x86 huge page boundary) */
+_Static_assert(PAGES_ALLOC_MAX == (1 << MAX_ORDER),
+               "PAGES_ALLOC_MAX must equal 2 ^ MAX_ORDER");
 
 /* 2048 PDPT entries × 1GB = 2TB (4 PML4 entries). */
 #define DIRECT_MAP_MAX (2048ULL * 1024 * 1024 * 1024)

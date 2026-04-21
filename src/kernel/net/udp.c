@@ -11,16 +11,19 @@
 #include "core/event_queue.h"
 #include "mm/slab.h"
 
-/* ── Slab Pool ───────────────────────────────────────── */
+/* ── Slab Pool (dynamic — grows on demand) ─────────── */
 
-static udp_sock_t udp_pool[UDP_POOL_SIZE];
-static slab_t     udp_slab;
-static int        udp_slab_inited;
+static slab_t udp_slab;
+static int    udp_slab_inited;
 
 static void udp_slab_ensure_init(void) {
     if (__builtin_expect(udp_slab_inited, 1)) return;
-    slab_init(&udp_slab, udp_pool, (int)sizeof(udp_sock_t), UDP_POOL_SIZE);
+    slab_init_dynamic(&udp_slab, (int)sizeof(udp_sock_t), 1);
     udp_slab_inited = 1;
+}
+
+void udp_init(void) {
+    udp_slab_ensure_init();
 }
 
 /* ── Hash Table (port → chain) ───────────────────────── */
@@ -64,7 +67,7 @@ udp_sock_t *udp_bind(uint16_t port) {
 
     if (!fresh) {
         spin_unlock_irq(&udp_table_lock, flags);
-        return 0; /* pool exhausted */
+        return 0; /* slab OOM */
     }
 
     fresh->port = port;

@@ -10,8 +10,9 @@ struct thread; /* forward declaration for wait_thread */
 
 /* ── Config ────────────────────────────────────────── */
 
-#define UDP_POOL_SIZE 128          /* max concurrent UDP sockets       */
 #define UDP_HASH_SIZE  64          /* buckets, must be power of 2      */
+/* UDP sockets are dynamically slab-allocated (no systemwide cap).
+ * Per-process bound is RLIMIT_NOFILE (one fd per socket). */
 
 /* ── Per-Socket UDP Queue ──────────────────────────── */
 
@@ -22,9 +23,15 @@ typedef struct udp_sock {
     struct udp_sock *hash_next;    /* hash-chain link                   */
 } udp_sock_t;
 
+/* ── UDP Init ──────────────────────────────────────── */
+
+/* Pre-warm slab so first udp_bind sees a populated free list (avoids
+ * timing-sensitive page_alloc on the recv path of the first DNS query). */
+void udp_init(void);
+
 /* ── UDP Registration ──────────────────────────────── */
 
-/* Bind a port for receiving. Returns udp_sock_t* or NULL if full. */
+/* Bind a port for receiving. Returns udp_sock_t* or NULL if OOM. */
 udp_sock_t *udp_bind(uint16_t port);
 
 /* Unbind — frees the slot. */

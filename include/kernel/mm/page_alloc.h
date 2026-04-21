@@ -21,6 +21,10 @@ void *page_alloc(void);
 /* Free a single page */
 void page_free(void *page);
 
+/* Maximum number of pages a single pages_alloc call can serve.
+ * Equals 2 ^ MAX_ORDER (buddy allocator cap). 512 pages = 2 MB. */
+#define PAGES_ALLOC_MAX 512
+
 /* Allocate N contiguous zeroed pages (rounded up to power of 2) */
 void *pages_alloc(int n);
 

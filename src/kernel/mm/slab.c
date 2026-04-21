@@ -28,20 +28,26 @@ void slab_init(slab_t *s, void *pool, int obj_size, int count) {
 }
 
 /* Grow a dynamic slab by allocating pages. Returns count added, 0 on OOM.
- * Caller must hold s->lock. */
+ * Caller must hold s->lock.
+ *
+ * pages_alloc is buddy-backed and capped at MAX_ORDER (currently 9 → 512
+ * pages = 2 MB). For huge objects (e.g. UDP sockets with embedded packet
+ * queues) the naive "16 objects per region" target would exceed that cap.
+ * The strategy is therefore: pick the largest power-of-two region size
+ * that the buddy can serve, then derive the actual object count from it. */
+#define SLAB_GROW_TARGET_OBJS  16
+
 static int slab_grow_locked(slab_t *s) {
-    /* Allocate enough pages for a batch of objects.
-     * Target: ~16 objects or 1 page, whichever is larger. */
     int objs_per_page = 4096 / s->obj_size;
     if (objs_per_page < 1) objs_per_page = 1;
-    int batch = objs_per_page * 4; /* 4 pages worth */
-    if (batch < 16) batch = 16;
+    int batch = objs_per_page * 4;
+    if (batch < SLAB_GROW_TARGET_OBJS) batch = SLAB_GROW_TARGET_OBJS;
 
     uint64_t bytes = (uint64_t)batch * s->obj_size;
     int npages = (int)((bytes + 4095) / 4096);
     if (npages < 1) npages = 1;
+    if (npages > PAGES_ALLOC_MAX) npages = PAGES_ALLOC_MAX;
 
-    /* Round up to power of 2 for pages_alloc */
     int alloc_pages = 1;
     while (alloc_pages < npages) alloc_pages <<= 1;
 
