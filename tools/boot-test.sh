@@ -12,6 +12,8 @@ echo "  CosmoRT Boot Test"
 echo "  $(uname -a)"
 echo "========================================"
 
+musl_pass=0; musl_fail=0; musl_skip=0
+if [ "$COSMO_SKIP_MUSL" != "1" ]; then
 echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
@@ -19,7 +21,7 @@ RUNNER=src/common/runtest.exe
 SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering"
 MUSL_EXES=$(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort)
 musl_total_exes=$(echo "$MUSL_EXES" | wc -l)
-musl_pass=0; musl_fail=0; musl_skip=0; musl_idx=0
+musl_idx=0
 for exe in $MUSL_EXES; do
     musl_idx=$((musl_idx + 1))
     name=$(basename "$exe" .exe)
@@ -40,6 +42,7 @@ for exe in $MUSL_EXES; do
     fi
 done
 echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL, $musl_skip SKIP"
+fi
 
 echo ""
 echo "=== LTP REQUIRED TESTS ==="
@@ -64,6 +67,13 @@ while read t; do
         ltp_skipped=$((ltp_skipped + 1))
     else
         echo "[$ltp_total/313] $t FAIL rc=$rc"
+        case "$t" in
+            bind0*|accept0*|accept4_*|connect0*)
+                echo "--- OUTPUT ($t) ---"
+                cat /tmp/ltp_out.txt
+                echo "--- END ($t) ---"
+                ;;
+        esac
         ltp_failed=$((ltp_failed + 1))
     fi
 done < /opt/ltp_required.txt
