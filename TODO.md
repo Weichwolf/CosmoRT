@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2505/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
+Stand: ktest **2526/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
 
 ## Offene Phasen
 
@@ -43,7 +43,7 @@ Research: `notes/TIMER_DRIVERS.md` (Commit `e4ff691`). Kernbefund: Hyper-V TSC-P
 Priorität nach Aufwand × ROI (bindende Reihenfolge):
 
 - [x] **7.7.1** `struct clocksource`/`clock_event_device` Core (`src/kernel/core/clocksource.{c,h}`). TSC als einzige clocksource rating 300, `hal_timer_now_ns` → `clocksource_read_ns()`. 2505/0.
-- [ ] **7.7.2** ACPI Table-Parser (`src/kernel/hw/acpi.{c,h}`) — RSDP aus UEFI-Config-Tables → XSDT → FADT/HPET/MADT/MCFG. Kein ACPICA, nur Table-Parsing. ~400 LOC, 2d.
+- [x] **7.7.2** ACPI Table-Parser (`src/kernel/hw/acpi.{c,h}`). RSDP aus `boot_info.rsdp_addr` → XSDT/RSDT-Walk → `acpi_find_table()`. FADT/HPET/MADT-Layout + MADT-Counts. 11 neue Tests (subcases 20-30). 2526/0.
 - [ ] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`) — clocksource rating 250 + clock_event pro Comparator. Eliminiert 10ms PIT-Kalibration. ~300 LOC, 1.5d.
 - [ ] **7.7.4** Hyper-V TSC-Page als clocksource (`src/arch/x86_64/hw/hyperv_clocksource.c`) — trivialer Wrapper um bestehenden `hyperv_tsc_time_ns`, rating 400. Fix für latenten Bug unter Hyper-V/WSL2. ~60 LOC, 0.3d.
 - [ ] **7.7.5** KVM pvclock (`src/arch/x86_64/hw/kvmclock.c`) — `wall_clock` + `system_time` MSRs, TSC-Scale vom Host. rating 400. Läuft unter `make qemu-*`. ~200 LOC, 1d.

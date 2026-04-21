@@ -110,6 +110,7 @@ KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
+            $(BUILD)/kernel/hw/acpi.o \
             $(BUILD)/arch/x86_64/hw/hyperv.o \
             $(BUILD)/arch/x86_64/hw/qemu.o \
             $(BUILD)/arch/x86_64/sha256.o

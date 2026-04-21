@@ -125,6 +125,10 @@ void kernel_main(struct boot_info *info) {
     extern void extable_sort(void);
     extable_sort();
 
+    /* ACPI table parser — needs phys_to_virt, runs before timer HPET/SMP MADT */
+    extern void acpi_init(void);
+    acpi_init();
+
     /* Interrupts + Timer */
     irq_init();
     timer_init();
