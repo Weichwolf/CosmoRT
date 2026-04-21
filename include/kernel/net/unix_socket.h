@@ -46,6 +46,8 @@ struct unix_socket {
 
     /* Blocked reader (waiting for data) */
     void     *blocked_reader;   /* thread_t* — blocked in read() */
+    /* Blocked accept (waiting for incoming connection) */
+    void     *blocked_acceptor; /* thread_t* — blocked in accept() */
 
     /* Global active list (intrusive) — replaces static pool scan for
      * bind-name-collision/connect-path-lookup. */

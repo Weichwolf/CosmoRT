@@ -299,8 +299,23 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     if (!s) return -EBADF;
     if (s->state != USOCK_LISTENING) return -EINVAL;
 
-    /* Check backlog */
-    if (s->backlog_count == 0) return -EAGAIN;
+    /* Block until a connection arrives (unless O_NONBLOCK). Per-socket
+     * blocked_acceptor is posted by usock_connect on enqueue. */
+    int nonblock = 0;
+    { process_t *rp = proc_current();
+      if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                 if (rf && (rf->flags & 0x800)) nonblock = 1; } }
+    thread_t *ct = thread_current();
+    while (s->backlog_count == 0) {
+        if (nonblock) return -EAGAIN;
+        if (!ct) return -EAGAIN;
+        __atomic_store_n(&s->blocked_acceptor, ct, __ATOMIC_RELEASE);
+        if (s->backlog_count > 0) { s->blocked_acceptor = 0; break; }
+        event_t ev;
+        int wr = event_wait(&ct->eq, &ev, -1);
+        s->blocked_acceptor = 0;
+        if (wr == -4) return -EINTR;
+    }
 
     /* Dequeue first pending connection */
     unix_socket_t *client = s->backlog[0];
@@ -374,7 +389,19 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     }
     /* Enqueue in listener's backlog */
     listener->backlog[listener->backlog_count++] = s;
+    thread_t *acceptor = 0;
+    if (listener->blocked_acceptor) {
+        acceptor = (thread_t *)listener->blocked_acceptor;
+        listener->blocked_acceptor = 0;
+    }
     spin_unlock_irq(&usock_lock, flags);
+    if (acceptor) {
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(acceptor, 9 /* EQ_SOCKET_CONNECT */, 0);
+    }
+    /* Wake select/poll waiters too */
+    extern void epoll_wake_all(void);
+    epoll_wake_all();
 
     /* Connection completes when accept() dequeues us.
      * For simplicity (no blocking connect), return 0 — client
