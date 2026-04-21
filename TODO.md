@@ -346,7 +346,7 @@ Einzelner Prozess kann alle Slots aufbrauchen → blockiert alle anderen.
 | `VMA_MAX` | 8192 | `mm/vma.c:7` | dyn. Slab, unbegrenzt | Slab-Wachstum |
 | `PTY_MAX` | 12 | `vt/pty.h:13` | dyn., typisch 256+ | Slab |
 | ~~`UDP_POOL_SIZE`~~ | ~~128~~ | ~~`net/udp.h:13`~~ | ~~unbegrenzt~~ | ~~Slab~~ erledigt |
-| `TW_MAX_TIMERS` | 256 | `core/timer_wheel.h:15` | hier. Wheel unbegrenzt | Wheel-Wachstum |
+| ~~`TW_MAX_TIMERS`~~ | ~~256~~ | ~~`core/timer_wheel.h:15`~~ | ~~hier. Wheel unbegrenzt~~ | ~~Slab + list_head pro Slot~~ erledigt |
 | `EQ_MAX_EVENTS` | 16 Ring/Thread | `core/event_queue.h:39` | unbegrenzte Wake-Lists | Ring-Wachstum bei Overflow |
 | `MOUNT_MAX` | 16 | `fs/vfs.h:138` | dyn. Mount-Tree | Slab-Liste |
 | `ARP_POOL_SIZE` | 128, Hash 64 | `net/arp.h:11` | `neigh_table`: Slab+Hash, gc_thresh1/2/3=128/512/1024 | Slab + adaptive Hash, GC-Thresholds |
@@ -386,13 +386,13 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [x] `ARP_POOL_SIZE=128` → dynamischer Slab, `evict_one`-Fallback bleibt fuer OOM. **Commit a627dc5**.
 - [x] `HW_MAX_HANDLERS_PER_IRQ=4` → irqaction-Liste pro IRQ, dynamischer Slab. **Commit d96c95f**.
 - [x] `UDP_POOL_SIZE=128` → dynamischer Slab + Pre-Warm in `net_init`. Der vorherige Versuch scheiterte nicht an Timing sondern an `slab_grow_locked`: `udp_sock_t` ist ~196 KB (enthaelt `pkt_queue_t` mit `data[128][1536]`), die "batch=16 Objekte"-Strategie forderte 4 MB Region → order 10 → `pages_alloc: order too large` → `udp_bind`=NULL → DNS-recvfrom hing. Fix: `slab_grow_locked` clamped auf `PAGES_ALLOC_MAX`; pro Region passen so 9 UDP-Sockets (2 MB). Per-Prozess-Cap ist `RLIMIT_NOFILE` (1 fd pro Socket).
+- [x] `TW_MAX_TIMERS=256` → Index-Array durch Pointer + dynamischen Slab ersetzt. `tw_entry_t` haengt als intrusive slist pro Slot, Allokation ueber `slab_init_dynamic`. DoS-Guard: Slab-OOM. `TW_SLOTS=256` bleibt (Wheel-Granularitaet, kein Timer-Count-Limit). Tick-Pfad nimmt `tw_lock` nur fuer Slot-Splice, `tw_fire` laeuft ohne Lock.
 
 **Mittel-Hoch — offen (Follow-up):**
 
 - [ ] `PID_TABLE_MAX=4096` → Radix-Tree/IDR (aufwaendig; 4096 ist praktisch genug).
 - [ ] `TID_TABLE_MAX=4096` → wie PID.
 - [ ] `PTY_MAX=12` → Slab (Signatur-Aenderung: `pty_get(int id)` vs. Pointer-Rueckgabe).
-- [ ] `TW_MAX_TIMERS=256` → Index-basiertes Wheel auf Pointer/list_head umbauen.
 - [ ] `EQ_MAX_EVENTS=16` → per-Thread, nicht systemweit — kein DoS-Risk. Ring-Wachstum bei Overflow.
 - [ ] `EXECVE_MAX_*` → 128KB-Buffer ist Linux-kompatibel (`ARG_MAX`), keine Aktion noetig.
 - [ ] `EQ_LOCK_MAX=512` → struktureller Umbau, per-thread Lock.
