@@ -159,6 +159,7 @@ static void test_chmod_sgid_strip(void) {
 
 static void child_creat_owner(void) {
     sc2(SYS_MKDIR, (long)"/tmp/credtest_dir", 0777);
+    sc2(SYS_CHMOD, (long)"/tmp/credtest_dir", 0777);
     sc1(SYS_SETGID, 42);
     sc2(SYS_SETREUID, (long)-1, 55);
     long fd = sc3(SYS_OPEN, (long)"/tmp/credtest_dir/f", O_RDWR|O_CREAT, 0644);

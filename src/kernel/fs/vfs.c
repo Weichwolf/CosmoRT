@@ -107,13 +107,23 @@ restart:
         for (int i = 0; i < len; i++) name[i] = start[i];
         name[len] = 0;
 
-        /* Intermediate component must be a directory */
+        /* Intermediate component must be a directory.
+         * Always read the inode (root inode too) so DAC traversal checks
+         * see the real mode bits, not a stale stack value. */
         struct ext4_inode cur_ip;
-        if (cur != EXT4_ROOT_INO) {
-            if (ext4_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
-            if ((cur_ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) {
-                if (err) *err = -ENOTDIR;
-                return 0;
+        if (ext4_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
+        if ((cur_ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) {
+            if (err) *err = -ENOTDIR;
+            return 0;
+        }
+
+        /* DAC: each directory on the path needs MAY_EXEC for non-root. */
+        {
+            process_t *pcur = proc_current();
+            if (pcur && pcur->euid != 0) {
+                int rc = cred_may_access(pcur, cur_ip.i_uid, cur_ip.i_gid,
+                                         cur_ip.i_mode, MAY_EXEC);
+                if (rc < 0) { if (err) *err = rc; return 0; }
             }
         }
 
@@ -629,9 +639,12 @@ not_pts:
             uint32_t cmask = pcur ? pcur->umask_val : 0022;
             uint32_t raw = mode ? (mode & 07777) : 0644;
             uint32_t cmode = raw & ~(cmask & 0777);
+            uint32_t new_gid = (pip.i_mode & S_ISGID)
+                                   ? (uint32_t)pip.i_gid
+                                   : (pcur ? pcur->fsgid : 0);
             if (pcur && pcur->euid != 0) {
                 cmode &= ~(uint32_t)S_ISUID;
-                if ((cmode & S_ISGID) && !cred_in_group(pcur, pip.i_gid))
+                if ((cmode & S_ISGID) && !cred_in_group(pcur, new_gid))
                     cmode &= ~(uint32_t)S_ISGID;
             }
             uint32_t new_ino;
@@ -641,9 +654,7 @@ not_pts:
                 struct ext4_inode nip;
                 if (ext4_inode_read(new_ino, &nip) == 0) {
                     nip.i_uid = (uint16_t)pcur->fsuid;
-                    nip.i_gid = (pip.i_mode & S_ISGID)
-                                    ? (uint16_t)pip.i_gid
-                                    : (uint16_t)pcur->fsgid;
+                    nip.i_gid = (uint16_t)new_gid;
                     ext4_inode_write(new_ino, &nip);
                 }
             }
@@ -713,18 +724,18 @@ not_pts:
         uint32_t cmask = pcur ? pcur->umask_val : 0022;
         uint32_t cmode = (mode & 07777) & ~(cmask & 0777);
         struct vfs_inode *parent_ino = node->parent ? node->parent->inode : 0;
+        uint32_t new_gid = (parent_ino && (parent_ino->mode & S_ISGID))
+                               ? parent_ino->gid
+                               : (pcur ? pcur->fsgid : 0);
         if (pcur && pcur->euid != 0) {
             cmode &= ~(uint32_t)S_ISUID;
-            if ((cmode & S_ISGID) && parent_ino &&
-                !cred_in_group(pcur, parent_ino->gid))
+            if ((cmode & S_ISGID) && !cred_in_group(pcur, new_gid))
                 cmode &= ~(uint32_t)S_ISGID;
         }
         node->inode->mode = cmode;
         if (pcur) {
             node->inode->uid = pcur->fsuid;
-            node->inode->gid = (parent_ino && (parent_ino->mode & S_ISGID))
-                                   ? parent_ino->gid
-                                   : pcur->fsgid;
+            node->inode->gid = new_gid;
         }
         inotify_event(path, IN_CREATE);
     }
