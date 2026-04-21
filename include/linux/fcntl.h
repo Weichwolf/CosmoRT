@@ -21,7 +21,7 @@
 #define O_PATH          0x200000
 #define O_TMPFILE       0x410000  /* O_TMPFILE | O_DIRECTORY */
 
-/* fcntl commands */
+/* fcntl commands — Linux x86_64 values (include/uapi/asm-generic/fcntl.h) */
 #define F_DUPFD         0
 #define F_GETFD         1
 #define F_SETFD         2
@@ -30,11 +30,24 @@
 #define F_GETLK         5
 #define F_SETLK         6
 #define F_SETLKW        7
-#define F_GETOWN        9
 #define F_SETOWN        8
-#define F_GETPIPE_SZ    1032
-#define F_SETPIPE_SZ    1031
+#define F_GETOWN        9
+#define F_SETSIG        10
+#define F_GETSIG        11
+#define F_SETOWN_EX     15
+#define F_GETOWN_EX     16
+#define F_GETOWNER_UIDS 17
+#define F_OFD_GETLK     36
+#define F_OFD_SETLK     37
+#define F_OFD_SETLKW    38
+#define F_SETLEASE      1024
+#define F_GETLEASE      1025
+#define F_NOTIFY        1026
 #define F_DUPFD_CLOEXEC 1030
+#define F_SETPIPE_SZ    1031
+#define F_GETPIPE_SZ    1032
+#define F_ADD_SEALS     1033
+#define F_GET_SEALS     1034
 #define FD_CLOEXEC      1
 
 /* flock for fcntl F_GETLK/F_SETLK/F_SETLKW */
@@ -48,6 +61,25 @@ struct k_flock {
 #define F_RDLCK  0
 #define F_WRLCK  1
 #define F_UNLCK  2
+
+/* F_SETOWN_EX / F_GETOWN_EX types */
+#define F_OWNER_TID   0
+#define F_OWNER_PID   1
+#define F_OWNER_PGRP  2
+
+struct k_f_owner_ex {
+    int type;
+    int pid;
+};
+
+/* F_NOTIFY (dnotify) event flags */
+#define DN_ACCESS    0x00000001
+#define DN_MODIFY    0x00000002
+#define DN_CREATE    0x00000004
+#define DN_DELETE    0x00000008
+#define DN_RENAME    0x00000010
+#define DN_ATTRIB    0x00000020
+#define DN_MULTISHOT 0x80000000
 
 /* flock(2) operations */
 #define LOCK_SH  1

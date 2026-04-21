@@ -717,6 +717,34 @@ static int procfs_sys_pid_max(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/sys/fs/pipe-max-size ───────────────────── */
+
+static int procfs_sys_pipe_max_size(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char tmp[16];
+    int pos = itoa_buf(tmp, 16, 1048576L);
+    tmp[pos++] = '\n';
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/sys/fs/lease-break-time ────────────────── */
+
+static int procfs_sys_lease_break_time(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    char tmp[8];
+    int pos = itoa_buf(tmp, 8, 45L);
+    tmp[pos++] = '\n';
+
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
 /* ── /proc/sys/kernel/hostname ─────────────────────── */
 
 static char hostname[64] = "cosmo";
@@ -897,9 +925,11 @@ void procfs_init(void) {
     procfs_register("filesystems", procfs_filesystems, 0);
     procfs_register("sys/kernel/pid_max", procfs_sys_pid_max, 0);
     procfs_register("sys/kernel/hostname", procfs_sys_hostname, 0);
+    procfs_register("sys/fs/pipe-max-size", procfs_sys_pipe_max_size, 0);
+    procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
-    serial_puts("procfs: init (21 entries)\n");
+    serial_puts("procfs: init (23 entries)\n");
 }
 
 /* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */
