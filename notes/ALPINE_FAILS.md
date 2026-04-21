@@ -1,102 +1,82 @@
-# Alpine Test — Bestandsaufnahme (Commit a144470)
+# Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-21, `make alpine-test` mit augmentiertem `tools/boot-test.sh`
-(`set -x` + PROBE-Heartbeats). Kein Kernel-Hang — Tests liefen 25+ Minuten
-kontinuierlich. Der Original-"Hang"-Eindruck kam vom stillen `find|sort|for`-
-Loop ohne Output vor dem ersten PASS/FAIL.
+Run: 2026-04-21, nach hrtimer-UAF-Fix.
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Status          |
 |-------|-------|------|------|------|-----------------|
 | musl  | 478   | 461  |  10  |   7  | komplett durch  |
-| LTP   | 313   |  24  |  29  |   8  | Hang bei 67/313 |
+| LTP   | 313   | 139  | 124  |  35  | komplett durch  |
 
-LTP-Hang: `clock_nanosleep02` → Kernel-PF `pid=0x56 cr2=0 rip=0`
-→ Test liefert FAIL, danach kommt `clock_nanosleep03` nicht mehr
-(Timer-Subsystem vermutlich korrumpiert durch den PF).
+LTP läuft jetzt vollständig durch. Vorher Hang bei 67/313 (clock_nanosleep02)
+wegen hrtimer-UAF, siehe fix.
 
-## musl FAIL-Kategorien (10 unique)
+## Root-Cause des früheren Hangs (gefixt)
 
-| Test                                   | Kategorie      | Vermutete Ursache                               |
-|----------------------------------------|----------------|-------------------------------------------------|
-| `fma`, `fmal`, `powf`, `remquol`       | math/FPU       | `qemu64` hat kein CPU-FMA; softfma fallback hat ULP-Drift + falsche fenv-Flags (INEXACT/UNDERFLOW) |
-| `malloc-brk-fail-static`               | mm             | `malloc(10000)` gelingt nachdem Memory voll; brk-ENOMEM nicht bis malloc durchgereicht |
-| `pthread_atfork-errno-clobber` +-static| proc/rlimit    | `setrlimit(RLIMIT_NPROC,0)` + fork → fork erfolgt trotzdem |
-| `rlimit-open-files` +-static           | proc/rlimit    | `getrlimit(RLIMIT_NOFILE)` liefert max=65536 nach `setrlimit(42,42)` — setrlimit speichert rlim_max nicht |
-| `tls_get_new-dtv`                      | dl/tls         | dlopen-Pfad mit dynamischer TLS-Slot-Allokation |
+LTP `clock_nanosleep01` SEND_SIGINT-Test timeoutet nach 3s (tst_test .timeout).
+Framework SIGKILLt den Testprozess. Sein Thread blockte zu dem Zeitpunkt in
+`do_nanosleep` → `thread_block_ms` mit einem stack-allozierten `hrtimer_t` im
+globalen RB-Tree. `exit_kill_process` markiert den Thread DEAD und orphant ihn,
+canceled den Timer aber nicht. Später `thread_free(t)` → `pages_free(t->kstack)`
+gibt den Stack-Frame frei — der Timer im RB-Tree zeigt ins freigegebene Memory.
+Nächster Timer-Fire: `t->fn(t)` lädt garbage-fn-ptr (oft 0, gerade
+freier Slab), Kernel-PF `rip=0 cr2=0`.
 
-## LTP FAIL-Liste (29)
+Fix: `hrtimer_cancel_by_data(t)` in `thread_free` vor `pages_free`. Dequeued
+alle Timer aus dem RB-Tree deren `data==t` ist. Kein dangling-pointer mehr.
 
-```
-abort01 accept02 access04 acct01 adjtimex02
-bind01 bind02 bind03 bind04
-bpf_prog02 bpf_prog03 bpf_prog04
-capget01 capset02 capset03
-chmod05 chmod06 chown04
-chroot01 chroot02 chroot03 chroot04
-clock_adjtime01 clock_adjtime02
-clock_gettime01 clock_gettime02 clock_gettime03 clock_gettime04
-clock_nanosleep01 clock_nanosleep02*
-```
+## musl FAIL-Kategorien (10 unique, alle bekannt)
 
-`*` clock_nanosleep02 endet mit Kernel-PF. Der PF ist benign behandelt
-(`kill pid=...`), aber der LTP-Runner fährt danach nicht weiter.
+| Test                                   | Kategorie      | Ursache                                           |
+|----------------------------------------|----------------|---------------------------------------------------|
+| `fma`, `fmal`, `powf`, `remquol`       | math/FPU       | `qemu64` ohne CPU-FMA; musl softfma ULP-Drift + falsche fenv-Flags |
+| `malloc-brk-fail-static`               | mm             | `malloc` gelingt nachdem brk OOM; ENOMEM nicht durchgereicht |
+| `pthread_atfork-errno-clobber` +-static| rlimit         | `setrlimit(RLIMIT_NPROC,0)` nicht enforced bei fork |
+| `rlimit-open-files` +-static           | rlimit         | `setrlimit` speichert `rlim_max` nicht            |
+| `tls_get_new-dtv`                      | dl/tls         | dlopen mit dynamischer TLS-Slot-Allokation        |
 
-## Gruppierung LTP-Fails
+## LTP Kernel-PFs (2 neue, non-fatal)
 
-| Gruppe       | Tests                                                  | Vermutung                                    |
-|--------------|--------------------------------------------------------|----------------------------------------------|
-| chroot       | chroot01-04                                            | chroot-Syscall fehlt / -ENOSYS               |
-| capget/caps  | capget01, capset02-03                                  | capabilities nicht implementiert             |
-| bpf          | bpf_prog02-04                                          | bpf()-Syscall nicht implementiert            |
-| bind         | bind01-04                                              | AF_UNIX / bind edge-cases                    |
-| clock_gettime| clock_gettime01-04, clock_adjtime01-02                 | CLOCK_TAI / CLOCK_BOOTTIME / adjtime         |
-| chmod        | chmod05, chmod06                                       | ownership / setuid bits                      |
-| chown        | chown04                                                | chown-lutimes oder setuid-drop               |
-| access       | access04                                               | faccessat edge-case                          |
-| adjtimex     | adjtimex02                                             | adjtimex-Write-Mode                          |
-| accept       | accept02                                               | accept error-returns                         |
-| acct         | acct01                                                 | acct()-Syscall (deprecated)                  |
-| abort        | abort01                                                | abort()-Verhalten / core-dump                |
-| clock_nanosl | clock_nanosleep01-02                                   | absolute-time / CLOCK_PROCESS_CPUTIME        |
+| Test       | PF-Addr              | rip (kernel)          | Hinweis                               |
+|------------|----------------------|-----------------------|---------------------------------------|
+| fcntl13    | cr2=0x7e20be0f8000   | 0xffff8000bcb4a3d5    | Prozess gekillt, LTP läuft weiter    |
+| fcntl13_64 | cr2=0x7edef6585000   | 0xffff8000bcb4a3d5    | Gleicher rip wie fcntl13              |
 
-## Kritische Bugs (Prio-Reihenfolge)
+Beide PFs nicht fatal — Prozess wird gekilled, LTP läuft weiter. Test FAILt
+mit rc=2 (timeout). Vermutlich weiterer UAF oder race in fcntl13 (F_GETLK
+mit range-lock hat vielleicht leaked-timer?).
 
-1. **Kernel-PF in `clock_nanosleep02`** — blockiert komplettes LTP-Durchlaufen
-   nach Test 67. Reproducer: `/opt/ltp/install/testcases/bin/clock_nanosleep02`.
-   PID-Zahl 0x56 deutet auf LTP-Test-Child. `cr2=0 rip=0` = NULL-Jump.
-2. **`setrlimit` ignoriert neue `rlim_max`** — blockiert jeden rlimit-Test.
-3. **`brk`-ENOMEM wird nicht an malloc propagiert** — Ressource-Exhaustion-
-   Semantik fehlt.
-4. **`RLIMIT_NPROC` wird nicht enforced** bei fork — setrlimit speichert, aber
-   fork-Pfad prüft nicht.
-5. **FPU: fma/fmal/powf/remquol** — kein Kernel-Bug; qemu64 hat kein FMA
-   und musl softfma setzt fenv-Flags falsch. Überspringen oder Host-baseline
-   gegenchecken.
+## LTP FAIL-Gruppen
 
-## Geänderte Dateien
+Unverändert aus voriger Bestandsaufnahme plus neue fcntl-Failures:
 
-- `tools/boot-test.sh` — `set -x` + PROBE-Heartbeats vor jedem musl-Test
-  (bleiben drin: das Output-Rauschen kostet ~0.5s/Test, aber verhindert
-  dass ein stiller Loop als Hang missgedeutet wird; zudem lassen sich
-  Hänge jederzeit eindeutig verorten).
+| Gruppe       | Beispiele                                  | Vermutung                       |
+|--------------|--------------------------------------------|---------------------------------|
+| chroot       | chroot01-04                                | chroot-Syscall -ENOSYS          |
+| caps         | capget01, capset02-03                      | capabilities nicht implementiert |
+| bpf          | bpf_prog02-04                              | bpf()-Syscall fehlt             |
+| bind         | bind01-04                                  | AF_UNIX / edge-cases            |
+| clock_gettime| clock_gettime01-04, clock_adjtime01-02     | CLOCK_TAI / adjtime             |
+| chmod        | chmod05, chmod06                           | setuid bits                     |
+| chown        | chown04                                    | chown + setuid-drop             |
+| fcntl        | fcntl11/13/14/15/17/21/31/35/37            | file locking edge-cases         |
+
+## Geänderte Dateien (dieser Run)
+
+- `include/kernel/core/hrtimer.h` — `hrtimer_cancel_by_data` API
+- `src/kernel/core/hrtimer.c` — impl (walk-leftmost-restart statt `rb_next`
+  nach dequeue, da dequeue die Iteration invalidiert)
+- `src/kernel/proc/process.c` — `thread_free` cancelt hrtimers vor kstack-free
+
+## Nächste Fix-Kandidaten
+
+1. **fcntl13 Kernel-PF (rip=0xffff8000bcb4a3d5)** — zweiter dangling-pointer-
+   Pfad. Debug via ldbase + ELF-Offset.
+2. **setrlimit rlim_max** — speichern, nicht verwerfen.
+3. **brk-ENOMEM an malloc propagieren**.
+4. **RLIMIT_NPROC fork-Enforcement**.
 
 ## Performance-Notiz
 
-- musl-Durchlauf brauchte ~24 min für 478 Tests (~3s/Test).
-- LTP-Durchlauf ~3 Tests/s, d.h. ~100 s für 313 ohne Hang.
-- `make alpine-test` braucht total ~30 min; `timeout 1800` im Makefile reicht
-  für musl allein, nicht für musl+LTP bis zum Ende. Hang bei 67/313 macht
-  das aber gerade egal.
-
-## Nächster Fix-Schritt (Empfehlung)
-
-1. `clock_nanosleep02` lokal reproduzieren, Kernel-PF-Ursache finden.
-   Vermutung: signal handler invoked mit NULL-Stack oder ucontext-Frame
-   korrupt bei `SIGALRM`-Delivery während `clock_nanosleep` spinnt.
-2. `setrlimit` fixen — Linux-Semantik: `rlim_max` darf nur gesenkt werden
-   (nicht erhöht ohne CAP_SYS_RESOURCE). Im CosmoRT-Single-User-Kontext
-   einfach speichern und zurückliefern.
-3. `fork()`-Pfad muss `RLIMIT_NPROC` gegen aktuellen `nr_tasks_per_user`
-   prüfen.
+alpine-test komplett in ~30 Minuten. `timeout 1800` im Makefile reicht.

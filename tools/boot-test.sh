@@ -12,13 +12,7 @@ echo "========================================"
 echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
-rm -f src/*/*.err
 RUNNER=src/common/runtest.exe
-# musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
-# mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
-# strptime: %F/%s/%z parsing broken in musl 1.2.5
-# Complex signal+fork: raise-race (fork in signal handler + RT signals)
-# Hang: fgetwc-buffering (dynamic variant deadlocks after fgetwc-buffering-static)
 SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering"
 MUSL_EXES=$(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort)
 musl_total_exes=$(echo "$MUSL_EXES" | wc -l)
@@ -28,19 +22,18 @@ for exe in $MUSL_EXES; do
     name=$(basename "$exe" .exe)
     skip=0; for s in $SKIP; do [ "$name" = "$s" ] && skip=1; done
     if [ $skip -eq 1 ]; then
-        echo "[$musl_idx/$musl_total_exes] $name ... SKIP"
+        echo "[$musl_idx/$musl_total_exes] $name SKIP"
         musl_skip=$((musl_skip + 1)); continue
     fi
-    echo -n "[$musl_idx/$musl_total_exes] $name ... "
+    echo "[$musl_idx/$musl_total_exes] $name RUN"
     timeout 60 "$RUNNER" -t 45 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
-        echo "PASS"
+        echo "[$musl_idx/$musl_total_exes] $name PASS"
         musl_pass=$((musl_pass + 1))
     else
-        echo "FAIL (rc=$rc)"
+        echo "[$musl_idx/$musl_total_exes] $name FAIL rc=$rc"
         musl_fail=$((musl_fail + 1))
-        cat /tmp/musl_out.txt
     fi
 done
 echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL, $musl_skip SKIP"
@@ -56,22 +49,19 @@ while read t; do
         ltp_skipped=$((ltp_skipped + 1))
         continue
     fi
-    echo -n "[$ltp_total/313] $t ... "
+    echo "[$ltp_total/313] $t RUN"
     cd /tmp
     timeout 10 "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
-        echo "PASS"
+        echo "[$ltp_total/313] $t PASS"
         ltp_passed=$((ltp_passed + 1))
     elif [ $rc -eq 32 ]; then
-        echo "SKIP"
+        echo "[$ltp_total/313] $t SKIP"
         ltp_skipped=$((ltp_skipped + 1))
     else
-        echo "FAIL (rc=$rc)"
+        echo "[$ltp_total/313] $t FAIL rc=$rc"
         ltp_failed=$((ltp_failed + 1))
-        if [ $ltp_failed -le 5 ]; then
-            cat /tmp/ltp_out.txt
-        fi
     fi
 done < /opt/ltp_required.txt
 
