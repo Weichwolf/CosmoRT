@@ -25,10 +25,10 @@
 
 /* ── Epoll internals ─────────────────────────────── */
 
-#define EPOLL_MAX_FDS   64
-#define EPOLL_POOL_MAX  16
-
-typedef struct {
+/* Per-watch entry: intrusive singly-linked. No systemwide cap; growth via
+ * dynamic slab, bounded per-process by RLIMIT_NOFILE (target fds must exist). */
+typedef struct epoll_entry {
+    struct epoll_entry *next;
     int      fd;
     uint32_t events;     /* requested events (including EPOLLET flag) */
     uint64_t data;
@@ -37,21 +37,25 @@ typedef struct {
 } epoll_entry_t;
 
 typedef struct {
-    epoll_entry_t entries[EPOLL_MAX_FDS];
-    int           count;
-    int           refcount;
-    spinlock_t    lock;
+    epoll_entry_t *entries;    /* head of watch list */
+    int            count;
+    int            refcount;
+    spinlock_t     lock;
 } epoll_t;
 
-static epoll_t epoll_pool[EPOLL_POOL_MAX];
-static slab_t  epoll_slab;
+static slab_t epoll_slab;
+static slab_t epoll_entry_slab;
+
+#define EPOLL_SLAB_INITIAL         8
+#define EPOLL_ENTRY_SLAB_INITIAL  64
 
 /* ── Init ────────────────────────────────────────── */
 
 static struct tick_callback epoll_timeout_cb;
 
 void epoll_init(void) {
-    slab_init(&epoll_slab, epoll_pool, (int)sizeof(epoll_t), EPOLL_POOL_MAX);
+    slab_init_dynamic(&epoll_slab,       (int)sizeof(epoll_t),       EPOLL_SLAB_INITIAL);
+    slab_init_dynamic(&epoll_entry_slab, (int)sizeof(epoll_entry_t), EPOLL_ENTRY_SLAB_INITIAL);
     eventfd_init();
     timerfd_init();
     inotify_init_slab();
@@ -117,9 +121,9 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
                 depth++;
                 /* Check if walk contains epfd → circular */
                 epoll_t *next = 0;
-                for (int i = 0; i < walk->count; i++) {
-                    if (walk->entries[i].fd == epfd) return -ELOOP;
-                    fd_entry_t *e = fd_get(&p->fds, walk->entries[i].fd);
+                for (epoll_entry_t *it = walk->entries; it; it = it->next) {
+                    if (it->fd == epfd) return -ELOOP;
+                    fd_entry_t *e = fd_get(&p->fds, it->fd);
                     if (e && e->type == FD_EPOLL && !next)
                         next = (epoll_t *)e->obj;
                 }
@@ -141,21 +145,32 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         struct epoll_event kev;
         { int r = copy_from_user(&kev, event, sizeof(kev));
           if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
-        for (int i = 0; i < ep->count; i++) {
-            if (ep->entries[i].fd == fd) {
+        for (epoll_entry_t *it = ep->entries; it; it = it->next) {
+            if (it->fd == fd) {
                 spin_unlock_irq(&ep->lock, irqf);
                 return -EEXIST;
             }
         }
-        if (ep->count >= EPOLL_MAX_FDS) {
-            spin_unlock_irq(&ep->lock, irqf);
-            return -ENOMEM;
+        /* Allocate outside lock to avoid holding spinlock across page_alloc
+         * growth path. Re-check duplicate after re-acquire. */
+        spin_unlock_irq(&ep->lock, irqf);
+        epoll_entry_t *ne = (epoll_entry_t *)slab_alloc(&epoll_entry_slab);
+        if (!ne) return -ENOMEM;
+        spin_lock_irq(&ep->lock, &irqf);
+        for (epoll_entry_t *it = ep->entries; it; it = it->next) {
+            if (it->fd == fd) {
+                spin_unlock_irq(&ep->lock, irqf);
+                slab_free(&epoll_entry_slab, ne);
+                return -EEXIST;
+            }
         }
-        ep->entries[ep->count].fd     = fd;
-        ep->entries[ep->count].events = kev.events;
-        ep->entries[ep->count].data   = kev.data;
-        ep->entries[ep->count].et_armed = 1; /* report on first ready */
-        ep->entries[ep->count].et_last  = 0;
+        ne->fd        = fd;
+        ne->events    = kev.events;
+        ne->data      = kev.data;
+        ne->et_armed  = 1;
+        ne->et_last   = 0;
+        ne->next      = ep->entries;
+        ep->entries   = ne;
         ep->count++;
         break;
     }
@@ -167,35 +182,35 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         struct epoll_event kev;
         { int r = copy_from_user(&kev, event, sizeof(kev));
           if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
-        int found = 0;
-        for (int i = 0; i < ep->count; i++) {
-            if (ep->entries[i].fd == fd) {
-                ep->entries[i].events = kev.events;
-                ep->entries[i].data   = kev.data;
-                ep->entries[i].et_armed = 1; /* re-arm on MOD */
-                ep->entries[i].et_last  = 0;
-                found = 1;
-                break;
-            }
+        epoll_entry_t *found = 0;
+        for (epoll_entry_t *it = ep->entries; it; it = it->next) {
+            if (it->fd == fd) { found = it; break; }
         }
         if (!found) {
             spin_unlock_irq(&ep->lock, irqf);
             return -ENOENT;
         }
+        found->events   = kev.events;
+        found->data     = kev.data;
+        found->et_armed = 1;
+        found->et_last  = 0;
         break;
     }
     case EPOLL_CTL_DEL: {
-        int found = -1;
-        for (int i = 0; i < ep->count; i++) {
-            if (ep->entries[i].fd == fd) { found = i; break; }
+        epoll_entry_t **pp = &ep->entries;
+        epoll_entry_t *victim = 0;
+        while (*pp) {
+            if ((*pp)->fd == fd) { victim = *pp; *pp = victim->next; break; }
+            pp = &(*pp)->next;
         }
-        if (found < 0) {
+        if (!victim) {
             spin_unlock_irq(&ep->lock, irqf);
             return -ENOENT;
         }
-        ep->entries[found] = ep->entries[ep->count - 1];
         ep->count--;
-        break;
+        spin_unlock_irq(&ep->lock, irqf);
+        slab_free(&epoll_entry_slab, victim);
+        return 0;
     }
     default:
         spin_unlock_irq(&ep->lock, irqf);
@@ -379,8 +394,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         spin_lock_irq(&ep->lock, &irqf);
 
         int nready = 0;
-        for (int i = 0; i < ep->count && nready < maxevents; i++) {
-            epoll_entry_t *ent = &ep->entries[i];
+        for (epoll_entry_t *ent = ep->entries; ent && nready < maxevents; ent = ent->next) {
             uint32_t interest = ent->events & ~(EPOLLET | EPOLLONESHOT);
             if (!interest) continue;
             uint32_t r = fd_poll_readiness(ent->fd, interest);
@@ -440,6 +454,14 @@ void epoll_incref(void *obj) {
 void epoll_destroy(void *obj) {
     if (!obj) return;
     epoll_t *ep = (epoll_t *)obj;
-    if (__sync_sub_and_fetch(&ep->refcount, 1) <= 0)
+    if (__sync_sub_and_fetch(&ep->refcount, 1) <= 0) {
+        epoll_entry_t *it = ep->entries;
+        while (it) {
+            epoll_entry_t *n = it->next;
+            slab_free(&epoll_entry_slab, it);
+            it = n;
+        }
+        ep->entries = 0;
         slab_free(&epoll_slab, obj);
+    }
 }
