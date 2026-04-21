@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "core/clocksource.h"
 #include "hw/acpi.h"
+#include "hw/hyperv.h"
 #include "arch/hpet.h"
 #include "config.h"
 #include "memops.h"
@@ -651,6 +652,65 @@ static long ht_boot_probe(void) {
     return 0;
 }
 
+/* ── Hyper-V TSC clocksource selftests (subcases 50-53) ─
+ * Ohne Hyper-V-Enlightenment (QEMU default) liefert hyperv_detect()==0. In
+ * dem Fall degradieren Cases 51/52 zu no-op success — das spiegelt die
+ * Laufzeit-Semantik wider: nichts registriert, nichts lesbar, kein Bug. */
+
+#define HVCS_NAME_FIRST_CHAR  'h'
+#define HVCS_EXPECTED_RATING  CLOCKSOURCE_RATING_HYPERV_TSC
+
+static int hvcs_name_equals_hyperv_tsc(const char *s) {
+    const char *want = "hyperv_tsc";
+    while (*want) { if (*s++ != *want++) return 0; }
+    return *s == '\0';
+}
+
+static long hvcs_init_no_hyperv(void) {
+    if (hyperv_detect()) return 0;
+    hyperv_clocksource_init();
+    struct clocksource *cs = clocksource_current();
+    while (cs) {
+        if (cs->name && cs->name[0] == HVCS_NAME_FIRST_CHAR
+            && hvcs_name_equals_hyperv_tsc(cs->name))
+            return -1;
+        cs = cs->next;
+    }
+    return 0;
+}
+
+static long hvcs_register_present(void) {
+    if (!hyperv_detect()) return 0;
+    if (!hyperv_tsc_page()) return 0;
+    struct clocksource *cs = clocksource_current();
+    while (cs) {
+        if (cs->name && hvcs_name_equals_hyperv_tsc(cs->name)) {
+            if (cs->rating != HVCS_EXPECTED_RATING) return -2;
+            if (cs->mult != 100 || cs->shift != 0)  return -3;
+            if (cs->mask != CLOCKSOURCE_MASK_64)    return -4;
+            return 0;
+        }
+        cs = cs->next;
+    }
+    return -1;
+}
+
+static long hvcs_monotonic(void) {
+    if (!hyperv_detect() || !hyperv_tsc_page()) return 0;
+    uint64_t a = hyperv_tsc_read_raw();
+    uint64_t b = hyperv_tsc_read_raw();
+    uint64_t c = hyperv_tsc_read_raw();
+    if (b < a) return -1;
+    if (c < b) return -2;
+    return 0;
+}
+
+static long hvcs_raw_times_tick(void) {
+    uint64_t raw = hyperv_tsc_read_raw();
+    uint64_t ns  = hyperv_tsc_time_ns();
+    return (ns == raw * 100ULL) ? 0 : -1;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -693,6 +753,10 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 42: return ht_clocksource_mask();
     case 43: return ht_mult_shift_sanity();
     case 44: return ht_boot_probe();
+    case 50: return hvcs_init_no_hyperv();
+    case 51: return hvcs_register_present();
+    case 52: return hvcs_monotonic();
+    case 53: return hvcs_raw_times_tick();
     default: return -EINVAL;
     }
 }

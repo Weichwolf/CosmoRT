@@ -207,9 +207,17 @@ int hyperv_msg_recv(int sint, void *buf, size_t bufsize) {
     return sz;
 }
 
-/* ---- Reference TSC time ---- */
+/* ---- Reference TSC time ----
+ *
+ * Hyper-V TLFS v6.0b §12.7: counter ticks 100ns. sequence==0 signals that the
+ * host is updating the page (or has not yet initialised it) — readers must
+ * fall back. Otherwise read scale/offset, snapshot rdtsc, recheck sequence.
+ */
 
-uint64_t hyperv_tsc_time_ns(void) {
+#define HV_TSC_INVALID_SEQUENCE  0u
+#define HV_TSC_TICK_NS           100u
+
+uint64_t hyperv_tsc_read_raw(void) {
     if (!tsc_page) return 0;
 
     uint32_t seq;
@@ -219,15 +227,19 @@ uint64_t hyperv_tsc_time_ns(void) {
     do {
         seq = tsc_page->sequence;
         arch_mfence();
-        if (seq == 0) return 0;  /* TSC page not yet valid */
+        if (seq == HV_TSC_INVALID_SEQUENCE) return 0;
         scale = tsc_page->tsc_scale;
         offset = tsc_page->tsc_offset;
         tsc = arch_rdtsc();
         arch_mfence();
     } while (tsc_page->sequence != seq);
 
-    /* result = (tsc * scale) >> 64 + offset, in 100ns units */
     __uint128_t wide = (__uint128_t)tsc * scale;
-    uint64_t val = (uint64_t)(wide >> 64) + (uint64_t)offset;
-    return val * 100;  /* convert 100ns → ns */
+    return (uint64_t)(wide >> 64) + (uint64_t)offset;
 }
+
+uint64_t hyperv_tsc_time_ns(void) {
+    return hyperv_tsc_read_raw() * HV_TSC_TICK_NS;
+}
+
+struct hv_tsc_page *hyperv_tsc_page(void) { return tsc_page; }

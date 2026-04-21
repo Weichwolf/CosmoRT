@@ -99,4 +99,17 @@ struct hv_message *hyperv_simp_slot(int sint);
 /* High-resolution time from Reference TSC (ns since boot). */
 uint64_t hyperv_tsc_time_ns(void);
 
+/* Raw Reference-TSC-Page counter in 100ns units. Uses the sequence lock to
+ * coordinate with host-side updates; returns 0 while the page is invalid
+ * (sequence == 0). */
+uint64_t hyperv_tsc_read_raw(void);
+
+/* Pointer to the mapped Reference TSC page (NULL if not allocated).
+ * Exposed so the clocksource wrapper can decide whether to register. */
+struct hv_tsc_page *hyperv_tsc_page(void);
+
+/* Register the Hyper-V Reference-TSC clocksource with the core. No-op when
+ * Hyper-V is not present or the TSC page is unavailable. */
+void hyperv_clocksource_init(void);
+
 #endif

@@ -224,6 +224,7 @@ void kernel_main(struct boot_info *info) {
     /* Drivers — probe and self-register with subsystems */
     extern int hyperv_detect(void);
     extern void hyperv_init(void);
+    extern void hyperv_clocksource_init(void);
     extern void hyperv_synic_init(void);
     extern int vmbus_init(void);
     extern int storvsc_init(void);
@@ -240,6 +241,7 @@ void kernel_main(struct boot_info *info) {
     if (hyperv_detect()) {
         serial_puts("Hyper-V detected\n");
         hyperv_init();
+        hyperv_clocksource_init();
         hyperv_synic_init();
         if (vmbus_init() == 0) {
             storvsc_init();     /* block device */
