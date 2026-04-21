@@ -453,7 +453,6 @@ int vfs_open(const char *path, int flags, int mode) {
         while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
         if (*d == '\0' && vt_num >= 1 && vt_num <= 12) {
             int vt_id = vt_num - 1; /* tty1 → VT0 */
-            if (vt_id >= PTY_MAX) return -ENOENT;
             process_t *p = proc_current();
             if (!p) return -EFAULT;
             int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)vt_id, flags & 3);
@@ -468,7 +467,7 @@ int vfs_open(const char *path, int flags, int mode) {
         const char *d = path + 9;
         if (*d < '0' || *d > '9') goto not_pts;
         while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
-        if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX) {
+        if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
             int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)pts_id, flags & 3);

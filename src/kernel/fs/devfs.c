@@ -71,7 +71,7 @@ static int devfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *
     if (name[0]=='t' && name[1]=='t' && name[2]=='y' && name[3] >= '1' && name[3] <= '9') {
         const char *d = name + 3;
         int vt_num = parse_int(&d);
-        if (*d == '\0' && vt_num >= 1 && vt_num <= 12 && vt_num - 1 < PTY_MAX) {
+        if (*d == '\0' && vt_num >= 1 && vt_num <= 12) {
             buf->st_mode = S_IFCHR | 0620;
             buf->st_rdev = (uint64_t)(0x0400 + vt_num);
             buf->st_ino = (uint64_t)(100 + vt_num);
@@ -84,7 +84,7 @@ static int devfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *
         const char *d = name + 4;
         if (*d >= '0' && *d <= '9') {
             int pts_id = parse_int(&d);
-            if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX) {
+            if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX) {
                 buf->st_mode = S_IFCHR | 0620;
                 buf->st_rdev = (uint64_t)(0x8800 + pts_id);
                 buf->st_ino = (uint64_t)(200 + pts_id);

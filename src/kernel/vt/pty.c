@@ -6,6 +6,7 @@
 #include "hw/serial.h"
 #include "proc/process.h"
 #include "proc/thread.h"
+#include "mm/slab.h"
 
 _Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
                "PTY_LINE_MAX must match line_buf array size");
@@ -14,7 +15,17 @@ extern void sched_add(thread_t *t);
 
 /* SIGINT, SIGQUIT — from linux.h (via process.h chain) */
 
-static pty_t pty_pool[PTY_MAX];
+static slab_t      pty_slab;
+static int         pty_slab_inited;
+static pty_t      *pty_list_head;
+static int         pty_next_id;
+static spinlock_t  pty_list_lock = SPINLOCK_INIT;
+
+static void pty_slab_ensure_init(void) {
+    if (__builtin_expect(pty_slab_inited, 1)) return;
+    slab_init_dynamic(&pty_slab, (int)sizeof(pty_t), 1);
+    pty_slab_inited = 1;
+}
 
 /* ── Ring buffer helpers ───────────────────────────── */
 
@@ -90,43 +101,41 @@ static void termios_init(struct kernel_termios *t) {
 /* ── Init ──────────────────────────────────────────── */
 
 void pty_init(void) {
-    kmemset(pty_pool, 0, sizeof(pty_pool));
-    for (int i = 0; i < PTY_MAX; i++) {
-        termios_init(&pty_pool[i].termios);
-        pty_pool[i].lock = (spinlock_t)SPINLOCK_INIT;
-    }
-    serial_puts("pty: ");
-    serial_putchar('0' + PTY_MAX);
-    serial_puts(" slots\n");
+    pty_slab_ensure_init();
+    serial_puts("pty: slab-backed, on-demand\n");
 }
 
 int pty_alloc(void) {
-    for (int i = 0; i < PTY_MAX; i++) {
-        uint64_t flags;
-        spin_lock_irq(&pty_pool[i].lock, &flags);
-        if (!pty_pool[i].in_use) {
-            pty_pool[i].in_use = 1;
-            pty_pool[i].input_head = pty_pool[i].input_tail = 0;
-            pty_pool[i].output_head = pty_pool[i].output_tail = 0;
-            pty_pool[i].line_pos = 0;
-            pty_pool[i].slave_pid = 0;
-            pty_pool[i].blocked_reader = 0;
-            termios_init(&pty_pool[i].termios);
-            pty_pool[i].ws.ws_col = (uint16_t)vt_cols();
-            pty_pool[i].ws.ws_row = (uint16_t)vt_rows();
-            pty_pool[i].ws.ws_xpixel = 0;
-            pty_pool[i].ws.ws_ypixel = 0;
-            spin_unlock_irq(&pty_pool[i].lock, flags);
-            return i;
-        }
-        spin_unlock_irq(&pty_pool[i].lock, flags);
-    }
-    return -1;
+    pty_slab_ensure_init();
+
+    pty_t *p = (pty_t *)slab_alloc(&pty_slab);
+    if (!p) return -1;
+
+    kmemset(p, 0, sizeof(*p));
+    p->lock = (spinlock_t)SPINLOCK_INIT;
+    p->in_use = 1;
+    termios_init(&p->termios);
+    p->ws.ws_col = (uint16_t)vt_cols();
+    p->ws.ws_row = (uint16_t)vt_rows();
+
+    uint64_t flags;
+    spin_lock_irq(&pty_list_lock, &flags);
+    p->id = pty_next_id++;
+    p->list_next = pty_list_head;
+    pty_list_head = p;
+    spin_unlock_irq(&pty_list_lock, flags);
+
+    return p->id;
 }
 
 pty_t *pty_get(int id) {
-    if (id < 0 || id >= PTY_MAX) return 0;
-    return &pty_pool[id];
+    if (id < 0 || id >= PTY_DEV_ID_MAX) return 0;
+    uint64_t flags;
+    spin_lock_irq(&pty_list_lock, &flags);
+    pty_t *p = pty_list_head;
+    while (p && p->id != id) p = p->list_next;
+    spin_unlock_irq(&pty_list_lock, flags);
+    return p;
 }
 
 /* ── Convenience accessors for termios fields ──────── */
@@ -175,8 +184,8 @@ static void line_flush(pty_t *p) {
 }
 
 int pty_master_write(int id, const char *buf, int len) {
-    if (id < 0 || id >= PTY_MAX) return -1;
-    pty_t *p = &pty_pool[id];
+    pty_t *p = pty_get(id);
+    if (!p) return -1;
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
 
@@ -301,8 +310,8 @@ int pty_master_write(int id, const char *buf, int len) {
 /* ── Master read: drain output buffer (process → VT) ── */
 
 int pty_master_read(int id, char *buf, int len) {
-    if (id < 0 || id >= PTY_MAX) return 0;
-    pty_t *p = &pty_pool[id];
+    pty_t *p = pty_get(id);
+    if (!p) return 0;
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
 
@@ -318,8 +327,8 @@ int pty_master_read(int id, char *buf, int len) {
 /* ── Slave write: process stdout → output buffer ───── */
 
 int pty_slave_write(int id, const char *buf, int len) {
-    if (id < 0 || id >= PTY_MAX) return -1;
-    pty_t *p = &pty_pool[id];
+    pty_t *p = pty_get(id);
+    if (!p) return -1;
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
 
@@ -347,8 +356,8 @@ int pty_slave_write(int id, const char *buf, int len) {
  * Used for terminal responses (DSR, cursor position) that must reach
  * the process regardless of canonical/raw mode state. */
 int pty_input_direct(int id, const char *buf, int len) {
-    if (id < 0 || id >= PTY_MAX) return 0;
-    pty_t *p = &pty_pool[id];
+    pty_t *p = pty_get(id);
+    if (!p) return 0;
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
     int written = 0;
@@ -374,8 +383,8 @@ int pty_input_direct(int id, const char *buf, int len) {
 }
 
 int pty_slave_read(int id, char *buf, int len) {
-    if (id < 0 || id >= PTY_MAX) return 0;
-    pty_t *p = &pty_pool[id];
+    pty_t *p = pty_get(id);
+    if (!p) return 0;
     uint64_t flags;
     spin_lock_irq(&p->lock, &flags);
 

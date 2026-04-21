@@ -10,9 +10,9 @@
 #include <stdint.h>
 #include "spinlock.h"
 
-#define PTY_MAX       12
-#define PTY_BUF_SIZE  4096
-#define PTY_LINE_MAX  256
+#define PTY_BUF_SIZE     4096
+#define PTY_LINE_MAX     256
+#define PTY_DEV_ID_MAX   256
 
 /* Linux kernel struct termios (36 bytes, matches x86_64 ABI) */
 #define NCCS 19
@@ -76,7 +76,7 @@ struct kernel_termios {
 #define VLNEXT  15
 #define VEOL2   16
 
-typedef struct {
+typedef struct pty {
     /* Master → Slave (keyboard → process stdin) */
     char     input_buf[PTY_BUF_SIZE];
     int      input_head, input_tail;
@@ -104,6 +104,12 @@ typedef struct {
 
     /* Blocked reader (thread waiting for input data) */
     struct thread *blocked_reader;
+
+    /* Persistent identifier for /dev/pts/N, fd obj payload, serial_vt mapping */
+    int      id;
+
+    /* Intrusive list linkage for pty_get lookup */
+    struct pty *list_next;
 
     spinlock_t lock;
 } pty_t;

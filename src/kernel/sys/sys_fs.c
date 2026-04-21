@@ -295,7 +295,7 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
             int vt_num = 0;
             const char *d = kpath + 8;
             while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
-            if (*d == '\0' && vt_num >= 1 && vt_num <= PTY_MAX)
+            if (*d == '\0' && vt_num >= 1 && vt_num <= 12)
                 { exists = 1; goto found; }
         }
         /* /dev/pts/0-3 */
@@ -306,7 +306,7 @@ long do_faccessat(int dirfd, const char *path, int mode, int flags) {
             const char *d = kpath + 9;
             if (*d >= '0' && *d <= '9') {
                 while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
-                if (*d == '\0' && pts_id >= 0 && pts_id < PTY_MAX)
+                if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX)
                     { exists = 1; goto found; }
             }
         }
