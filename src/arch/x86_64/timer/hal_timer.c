@@ -3,6 +3,7 @@
 #include "hal/hal_timer.h"
 #include "core/timer.h"
 #include "core/hrtimer.h"
+#include "core/clocksource.h"
 
 void hal_timer_init(void) {
     timer_init();       /* TSC calibration */
@@ -26,7 +27,7 @@ void hal_timer_disarm(void) {
 }
 
 uint64_t hal_timer_now_ns(void) {
-    return hrtimer_now_ns();
+    return clocksource_read_ns();
 }
 
 uint64_t hal_timer_ticks_per_ms(void) {

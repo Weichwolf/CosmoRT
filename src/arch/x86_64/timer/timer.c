@@ -2,10 +2,25 @@
  * Also reads CMOS RTC at boot for wall-clock epoch offset. */
 
 #include "core/timer.h"
+#include "core/clocksource.h"
 #include "hw/serial.h"
 #include "arch/arch.h"
 
 static inline uint64_t rdtsc(void) { return arch_rdtsc(); }
+
+/* TSC as clocksource. Registered after TSC calibration in timer_init().
+ * 64-bit counter, continuous, rating 300 (desired). No wrap concerns.
+ * Under Hyper-V / KVM with pvclock, a higher-rated clocksource will take
+ * precedence once registered — this one stays as safe fallback. */
+static uint64_t tsc_clocksource_read(void) { return arch_rdtsc(); }
+
+static struct clocksource tsc_clocksource = {
+    .name  = "tsc",
+    .rating = CLOCKSOURCE_RATING_TSC,
+    .read  = tsc_clocksource_read,
+    .mask  = CLOCKSOURCE_MASK_64,
+    .flags = CLOCKSOURCE_FLAG_CONTINUOUS | CLOCKSOURCE_FLAG_VALID_FOR_HRES,
+};
 
 uint64_t timer_tsc_per_ms = 0;
 uint64_t timer_boot_tsc = 0;
@@ -61,6 +76,12 @@ void timer_init(void) {
     do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
     while (ti--) serial_putchar(tmp[ti]);
     serial_puts(" TSC/ms\n");
+
+    /* Derive ns conversion: cycles_per_sec = tsc_per_ms * 1000.
+     * max_sec=600 keeps mult*cycles within 64 bits for 10 minutes. */
+    uint64_t hz = timer_tsc_per_ms * 1000ULL;
+    clocksource_hz_to_mult(&tsc_clocksource, hz, 600);
+    clocksource_register(&tsc_clocksource);
 }
 
 uint64_t timer_ms(void) {

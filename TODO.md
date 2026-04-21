@@ -42,7 +42,7 @@ Research: `notes/TIMER_DRIVERS.md` (Commit `e4ff691`). Kernbefund: Hyper-V TSC-P
 
 Priorität nach Aufwand × ROI (bindende Reihenfolge):
 
-- [ ] **7.7.1** `struct clocksource`/`clock_event_device` Core (`src/kernel/core/clocksource.{c,h}`) — Voraussetzung für alles. HAL-API (`hal_timer_now_ns`) bleibt unverändert, intern → `clocksource_read_ns()`. ~350 LOC, 2d.
+- [x] **7.7.1** `struct clocksource`/`clock_event_device` Core (`src/kernel/core/clocksource.{c,h}`). TSC als einzige clocksource rating 300, `hal_timer_now_ns` → `clocksource_read_ns()`. 2505/0.
 - [ ] **7.7.2** ACPI Table-Parser (`src/kernel/hw/acpi.{c,h}`) — RSDP aus UEFI-Config-Tables → XSDT → FADT/HPET/MADT/MCFG. Kein ACPICA, nur Table-Parsing. ~400 LOC, 2d.
 - [ ] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`) — clocksource rating 250 + clock_event pro Comparator. Eliminiert 10ms PIT-Kalibration. ~300 LOC, 1.5d.
 - [ ] **7.7.4** Hyper-V TSC-Page als clocksource (`src/arch/x86_64/hw/hyperv_clocksource.c`) — trivialer Wrapper um bestehenden `hyperv_tsc_time_ns`, rating 400. Fix für latenten Bug unter Hyper-V/WSL2. ~60 LOC, 0.3d.

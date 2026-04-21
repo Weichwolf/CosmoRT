@@ -21,7 +21,8 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/rbtree.o \
             $(BUILD)/kernel/core/hrtimer.o \
             $(BUILD)/kernel/core/rcu.o \
-            $(BUILD)/kernel/core/tick.o
+            $(BUILD)/kernel/core/tick.o \
+            $(BUILD)/kernel/core/clocksource.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/paging.o \
