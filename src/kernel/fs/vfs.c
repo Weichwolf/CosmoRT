@@ -668,6 +668,7 @@ not_pts:
         if (ext4_inode_read(ino, &ip) < 0) return -EIO;
         int is_dir = ((ip.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR);
         if ((flags & O_DIRECTORY) && !is_dir) return -ENOTDIR;
+        if (is_dir && (flags & O_ACCMODE) != O_RDONLY) return -EISDIR;
 
         struct vfs_file *f = file_alloc();
         if (!f) return -ENOMEM;
@@ -742,6 +743,11 @@ not_pts:
     if (!node) return verr;
 
     if ((flags & O_DIRECTORY) && node->inode->type != VFS_DIR) return -ENOTDIR;
+
+    /* Opening a directory for write → EISDIR (Linux fs/namei.c do_open) */
+    if (node->inode->type == VFS_DIR &&
+        (flags & O_ACCMODE) != O_RDONLY)
+        return -EISDIR;
 
     struct vfs_file *f = file_alloc();
     if (!f) return -ENOMEM;

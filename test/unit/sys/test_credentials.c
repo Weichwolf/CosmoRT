@@ -251,6 +251,16 @@ static void test_eacces_path(void) {
     credtest_fork(child_eacces_path);
 }
 
+/* ── creat() on existing directory → EISDIR ── */
+
+static void test_creat_eisdir(void) {
+    puts("\n[cred/creat_eisdir]\n");
+    sc2(SYS_MKDIR, (long)"/tmp/credtest_existing_dir", 0755);
+    long r = sc2(SYS_CREAT, (long)"/tmp/credtest_existing_dir", 0644);
+    check_val("creat on dir EISDIR", r, -EISDIR);
+    sc1(SYS_RMDIR, (long)"/tmp/credtest_existing_dir");
+}
+
 /* ── O_CREAT without MAY_WRITE on parent → EACCES ── */
 
 static void child_creat_eacces(void) {
@@ -302,4 +312,5 @@ TEST("cred/creat_sgid_inherit",  test_creat_sgid_inherit);
 TEST("cred/mkdir_sgid_inherit",  test_mkdir_sgid_inherit);
 TEST("cred/eacces_path",         test_eacces_path);
 TEST("cred/creat_eacces",        test_creat_eacces);
+TEST("cred/creat_eisdir",        test_creat_eisdir);
 TEST("cred/fork_inherit",        test_fork_inherit);
