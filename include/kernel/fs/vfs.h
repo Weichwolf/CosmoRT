@@ -235,6 +235,29 @@ void vfs_file_incref(struct vfs_file *f);
 void vfs_file_free_obj(void *obj);
 uint64_t vfs_ext4_lookup(const char *path);
 
+/* ── i_writecount (ETXTBSY) ─────────────────────── */
+
+/* Called by open(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC): returns -ETXTBSY if the
+ * inode currently has an exec-deny active, else increments writer count. */
+int  i_writecount_get_write(int backend, uint64_t ino);
+
+/* Called by close/release of a writable file. */
+void i_writecount_put_write(int backend, uint64_t ino);
+
+/* Called at execve setup: returns -ETXTBSY if writer count > 0, else
+ * marks the inode as write-denied for the lifetime of the exec. */
+int  i_writecount_deny_write(int backend, uint64_t ino);
+
+/* Called at process exit/execve-replace to release the write-deny. */
+void i_writecount_allow_write(int backend, uint64_t ino);
+
+/* Add one unit of write-deny without checking writer count (used by fork
+ * to give the child an independent deny holding). */
+void i_writecount_deny_add(int backend, uint64_t ino);
+
+/* Read current writer count (positive = writers present, <= 0 = none). */
+int  wc_peek_writers(int backend, uint64_t ino);
+
 /* ── Filesystem registrations ───────────────────── */
 
 extern struct inode_ops ext4_inode_ops;

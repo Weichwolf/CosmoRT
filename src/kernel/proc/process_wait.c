@@ -7,6 +7,12 @@
 void proc_cleanup(process_t *p) {
     if (!p) return;
 
+    /* Release i_writecount deny-write held by the process's text image. */
+    if (p->exe_ino) {
+        i_writecount_allow_write(p->exe_backend, p->exe_ino);
+        p->exe_ino = 0;
+    }
+
     /* Release all advisory file locks held by this process */
     extern void flock_release_pid(uint32_t pid);
     flock_release_pid(p->pid);

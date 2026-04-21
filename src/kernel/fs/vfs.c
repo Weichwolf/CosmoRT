@@ -394,6 +394,147 @@ int ext4_open_count(uint32_t ino) {
     return 0;
 }
 
+/* ── i_writecount tracking (ETXTBSY semantics) ──────
+ *
+ * Linux fs/open.c: i_writecount is a signed counter.
+ *   > 0: one or more writable opens, exec returns -ETXTBSY.
+ *   < 0: deny_write_access from exec; open(W) returns -ETXTBSY.
+ *   = 0: idle.
+ *
+ * Tracked per (backend, ino) for both tmpfs and ext4 so ELF-exec on an
+ * ext4 binary denies writer opens on the same inode.
+ */
+#define WC_HASH_SIZE 128
+_Static_assert((WC_HASH_SIZE & (WC_HASH_SIZE - 1)) == 0,
+               "WC_HASH_SIZE must be power of 2");
+
+typedef struct wc_entry {
+    int       backend;
+    uint64_t  ino;
+    int       count;        /* signed: +writers or -deny */
+    struct wc_entry *next;
+} wc_entry_t;
+
+static wc_entry_t *wc_hash[WC_HASH_SIZE];
+static spinlock_t  wc_lock = SPINLOCK_INIT;
+static slab_t      wc_slab;
+static int         wc_slab_ready;
+
+static inline uint32_t wc_hash_fn(int backend, uint64_t ino) {
+    uint64_t k = ((uint64_t)backend << 56) ^ ino;
+    return (uint32_t)((k * 2654435761ULL) & (WC_HASH_SIZE - 1));
+}
+
+static void wc_ensure_slab(void) {
+    if (__builtin_expect(wc_slab_ready, 1)) return;
+    slab_init_dynamic(&wc_slab, sizeof(wc_entry_t), 32);
+    wc_slab_ready = 1;
+}
+
+/* Apply delta to (backend,ino) writecount. If result drops to 0, entry is
+ * removed. Returns NEW value after applying delta. Caller must check for
+ * ETXTBSY conditions before calling (this is an unconditional apply). */
+static int wc_apply(int backend, uint64_t ino, int delta) {
+    wc_ensure_slab();
+    uint32_t idx = wc_hash_fn(backend, ino);
+    uint64_t flags;
+    spin_lock_irq(&wc_lock, &flags);
+    wc_entry_t **pp = &wc_hash[idx];
+    while (*pp) {
+        wc_entry_t *e = *pp;
+        if (e->backend == backend && e->ino == ino) {
+            e->count += delta;
+            int n = e->count;
+            if (n == 0) {
+                *pp = e->next;
+                spin_unlock_irq(&wc_lock, flags);
+                slab_free(&wc_slab, e);
+                return 0;
+            }
+            spin_unlock_irq(&wc_lock, flags);
+            return n;
+        }
+        pp = &e->next;
+    }
+    spin_unlock_irq(&wc_lock, flags);
+
+    wc_entry_t *ne = slab_alloc(&wc_slab);
+    if (!ne) return 0;
+    ne->backend = backend;
+    ne->ino = ino;
+    ne->count = delta;
+
+    spin_lock_irq(&wc_lock, &flags);
+    for (wc_entry_t *e = wc_hash[idx]; e; e = e->next) {
+        if (e->backend == backend && e->ino == ino) {
+            e->count += delta;
+            int n = e->count;
+            spin_unlock_irq(&wc_lock, flags);
+            slab_free(&wc_slab, ne);
+            return n;
+        }
+    }
+    ne->next = wc_hash[idx];
+    wc_hash[idx] = ne;
+    int n = ne->count;
+    spin_unlock_irq(&wc_lock, flags);
+    if (n == 0) {
+        /* Shouldn't happen with non-zero delta, but be safe. */
+        return 0;
+    }
+    return n;
+}
+
+static int wc_peek(int backend, uint64_t ino) {
+    if (!wc_slab_ready) return 0;
+    uint32_t idx = wc_hash_fn(backend, ino);
+    uint64_t flags;
+    spin_lock_irq(&wc_lock, &flags);
+    for (wc_entry_t *e = wc_hash[idx]; e; e = e->next) {
+        if (e->backend == backend && e->ino == ino) {
+            int n = e->count;
+            spin_unlock_irq(&wc_lock, flags);
+            return n;
+        }
+    }
+    spin_unlock_irq(&wc_lock, flags);
+    return 0;
+}
+
+/* Public API:
+ *   i_writecount_get_write: open(W) → 0 or -ETXTBSY
+ *   i_writecount_put_write: close on writable fd
+ *   i_writecount_deny_write: exec → 0 or -ETXTBSY
+ *   i_writecount_allow_write: exec teardown */
+int i_writecount_get_write(int backend, uint64_t ino) {
+    if (wc_peek(backend, ino) < 0) return -ETXTBSY;
+    wc_apply(backend, ino, +1);
+    return 0;
+}
+
+void i_writecount_put_write(int backend, uint64_t ino) {
+    wc_apply(backend, ino, -1);
+}
+
+int i_writecount_deny_write(int backend, uint64_t ino) {
+    if (wc_peek(backend, ino) > 0) return -ETXTBSY;
+    wc_apply(backend, ino, -1);
+    return 0;
+}
+
+void i_writecount_allow_write(int backend, uint64_t ino) {
+    wc_apply(backend, ino, +1);
+}
+
+void i_writecount_deny_add(int backend, uint64_t ino) {
+    wc_apply(backend, ino, -1);
+}
+
+int wc_peek_writers(int backend, uint64_t ino) {
+    int n = wc_peek(backend, ino);
+    return n > 0 ? n : 0;
+}
+
 /* ── File alloc/free ─────────────────────────────── */
 
 struct vfs_file *file_alloc(void) {
@@ -413,6 +554,13 @@ void vfs_file_incref(struct vfs_file *f) {
 static void vfs_file_release(struct vfs_file *f) {
     extern void flock_release_file(void *vfs_file_ptr);
     flock_release_file(f);
+    /* Decrement i_writecount for writable opens (matches the inc in vfs_open). */
+    if (f->type == VFS_FILE &&
+        ((f->flags & O_ACCMODE) == O_WRONLY ||
+         (f->flags & O_ACCMODE) == O_RDWR)) {
+        uint64_t ino = f->inode ? f->inode->ino : f->disk_ino;
+        if (ino) i_writecount_put_write(f->backend, ino);
+    }
     if (f->f_ops && f->f_ops->close)
         f->f_ops->close(f);
 }
@@ -676,8 +824,20 @@ not_pts:
         if ((flags & O_DIRECTORY) && !is_dir) return -ENOTDIR;
         if (is_dir && (flags & O_ACCMODE) != O_RDONLY) return -EISDIR;
 
+        int writable = !is_dir &&
+                       (((flags & O_ACCMODE) == O_WRONLY) ||
+                        ((flags & O_ACCMODE) == O_RDWR) ||
+                        (flags & O_TRUNC));
+        if (writable) {
+            int rc = i_writecount_get_write(VFS_BACKEND_EXT4, ino);
+            if (rc < 0) return rc;
+        }
+
         struct vfs_file *f = file_alloc();
-        if (!f) return -ENOMEM;
+        if (!f) {
+            if (writable) i_writecount_put_write(VFS_BACKEND_EXT4, ino);
+            return -ENOMEM;
+        }
         f->type = is_dir ? VFS_DIR : VFS_FILE;
         f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
         f->refcount = 1;
@@ -693,9 +853,17 @@ not_pts:
         if ((flags & O_TRUNC) && !is_dir) ext4_truncate(ino, 0);
 
         process_t *p = proc_current();
-        if (!p) { file_free(f); return -EFAULT; }
+        if (!p) {
+            if (writable) i_writecount_put_write(VFS_BACKEND_EXT4, ino);
+            file_free(f);
+            return -EFAULT;
+        }
         int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
-        if (fd < 0) { file_free(f); return -EMFILE; }
+        if (fd < 0) {
+            if (writable) i_writecount_put_write(VFS_BACKEND_EXT4, ino);
+            file_free(f);
+            return -EMFILE;
+        }
         ext4_open_inc(ino);
         return fd;
     }
@@ -755,8 +923,20 @@ not_pts:
         (flags & O_ACCMODE) != O_RDONLY)
         return -EISDIR;
 
+    int writable_tm = (node->inode->type == VFS_FILE) &&
+                      (((flags & O_ACCMODE) == O_WRONLY) ||
+                       ((flags & O_ACCMODE) == O_RDWR) ||
+                       (flags & O_TRUNC));
+    if (writable_tm) {
+        int rc = i_writecount_get_write(VFS_BACKEND_RAM, node->inode->ino);
+        if (rc < 0) return rc;
+    }
+
     struct vfs_file *f = file_alloc();
-    if (!f) return -ENOMEM;
+    if (!f) {
+        if (writable_tm) i_writecount_put_write(VFS_BACKEND_RAM, node->inode->ino);
+        return -ENOMEM;
+    }
     f->type = node->inode->type;
     f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
     f->refcount = 1;
@@ -772,9 +952,17 @@ not_pts:
     if ((flags & O_TRUNC) && node->inode->type == VFS_FILE) node->inode->size = 0;
 
     process_t *p = proc_current();
-    if (!p) { file_free(f); return -EFAULT; }
+    if (!p) {
+        if (writable_tm) i_writecount_put_write(VFS_BACKEND_RAM, node->inode->ino);
+        file_free(f);
+        return -EFAULT;
+    }
     int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
-    if (fd < 0) { file_free(f); return -EMFILE; }
+    if (fd < 0) {
+        if (writable_tm) i_writecount_put_write(VFS_BACKEND_RAM, node->inode->ino);
+        file_free(f);
+        return -EMFILE;
+    }
     __sync_fetch_and_add(&node->inode->refcount, 1);
     return fd;
 }

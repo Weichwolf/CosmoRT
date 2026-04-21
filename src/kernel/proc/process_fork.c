@@ -296,6 +296,21 @@ long kernel_clone(unsigned long flags, void *child_stack,
             child->cwd[i] = parent->cwd[i];
             if (!parent->cwd[i]) break;
         }
+        for (int i = 0; i < 256; i++) {
+            child->exe_path[i] = parent->exe_path[i];
+            if (!parent->exe_path[i]) break;
+        }
+        for (int i = 0; i < 16; i++) {
+            child->comm[i] = parent->comm[i];
+            if (!parent->comm[i]) break;
+        }
+        /* Inherit the exe i_writecount deny. Each process holds one unit of
+         * deny on the inode; fork gives the child an independent holding,
+         * released in proc_cleanup (matches Linux: child inherits mm->exe_file). */
+        child->exe_backend = parent->exe_backend;
+        child->exe_ino = parent->exe_ino;
+        if (child->exe_ino)
+            i_writecount_deny_add(child->exe_backend, child->exe_ino);
         child->cmdline_len = parent->cmdline_len;
         for (int i = 0; i < parent->cmdline_len && i < 1024; i++)
             child->cmdline[i] = parent->cmdline[i];

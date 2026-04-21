@@ -68,6 +68,13 @@ typedef struct process {
     /* Executable path (set by execve, read by /proc/self/exe) */
     char        exe_path[256];
 
+    /* Executable identity for i_writecount write-deny tracking (ETXTBSY).
+     * Set by execve(), cleared on proc_cleanup/execve-replace.
+     * exe_backend: VFS_BACKEND_RAM or VFS_BACKEND_EXT4.
+     * exe_ino: inode number inside that backend (0 = no deny held). */
+    int         exe_backend;
+    uint64_t    exe_ino;
+
     /* Command line (null-separated argv, set by execve, read by /proc/pid/cmdline) */
     char        cmdline[1024];
     int         cmdline_len;  /* total bytes including all nulls */

@@ -294,6 +294,19 @@ shebang_retry:;
         elf_len = ramfs_node->size;
     }
 
+    /* ETXTBSY gate: Linux fs/exec.c denies write before format validation.
+     * Must run before ELF-header/shebang checks so a writer-held binary
+     * fails with -ETXTBSY rather than -ENOEXEC. Only check against the
+     * initial inode (pre-shebang); interpreters go through recursive
+     * execve paths which re-enter and re-check. */
+    if (shebang_depth == 0) {
+        int new_backend = ext4_ino ? VFS_BACKEND_EXT4 : VFS_BACKEND_RAM;
+        uint64_t new_ino = ext4_ino ? ext4_ino : ramfs_node->ino;
+        if (wc_peek_writers(new_backend, new_ino) > 0)
+            EXECVE_FAIL(-ETXTBSY);
+    }
+
+
     /* ── Shebang (#!) detection ─────────────────── */
     {
         uint8_t shebang_buf[256];
@@ -475,6 +488,23 @@ shebang_retry:;
                 }
                 break;
             }
+        }
+    }
+
+    /* ETXTBSY: reject exec if the target inode has writable opens.
+     * Linux fs/exec.c: deny_write_access before destroying old mm. This is
+     * the last failure point before the point-of-no-return MMU switch.
+     * Same-inode re-exec of own text: allow (already denied). */
+    {
+        int new_backend = ext4_ino ? VFS_BACKEND_EXT4 : VFS_BACKEND_RAM;
+        uint64_t new_ino = ext4_ino ? ext4_ino : ramfs_node->ino;
+        if (!(p->exe_backend == new_backend && p->exe_ino == new_ino)) {
+            int rc = i_writecount_deny_write(new_backend, new_ino);
+            if (rc < 0) EXECVE_FAIL(rc);
+            if (p->exe_ino)
+                i_writecount_allow_write(p->exe_backend, p->exe_ino);
+            p->exe_backend = new_backend;
+            p->exe_ino = new_ino;
         }
     }
 
