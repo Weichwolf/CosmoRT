@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2553/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
+Stand: ktest **2572/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
 
 ## Offene Phasen
 
@@ -134,6 +134,7 @@ HAL-Stubs bereits in `src/arch/aarch64/hal_*.c` (Phase 7.2). Interface-Oberfläc
 | 7.5 RCU-Vollendung | Tick-basierte Deferred-Execution, Range-Check-Helper | `bc8dd55`, `19b3310` |
 | 7.3 Pool-Migration (10) | FD/PIPE/NET_TCP/NET_SOCK/USOCK/ACCEPT_QUEUE/VMA/MOUNT/ARP/HW_MAX_HANDLERS | `01fa5e8`..`d96c95f`, plus TCP-OOO `64372a0`, UDP `b185178`, TW `fefa4ca` |
 | 8.3 procfs | mmap-fileop, /proc/stat, /proc/pid/status/stat vervollständigt | `0e89143`, `b16c3c3` |
+| POSIX-Credentials (LTP chmod/chown-Gruppe) | ruid/euid/suid + rgid/egid/sgid + groups[] auf process_t, setuid/seteuid/setreuid/setresuid/setgroups POSIX-konform, fork erbt, chmod/chown/creat/mkdir DAC + SUID/SGID-Semantik + GID-Inheritance, path-traversal MAY_EXEC, O_CREAT W-Check, open-on-dir → EISDIR, ext4-lchown | `16e61bc`..`f4dbdb6` |
 | Einzelbug-Sweep | adjtimex03, faccessat202, EPOLL-CLOEXEC, close_range-cloexec, EPOLLONESHOT, epoll_ctl02-eperm, execve03, acct(".") | `0a96060`..`f6b79d1` |
 | Build-Härte | `-z defs`, `-Wl,--no-undefined`, alpine-test Timeout 600s→1800s, boot-test.sh robust | `6d10e1c` |
 | musl Regressionen | sem_open/pthread_robust/tmpfs-Mount-abspath-Bug, fd_cleanup_entry Pipe-Refcount-Bug aus 7.3, ext4-Extent-Skip, `vfs_futimensat_ext4` NULL-Jump | `d630392`, `9e3a1f1`, `e31ff40` |
