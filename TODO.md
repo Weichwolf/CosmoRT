@@ -14,10 +14,10 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 ## Phase 7.3 — Offene Pools
 
-10 migriert, 2 in Arbeit, 6 offen. Einer pro Task-Session.
+11 migriert, 1 in Arbeit, 6 offen. Einer pro Task-Session.
 
-**In Arbeit:**
-- [ ] `EQ_MAX_EVENTS=16` Per-Thread-Ring-Buffer. Linux: unbegrenzte wait_queue. Migration zu Linked-List oder Ring-Wachstum bei Overflow.
+**Erledigt (diese Session):**
+- [x] `EQ_MAX_EVENTS=16` → Ring-Wachstum bei Overflow. Initial 256 Events (1 Page), verdoppelt bei Bedarf via `pages_alloc` unter `eq_lock`. Events lossless (kein Overwrite mehr), bei OOM Fallback auf alten Overwrite-Pfad. `event_queue_init/destroy` aus `thread_alloc/free` + exec-Reset via `event_queue_reset`. Keine Header-Inline-Änderung am Fast-Path (eq_pop/eq_push weiter inline, Feld-basiert statt Makro-Mask).
 
 **Offen:**
 - [ ] `PID_TABLE_MAX=4096` → Radix-Tree/IDR (aufwändig; 4096 für Single-User praktisch genug).

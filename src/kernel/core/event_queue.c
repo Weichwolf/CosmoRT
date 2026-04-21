@@ -3,6 +3,8 @@
  * event_post: write event into target thread's queue, then sched_wake.
  * event_wait: consume next event; if empty, block via schedule().
  * Timeouts use hrtimer (LAPIC one-shot) instead of polling.
+ *
+ * Ring grows on overflow via page_alloc — unbounded like Linux wait_queue.
  */
 
 #include "core/event_queue.h"
@@ -11,19 +13,82 @@
 #include "proc/process.h"
 #include "core/percpu.h"
 #include "core/timer.h"
+#include "mm/page_alloc.h"
 #include "arch/arch.h"
 #include "hal/hal.h"
 #include "spinlock.h"
 
 /* Per-thread producer lock — indexed by TID.
- * Protects head writes for multi-producer safety (IRQ + syscall). */
+ * Protects head writes for multi-producer safety (IRQ + syscall).
+ * Also serializes ring growth. */
 #define EQ_LOCK_MAX 512
 static spinlock_t eq_locks[EQ_LOCK_MAX] = { [0 ... EQ_LOCK_MAX-1] = {0, 0} };
+
+/* Size of one page in bytes — grow step is always page-aligned. */
+#define EQ_PAGE_BYTES 4096
+
+_Static_assert((EQ_INIT_CAPACITY & (EQ_INIT_CAPACITY - 1)) == 0,
+               "EQ_INIT_CAPACITY must be power of 2");
+_Static_assert(sizeof(event_t) * EQ_INIT_CAPACITY <= EQ_PAGE_BYTES,
+               "EQ_INIT_CAPACITY must fit in one page");
 
 static inline spinlock_t *eq_lock_for(thread_t *t) {
     int idx = t->tid;
     if (idx < 0 || idx >= EQ_LOCK_MAX) idx = 0;
     return &eq_locks[idx];
+}
+
+static inline int eq_pages_for(uint32_t capacity) {
+    uint64_t bytes = (uint64_t)capacity * sizeof(event_t);
+    int pages = (int)((bytes + EQ_PAGE_BYTES - 1) / EQ_PAGE_BYTES);
+    return pages < 1 ? 1 : pages;
+}
+
+void event_queue_init(event_queue_t *eq) {
+    eq->capacity = EQ_INIT_CAPACITY;
+    eq->mask = EQ_INIT_CAPACITY - 1;
+    eq->head = 0;
+    eq->tail = 0;
+    eq->events = (event_t *)pages_alloc(eq_pages_for(EQ_INIT_CAPACITY));
+}
+
+void event_queue_destroy(event_queue_t *eq) {
+    if (!eq->events) return;
+    pages_free(eq->events, eq_pages_for(eq->capacity));
+    eq->events = (event_t *)0;
+    eq->capacity = 0;
+    eq->mask = 0;
+    eq->head = 0;
+    eq->tail = 0;
+}
+
+/* Grow the ring to new_capacity (power of 2, > old capacity).
+ * Caller must hold eq_lock. Copies pending events compactly.
+ * On allocation failure: returns -1, queue unchanged (caller falls back
+ * to lossy overwrite — matches Linux oom_kill semantics better than panic). */
+static int eq_grow_locked(event_queue_t *eq, uint32_t new_capacity) {
+    event_t *new_events = (event_t *)pages_alloc(eq_pages_for(new_capacity));
+    if (!new_events) return -1;
+
+    uint32_t h = eq->head;
+    uint32_t t = eq->tail;
+    uint32_t pending = h - t;
+    uint32_t new_mask = new_capacity - 1;
+
+    for (uint32_t i = 0; i < pending; i++)
+        new_events[i] = eq->events[(t + i) & eq->mask];
+
+    event_t *old_events = eq->events;
+    int old_pages = eq_pages_for(eq->capacity);
+
+    eq->events = new_events;
+    eq->capacity = new_capacity;
+    eq->mask = new_mask;
+    eq->tail = 0;
+    hal_cpu_store_release(&eq->head, pending);
+
+    pages_free(old_events, old_pages);
+    return 0;
 }
 
 /* ── Post: write event + wake target ─────────── */
@@ -36,14 +101,26 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     uint64_t irqf;
     spin_lock_irq(lk, &irqf);
 
+    if (!eq->events) {
+        spin_unlock_irq(lk, irqf);
+        return;
+    }
+
     uint32_t h = eq->head;
     uint32_t t = eq->tail;
 
-    if (h - t >= EQ_MAX_EVENTS)
-        hal_cpu_store_release(&eq->tail, t + 1);
+    if (__builtin_expect(h - t >= eq->capacity, 0)) {
+        uint32_t next_cap = eq->capacity * 2;
+        if (next_cap > eq->capacity && eq_grow_locked(eq, next_cap) == 0) {
+            h = eq->head;
+            t = eq->tail;
+        } else {
+            hal_cpu_store_release(&eq->tail, t + 1);
+        }
+    }
 
-    eq->events[h & EQ_MASK].type = type;
-    eq->events[h & EQ_MASK].data = data;
+    eq->events[h & eq->mask].type = type;
+    eq->events[h & eq->mask].data = data;
     hal_cpu_store_release(&eq->head, h + 1);
 
     spin_unlock_irq(lk, irqf);
@@ -74,7 +151,6 @@ void thread_block_ms(int timeout_ms) {
         if (deliverable) return;
     }
 
-    /* hrtimer wakes us after timeout */
     hrtimer_t timer;
     hrtimer_init(&timer, timeout_wake, cur);
     hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
@@ -93,7 +169,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
 
-    /* Set up timeout hrtimer (if finite timeout) */
     hrtimer_t timer;
     int has_timer = 0;
     uint64_t deadline_ns = 0;
@@ -105,20 +180,19 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
 
     for (;;) {
         /* Signal check — fatal signals (SIGALRM, SIGKILL) must interrupt.
-         * But ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
+         * Ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
          * SIGWINCH=28, SIGIO=29) to avoid spurious EINTR. */
         if (cur->proc) {
             uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
             uint64_t deliverable = all_pending & ~cur->sig_blocked;
             if (deliverable) {
-                /* Filter out SIG_DFL-ignored signals */
                 #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
                 uint64_t real = deliverable;
                 for (int s = 1; s < 64 && real; s++) {
                     if (!(real & (1ULL << (s-1)))) continue;
                     if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
                         ((1ULL << (s-1)) & SIG_DFL_IGNORE))
-                        real &= ~(1ULL << (s-1)); /* SIG_DFL + ignored class */
+                        real &= ~(1ULL << (s-1));
                 }
                 if (real) {
                     if (has_timer) hrtimer_cancel(&timer);
@@ -127,28 +201,24 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
             }
         }
 
-        /* Fast path: event available */
         uint32_t h = hal_cpu_load_acquire(&eq->head);
         uint32_t t = eq->tail;
 
         if (h != t) {
-            *out = eq->events[t & EQ_MASK];
+            *out = eq->events[t & eq->mask];
             hal_cpu_store_release(&eq->tail, t + 1);
             if (has_timer) hrtimer_cancel(&timer);
             return 0;
         }
 
-        /* Queue empty — non-blocking mode */
         if (timeout_ms == 0)
             return -11; /* EAGAIN */
 
-        /* Check timeout before blocking */
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             hrtimer_cancel(&timer);
             return -11; /* EAGAIN (timeout) */
         }
 
-        /* Arm hrtimer for this block iteration */
         if (has_timer)
             hrtimer_start(&timer, deadline_ns);
 
@@ -164,13 +234,11 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         extern void schedule(void);
         schedule();
 
-        /* Resumed — check timeout */
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             hrtimer_cancel(&timer);
-            /* Check queue one last time (event might have arrived with timeout) */
             h = hal_cpu_load_acquire(&eq->head);
             if (h != eq->tail) {
-                *out = eq->events[eq->tail & EQ_MASK];
+                *out = eq->events[eq->tail & eq->mask];
                 hal_cpu_store_release(&eq->tail, eq->tail + 1);
                 return 0;
             }

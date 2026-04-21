@@ -78,6 +78,7 @@ void thread_free(thread_t *t) {
     if (!t) return;
     if (t->tid > 0 && t->tid < TID_TABLE_MAX)
         tid_table[t->tid] = 0;
+    event_queue_destroy(&t->eq);
     if (t->kstack)
         pages_free(t->kstack, KSTACK_SIZE / 4096);
     slab_free(&thread_slab, t);

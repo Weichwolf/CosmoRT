@@ -590,10 +590,7 @@ shebang_retry:;
 
     /* Flush event queue — stale events from pre-exec children must not
      * confuse event_wait (e.g., sigtimedwait) after exec replaces the binary. */
-    { thread_t *et = cur;
-      et->eq.head = 0;
-      et->eq.tail = 0;
-    }
+    event_queue_reset(&cur->eq);
 
     /* Close O_CLOEXEC fds — must use full close (pipe_close, fd_cleanup_entry)
      * not just fd_close, so pipe write_open/read_open decrements happen and

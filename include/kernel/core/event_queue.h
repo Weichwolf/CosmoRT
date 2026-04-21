@@ -7,6 +7,7 @@
  * MPSC ringbuffer: multiple producers (serialized by eq_lock spinlock),
  * single consumer (owner thread). Monotonic head/tail, power-of-2 masking.
  *
+ * Unbounded: ring grows on overflow (page-backed, power-of-2 capacity).
  * IRQ-safe: event_post can be called from IRQ context (RT-Core).
  */
 #ifndef EVENT_QUEUE_H
@@ -36,63 +37,68 @@ typedef struct {
 
 /* ── Event Queue ─────────────────────────────── */
 
-#define EQ_MAX_EVENTS 16
-#define EQ_MASK       (EQ_MAX_EVENTS - 1)
+/* Initial ring capacity in events. One 4KB page holds 256 events
+ * (sizeof(event_t) = 16). Grows in powers of two via page_alloc on overflow. */
+#define EQ_INIT_CAPACITY 256
 
 typedef struct {
-    event_t  events[EQ_MAX_EVENTS];
-    volatile uint32_t head;  /* producer index (monotonic) */
-    volatile uint32_t tail;  /* consumer index (monotonic) */
+    event_t          *events;
+    uint32_t          capacity;   /* always power of 2 */
+    uint32_t          mask;       /* capacity - 1 */
+    volatile uint32_t head;       /* producer index (monotonic) */
+    volatile uint32_t tail;       /* consumer index (monotonic) */
 } event_queue_t;
 
-/* ── Inline operations (no kernel dependencies, testable in userspace) ── */
+/* ── Lifecycle (implemented in event_queue.c) ── */
 
-static inline void event_queue_init(event_queue_t *eq) {
+void event_queue_init(event_queue_t *eq);
+void event_queue_destroy(event_queue_t *eq);
+
+/* Reset head/tail without touching buffer (for exec flush). */
+static inline void event_queue_reset(event_queue_t *eq) {
     eq->head = 0;
     eq->tail = 0;
 }
 
-/* Non-blocking: number of pending events. */
+/* ── Inline operations (single-threaded / caller-locked use) ── */
+
 static inline int event_pending(event_queue_t *eq) {
     uint32_t h = eq->head;
-    __asm__ volatile("" ::: "memory"); /* compiler barrier (load-acquire) */
+    __asm__ volatile("" ::: "memory");
     uint32_t t = eq->tail;
     return (int)(h - t);
 }
 
-/* Raw enqueue — no locking, no wake. For single-producer or caller-locked use. */
+/* Raw enqueue — no locking, no growth, no wake. For tests or caller-locked use.
+ * Full queue: drops oldest (test harness relies on this lossy behavior). */
 static inline int eq_push(event_queue_t *eq, uint32_t type, uint64_t data) {
     uint32_t h = eq->head;
     uint32_t t = eq->tail;
 
-    /* Queue full: advance tail (drop oldest) */
-    if (h - t >= EQ_MAX_EVENTS) {
+    if (h - t >= eq->capacity)
         eq->tail = t + 1;
-    }
 
-    eq->events[h & EQ_MASK].type = type;
-    eq->events[h & EQ_MASK].data = data;
-    __asm__ volatile("" ::: "memory"); /* compiler barrier (store-release) */
+    eq->events[h & eq->mask].type = type;
+    eq->events[h & eq->mask].data = data;
+    __asm__ volatile("" ::: "memory");
     eq->head = h + 1;
     return 0;
 }
 
-/* Raw dequeue — single consumer. Returns 0 on success, -1 if empty. */
 static inline int eq_pop(event_queue_t *eq, event_t *out) {
     uint32_t h = eq->head;
-    __asm__ volatile("" ::: "memory"); /* compiler barrier (load-acquire) */
+    __asm__ volatile("" ::: "memory");
     uint32_t t = eq->tail;
 
     if (h == t) return -1;
 
-    *out = eq->events[t & EQ_MASK];
-    __asm__ volatile("" ::: "memory"); /* compiler barrier (store-release) */
+    *out = eq->events[t & eq->mask];
+    __asm__ volatile("" ::: "memory");
     eq->tail = t + 1;
     return 0;
 }
 
-/* Drain all events of a specific type. Returns count drained (up to max).
- * Non-matching events are compacted back into the queue. */
+/* Drain all events of a specific type. Non-matching events compacted back. */
 static inline int event_drain(event_queue_t *eq, uint32_t type, event_t *out, int max) {
     uint32_t h = eq->head;
     uint32_t t = eq->tail;
@@ -100,12 +106,12 @@ static inline int event_drain(event_queue_t *eq, uint32_t type, event_t *out, in
     uint32_t new_head = t;
 
     for (uint32_t i = t; i != h; i++) {
-        event_t *e = &eq->events[i & EQ_MASK];
+        event_t *e = &eq->events[i & eq->mask];
         if (e->type == type && count < max) {
             out[count++] = *e;
         } else {
             if (new_head != i)
-                eq->events[new_head & EQ_MASK] = *e;
+                eq->events[new_head & eq->mask] = *e;
             new_head++;
         }
     }
@@ -117,7 +123,7 @@ static inline int event_drain(event_queue_t *eq, uint32_t type, event_t *out, in
 /* ── Kernel API (implemented in event_queue.c) ── */
 
 /* Post event to target thread's queue + sched_wake.
- * Non-blocking, IRQ-safe. Queue full: oldest overwritten. */
+ * Non-blocking, IRQ-safe. Grows ring on overflow (page-backed). */
 struct thread;
 void event_post(struct thread *target, uint32_t type, uint64_t data);
 
