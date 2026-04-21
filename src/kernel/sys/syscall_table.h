@@ -178,7 +178,7 @@
     X(SYS_TRUNCATE, truncate, do_truncate((const char *)a1, (int64_t)a2)) \
     X(SYS_FTRUNCATE, ftruncate, do_ftruncate((int)a1, (int64_t)a2)) \
     X(SYS_CHMOD, chmod, do_fchmodat(AT_FDCWD, (const char *)a1, (uint32_t)a2, 0)) \
-    X(SYS_FCHMODAT, fchmodat, do_fchmodat((int)a1, (const char *)a2, (uint32_t)a3, (int)a4)) \
+    X(SYS_FCHMODAT, fchmodat, do_fchmodat((int)a1, (const char *)a2, (uint32_t)a3, 0)) \
     X(SYS_UTIMENSAT, utimensat, do_utimensat((int)a1, (const char *)a2, (const void *)a3, (int)a4)) \
     X(SYS_FALLOCATE, fallocate, do_fallocate((int)a1, (int)a2, (int64_t)a3, (int64_t)a4)) \
     X(SYS_MKNODAT, mknodat, do_mknodat((int)a1, (const char *)a2, (uint32_t)a3, (uint64_t)a4)) \
