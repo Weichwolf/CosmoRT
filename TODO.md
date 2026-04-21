@@ -24,7 +24,7 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 **Offen:**
 - [ ] `PID_TABLE_MAX=4096` → Radix-Tree/IDR (aufwändig; 4096 für Single-User praktisch genug).
 - [ ] `TID_TABLE_MAX=4096` → wie PID.
-- [ ] `EXECVE_MAX_*` → 128KB-Buffer ist laut Audit bereits Linux-kompatibel; Verify-only.
+- [ ] `EXECVE_MAX_*` → **nicht OK.** Verify-Ergebnis: Total-Buffer (128KB) matcht Alpine `ARG_MAX`, aber `MAX_ARGS=256`, `MAX_ENVS=256` und `MAX_STRLEN=4096` liegen weit unter Linux (`MAX_ARG_STRINGS=0x7FFFFFFF`, `MAX_ARG_STRLEN=128KB`). Drei konkrete Bugs: (1) `ls /usr/bin/*` (~500 Einträge) trunkiert silent, (2) Env-String >4KB bricht env-Enumeration silent ab, (3) Overflow macht `break` statt `-E2BIG`. Stack-Arrays (`kargv_ptrs/kenvp_ptrs` je 2KB) bleiben bei 256 verträglich; Skalierung auf Linux-Werte braucht iterative Seite-für-Seite-Kopie in User-Stack statt Kernel-Stack-Array. Migrationsplan: (a) `MAX_ARGS/ENVS` auf `INT_MAX` (limitiert durch 128KB-Buffer), Loop-Abbruch bei `buf_off >= EXECVE_BUF_SIZE` mit `-E2BIG`; (b) `MAX_STRLEN` auf 128KB, pro-String limitiert durch Restbuffer; (c) `argv_addrs/envp_addrs` in `build_user_stack` als `pages_alloc` statt Stack-Array; (d) `kargv_ptrs/kenvp_ptrs` ebenfalls dynamisch. Separater Task.
 - [ ] `EXT4_OPEN_MAX=256` (`fs/vfs.c:283`) → lineare Suche unter Lock. Hash-Table. Aus 7.4-Audit abgeleitet.
 - [ ] `_Static_assert` auf kritische Slab-Struct-Größen.
 - [ ] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` — noch nicht verdrahtet.
