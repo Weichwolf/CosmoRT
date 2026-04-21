@@ -336,7 +336,7 @@ Einzelner Prozess kann alle Slots aufbrauchen → blockiert alle anderen.
 | `NET_MAX_SOCKETS` | 256 | `net/socket.h:8` | unbegrenzt | Slab |
 | `USOCK_MAX` | 32 | `net/unix_socket.h:17` | unbegrenzt, skb-Queues | Slab |
 | `ACCEPT_QUEUE_MAX` | 8 | `net/socket.h:18` | Default 128, per `listen()` | dynamisch per listen-backlog |
-| TCP OOO-Queue | 4 Slots | `net/tcp.h` | adaptive | Slab pro Connection |
+| ~~TCP OOO-Queue 4 Slots~~ | erledigt | `net/tcp.h` | adaptive (rb_tree) | Slab + sortierte Liste, NET_TCP_OOO_MAX=64 pro Connection |
 
 #### Mittel-Hoch (funktional einschränkend)
 
@@ -377,6 +377,7 @@ Jede Migration eigener Task, Reihenfolge nach DoS-Risiko (kritisch zuerst):
 - [x] `NET_MAX_SOCKETS=256` → `sock_slab` auf `slab_init_dynamic` umgestellt. **Commit 2de6902**.
 - [x] `USOCK_MAX=32` → dynamischer Slab + intrusive Active-List fuer bind/connect-Path-Lookup. **Commit 67048b5**.
 - [x] `ACCEPT_QUEUE_MAX=8` → war Dead-Code (`accept_count` wurde nirgends inkrementiert, Queue nie befuellt). Komplett entfernt. **Commit 6db7323**.
+- [x] `NET_TCP_OOO_SLOTS=4` (inline Array, ~5.8KB pro Connection) → sortierte Linked-List `tcp_ooo_seg_t` aus dynamischem Slab. Per-Connection-Limit `NET_TCP_OOO_MAX=64` (DoS-Guard). Cleanup in `net_tcp_close`.
 
 **Mittel-Hoch — erledigt:**
 

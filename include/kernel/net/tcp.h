@@ -15,7 +15,7 @@ struct thread; /* forward declaration for wait_thread */
 
 /* TCP connections themselves are sock_slab-allocated (dynamic, on-demand).
  * Per-connection limits below are per-socket caps, not system-wide pools. */
-#define NET_TCP_OOO_SLOTS 4    /* out-of-order segments per connection */
+#define NET_TCP_OOO_MAX   64   /* per-connection cap on OOO segments (DoS guard) */
 #define NET_TFO_CACHE_MAX 64   /* TFO-cookie cache (global, server-IP keyed) */
 
 /* ── TCP States (RFC 793) ─────────────────────────── */
@@ -64,13 +64,12 @@ typedef struct net_tcp {
 
     tcp_rxring_t rx;
 
-    /* Out-of-order buffer (Phase E) */
-    struct {
-        uint32_t seq;
-        uint16_t len;
-        uint8_t  data[1460]; /* segment payload copy */
-    } ooo[NET_TCP_OOO_SLOTS];
-    int ooo_count;
+    /* Out-of-order queue: sorted singly-linked list of slab-allocated
+     * tcp_ooo_seg_t (definition private to tcp.c). Linux uses an rb_tree
+     * (out_of_order_queue); a sorted list suffices because TCP OOO depth
+     * is typically small and bounded by NET_TCP_OOO_MAX per connection. */
+    void *ooo_head;
+    int   ooo_count;
 
     /* CUBIC Congestion Control (RFC 8312) */
     uint32_t cwnd;           /* congestion window (bytes) */

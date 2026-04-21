@@ -8,6 +8,7 @@
 #include "net/net_util.h"
 #include "core/timer.h"
 #include "mm/page_alloc.h"
+#include "mm/slab.h"
 #include "core/event_queue.h"
 
 /* From socket.c — listener lookup (host-order port). Returns the
@@ -461,48 +462,69 @@ static void sack_advance(net_tcp_t *c, uint32_t ack) {
     c->sack_count = w;
 }
 
-/* ── OOO Buffer Helpers (called on RT-Core, no locks) ── */
+/* ── OOO Queue (sorted singly-linked list, slab-allocated) ── */
+
+typedef struct tcp_ooo_seg {
+    struct tcp_ooo_seg *next;
+    uint32_t seq;
+    uint16_t len;
+    uint8_t  data[MSS];
+} tcp_ooo_seg_t;
+
+static slab_t ooo_slab;
+static int    ooo_slab_inited;
+
+static void ooo_slab_ensure(void) {
+    if (__builtin_expect(ooo_slab_inited, 1)) return;
+    if (__sync_bool_compare_and_swap(&ooo_slab_inited, 0, 1))
+        slab_init_dynamic(&ooo_slab, (int)sizeof(tcp_ooo_seg_t), 0);
+}
+
+static void ooo_free_all(net_tcp_t *c) {
+    tcp_ooo_seg_t *s = (tcp_ooo_seg_t *)c->ooo_head;
+    while (s) {
+        tcp_ooo_seg_t *next = s->next;
+        slab_free(&ooo_slab, s);
+        s = next;
+    }
+    c->ooo_head = 0;
+    c->ooo_count = 0;
+}
 
 static void ooo_insert(net_tcp_t *c, uint32_t seq, const uint8_t *data, int len) {
-    if (len <= 0 || len > 1460) return;
-    for (int i = 0; i < c->ooo_count; i++)
-        if (c->ooo[i].seq == seq) return; /* duplicate */
+    if (len <= 0 || len > MSS) return;
+    if (c->ooo_count >= NET_TCP_OOO_MAX) return;
 
-    int slot;
-    if (c->ooo_count < NET_TCP_OOO_SLOTS) {
-        slot = c->ooo_count++;
-    } else {
-        slot = 0;
-        for (int i = 1; i < NET_TCP_OOO_SLOTS; i++)
-            if ((int32_t)(c->ooo[i].seq - c->ooo[slot].seq) < 0)
-                slot = i;
-    }
-    c->ooo[slot].seq = seq;
-    c->ooo[slot].len = (uint16_t)len;
-    mcpy(c->ooo[slot].data, data, len);
+    tcp_ooo_seg_t **pp = (tcp_ooo_seg_t **)&c->ooo_head;
+    while (*pp && (int32_t)((*pp)->seq - seq) < 0) pp = &(*pp)->next;
+    if (*pp && (*pp)->seq == seq) return; /* duplicate */
 
-    /* Update SACK blocks for OOO segment */
+    ooo_slab_ensure();
+    tcp_ooo_seg_t *s = (tcp_ooo_seg_t *)slab_alloc(&ooo_slab);
+    if (!s) return;
+    s->seq = seq;
+    s->len = (uint16_t)len;
+    mcpy(s->data, data, len);
+    s->next = *pp;
+    *pp = s;
+    c->ooo_count++;
+
     sack_update(c, seq, len);
 }
 
 static int ooo_drain(net_tcp_t *c) {
-    int drained = 0, progress = 1;
-    while (progress && c->ooo_count > 0) {
-        progress = 0;
-        for (int i = 0; i < c->ooo_count; i++) {
-            if (c->ooo[i].seq == c->rcv_nxt) {
-                rxring_push(&c->rx, c->ooo[i].data, c->ooo[i].len);
-                c->rcv_nxt += c->ooo[i].len;
-                drained += c->ooo[i].len;
-                c->ooo_count--;
-                if (i < c->ooo_count)
-                    c->ooo[i] = c->ooo[c->ooo_count];
-                progress = 1;
-                break;
-            }
-        }
+    int drained = 0;
+    tcp_ooo_seg_t *s = (tcp_ooo_seg_t *)c->ooo_head;
+    while (s && s->seq == c->rcv_nxt) {
+        rxring_push(&c->rx, s->data, s->len);
+        c->rcv_nxt += s->len;
+        drained += s->len;
+        tcp_ooo_seg_t *next = s->next;
+        slab_free(&ooo_slab, s);
+        s = next;
+        c->ooo_count--;
     }
-    /* Remove SACK blocks covered by advanced rcv_nxt */
+    c->ooo_head = s;
     sack_advance(c, c->rcv_nxt);
     return drained;
 }
@@ -999,7 +1021,9 @@ int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
     uint8_t fl = pkt[47];
 
     /* mzero clobbers wait_thread; preserve so recursive tcp_input paths
-     * (send_syn -> loopback -> q_push -> event_post) can still wake us. */
+     * (send_syn -> loopback -> q_push -> event_post) can still wake us.
+     * OOO list is freed by net_tcp_close before reuse; mzero on a freshly
+     * allocated socket is safe (head was never written). */
     struct thread *saved_wt = c->wait_thread;
     mzero(c, sizeof(*c));
     c->wait_thread = saved_wt;
@@ -1055,7 +1079,9 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     if (c->got_rst) return -1;
 
     /* Preserve wait_thread across mzero: caller (do_connect) set it for
-     * recursive loopback wakeup via send_syn -> tcp_input. */
+     * recursive loopback wakeup via send_syn -> tcp_input.
+     * OOO list is freed by net_tcp_close before reuse; mzero on a freshly
+     * allocated socket is safe (head was never written). */
     struct thread *saved_wt = c->wait_thread;
     mzero(c, sizeof(*c));
     c->wait_thread = saved_wt;
@@ -1151,6 +1177,7 @@ void net_tcp_close(net_tcp_t *c) {
     }
     tcp_unregister(c);
     rxring_destroy(&c->rx);
+    ooo_free_all(c);
     c->state = TCP_CLOSED;
 }
 
