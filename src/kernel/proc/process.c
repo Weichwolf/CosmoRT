@@ -719,7 +719,7 @@ int cred_owns(process_t *p, uint32_t owner_uid) {
 }
 
 int cred_can_chmod(process_t *p, uint32_t owner_uid) {
-    if (!p) return 0;
+    if (!p) return 1;  /* kernel context: allow */
     if (p->euid == 0) return 1;
     return p->euid == owner_uid;
 }
