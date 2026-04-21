@@ -50,12 +50,24 @@ static int tmpfs_op_lstat(struct mount *mnt, const char *relpath, struct k_stat 
 }
 
 static int tmpfs_op_mkdir(struct mount *mnt, const char *relpath, int mode) {
-    (void)mode;
     char _a[512]; const char *abs = tmpfs_abspath(mnt, relpath, _a, sizeof(_a));
     struct vfs_node *existing = vfs_lookup(abs);
     if (existing) return -EEXIST;
     struct vfs_node *n = vfs_create(abs, VFS_DIR);
     if (!n) return -ENOENT;
+    process_t *pcur = proc_current();
+    uint32_t cmask = pcur ? pcur->umask_val : 0022;
+    uint32_t cmode = ((uint32_t)mode & 07777) & ~(cmask & 0777);
+    struct vfs_inode *parent_ino = n->parent ? n->parent->inode : 0;
+    if (parent_ino && (parent_ino->mode & S_ISGID))
+        cmode |= S_ISGID;
+    n->inode->mode = cmode;
+    if (pcur) {
+        n->inode->uid = pcur->fsuid;
+        n->inode->gid = (parent_ino && (parent_ino->mode & S_ISGID))
+                            ? parent_ino->gid
+                            : pcur->fsgid;
+    }
     return 0;
 }
 

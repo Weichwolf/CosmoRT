@@ -73,7 +73,6 @@ static int ext4_vfs_lstat(struct mount *mnt, const char *relpath, struct k_stat 
 
 static int ext4_vfs_mkdir(struct mount *mnt, const char *relpath, int mode) {
     (void)mnt;
-    /* Check if exists */
     uint64_t ino64 = ext4_walk_err(relpath, 0);
     if (ino64 != 0) return -EEXIST;
 
@@ -83,8 +82,27 @@ static int ext4_vfs_mkdir(struct mount *mnt, const char *relpath, int mode) {
     uint32_t parent_ino = (uint32_t)parent_ino64;
     if (parent_ino == 0) return perr;
 
+    struct ext4_inode pip;
+    if (ext4_inode_read(parent_ino, &pip) < 0) return -EIO;
+    process_t *pcur = proc_current();
+    uint32_t cmask = pcur ? pcur->umask_val : 0022;
+    uint32_t cmode = ((uint32_t)mode & 07777) & ~(cmask & 0777);
+    if (pip.i_mode & S_ISGID) cmode |= S_ISGID;
+
     uint32_t new_ino;
-    return ext4_mkdir(parent_ino, basename, (uint16_t)(mode & 07777), &new_ino);
+    int rc = ext4_mkdir(parent_ino, basename, (uint16_t)cmode, &new_ino);
+    if (rc < 0) return rc;
+    if (pcur) {
+        struct ext4_inode nip;
+        if (ext4_inode_read(new_ino, &nip) == 0) {
+            nip.i_uid = (uint16_t)pcur->fsuid;
+            nip.i_gid = (pip.i_mode & S_ISGID)
+                            ? (uint16_t)pip.i_gid
+                            : (uint16_t)pcur->fsgid;
+            ext4_inode_write(new_ino, &nip);
+        }
+    }
+    return rc;
 }
 
 static int ext4_vfs_rmdir(struct mount *mnt, const char *relpath) {

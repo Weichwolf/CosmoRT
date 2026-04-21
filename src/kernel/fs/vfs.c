@@ -614,10 +614,29 @@ not_pts:
             struct ext4_inode pip;
             if (ext4_inode_read(parent_ino, &pip) < 0) return -EIO;
             if ((pip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return -ENOTDIR;
+
+            process_t *pcur = proc_current();
+            uint32_t cmask = pcur ? pcur->umask_val : 0022;
+            uint32_t raw = mode ? (mode & 07777) : 0644;
+            uint32_t cmode = raw & ~(cmask & 0777);
+            if (pcur && pcur->euid != 0) {
+                cmode &= ~(uint32_t)S_ISUID;
+                if ((cmode & S_ISGID) && !cred_in_group(pcur, pip.i_gid))
+                    cmode &= ~(uint32_t)S_ISGID;
+            }
             uint32_t new_ino;
-            int cmode = mode ? (mode & 07777) : 0644;
-            int rc = ext4_create(parent_ino, basename, cmode, &new_ino);
+            int rc = ext4_create(parent_ino, basename, (int)cmode, &new_ino);
             if (rc < 0) return rc;
+            if (pcur) {
+                struct ext4_inode nip;
+                if (ext4_inode_read(new_ino, &nip) == 0) {
+                    nip.i_uid = (uint16_t)pcur->fsuid;
+                    nip.i_gid = (pip.i_mode & S_ISGID)
+                                    ? (uint16_t)pip.i_gid
+                                    : (uint16_t)pcur->fsgid;
+                    ext4_inode_write(new_ino, &nip);
+                }
+            }
             ino = new_ino;
             inotify_event(path, IN_CREATE);
         }
@@ -668,7 +687,23 @@ not_pts:
     if (!node && (flags & O_CREAT) && verr == -ENOENT) {
         node = vfs_create(path, VFS_FILE);
         if (!node) return -ENOENT;
-        node->inode->mode = mode & 07777;
+        process_t *pcur = proc_current();
+        uint32_t cmask = pcur ? pcur->umask_val : 0022;
+        uint32_t cmode = (mode & 07777) & ~(cmask & 0777);
+        struct vfs_inode *parent_ino = node->parent ? node->parent->inode : 0;
+        if (pcur && pcur->euid != 0) {
+            cmode &= ~(uint32_t)S_ISUID;
+            if ((cmode & S_ISGID) && parent_ino &&
+                !cred_in_group(pcur, parent_ino->gid))
+                cmode &= ~(uint32_t)S_ISGID;
+        }
+        node->inode->mode = cmode;
+        if (pcur) {
+            node->inode->uid = pcur->fsuid;
+            node->inode->gid = (parent_ino && (parent_ino->mode & S_ISGID))
+                                   ? parent_ino->gid
+                                   : pcur->fsgid;
+        }
         inotify_event(path, IN_CREATE);
     }
     if (!node) return verr;
