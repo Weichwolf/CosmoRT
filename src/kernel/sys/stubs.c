@@ -34,9 +34,14 @@ long do_mount(const char *source, const char *target, const char *fstype,
               unsigned long flags, const void *data) {
     (void)source; (void)data;
     if (!target) return -EFAULT;
-    char ktarget[PATH_MAX];
-    int tlen = copy_path_from_user(ktarget, target, PATH_MAX);
+    char ktarget_raw[PATH_MAX];
+    int tlen = copy_path_from_user(ktarget_raw, target, PATH_MAX);
     if (tlen < 0) return tlen;
+
+    char ktarget[PATH_MAX];
+    if (resolve_path(ktarget_raw, ktarget, PATH_MAX) < 0) return -EINVAL;
+    tlen = 0;
+    while (ktarget[tlen]) tlen++;
 
     /* MS_REMOUNT: update existing mount's flags only. fstype/source ignored. */
     if (flags & MS_REMOUNT)
@@ -63,6 +68,26 @@ long do_mount(const char *source, const char *target, const char *fstype,
     int sr = vfs_stat(ktarget, &st);
     if (sr < 0) return sr;
     if ((st.st_mode & S_IFMT) != S_IFDIR) return -ENOTDIR;
+
+    /* Ensure target exists in the ramfs dentry tree so tmpfs_op_* can
+     * lookup children. Alpine's /tmp etc. live on ext4; the tmpfs mount
+     * overlays them, but tmpfs_op_mkdir/lookup walk the shared ramfs tree. */
+    extern struct vfs_node *vfs_lookup(const char *path);
+    extern struct vfs_node *vfs_create(const char *path, int type);
+    extern struct vfs_node *ensure_dirs(const char *path);
+    if (!vfs_lookup(ktarget)) {
+        /* Build parent path + trailing slash so ensure_dirs creates the
+         * final component as a directory (ensure_dirs stops before the
+         * basename). */
+        char trailing[PATH_MAX + 8];
+        int ti = 0;
+        while (ktarget[ti] && ti < PATH_MAX) { trailing[ti] = ktarget[ti]; ti++; }
+        trailing[ti] = '/';
+        trailing[ti + 1] = '.';
+        trailing[ti + 2] = '\0';
+        ensure_dirs(trailing);
+        if (!vfs_lookup(ktarget)) vfs_create(ktarget, VFS_DIR);
+    }
 
     char *dup = mount_path_dup(ktarget, tlen);
     if (!dup) return -ENOMEM;

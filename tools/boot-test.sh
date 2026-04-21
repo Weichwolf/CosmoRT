@@ -1,5 +1,6 @@
 #!/bin/sh
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export LTPROOT=/opt/ltp/install
 mount -t proc none /proc 2>/dev/null || true
 mount -t sysfs none /sys 2>/dev/null || true
 mount -t tmpfs none /tmp 2>/dev/null || true
