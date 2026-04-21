@@ -137,18 +137,15 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (!dp) return -EFAULT;
         fd_entry_t *dold = fd_get(&dp->fds, (int)a1);
         if (!dold) return -EBADF;
-        int di = fd_find_free(&dp->fds, 0);
-        if (di < 0) return -EMFILE;
-        dp->fds.entries[di] = *dold;
-        dp->fds.entries[di].flags &= ~O_CLOEXEC;
-        fd_mark_used(&dp->fds, di);
-        if (dold->type == FD_FILE && dold->obj) {
+        fd_entry_t src = *dold;
+        int di = fd_dup_at(&dp->fds, 0, src, src.flags & ~O_CLOEXEC);
+        if (di < 0) return di;
+        if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
-            vfs_file_incref((struct vfs_file *)dold->obj);
-        } else if (dold->obj) {
-            fd_obj_incref(dold->type, dold->obj, dold->flags);
+            vfs_file_incref((struct vfs_file *)src.obj);
+        } else if (src.obj) {
+            fd_obj_incref(src.type, src.obj, src.flags);
         }
-        if (di >= dp->fds.max_fd) dp->fds.max_fd = di + 1;
         return di;
     }
 

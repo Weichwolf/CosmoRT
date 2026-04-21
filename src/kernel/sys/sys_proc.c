@@ -51,8 +51,10 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         p->vfork_parent_tid = 0;
     }
 
-    /* Close all FDs immediately so pipe writers/readers see EOF */
-    for (int i = 0; i < FD_MAX; i++) {
+    /* Close all FDs immediately so pipe writers/readers see EOF.
+     * proc_cleanup() will fd_table_free() — here we only decrement refs
+     * and clear entries so blocked I/O wakes up. */
+    for (int i = 0; i < p->fds.max_slots; i++) {
         int ftype = p->fds.entries[i].type;
         if (ftype == FD_FILE) {
             extern void vfs_file_free_obj(void *obj);
@@ -63,9 +65,8 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         }
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;
+        if (p->fds.free_bitmap) fd_mark_free(&p->fds, i);
     }
-    /* Reset bitmap: all free */
-    for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
 
     /* Kill other threads.
      * Sibling threads may be in the scheduler's run queue (no way to dequeue
@@ -483,7 +484,8 @@ long do_prlimit64(int pid, int resource,
     const struct k_rlimit *new_rlim = (const struct k_rlimit *)new_rlim_;
     (void)pid;
     process_t *p = proc_current();
-    unsigned long nofile_cur = (p && p->rlim_nofile) ? p->rlim_nofile : FD_MAX;
+    unsigned long nofile_cur = (p && p->rlim_nofile) ? p->rlim_nofile
+                                                      : (unsigned long)FD_DEFAULT_NOFILE;
 
     unsigned long stack_cur = (p && p->rlim_stack) ? p->rlim_stack : RLIM_STACK_DEFAULT;
 
@@ -493,7 +495,7 @@ long do_prlimit64(int pid, int resource,
         int r = copy_from_user(&knew, new_rlim, sizeof(knew));
         if (r) return r;
         if (resource == RLIMIT_NOFILE && p) {
-            if (knew.rlim_cur > FD_MAX) knew.rlim_cur = FD_MAX;
+            if (knew.rlim_cur > (unsigned long)FD_CEILING) knew.rlim_cur = FD_CEILING;
             p->rlim_nofile = knew.rlim_cur;
             nofile_cur = knew.rlim_cur;
         }
@@ -531,7 +533,7 @@ long do_prlimit64(int pid, int resource,
             break;
         case RLIMIT_NOFILE:
             krl.rlim_cur = nofile_cur;
-            krl.rlim_max = FD_MAX;
+            krl.rlim_max = FD_CEILING;
             break;
         case RLIMIT_AS:
             krl.rlim_cur = RLIM_INFINITY;

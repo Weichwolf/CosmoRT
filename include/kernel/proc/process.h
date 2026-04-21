@@ -91,7 +91,7 @@ typedef struct process {
     spinlock_t  lock;
 
     /* Resource limits (at end to avoid offset shifts) */
-    unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_MAX default) */
+    unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_DEFAULT_NOFILE) */
     unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
     unsigned long rlim_data;     /* RLIMIT_DATA cur (0 = unlimited, like Linux) */
     unsigned long rlim_nproc;    /* RLIMIT_NPROC cur (0 = unlimited) */

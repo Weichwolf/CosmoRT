@@ -269,18 +269,72 @@ int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int p
 /* Default PTY for init's stdio. Set by vt_init(). */
 int fd_default_pty = -1;
 
-void fd_table_init(fd_table_t *fdt) {
-    for (int i = 0; i < FD_MAX; i++) fdt->entries[i].type = FD_NONE;
-    /* All FDs free */
-    for (int w = 0; w < FD_BITMAP_WORDS; w++) fdt->free_bitmap[w] = ~0ULL;
+static int fd_entries_pages(int slots) {
+    size_t bytes = (size_t)slots * sizeof(fd_entry_t);
+    return (int)((bytes + 4095) / 4096);
+}
+static int fd_bitmap_pages(int slots) {
+    size_t bytes = (size_t)(slots / 64) * sizeof(uint64_t);
+    if (bytes == 0) bytes = sizeof(uint64_t);
+    return (int)((bytes + 4095) / 4096);
+}
+
+/* fd_alloc/expand/dup may be entered concurrently via signal-path syscalls;
+ * all FD mutations already run under the process syscall context, but the
+ * expansion itself must be atomic w.r.t. interrupts. Table grow is rare. */
+static int fd_table_grow(fd_table_t *fdt, int min_slots) {
+    if (min_slots > FD_CEILING) return -EMFILE;
+    int new_slots = fdt->max_slots ? fdt->max_slots : FD_INIT_SLOTS;
+    while (new_slots < min_slots) new_slots *= 2;
+    if (new_slots > FD_CEILING) new_slots = FD_CEILING;
+    if (new_slots < min_slots) return -EMFILE;
+
+    fd_entry_t *ne = (fd_entry_t *)pages_alloc(fd_entries_pages(new_slots));
+    uint64_t   *nb = ne ? (uint64_t *)pages_alloc(fd_bitmap_pages(new_slots)) : 0;
+    if (!ne || !nb) {
+        if (ne) pages_free(ne, fd_entries_pages(new_slots));
+        if (nb) pages_free(nb, fd_bitmap_pages(new_slots));
+        return -ENOMEM;
+    }
+
+    int nwords = new_slots / 64;
+    for (int w = 0; w < nwords; w++) nb[w] = ~0ULL;
+
+    if (fdt->entries) {
+        for (int i = 0; i < fdt->max_slots; i++) ne[i] = fdt->entries[i];
+        int ow = fdt->max_slots / 64;
+        for (int w = 0; w < ow; w++) nb[w] = fdt->free_bitmap[w];
+        pages_free(fdt->entries,     fd_entries_pages(fdt->max_slots));
+        pages_free(fdt->free_bitmap, fd_bitmap_pages(fdt->max_slots));
+    }
+    fdt->entries     = ne;
+    fdt->free_bitmap = nb;
+    fdt->max_slots   = new_slots;
+    return 0;
+}
+
+int fd_table_alloc_empty(fd_table_t *fdt, int slots) {
+    fdt->entries = 0;
+    fdt->free_bitmap = 0;
+    fdt->max_slots = 0;
+    fdt->max_fd = 0;
+    if (slots < FD_INIT_SLOTS) slots = FD_INIT_SLOTS;
+    return fd_table_grow(fdt, slots);
+}
+
+int fd_table_init(fd_table_t *fdt) {
+    fdt->entries = 0;
+    fdt->free_bitmap = 0;
+    fdt->max_slots = 0;
+    fdt->max_fd = 0;
+    if (fd_table_grow(fdt, FD_INIT_SLOTS) < 0) return -ENOMEM;
+
     if (fd_default_pty >= 0) {
-        /* VT available: stdin/stdout/stderr → PTY slave (VT0) */
         void *pty = (void *)(uintptr_t)fd_default_pty;
         fdt->entries[0] = (fd_entry_t){FD_PTY_SLAVE, pty, O_RDONLY};
         fdt->entries[1] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
         fdt->entries[2] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
     } else {
-        /* No VT (early boot / headless) → serial fallback */
         fdt->entries[0] = (fd_entry_t){FD_SERIAL, 0, O_RDONLY};
         fdt->entries[1] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
         fdt->entries[2] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
@@ -289,23 +343,93 @@ void fd_table_init(fd_table_t *fdt) {
     fd_mark_used(fdt, 1);
     fd_mark_used(fdt, 2);
     fdt->max_fd = 3;
+    return 0;
+}
+
+void fd_table_free(fd_table_t *fdt) {
+    if (fdt->entries) {
+        pages_free(fdt->entries,     fd_entries_pages(fdt->max_slots));
+        pages_free(fdt->free_bitmap, fd_bitmap_pages(fdt->max_slots));
+    }
+    fdt->entries = 0;
+    fdt->free_bitmap = 0;
+    fdt->max_slots = 0;
+    fdt->max_fd = 0;
+}
+
+/* Effective RLIMIT_NOFILE: 0 = unset → FD_DEFAULT_NOFILE (Linux ulimit -n). */
+static unsigned long fd_effective_nofile(process_t *p) {
+    if (!p) return FD_DEFAULT_NOFILE;
+    unsigned long n = p->rlim_nofile;
+    return n ? n : FD_DEFAULT_NOFILE;
+}
+
+/* Ensure capacity for at least `min_slots` entries, bounded by nofile.
+ * Returns 0 on success, -EMFILE if nofile cap reached, -ENOMEM on OOM. */
+static int fd_ensure_capacity(fd_table_t *fdt, int min_slots, unsigned long nofile) {
+    if (min_slots <= fdt->max_slots) return 0;
+    unsigned long cap = nofile < (unsigned long)FD_CEILING ? nofile : (unsigned long)FD_CEILING;
+    if ((unsigned long)min_slots > cap) return -EMFILE;
+    return fd_table_grow(fdt, min_slots);
 }
 
 int fd_alloc(fd_table_t *fdt, int type, void *obj, int flags) {
-    int fd = fd_find_free(fdt, 0);
-    if (fd < 0) return -EMFILE;
-    /* Enforce RLIMIT_NOFILE */
     process_t *p = proc_current();
-    if (p && p->rlim_nofile && (unsigned long)fd >= p->rlim_nofile)
-        return -EMFILE;
+    unsigned long nofile = fd_effective_nofile(p);
+
+    int fd = fd_find_free(fdt, 0);
+    if (fd < 0 || (unsigned long)fd >= nofile) {
+        int want = fdt->max_slots ? fdt->max_slots + 1 : FD_INIT_SLOTS;
+        int r = fd_ensure_capacity(fdt, want, nofile);
+        if (r < 0) return r;
+        fd = fd_find_free(fdt, 0);
+        if (fd < 0 || (unsigned long)fd >= nofile) return -EMFILE;
+    }
     fdt->entries[fd] = (fd_entry_t){type, obj, flags};
     fd_mark_used(fdt, fd);
     if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;
     return fd;
 }
 
+int fd_dup_at(fd_table_t *fdt, int minfd, fd_entry_t src, int new_flags) {
+    process_t *p = proc_current();
+    unsigned long nofile = fd_effective_nofile(p);
+    if (minfd < 0) return -EINVAL;
+    if ((unsigned long)minfd >= nofile) return -EMFILE;
+
+    int fd = fd_find_free(fdt, minfd);
+    if (fd < 0 || (unsigned long)fd >= nofile) {
+        int want = fdt->max_slots * 2;
+        if (want <= minfd) want = minfd + 1;
+        int r = fd_ensure_capacity(fdt, want, nofile);
+        if (r < 0) return r;
+        fd = fd_find_free(fdt, minfd);
+        if (fd < 0 || (unsigned long)fd >= nofile) return -EMFILE;
+    }
+    src.flags = new_flags;
+    fdt->entries[fd] = src;
+    fd_mark_used(fdt, fd);
+    if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;
+    return fd;
+}
+
+int fd_install_at(fd_table_t *fdt, int newfd, fd_entry_t src) {
+    process_t *p = proc_current();
+    unsigned long nofile = fd_effective_nofile(p);
+    if (newfd < 0) return -EBADF;
+    if ((unsigned long)newfd >= nofile) return -EMFILE;
+    if (newfd >= fdt->max_slots) {
+        int r = fd_ensure_capacity(fdt, newfd + 1, nofile);
+        if (r < 0) return r;
+    }
+    fdt->entries[newfd] = src;
+    fd_mark_used(fdt, newfd);
+    if (newfd >= fdt->max_fd) fdt->max_fd = newfd + 1;
+    return 0;
+}
+
 int fd_close(fd_table_t *fdt, int fd) {
-    if (fd < 0 || fd >= FD_MAX) return -1;
+    if (fd < 0 || fd >= fdt->max_slots) return -1;
     if (fdt->entries[fd].type == FD_NONE) return -1;
     fdt->entries[fd].type = FD_NONE;
     fdt->entries[fd].obj = 0;
@@ -314,7 +438,7 @@ int fd_close(fd_table_t *fdt, int fd) {
 }
 
 fd_entry_t *fd_get(fd_table_t *fdt, int fd) {
-    if (fd < 0 || fd >= FD_MAX) return 0;
+    if (fd < 0 || fd >= fdt->max_slots) return 0;
     if (fdt->entries[fd].type == FD_NONE) return 0;
     return &fdt->entries[fd];
 }
@@ -366,7 +490,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }
     { const char *s = "init";  int ii = 0; while (s[ii] && ii < 15)  { p->comm[ii] = s[ii]; ii++; } p->comm[ii] = 0; }
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 1023) { p->cmdline[ii] = s[ii]; ii++; } p->cmdline[ii] = 0; p->cmdline_len = ii + 1; }
-    fd_table_init(&p->fds);
+    if (fd_table_init(&p->fds) < 0) goto fail_pml4;
 
     /* Stack: small initial VMA with VMA_GROWSDOWN (expands on page fault).
      * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand.

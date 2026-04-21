@@ -13,7 +13,7 @@ void proc_cleanup(process_t *p) {
 
     /* Close all FDs — decrement refcount, free when last ref.
      * exit_kill_process already does this, so entries may be FD_NONE. */
-    for (int i = 0; i < FD_MAX; i++) {
+    for (int i = 0; i < p->fds.max_slots; i++) {
         int type = p->fds.entries[i].type;
         if (type == FD_FILE) {
             vfs_file_free_obj(p->fds.entries[i].obj);
@@ -24,7 +24,7 @@ void proc_cleanup(process_t *p) {
         p->fds.entries[i].type = FD_NONE;
         p->fds.entries[i].obj = 0;
     }
-    for (int w = 0; w < FD_BITMAP_WORDS; w++) p->fds.free_bitmap[w] = ~0ULL;
+    fd_table_free(&p->fds);
 
     /* Free threads.
      * exit_kill_process sets sibling threads to DEAD with proc=NULL. Those

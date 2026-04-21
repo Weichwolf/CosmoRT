@@ -657,7 +657,7 @@ shebang_retry:;
     {
         extern void vfs_file_free_obj(void *obj);
         extern void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags);
-        for (int i = 0; i < FD_MAX; i++) {
+        for (int i = 0; i < p->fds.max_slots; i++) {
             if (p->fds.entries[i].type != FD_NONE &&
                 (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
                 int ftype = p->fds.entries[i].type;

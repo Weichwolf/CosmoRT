@@ -38,7 +38,7 @@ static void test_fd_lowest_free(void) {
     }
 }
 
-/* ── Test: exhaust FD_MAX → EMFILE ─────────────── */
+/* ── Test: exhaust RLIMIT_NOFILE → EMFILE ─────────────── */
 static void test_fd_emfile(void) {
     puts("\n[FD_EMFILE]\n");
 
@@ -61,13 +61,41 @@ static void test_fd_emfile(void) {
         }
     }
 
-    check("all fds < FD_MAX", max_fd < 1024);
-    check_ge("opened near FD_MAX fds", (long)count, 1000);
+    check("all fds < ulimit (1024)", max_fd < 1024);
+    check_ge("opened near ulimit fds", (long)count, 1000);
 
     for (int i = 3; i < count + 3; i++)
         sc1(SYS_CLOSE, i);
 }
 
+/* ── Test: setrlimit(RLIMIT_NOFILE, 2048) opens 2000+ FDs ───── */
+#define TEST_RLIMIT_NOFILE 7
+struct t_rlimit { unsigned long cur, max; };
+
+static void test_fd_expand_via_rlimit(void) {
+    puts("\n[FD_EXPAND_RLIMIT]\n");
+
+    for (int i = 3; i < 2048; i++) sc1(SYS_CLOSE, i);
+
+    struct t_rlimit r = { 4096, 65536 };
+    long sr = sc4(SYS_PRLIMIT64, 0, TEST_RLIMIT_NOFILE, (long)&r, 0);
+    check_val("prlimit64 set NOFILE=4096", sr, 0);
+
+    int count = 0;
+    for (int i = 0; i < 3500; i++) {
+        long fd = sc1(SYS_DUP, 0);
+        if (fd < 0) break;
+        count++;
+    }
+    check_ge("opened >2000 FDs after rlimit raise", (long)count, 2000);
+
+    for (int i = 3; i < count + 3; i++) sc1(SYS_CLOSE, i);
+
+    struct t_rlimit back = { 1024, 65536 };
+    sc4(SYS_PRLIMIT64, 0, TEST_RLIMIT_NOFILE, (long)&back, 0);
+}
+
 TEST("fd_scale_512", test_fd_scale_512);
 TEST("fd_lowest_free", test_fd_lowest_free);
 TEST("fd_emfile", test_fd_emfile);
+TEST("fd_expand_rlimit", test_fd_expand_via_rlimit);

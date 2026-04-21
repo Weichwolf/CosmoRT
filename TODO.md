@@ -1,12 +1,12 @@
 # CosmoRT — TODO
 
-Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
+Stand: ktest **2429/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
 
 ## Offene Phasen
 
 | # | Phase | Status | Aufwand | Blocker für |
 |---|-------|--------|---------|-------------|
-| 7.3 Rest | 0 Pools offen | — | — | — |
+| 7.3 Rest | abgeschlossen | — | — | — |
 | 8.1 | Audio | neu | langer Neubau | RT-Audio-Identität |
 | 9 | aarch64-Port | neu | mehrere Sessions | Multi-Arch |
 
@@ -14,7 +14,7 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 ## Phase 7.3 — Offene Pools
 
-17 migriert, 0 offen. Einer pro Task-Session.
+18 migriert, 0 offen. Einer pro Task-Session.
 
 **Erledigt (diese Session):**
 - [x] `EXT4_OPEN_MAX=256` (`fs/vfs.c`) → chained Hash-Table. 64 Buckets (power of 2, Mask statt Modulo), Knuth-Multiplikator auf `ino`. Entries slab-dynamic (`ext4_open_slab`, initial 64). `ext4_open_inc` alloziert außerhalb des Locks mit Recheck nach Acquire (Race-Safe). Lookup/Insert/Remove O(1) average. `_Static_assert` auf power-of-2 Hash-Size. Linearer 256-Slot-Scan unter `ext4_open_lock` eliminiert.
@@ -27,8 +27,10 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 **Erledigt (Forts.):**
 - [x] `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_CPU` verdrahtet. NPROC: Check in `kernel_clone` via `proc_count_alive()`, `-EAGAIN` bei Überschreitung. FSIZE: Check in `vfs_write`/`vfs_pwrite`/`vfs_truncate`/`vfs_ftruncate`; Partial-Write klemmt `count` auf `limit - offset`, bei `offset >= limit` -EFBIG + SIGXFSZ. O_APPEND: effektiver Offset = aktuelle Dateigröße. CPU: Tick-Callback bei 1000Hz, akkumuliert `p->cpu_time_ticks`; bei Soft-Limit SIGXCPU (1×/sec), Hard-Limit SIGKILL — beides via `sig_pending`-Bit (delivery auf Syscall-Return, nicht in IRQ-Kontext). Fork erbt jetzt auch `rlim_nofile` (war latent nicht kopiert). Defaults: alle `RLIM_INFINITY` (0 = unlimited, Linux-kompatibel).
 
-**Offen:**
-- [ ] FD-Tabelle echte dynamische Expansion (Linux 32→64→∞). Heute fix 1024 mit RLIMIT_NOFILE, ausreichend für Single-User.
+**Erledigt (Forts.):**
+- [x] FD-Tabelle `FD_MAX=1024` → dynamische Expansion (Linux `expand_fdtable`). Initial 64 Slots (`FD_INIT_SLOTS` = BITS_PER_LONG), verdoppelt on-demand in `fd_alloc`/`fd_dup_at`/`fd_install_at` bis `FD_CEILING=65536` (2MB buddy-Cap für `fd_entry_t`-Array). Default `rlim_nofile=0` bleibt „unset" → `FD_DEFAULT_NOFILE=1024` (Linux ulimit -n Default). `entries[]` + `free_bitmap[]` jetzt Pointer, page-alloziert. `fd_table_init`/`fd_table_free`/`fd_table_alloc_empty`-API. Fork: `dup_fd_table` respektiert child's `rlim_nofile` (overshoot → dropped). dup/dup2/dup3/F_DUPFD: `fd_entry_t`-Kopie auf Stack vor potentieller Re-Alloc (Pointer-Stability). setrlimit(NOFILE, 4096) + 2000 dups getestet.
+
+**Offen:** —
 
 ---
 
@@ -122,7 +124,7 @@ HAL-Stubs bereits in `src/arch/aarch64/hal_*.c` (Phase 7.2). Interface-Oberfläc
 
 | Metrik | Start | Jetzt |
 |---|---|---|
-| ktest passed | 2334 | **2427** (+93) |
+| ktest passed | 2334 | **2429** (+95) |
 | ktest failed | 79 | **0** |
 | Varianz | ±14 | 0 |
 | musl passed | 446 | 462 (+16) |

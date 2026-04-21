@@ -495,9 +495,11 @@ long do_dup3(int oldfd, int newfd, int flags) {
     if (oldfd == newfd) return -EINVAL;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    if (oldfd < 0 || oldfd >= FD_MAX || newfd < 0 || newfd >= FD_MAX) return -EBADF;
+    if (oldfd < 0 || newfd < 0) return -EBADF;
     fd_entry_t *old = fd_get(&p->fds, oldfd);
     if (!old) return -EBADF;
+    /* Copy the entry to stack — subsequent table expansion may reallocate. */
+    fd_entry_t old_copy = *old;
 
     /* Close newfd if open (must match do_close logic) */
     fd_entry_t *cur = fd_get(&p->fds, newfd);
@@ -511,25 +513,24 @@ long do_dup3(int oldfd, int newfd, int flags) {
             fd_cleanup_entry(cur->type, cur->obj, cur->flags);
             fd_close(&p->fds, newfd);
         }
+        /* cur pointer still valid here; fd_install_at below may reallocate */
         p->fds.entries[newfd].type = FD_NONE;
         p->fds.entries[newfd].obj = 0;
     }
 
-    /* Copy the fd entry and bump refcount.
-     * dup2 clears O_CLOEXEC on the new fd (POSIX). dup3 sets it only if
-     * O_CLOEXEC is in flags. */
-    p->fds.entries[newfd] = *old;
-    p->fds.entries[newfd].flags &= ~O_CLOEXEC;  /* dup2: always clear */
-    fd_mark_used(&p->fds, newfd);
-    if (old->type == FD_FILE && old->obj) {
+    fd_entry_t installed = old_copy;
+    installed.flags &= ~O_CLOEXEC;
+    if (flags & O_CLOEXEC) installed.flags |= O_CLOEXEC;
+
+    int r = fd_install_at(&p->fds, newfd, installed);
+    if (r < 0) return r;
+
+    if (old_copy.type == FD_FILE && old_copy.obj) {
         extern void vfs_file_incref(struct vfs_file *f);
-        vfs_file_incref((struct vfs_file *)old->obj);
-    } else if (old->obj) {
-        fd_obj_incref(old->type, old->obj, old->flags);
+        vfs_file_incref((struct vfs_file *)old_copy.obj);
+    } else if (old_copy.obj) {
+        fd_obj_incref(old_copy.type, old_copy.obj, old_copy.flags);
     }
-    if (flags & O_CLOEXEC)
-        p->fds.entries[newfd].flags |= O_CLOEXEC;
-    if (newfd >= p->fds.max_fd) p->fds.max_fd = newfd + 1;
     return newfd;
 }
 
@@ -659,7 +660,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
                 .written = 0,
                 .next_off = (uint64_t)pf->offset
             };
-            for (int i = pf->offset; i < FD_MAX; i++) {
+            for (int i = pf->offset; i < p->fds.max_slots; i++) {
                 fd_entry_t *e = fd_get(&p->fds, i);
                 if (!e || e->type == FD_NONE) continue;
                 char name[12];
@@ -1245,18 +1246,16 @@ long do_fcntl(int fd, int cmd, long arg) {
         return 65536; /* accept but return fixed size */
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        int i = fd_find_free(&p->fds, (int)arg);
-        if (i < 0) return -EMFILE;
-        p->fds.entries[i] = *fde;
-        p->fds.entries[i].flags &= ~O_CLOEXEC; /* F_DUPFD: always clear */
-        fd_mark_used(&p->fds, i);
-        if (cmd == F_DUPFD_CLOEXEC)
-            p->fds.entries[i].flags |= O_CLOEXEC;
-        if (i >= p->fds.max_fd) p->fds.max_fd = i + 1;
-        /* Increment refcount for vfs_file if needed */
-        if (fde->type == FD_FILE && fde->obj) {
+        fd_entry_t src = *fde;
+        int new_flags = src.flags & ~O_CLOEXEC;
+        if (cmd == F_DUPFD_CLOEXEC) new_flags |= O_CLOEXEC;
+        int i = fd_dup_at(&p->fds, (int)arg, src, new_flags);
+        if (i < 0) return i;
+        if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
-            vfs_file_incref((struct vfs_file *)fde->obj);
+            vfs_file_incref((struct vfs_file *)src.obj);
+        } else if (src.obj) {
+            fd_obj_incref(src.type, src.obj, src.flags);
         }
         return i;
     }
@@ -1339,7 +1338,9 @@ long do_getdents(int fd, void *buf, size_t count) {
 long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
     if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) return -EINVAL;
     if (first > last) return -EINVAL;
-    if (last >= FD_MAX) last = FD_MAX - 1;
+    process_t *pr = proc_current();
+    int slot_max = pr ? pr->fds.max_slots : 0;
+    if (slot_max > 0 && last >= (unsigned int)slot_max) last = (unsigned int)slot_max - 1;
     if (flags & CLOSE_RANGE_CLOEXEC) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;

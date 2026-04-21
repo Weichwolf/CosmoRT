@@ -161,27 +161,45 @@ extern void sched_add(thread_t *t);
 static void free_child_proc(process_t *child) {
     if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
     vma_free_tree(child->vma_root); child->vma_root = 0;
+    fd_table_free(&child->fds);
     if ((int)child->pid < pid_table_capacity()) pid_table[child->pid] = 0;
     slab_free(&proc_slab, child);
 }
 
-static void dup_fd_table(process_t *child, process_t *parent) {
-    for (int i = 0; i < FD_MAX; i++) {
-        child->fds.entries[i] = parent->fds.entries[i];
-        if (parent->fds.entries[i].obj) {
-            int ft = parent->fds.entries[i].type;
-            if (ft == FD_FILE)
-                vfs_file_incref((struct vfs_file *)parent->fds.entries[i].obj);
-            else if (ft == FD_PIPE || ft == FD_SOCKET || ft == FD_EPOLL ||
-                     ft == FD_EVENTFD || ft == FD_TIMERFD ||
-                     ft == FD_INOTIFY || ft == FD_UNIX_SOCK)
-                fd_obj_incref(ft, parent->fds.entries[i].obj,
-                              parent->fds.entries[i].flags);
+/* Copy parent's FDs into child. If child's rlim_nofile is smaller than parent's
+ * in-use range, only FDs < child's nofile are inherited (excess silently dropped,
+ * Linux behavior per copy_fd_table w/ sysctl_nr_open interaction). Returns
+ * -ENOMEM on alloc failure, 0 on success. */
+static int dup_fd_table(process_t *child, process_t *parent) {
+    unsigned long child_nofile = child->rlim_nofile ? child->rlim_nofile
+                                                    : (unsigned long)FD_DEFAULT_NOFILE;
+    int copy_end = parent->fds.max_fd;
+    if ((unsigned long)copy_end > child_nofile) copy_end = (int)child_nofile;
+
+    int want = FD_INIT_SLOTS;
+    while (want < copy_end) want *= 2;
+    if (want > FD_CEILING) want = FD_CEILING;
+
+    if (fd_table_alloc_empty(&child->fds, want) < 0) return -ENOMEM;
+
+    for (int i = 0; i < copy_end; i++) {
+        fd_entry_t e = parent->fds.entries[i];
+        child->fds.entries[i] = e;
+        if (e.type != FD_NONE) {
+            fd_mark_used(&child->fds, i);
+            if (e.obj) {
+                if (e.type == FD_FILE)
+                    vfs_file_incref((struct vfs_file *)e.obj);
+                else if (e.type == FD_PIPE || e.type == FD_SOCKET ||
+                         e.type == FD_EPOLL || e.type == FD_EVENTFD ||
+                         e.type == FD_TIMERFD || e.type == FD_INOTIFY ||
+                         e.type == FD_UNIX_SOCK)
+                    fd_obj_incref(e.type, e.obj, e.flags);
+            }
         }
     }
-    child->fds.max_fd = parent->fds.max_fd;
-    for (int w = 0; w < FD_BITMAP_WORDS; w++)
-        child->fds.free_bitmap[w] = parent->fds.free_bitmap[w];
+    child->fds.max_fd = copy_end;
+    return 0;
 }
 
 long kernel_clone(unsigned long flags, void *child_stack,
