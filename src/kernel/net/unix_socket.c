@@ -108,9 +108,22 @@ void usock_decref(void *obj) {
             spin_unlock_irq(&usock_lock, irqf);
             s->peer = 0;
         }
+        /* Wake blocked_acceptor on a LISTENING socket being closed */
+        thread_t *acceptor = 0;
+        if (s->blocked_acceptor) {
+            uint64_t irqf;
+            spin_lock_irq(&usock_lock, &irqf);
+            acceptor = (thread_t *)s->blocked_acceptor;
+            s->blocked_acceptor = 0;
+            spin_unlock_irq(&usock_lock, irqf);
+        }
         if (reader) {
             extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
+        }
+        if (acceptor) {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(acceptor, 9 /* EQ_SOCKET_CONNECT */, 0);
         }
         usock_release(s);
     }
