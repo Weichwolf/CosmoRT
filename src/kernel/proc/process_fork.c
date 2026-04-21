@@ -161,7 +161,7 @@ extern void sched_add(thread_t *t);
 static void free_child_proc(process_t *child) {
     if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
     vma_free_tree(child->vma_root); child->vma_root = 0;
-    if (child->pid < PID_TABLE_MAX) pid_table[child->pid] = 0;
+    if ((int)child->pid < pid_table_capacity()) pid_table[child->pid] = 0;
     slab_free(&proc_slab, child);
 }
 

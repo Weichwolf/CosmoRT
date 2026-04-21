@@ -14,7 +14,8 @@ uint64_t read_pte(uint64_t *user_pml4, uint64_t va) {
  * Returns number of pages actually freed. Caller must NOT hold buddy_lock. */
 int lazyfree_reclaim(int count) {
     int freed = 0;
-    for (int pid = 1; pid < PID_TABLE_MAX && freed < count; pid++) {
+    int cap = pid_table_capacity();
+    for (int pid = 1; pid < cap && freed < count; pid++) {
         process_t *p = pid_table[pid];
         if (!p || !p->pml4) continue;
         uint64_t irqf;

@@ -105,9 +105,14 @@ typedef struct process {
     uint32_t    umask_val;
 } process_t;
 
-/* PID/TID lookup table sizes */
-#define PID_TABLE_MAX 4096
-#define TID_TABLE_MAX 4096
+/* PID/TID ceiling — Linux kernel.pid_max default for 64-bit (2^22).
+ * RLIMIT_NPROC caps per-user; this is only the absolute slot-index ceiling. */
+#define PID_MAX_CEILING (1 << 22)
+
+/* Current capacity of the pid_table / tid_table (dynamic, grows on demand).
+ * Use these in iteration instead of a fixed compile-time constant. */
+int pid_table_capacity(void);
+int tid_table_capacity(void);
 
 /* Iterate all live processes via pid_table. Callback returns 0 to continue, nonzero to stop. */
 typedef int (*proc_iter_fn)(process_t *p, void *ctx);

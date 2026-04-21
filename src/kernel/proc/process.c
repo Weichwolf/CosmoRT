@@ -14,20 +14,68 @@ static int next_pid = 1;
 static int next_tid = 1;
 spinlock_t pid_lock = SPINLOCK_INIT;
 
-/* O(1) lookup tables — indexed by PID/TID, entries set at alloc, cleared at free */
-process_t *pid_table[PID_TABLE_MAX];
-thread_t  *tid_table[TID_TABLE_MAX];
+/* O(1) lookup tables — indexed by PID/TID, grow on demand (power-of-two).
+ * Start at PID_TABLE_INIT slots (1 page at 8B pointers), double until
+ * PID_MAX_CEILING. Growth happens under pid_lock in proc_alloc/thread_alloc. */
+#define PID_TABLE_INIT 256
+process_t **pid_table;
+thread_t  **tid_table;
+static int pid_capacity;
+static int tid_capacity;
+
+int pid_table_capacity(void) { return pid_capacity; }
+int tid_table_capacity(void) { return tid_capacity; }
+
+/* Allocate a pointer-table of `slots` entries via pages_alloc (zeroed).
+ * slots must be power-of-two; returns NULL on OOM. */
+static void **alloc_ptr_table(int slots) {
+    size_t bytes = (size_t)slots * sizeof(void *);
+    int npages = (int)((bytes + 4095) / 4096);
+    return (void **)pages_alloc(npages);
+}
+
+static void free_ptr_table(void **tbl, int slots) {
+    size_t bytes = (size_t)slots * sizeof(void *);
+    int npages = (int)((bytes + 4095) / 4096);
+    pages_free(tbl, npages);
+}
+
+/* Grow `*tbl_ptr` from `*cap_ptr` to `*cap_ptr * 2`. Copies existing entries.
+ * Caller must hold pid_lock. Returns 0 on success, -1 on OOM or ceiling reached. */
+static int grow_ptr_table(void ***tbl_ptr, int *cap_ptr) {
+    int old_cap = *cap_ptr;
+    if (old_cap >= PID_MAX_CEILING) return -1;
+    int new_cap = old_cap * 2;
+    if (new_cap > PID_MAX_CEILING) new_cap = PID_MAX_CEILING;
+    void **new_tbl = alloc_ptr_table(new_cap);
+    if (!new_tbl) return -1;
+    for (int i = 0; i < old_cap; i++) new_tbl[i] = (*tbl_ptr)[i];
+    void **old_tbl = *tbl_ptr;
+    *tbl_ptr = new_tbl;
+    *cap_ptr = new_cap;
+    free_ptr_table(old_tbl, old_cap);
+    return 0;
+}
 
 void proc_init(void) {
     slab_init_dynamic(&proc_slab, (int)sizeof(process_t), 32);
     slab_init_dynamic(&thread_slab, (int)sizeof(thread_t), 64);
+    pid_table = (process_t **)alloc_ptr_table(PID_TABLE_INIT);
+    tid_table = (thread_t  **)alloc_ptr_table(PID_TABLE_INIT);
+    if (!pid_table || !tid_table) {
+        serial_puts("proc: init OOM on pid/tid table\n");
+        for (;;) hal_cpu_halt();
+    }
+    pid_capacity = PID_TABLE_INIT;
+    tid_capacity = PID_TABLE_INIT;
     serial_puts("proc: init (dynamic slab)\n");
 }
 
 /* ── Process iteration via pid_table ─────────────── */
 
 void proc_for_each(proc_iter_fn fn, void *ctx) {
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    int cap = pid_capacity;
+    for (int i = 1; i < cap; i++) {
         process_t *p = pid_table[i];
         if (p && p->state != PROC_FREE && p->pid == (uint32_t)i) {
             if (fn(p, ctx)) return;
@@ -37,12 +85,35 @@ void proc_for_each(proc_iter_fn fn, void *ctx) {
 
 int proc_count_alive(void) {
     int count = 0;
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    int cap = pid_capacity;
+    for (int i = 1; i < cap; i++) {
         process_t *p = pid_table[i];
         if (p && p->state == PROC_ALIVE && p->pid == (uint32_t)i)
             count++;
     }
     return count;
+}
+
+/* Allocate the next free slot in a dynamic pointer-table.
+ * Linux-like monotonic allocator: advance *next_id, wrap at capacity,
+ * grow the table (power-of-two) when the wrap finds no free slot.
+ * Slot 0 is reserved (PID 0 = kernel/idle); first user slot is 1.
+ * Caller must hold pid_lock. Returns slot id (>=1), or -1 on OOM/ceiling. */
+static int alloc_next_id(void ***tbl_ptr, int *cap_ptr, int *next_id) {
+    for (;;) {
+        int cap = *cap_ptr;
+        for (int scanned = 0; scanned < cap; scanned++) {
+            int candidate = *next_id;
+            int n = candidate + 1;
+            if (n >= cap) n = (cap >= 2 ? 2 : 1);
+            *next_id = n;
+            if (candidate >= 1 && candidate < cap && !(*tbl_ptr)[candidate])
+                return candidate;
+        }
+        /* Table fully populated — grow or give up */
+        if (grow_ptr_table(tbl_ptr, cap_ptr) < 0) return -1;
+        *next_id = cap; /* fresh half starts at old capacity */
+    }
 }
 
 thread_t *thread_alloc(void) {
@@ -54,17 +125,11 @@ thread_t *thread_alloc(void) {
 
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
-        /* Find free TID slot (skip collisions from wrapping) */
-        int tid = -1;
-        for (int try = 0; try < TID_TABLE_MAX - 2; try++) {
-            int candidate = next_tid++;
-            if (next_tid >= TID_TABLE_MAX) next_tid = 2;
-            if (!tid_table[candidate]) { tid = candidate; break; }
-        }
+        int tid = alloc_next_id((void ***)&tid_table, &tid_capacity, &next_tid);
         if (tid < 0) {
             spin_unlock_irq(&pid_lock, flags);
             slab_free(&thread_slab, t);
-            return 0; /* TID table full */
+            return 0;
         }
         t->tid = tid;
         tid_table[tid] = t;
@@ -76,7 +141,7 @@ thread_t *thread_alloc(void) {
 
 void thread_free(thread_t *t) {
     if (!t) return;
-    if (t->tid > 0 && t->tid < TID_TABLE_MAX)
+    if (t->tid > 0 && t->tid < tid_capacity)
         tid_table[t->tid] = 0;
     event_queue_destroy(&t->eq);
     if (t->kstack)
@@ -91,17 +156,11 @@ process_t *proc_alloc(void) {
 
         uint64_t flags;
         spin_lock_irq(&pid_lock, &flags);
-        /* Find free PID slot (skip collisions from wrapping) */
-        int pid = -1;
-        for (int try = 0; try < PID_TABLE_MAX - 2; try++) {
-            int candidate = next_pid++;
-            if (next_pid >= (int)PID_TABLE_MAX) next_pid = 2;
-            if (!pid_table[candidate]) { pid = candidate; break; }
-        }
+        int pid = alloc_next_id((void ***)&pid_table, &pid_capacity, &next_pid);
         if (pid < 0) {
             spin_unlock_irq(&pid_lock, flags);
             slab_free(&proc_slab, p);
-            return 0; /* PID table full */
+            return 0;
         }
         p->pid = (uint32_t)pid;
         pid_table[pid] = p;
@@ -502,7 +561,7 @@ void proc_yield(void) {
 /* ── Process lookup — O(1) via pid_table ─────────── */
 
 process_t *proc_find(uint32_t pid) {
-    if (pid == 0 || pid >= PID_TABLE_MAX) return 0;
+    if (pid == 0 || pid >= (uint32_t)pid_capacity) return 0;
     process_t *p = pid_table[pid];
     if (p && __atomic_load_n(&p->state, __ATOMIC_ACQUIRE) != PROC_FREE && p->pid == pid)
         return p;
@@ -512,7 +571,7 @@ process_t *proc_find(uint32_t pid) {
 /* ── Thread lookup — O(1) via tid_table ──────────── */
 
 thread_t *thread_find_by_tid(int tid) {
-    if (tid <= 0 || tid >= TID_TABLE_MAX) return 0;
+    if (tid <= 0 || tid >= tid_capacity) return 0;
     thread_t *t = tid_table[tid];
     if (t && t->state != THREAD_FREE && t->state != THREAD_DEAD && t->tid == tid)
         return t;

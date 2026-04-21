@@ -156,7 +156,8 @@ static void send_signal_to_fg(pty_t *p, int sig) {
 
     extern process_t *proc_find(uint32_t pid);
     extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    int cap = pid_table_capacity();
+    for (int i = 1; i < cap; i++) {
         process_t *proc = proc_find((uint32_t)i);
         if (!proc) continue;
         if ((int)proc->pgid != pgid) continue;

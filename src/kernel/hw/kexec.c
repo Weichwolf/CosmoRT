@@ -108,7 +108,8 @@ static void flush_filesystem(void) {
 
 static void kill_all_processes(void) {
     serial_puts("kexec: killing all processes\n");
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    int cap = pid_table_capacity();
+    for (int i = 1; i < cap; i++) {
         process_t *p = proc_find((uint32_t)i);
         if (!p) continue;
 

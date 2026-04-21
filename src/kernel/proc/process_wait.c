@@ -61,7 +61,7 @@ void proc_cleanup(process_t *p) {
     p->vma_root = 0;
 
     /* Clear lookup table entry */
-    if (p->pid < PID_TABLE_MAX)
+    if ((int)p->pid < pid_table_capacity())
         pid_table[p->pid] = 0;
 
     /* Free process struct */
@@ -86,7 +86,8 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     if ((parent->sig_actions[17 /* SIGCHLD */].sa_flags & SA_NOCLDWAIT_VAL) &&
         parent->sig_actions[17].sa_handler == (void *)0 /* SIG_DFL */) {
         /* Auto-reap all zombie children matching pid filter */
-        for (int i = 1; i < PID_TABLE_MAX; i++) {
+        int cap = pid_table_capacity();
+        for (int i = 1; i < cap; i++) {
             process_t *child = pid_table[i];
             if (!child || child->parent_pid != parent->pid) continue;
             if (child->state == PROC_ZOMBIE) proc_cleanup(child);
@@ -106,8 +107,9 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     /* Scan for matching child */
     for (;;) {
         int found_child = 0;
+        int cap = pid_table_capacity();
 
-        for (int i = 1; i < PID_TABLE_MAX; i++) {
+        for (int i = 1; i < cap; i++) {
             process_t *child = pid_table[i];
             if (!child || child->state == PROC_FREE) continue;
             if (child->pid != (uint32_t)i) continue;

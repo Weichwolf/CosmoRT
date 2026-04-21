@@ -82,8 +82,9 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
 
     /* Reparent children to init (pid 1) — POSIX orphan semantics.
      * Without reparenting, orphaned children can never be waited on. */
-    extern process_t *pid_table[];
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    extern process_t **pid_table;
+    int cap = pid_table_capacity();
+    for (int i = 1; i < cap; i++) {
         process_t *child = pid_table[i];
         if (child && child->parent_pid == p->pid) {
             child->parent_pid = 1;

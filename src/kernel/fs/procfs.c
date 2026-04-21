@@ -708,7 +708,7 @@ static int procfs_filesystems(char *buf, int size, int offset, void *ctx) {
 static int procfs_sys_pid_max(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     char tmp[16];
-    int pos = itoa_buf(tmp, 16, (long)PID_TABLE_MAX);
+    int pos = itoa_buf(tmp, 16, (long)PID_MAX_CEILING);
     tmp[pos++] = '\n';
 
     int out = 0;

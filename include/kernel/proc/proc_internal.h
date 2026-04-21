@@ -38,8 +38,8 @@
 extern slab_t proc_slab;
 extern slab_t thread_slab;
 extern spinlock_t pid_lock;
-extern process_t *pid_table[PID_TABLE_MAX];
-extern thread_t  *tid_table[TID_TABLE_MAX];
+extern process_t **pid_table;
+extern thread_t  **tid_table;
 extern uint64_t pml4[];
 
 /* Internal helpers — defined in process.c */

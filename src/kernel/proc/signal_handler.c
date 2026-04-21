@@ -129,11 +129,12 @@ long do_alarm(unsigned int seconds) {
 
 /* Check all processes for expired alarm timers.
  * Registered in alarm_init() via tick_register. Runs every tick.
- * Per-Prozess-Scan O(PID_TABLE_MAX) — Folge-Arbeit: Timer-Wheel. */
+ * Per-Prozess-Scan O(pid_table_capacity) — Folge-Arbeit: Timer-Wheel. */
 void check_alarm_timers(void) {
     uint64_t now = timer_ms();
-    extern process_t *pid_table[];
-    for (int i = 1; i < PID_TABLE_MAX; i++) {
+    extern process_t **pid_table;
+    int cap = pid_table_capacity();
+    for (int i = 1; i < cap; i++) {
         process_t *p = pid_table[i];
         if (!p || p->state != PROC_ALIVE) continue;
         if (p->alarm_deadline_ms == 0 || now < p->alarm_deadline_ms) continue;
