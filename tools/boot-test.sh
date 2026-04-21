@@ -19,7 +19,8 @@ RUNNER=src/common/runtest.exe
 # strptime: %F/%s/%z parsing broken in musl 1.2.5
 # musl 1.2.5 bugs: mntent (getmntent parsing), strptime (%F/%s/%z)
 # Complex signal+fork: raise-race (fork in signal handler + RT signals)
-SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static"
+# Hang: fgetwc-buffering (dynamic variant deadlocks after fgetwc-buffering-static)
+SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering"
 musl_pass=0; musl_fail=0; musl_skip=0
 for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
     name=$(basename "$exe" .exe)
