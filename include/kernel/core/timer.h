@@ -40,4 +40,18 @@ extern uint64_t rtc_epoch_sec;
 /* Read CMOS RTC and set rtc_epoch_sec. Call once at boot. */
 void rtc_init(void);
 
+/* Probes nach timer_init(): Kalibrierungs-Pfad, TSC-Invariant, Frequenz. */
+int      tsc_is_invariant(void);
+int      tsc_calibrated_via_hpet(void);
+uint64_t tsc_calibrated_hz(void);
+
+/* Test-Hook: erzwinge Invariant-Rueckgabe. state: -1 auto, 0 not, 1 invariant. */
+void     tsc_override_invariant_for_test(int state);
+
+/* Test-Hook: fuehre Re-Kalibrierung aus (PIT oder HPET, je nach hpet_available). */
+void     tsc_recalibrate_for_test(void);
+
+/* Test-Hook: HPET-Kalibrierungs-Pfad isoliert aufrufen. 0 bei Timeout/HPET fehlt. */
+uint64_t tsc_calibrate_via_hpet_for_test(void);
+
 #endif

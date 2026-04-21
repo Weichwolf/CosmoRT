@@ -3,6 +3,7 @@
 
 #include "internal.h"
 #include "core/clocksource.h"
+#include "core/timer.h"
 #include "hw/acpi.h"
 #include "hw/hyperv.h"
 #include "hw/kvmclock.h"
@@ -1084,6 +1085,121 @@ static long vrtc_not_in_clocksource_chain(void) {
     return 0;
 }
 
+/* ── TSC calibration selftests (subcases 110-115) ─────
+ * Exercise tsc_check_invariant via tsc_override_invariant_for_test + the
+ * re-calibration helper. HPET path is verified against the HPET override
+ * hook so no live HPET is required. Live CPUID is sampled in 110 + 114. */
+
+#define TSC_HZ_MIN              500000000ULL
+#define TSC_HZ_MAX              5000000000ULL
+#define TSC_HPET_TEST_PERIOD_FS 10000000u
+#define TSC_MATCH_TOLERANCE_PPM 200000           /* 20 % — TCG-Jitter */
+
+static uint64_t tsc_test_mmio[HPET_TEST_BUF_WORDS] __attribute__((aligned(16)));
+
+static void tsc_test_reset_hpet_buf(uint32_t period_fs, int num_comp, int is_64bit) {
+    for (int i = 0; i < HPET_TEST_BUF_WORDS; i++) tsc_test_mmio[i] = 0;
+    uint64_t caps =
+        ((uint64_t)period_fs << HPET_GCAP_PERIOD_SHIFT) |
+        ((uint64_t)((num_comp - 1) & HPET_GCAP_NUM_TIM_MASK)
+             << HPET_GCAP_NUM_TIM_SHIFT) |
+        (is_64bit ? HPET_GCAP_COUNT_SIZE : 0);
+    tsc_test_mmio[HPET_REG_GCAP_ID / 8] = caps;
+}
+
+static uint64_t tsc_abs_diff(uint64_t a, uint64_t b) {
+    return a > b ? a - b : b - a;
+}
+
+static long tsc_within_ppm(uint64_t got, uint64_t expect, uint64_t ppm) {
+    uint64_t diff = tsc_abs_diff(got, expect);
+    return (diff * 1000000ULL) <= (expect * ppm);
+}
+
+static long tsc_invariant_query(void) {
+    tsc_override_invariant_for_test(-1);
+    tsc_recalibrate_for_test();
+    int v = tsc_is_invariant();
+    return (v == 0 || v == 1) ? 0 : -1;
+}
+
+static long tsc_hpet_freq_match(void) {
+    if (!hpet_available()) return 0;
+    uint64_t ref = tsc_calibrated_hz();
+    if (ref < TSC_HZ_MIN || ref > TSC_HZ_MAX) return -1;
+
+    tsc_recalibrate_for_test();
+    if (!tsc_calibrated_via_hpet()) return -2;
+    uint64_t got = tsc_calibrated_hz();
+    if (!tsc_within_ppm(got, ref, TSC_MATCH_TOLERANCE_PPM)) return -3;
+    return 0;
+}
+
+static long tsc_pit_fallback(void) {
+    /* Isolierter HPET-Pfad mit nicht-tickendem MAIN_CNT muss 0 liefern;
+     * timer_init() wuerde dann auf PIT fallen. Der Fake-HPET ruft keinen
+     * 10-ms PIT-Busy-Wait aus, sondern prueft nur die Timeout-Semantik. */
+    tsc_test_reset_hpet_buf(TSC_HPET_TEST_PERIOD_FS, 1, 1);
+    hpet_override_base_for_test((uint64_t)(uintptr_t)tsc_test_mmio,
+                                TSC_HPET_TEST_PERIOD_FS, 1, 1);
+
+    tsc_test_mmio[HPET_REG_MAIN_CNT / 8] = 0;
+    uint64_t hz = tsc_calibrate_via_hpet_for_test();
+    hpet_clear_override_for_test();
+    return (hz == 0) ? 0 : -1;
+}
+
+static long tsc_rating_downgrade(void) {
+    tsc_override_invariant_for_test(0);
+    tsc_recalibrate_for_test();
+    struct clocksource *cs = clocksource_current();
+    long rc = 0;
+    while (cs) {
+        if (cs->name && cs->name[0] == 't' && cs->name[1] == 's' && cs->name[2] == 'c'
+            && cs->name[3] == '\0') {
+            if (cs->rating != CLOCKSOURCE_RATING_TSC_UNSTABLE) rc = -1;
+            break;
+        }
+        cs = cs->next;
+    }
+    if (!rc && tsc_is_invariant() != 0) rc = -2;
+
+    tsc_override_invariant_for_test(1);
+    tsc_recalibrate_for_test();
+    cs = clocksource_current();
+    while (cs) {
+        if (cs->name && cs->name[0] == 't' && cs->name[1] == 's' && cs->name[2] == 'c'
+            && cs->name[3] == '\0') {
+            if (!rc && cs->rating != CLOCKSOURCE_RATING_TSC) rc = -3;
+            break;
+        }
+        cs = cs->next;
+    }
+    if (!rc && tsc_is_invariant() != 1) rc = -4;
+
+    tsc_override_invariant_for_test(-1);
+    tsc_recalibrate_for_test();
+    return rc;
+}
+
+static long tsc_freq_plausible(void) {
+    uint64_t hz = tsc_calibrated_hz();
+    if (hz < TSC_HZ_MIN) return -1;
+    if (hz > TSC_HZ_MAX) return -2;
+    if (timer_tsc_per_ms == 0) return -3;
+    uint64_t derived = timer_tsc_per_ms * 1000ULL;
+    if (!tsc_within_ppm(derived, hz, 10000ULL)) return -4;
+    return 0;
+}
+
+static long tsc_path_consistent(void) {
+    int path_hpet = tsc_calibrated_via_hpet();
+    int hpet_live = hpet_available();
+    if (hpet_live && !path_hpet) return -1;
+    if (!hpet_live && path_hpet) return -2;
+    return 0;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -1148,6 +1264,12 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 91: return vrtc_probe_idempotent();
     case 92: return vrtc_location_consistency();
     case 93: return vrtc_not_in_clocksource_chain();
+    case 110: return tsc_invariant_query();
+    case 111: return tsc_hpet_freq_match();
+    case 112: return tsc_pit_fallback();
+    case 113: return tsc_rating_downgrade();
+    case 114: return tsc_freq_plausible();
+    case 115: return tsc_path_consistent();
     default: return -EINVAL;
     }
 }

@@ -129,11 +129,12 @@ void kernel_main(struct boot_info *info) {
     extern void acpi_init(void);
     acpi_init();
 
-    /* Interrupts + Timer */
+    /* Interrupts + Timer. HPET vor timer_init, damit TSC gegen HPET statt PIT
+     * kalibriert (praeziser, kein 10-ms Busy-Wait). */
     irq_init();
-    timer_init();
     extern void hpet_init(void);
     hpet_init();
+    timer_init();
     extern void acpi_pm_init(void);
     acpi_pm_init();
     rtc_init();
