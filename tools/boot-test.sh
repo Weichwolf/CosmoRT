@@ -17,15 +17,17 @@ RUNNER=src/common/runtest.exe
 # musl 1.2.5 bugs (fail with ld-musl on host too — not kernel issues)
 # mntent: getmntent 4-field parsing (fixed after musl 1.2.5, commit b4b1e10)
 # strptime: %F/%s/%z parsing broken in musl 1.2.5
-# musl 1.2.5 bugs: mntent (getmntent parsing), strptime (%F/%s/%z)
 # Complex signal+fork: raise-race (fork in signal handler + RT signals)
 # Hang: fgetwc-buffering (dynamic variant deadlocks after fgetwc-buffering-static)
 SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering"
 musl_pass=0; musl_fail=0; musl_skip=0
+# RUNNING-Heartbeat vor jedem Test: ohne den fliegt ein Hang unter dem Radar
+# ("stilles find|sort|for" sieht aus wie Kernel-Hang, ist aber nur fehlender Output).
 for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
     name=$(basename "$exe" .exe)
     skip=0; for s in $SKIP; do [ "$name" = "$s" ] && skip=1; done
     if [ $skip -eq 1 ]; then musl_skip=$((musl_skip + 1)); continue; fi
+    echo "RUNNING $name"
     timeout 60 "$RUNNER" -t 45 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
