@@ -606,6 +606,12 @@ not_pts:
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
 
+    /* Read-only mount: reject any open that may modify (O_WRONLY/O_RDWR,
+     * O_CREAT, O_TRUNC). Linux fs/open.c: do_open → may_open → EROFS. */
+    if (mnt && (mnt->mnt_flags & MS_RDONLY) &&
+        (((flags & O_ACCMODE) != O_RDONLY) || (flags & (O_CREAT | O_TRUNC))))
+        return -EROFS;
+
     /* ext4 path? */
     if (mnt && mnt->f_ops == &ext4_file_ops) {
         int werr = -ENOENT;

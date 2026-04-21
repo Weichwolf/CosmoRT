@@ -14,5 +14,6 @@
 #include "prctl.h"
 #include "epoll.h"
 #include "stat.h"
+#include "mount.h"
 
 #endif /* COSMO_LINUX_ABI_H */

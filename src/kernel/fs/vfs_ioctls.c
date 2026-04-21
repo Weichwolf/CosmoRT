@@ -152,26 +152,48 @@ int vfs_fstat(int fd, struct k_stat *buf) {
 int vfs_chmod(const char *path, uint32_t mode) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->chmod)
-        return mnt->i_ops->chmod(mnt, relpath, mode);
-    return vfs_path_error(mnt, relpath);
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->chmod)
+        return vfs_path_error(mnt, relpath);
+    /* Linux: path validation precedes EROFS on RO mounts — stat first. */
+    if (mnt->i_ops->stat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->stat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->chmod(mnt, relpath, mode);
 }
 
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->chown)
-        return mnt->i_ops->chown(mnt, relpath, uid, gid);
-    return vfs_path_error(mnt, relpath);
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->chown)
+        return vfs_path_error(mnt, relpath);
+    if (mnt->i_ops->stat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->stat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->chown(mnt, relpath, uid, gid);
 }
 
 int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->lchown)
+    if (!mnt || !mnt->i_ops) return -ENOENT;
+    if (mnt->i_ops->lstat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->lstat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    if (mnt->i_ops->lchown)
         return mnt->i_ops->lchown(mnt, relpath, uid, gid);
-    /* fallback: if no lchown, use chown */
-    if (mnt && mnt->i_ops && mnt->i_ops->chown)
+    if (mnt->i_ops->chown)
         return mnt->i_ops->chown(mnt, relpath, uid, gid);
     return -ENOENT;
 }
@@ -185,6 +207,8 @@ int vfs_fchmod(int fd, uint32_t mode) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
+    int ro = vfs_mount_writable(f->mnt);
+    if (ro < 0) return ro;
     if (f->f_ops && f->f_ops->fchmod)
         return f->f_ops->fchmod(f, mode);
     return -EBADF;
@@ -197,6 +221,8 @@ int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
+    int ro = vfs_mount_writable(f->mnt);
+    if (ro < 0) return ro;
     if (f->f_ops && f->f_ops->fchown)
         return f->f_ops->fchown(f, uid, gid);
     return -EBADF;
@@ -225,9 +251,16 @@ int vfs_truncate(const char *path, int64_t length) {
     if (r) return r;
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->truncate)
-        return mnt->i_ops->truncate(mnt, relpath, length);
-    return vfs_path_error(mnt, relpath);
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->truncate)
+        return vfs_path_error(mnt, relpath);
+    if (mnt->i_ops->stat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->stat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->truncate(mnt, relpath, length);
 }
 
 int vfs_ftruncate(int fd, int64_t length) {
@@ -240,6 +273,8 @@ int vfs_ftruncate(int fd, int64_t length) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f || f->type != VFS_FILE) return -EINVAL;
+    int ro = vfs_mount_writable(f->mnt);
+    if (ro < 0) return ro;
     if (f->f_ops && f->f_ops->ftruncate)
         return f->f_ops->ftruncate(f, length);
     return -EBADF;
@@ -251,7 +286,14 @@ int vfs_utimensat(const char *path, const int64_t times[4], int flags) {
     if (!path) return -EINVAL;
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->utimensat)
-        return mnt->i_ops->utimensat(mnt, relpath, times, flags);
-    return vfs_path_error(mnt, relpath);
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->utimensat)
+        return vfs_path_error(mnt, relpath);
+    if (mnt->i_ops->stat) {
+        struct k_stat st;
+        int rc = mnt->i_ops->stat(mnt, relpath, &st);
+        if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->utimensat(mnt, relpath, times, flags);
 }

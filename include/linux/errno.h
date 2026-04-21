@@ -7,6 +7,7 @@
 #define ESRCH           3
 #define EINTR           4
 #define EIO             5
+#define ENXIO           6
 #define E2BIG           7
 #define ENOEXEC         8
 #define EBADF           9
@@ -25,6 +26,9 @@
 #define ENOTTY          25
 #define EFBIG           27
 #define ENOSPC          28
+#define EROFS           30
+#define EMLINK          31
+#define ETXTBSY         26
 #define ESPIPE          29
 #define EPIPE           32
 #define ERANGE          34

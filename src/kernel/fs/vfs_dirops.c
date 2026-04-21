@@ -26,9 +26,10 @@ int unlink_child(struct vfs_node *parent, struct vfs_node *child) {
 int vfs_mkdir(const char *path) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->mkdir)
-        return mnt->i_ops->mkdir(mnt, relpath, 0755);
-    return -ENOENT;
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->mkdir) return -ENOENT;
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->mkdir(mnt, relpath, 0755);
 }
 
 /* ── rmdir ──────────────────────────────────────── */
@@ -36,9 +37,10 @@ int vfs_mkdir(const char *path) {
 int vfs_rmdir(const char *path) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->rmdir)
-        return mnt->i_ops->rmdir(mnt, relpath);
-    return -ENOENT;
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->rmdir) return -ENOENT;
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->rmdir(mnt, relpath);
 }
 
 /* ── unlink ─────────────────────────────────────── */
@@ -46,9 +48,10 @@ int vfs_rmdir(const char *path) {
 int vfs_unlink(const char *path) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->unlink)
-        return mnt->i_ops->unlink(mnt, relpath);
-    return -ENOENT;
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->unlink) return -ENOENT;
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->unlink(mnt, relpath);
 }
 
 /* ── rename ─────────────────────────────────────── */
@@ -59,6 +62,8 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     struct mount *new_mnt = vfs_resolve_mount(newpath, &newrel);
     if (!old_mnt || !new_mnt) return -ENOENT;
     if (old_mnt != new_mnt) return -EXDEV; /* cross-device rename */
+    int ro = vfs_mount_writable(old_mnt);
+    if (ro < 0) return ro;
     if (old_mnt->i_ops && old_mnt->i_ops->rename)
         return old_mnt->i_ops->rename(old_mnt, oldrel, newrel);
     return -ENOENT;
@@ -72,6 +77,8 @@ int vfs_link(const char *oldpath, const char *newpath) {
     struct mount *new_mnt = vfs_resolve_mount(newpath, &newrel);
     if (!old_mnt || !new_mnt) return -ENOENT;
     if (old_mnt != new_mnt) return -EXDEV;
+    int ro = vfs_mount_writable(new_mnt);
+    if (ro < 0) return ro;
     if (old_mnt->i_ops && old_mnt->i_ops->link)
         return old_mnt->i_ops->link(old_mnt, oldrel, newrel);
     return -ENOSYS;

@@ -19,7 +19,56 @@ long do_get_robust_list(int pid, void **head_ptr, size_t *len_ptr) {
     if (len_ptr) { size_t sz = 24; copy_to_user(len_ptr, &sz, sizeof(sz)); }
     return 0;
 }
-long do_mount(void)           { return 0; }
+/* mount(2): minimal subset — tmpfs mount + MS_REMOUNT flag update.
+ * Source/data ignored for tmpfs. Path strings duplicated via pages_alloc
+ * (leaked for lifetime of mount, which is process lifetime — single-user). */
+static char *mount_path_dup(const char *src, int len) {
+    char *buf = (char *)pages_alloc(1);
+    if (!buf) return 0;
+    for (int i = 0; i < len && i < 255; i++) buf[i] = src[i];
+    buf[len < 255 ? len : 255] = '\0';
+    return buf;
+}
+
+long do_mount(const char *source, const char *target, const char *fstype,
+              unsigned long flags, const void *data) {
+    (void)source; (void)data;
+    if (!target) return -EFAULT;
+    char ktarget[PATH_MAX];
+    int tlen = copy_path_from_user(ktarget, target, PATH_MAX);
+    if (tlen < 0) return tlen;
+
+    /* MS_REMOUNT: update existing mount's flags only. fstype/source ignored. */
+    if (flags & MS_REMOUNT)
+        return vfs_mount_remount(ktarget, flags);
+
+    /* Bind/move/shared/slave/private: no namespaces — accept as no-op. */
+    if (flags & (MS_BIND | MS_MOVE | MS_SHARED | MS_PRIVATE | MS_SLAVE |
+                 MS_UNBINDABLE))
+        return 0;
+
+    /* Need fstype for new mount */
+    if (!fstype) return -EINVAL;
+    char kfstype[32];
+    int flen = copy_path_from_user(kfstype, fstype, sizeof(kfstype));
+    if (flen < 0) return flen;
+
+    /* tmpfs is the only supported dynamic fstype. */
+    int is_tmpfs = (kfstype[0]=='t' && kfstype[1]=='m' && kfstype[2]=='p' &&
+                    kfstype[3]=='f' && kfstype[4]=='s' && kfstype[5]==0);
+    if (!is_tmpfs) return -ENODEV;
+
+    /* Target dir must exist. */
+    struct k_stat st;
+    int sr = vfs_stat(ktarget, &st);
+    if (sr < 0) return sr;
+    if ((st.st_mode & S_IFMT) != S_IFDIR) return -ENOTDIR;
+
+    char *dup = mount_path_dup(ktarget, tlen);
+    if (!dup) return -ENOMEM;
+    return vfs_mount_flags(dup, flags & ~MS_REMOUNT, 0,
+                           &tmpfs_inode_ops, &tmpfs_file_ops, 0);
+}
 long do_sethostname(void)     { return 0; }
 long do_rseq(void)            { return -ENOSYS; }
 #include "linux/capability.h"

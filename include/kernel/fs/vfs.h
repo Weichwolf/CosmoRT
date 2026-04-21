@@ -143,6 +143,7 @@ struct mount {
     struct mount *next;         /* list linkage */
     const char *path;
     int pathlen;
+    unsigned long mnt_flags;    /* MS_RDONLY, MS_NOSUID, ... */
     struct super_ops *s_ops;
     struct inode_ops *i_ops;
     struct file_ops  *f_ops;    /* default file_ops (FS can override per-file) */
@@ -174,7 +175,12 @@ struct vfs_file {
 void vfs_init(void);
 int  vfs_mount(const char *path, struct super_ops *s_ops,
                struct inode_ops *i_ops, struct file_ops *f_ops, void *fs_data);
+int  vfs_mount_flags(const char *path, unsigned long flags,
+                     struct super_ops *s_ops, struct inode_ops *i_ops,
+                     struct file_ops *f_ops, void *fs_data);
+int  vfs_mount_remount(const char *path, unsigned long flags);
 struct mount *vfs_resolve_mount(const char *abspath, const char **relpath);
+int  vfs_mount_writable(struct mount *mnt);  /* 0 or -EROFS */
 
 /* ── Path operations (tmpfs dentry tree) ────────── */
 

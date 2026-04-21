@@ -14,9 +14,10 @@ int vfs_symlink(const char *target, const char *linkpath) {
 
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(linkpath, &relpath);
-    if (mnt && mnt->i_ops && mnt->i_ops->symlink)
-        return mnt->i_ops->symlink(mnt, target, relpath);
-    return -ENOENT;
+    if (!mnt || !mnt->i_ops || !mnt->i_ops->symlink) return -ENOENT;
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    return mnt->i_ops->symlink(mnt, target, relpath);
 }
 
 /* ── readlink ───────────────────────────────────── */

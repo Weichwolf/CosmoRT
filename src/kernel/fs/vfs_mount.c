@@ -17,8 +17,9 @@ static void mount_slab_ensure(void) {
         slab_init_dynamic(&mount_slab, (int)sizeof(struct mount), 0);
 }
 
-int vfs_mount(const char *path, struct super_ops *s_ops,
-              struct inode_ops *i_ops, struct file_ops *f_ops, void *fs_data) {
+int vfs_mount_flags(const char *path, unsigned long flags,
+                    struct super_ops *s_ops, struct inode_ops *i_ops,
+                    struct file_ops *f_ops, void *fs_data) {
     mount_slab_ensure();
 
     /* Compute path length (exclude trailing slash unless root) */
@@ -29,12 +30,13 @@ int vfs_mount(const char *path, struct super_ops *s_ops,
     struct mount *m = (struct mount *)slab_alloc(&mount_slab);
     if (!m) return -ENOMEM;
 
-    m->path    = path;
-    m->pathlen = len;
-    m->s_ops   = s_ops;
-    m->i_ops   = i_ops;
-    m->f_ops   = f_ops;
-    m->fs_data = fs_data;
+    m->path      = path;
+    m->pathlen   = len;
+    m->mnt_flags = flags;
+    m->s_ops     = s_ops;
+    m->i_ops     = i_ops;
+    m->f_ops     = f_ops;
+    m->fs_data   = fs_data;
 
     /* Insert sorted by pathlen descending, newer mount shadows older at same
      * pathlen (do_mount over existing mount point — Linux mnt_hash-Verhalten). */
@@ -97,4 +99,34 @@ struct mount *vfs_get_mount(int idx) {
 
 int vfs_mount_count(void) {
     return mount_count;
+}
+
+int vfs_mount(const char *path, struct super_ops *s_ops,
+              struct inode_ops *i_ops, struct file_ops *f_ops, void *fs_data) {
+    return vfs_mount_flags(path, 0, s_ops, i_ops, f_ops, fs_data);
+}
+
+/* Remount: locate existing mount by exact path, update mnt_flags.
+ * Linux mount(2) with MS_REMOUNT requires the mountpoint to exist. */
+int vfs_mount_remount(const char *path, unsigned long flags) {
+    int len = 0;
+    while (path[len]) len++;
+    if (len > 1 && path[len - 1] == '/') len--;
+
+    for (struct mount *m = mount_head; m; m = m->next) {
+        if (m->pathlen != len) continue;
+        int match = 1;
+        for (int j = 0; j < len; j++)
+            if (m->path[j] != path[j]) { match = 0; break; }
+        if (!match) continue;
+        m->mnt_flags = (m->mnt_flags & ~MS_RMT_MASK) | (flags & MS_RMT_MASK);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+int vfs_mount_writable(struct mount *mnt) {
+    if (!mnt) return 0;
+    if (mnt->mnt_flags & MS_RDONLY) return -EROFS;
+    return 0;
 }

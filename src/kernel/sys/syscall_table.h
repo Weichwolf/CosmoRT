@@ -85,7 +85,7 @@
     /* Stubs */ \
     X(SYS_FLOCK, flock, do_flock((int)a1, (int)a2)) \
     X(SYS_REBOOT, reboot, do_reboot((int)a1, (int)a2, (int)a3)) \
-    X(SYS_MOUNT, mount, do_mount()) \
+    X(SYS_MOUNT, mount, do_mount((const char *)a1, (const char *)a2, (const char *)a3, (unsigned long)a4, (const void *)a5)) \
     X(SYS_SETHOSTNAME, sethostname, do_sethostname()) \
     X(SYS_RSEQ, rseq, do_rseq()) \
     X(SYS_CAPGET, capget, do_capget((void *)a1, (void *)a2)) \

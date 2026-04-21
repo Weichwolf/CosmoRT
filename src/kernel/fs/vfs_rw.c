@@ -77,6 +77,8 @@ long vfs_write(int fd, const void *buf, size_t count) {
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
+    int ro = vfs_mount_writable(f->mnt);
+    if (ro < 0) return ro;
     long clamp = fsize_clamp_write(&count, effective_write_offset(f));
     if (clamp < 0) return clamp;
     if (count == 0) return 0;
@@ -106,6 +108,8 @@ long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset) {
 
 long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset) {
     if (!f) return -EBADF;
+    int ro = vfs_mount_writable(f->mnt);
+    if (ro < 0) return ro;
     long clamp = fsize_clamp_write(&count, offset);
     if (clamp < 0) return clamp;
     if (count == 0) return 0;

@@ -249,7 +249,8 @@ long do_setfsgid(long gid);
 /* ── Forward declarations: stubs.c ── */
 long do_set_robust_list(void *head, size_t len);
 long do_get_robust_list(int pid, void **head_ptr, size_t *len_ptr);
-long do_mount(void);
+long do_mount(const char *source, const char *target, const char *fstype,
+              unsigned long flags, const void *data);
 long do_sethostname(void);
 long do_rseq(void);
 long do_capget(void *hdrp, void *datap);
