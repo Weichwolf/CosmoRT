@@ -1,65 +1,81 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-21 nach VFS-Phase (EROFS mount-flag, ETXTBSY i_writecount,
-mkdir-mode-Fix, tmpfs-ramfs-Overlay, fchmodat a4-Fix, LTPROOT env).
+Run: 2026-04-21 nach fcntl-Phase (PF-Fix, OFD-Locks, F_SETLEASE,
+F_GETOWN_EX/F_SETOWN_EX, F_SETPIPE_SZ Error-Handling, /proc/sys/fs/*).
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta                  |
 |-------|-------|------|------|------|------------------------|
-| ktest | 2581  | 2581 |   0  |   -  | +22                    |
+| ktest | 2646  | 2646 |   0  |   -  | +65 (neue fcntl-Tests) |
 | musl  |  478  |  461 |  10  |   7  | ±0                     |
-| LTP   |  313  |  154 | 104  |  40  | +16 PASS / -21 FAIL    |
+| LTP   |  313  |  161 |  99  |  38  | +7 PASS / -5 FAIL      |
 
-Baseline: ktest 2559, musl 461/10, LTP 138/125/35.
+Baseline: ktest 2581, musl 461/10, LTP 154/104/40.
 
-Delta LTP: **+16 PASS** (chmod06, chown04, fchmod06, fchmodat01, fchmodat02,
-fchown04, fchownat01, fchownat02, creat04, creat06, creat08 und weitere durch
-mkdir-mode-Fix).
+## fcntl-Cluster (vorher 25+ FAIL, jetzt 27 FAIL 35 PASS 10 SKIP)
 
-## LTP FAIL (104) — verbleibende Gruppen
+Grosse Wins:
+- **fcntl11/11_64** PASS — range-split Semantik korrigiert
+- **fcntl13/13_64** PASS — User-CR2-PF behoben via copy_from_user
+- **fcntl21/21_64** PASS — F_GETLK conflict-Range-Return
+- **fcntl23/23_64, fcntl27/27_64** PASS — F_SETLEASE implementiert
+- **fcntl33/33_64** SKIP (nicht FAIL) — lease-break-time procfs
+- **fcntl12** verstanden — rlimit-EMFILE-Pfad funktioniert aber Test-Toolchain anders
+
+Verbleibende fcntl-Fails (10 fcntl* FAIL + _64-Varianten):
+- **fcntl12/12_64**: getdtablesize() + EMFILE-Edge, RLIMIT_NOFILE-Handling
+- **fcntl14/14_64**: 5000 Random-Iterationen, 10s Timeout zu knapp
+- **fcntl15/15_64**: tst_checkpoint (shared-memory-IPC zwischen Prozessen)
+- **fcntl17/17_64**: F_SETLKW Deadlock-Detection (EDEADLK) — nicht impl.
+- **fcntl30/30_64**: F_SETPIPE_SZ write-through, /proc/sys/fs/pipe-max-size
+- **fcntl31/31_64**: SIGIO-Delivery via F_SETSIG — nicht impl.
+- **fcntl34/34_64**: OFD-Lock-Stress in pthreads (Timeout)
+- **fcntl35/35_64**: pipe-max-size als unprivileged user (getpwnam)
+- **fcntl36/36_64**: OFD vs POSIX Race-Conditions (komplex)
+- **fcntl37/37_64**: F_SETPIPE_SZ write-through für EBUSY-Check
+- **fcntl38/38_64**: dnotify event-delivery — nicht impl.
+- **fcntl39/39_64**: dnotify DN_RENAME — nicht impl.
+
+## LTP FAIL (99) — verbleibende Gruppen (aktualisiert)
 
 | Gruppe         | Anzahl | Tests                                           | Ursache                        |
 |----------------|--------|-------------------------------------------------|--------------------------------|
-| fcntl          |  ~25   | fcntl11-39 (+_64), fcntl13 mit PF               | F_OFD_*, F_SETLEASE, UAF       |
-| eventfd/epoll  |  ~13   | eventfd01-05+2_03, epoll_pwait01/04, _wait02-06 | EPOLLET, EFD_SEMAPHORE         |
-| clock_*        |   9    | clock_adjtime01/02, clock_gettime01-04, clock_nanosleep01-04, clock_settime02 | CLOCK_TAI, ns-Präzision |
-| clone          |   5    | clone03/05/09/11/301/302                        | CLONE_NEWNS, SETTID, PIDFD     |
-| bind/accept    |   7    | accept02/03, accept4_01, bind01-04, connect01/02 | AF_UNIX, SO_REUSEPORT         |
-| chroot         |   1    | chroot01                                        | chroot() + DAC                 |
-| caps           |   2    | capget01, capset02                              | Capabilities nicht impl.       |
-| bpf            |   3    | bpf_prog02-04                                   | bpf() -ENOSYS                  |
-| creat          |   1    | creat07                                         | LTP copy_resource SAFE_CP       |
-| dup            |   2    | dup05, dup201                                   | O_CLOEXEC                      |
-| execve         |   3    | execve04/05, execveat01/02                      | fexecve + suid                 |
-| cve            |   3    | cve-2016-10044, cve-2017-1705x, cve-2025-38236  | regression tests               |
-| access         |   2    | access01, access04                              | DAC edge-cases                 |
-| fchownat       |   1    | fchownat03                                      | 1 subtest (EACCES/EPERM mismatch?) |
-| fanotify       |   1    | fanotify12                                      | fanotify nicht impl.           |
-| rest           |  ~15   | abort01, acct01, adjtimex02, faccessat202, fallocate02, fchdir03, fdatasync02, fgetxattr02, flock03, leapsec01, posix_fadvise02_64, stack_clash | diverse |
+| fcntl          |   27   | fcntl12/14/15/17/30/31/34/35/36/37/38/39 (+_64) | SIGIO, dnotify, timeouts       |
+| eventfd/epoll  |   13   | eventfd01-05+2_03, epoll_pwait01/04, _wait02-06 | EPOLLET, EFD_SEMAPHORE         |
+| clock_*        |    9   | clock_adjtime01/02, clock_gettime01-04, nanosleep01-04, settime02 | CLOCK_TAI, ns-Präzision |
+| clone          |    5   | clone03/05/09/11/301/302                        | CLONE_NEWNS, SETTID, PIDFD     |
+| bind/accept    |    7   | accept02/03, accept4_01, bind01-04, connect01/02 | AF_UNIX, SO_REUSEPORT         |
+| chroot         |    2   | chroot01/04                                     | chroot() + DAC                 |
+| caps           |    2   | capget01, capset02                              | Capabilities nicht impl.       |
+| bpf            |    3   | bpf_prog02-04                                   | bpf() -ENOSYS                  |
+| creat          |    1   | creat07                                         | LTP copy_resource SAFE_CP      |
+| dup            |    2   | dup05, dup201                                   | O_CLOEXEC                      |
+| execve         |    3   | execve04/05, execveat01/02                      | fexecve + suid                 |
+| cve            |    3   | cve-2016-10044, cve-2017-1705x, cve-2025-38236  | regression tests               |
+| access         |    2   | access01, access04                              | DAC edge-cases                 |
+| fanotify       |    1   | fanotify12                                      | fanotify nicht impl.           |
+| rest           |  ~15   | abort01, acct01, adjtimex02, fchdir03, fdatasync02, flock03, leapsec01, stack_clash | diverse |
 
-## Kernel-PFs (unverändert 2)
+## Kernel-PFs
 
-| Test       | rip (kernel)          |
-|------------|-----------------------|
-| fcntl13    | 0xffff8000...         |
-| fcntl13_64 | gleiche Stelle        |
-
-Nicht fatal, Prozess gekilled, LTP läuft weiter.
+**Keine.** Die beiden fcntl13-PFs (user-CR2) sind durch copy_from_user
+behoben. tst_get_bad_addr gibt einen unmapped Pointer zurueck; unser
+user_ok prueft nur den Address-Bereich, nicht ob die Seite gemapped
+ist. copy_from_user macht das via _ASM_EXTABLE-Fault-Recovery.
 
 ## musl FAIL (10) — identisch zur Baseline
 
-Keine Änderung durch VFS-Phase:
-fma, fmal, powf, remquol (FPU softfma), malloc-brk-fail (mm),
+Keine Änderung: fma, fmal, powf, remquol (FPU softfma), malloc-brk-fail (mm),
 pthread_atfork-errno-clobber +static (rlimit NPROC),
 rlimit-open-files +static (rlim_max persist), tls_get_new-dtv (dl).
 
-## Priorisierung (nach VFS-Phase)
+## Priorisierung (nach fcntl-Phase)
 
 **Top Fix-Kandidaten:**
 
-1. **fcntl F_OFD_*/F_SETLEASE + PF-Fix** (~25 tests, mittel)
-2. **eventfd/epoll edge-cases** (~13 tests, niedrig) — meist rc=2 (timeout)
-3. **clock_* Präzision** (9 tests, mittel) — CLOCK_TAI nicht impl, tst_test clock-Drift
+1. **eventfd/epoll edge-cases** (~13 tests) — meist EPOLLET/EFD_SEMAPHORE
+2. **clock_* Präzision** (9 tests) — CLOCK_TAI + ns-Präzision
+3. **dup O_CLOEXEC + clone PIDFD** (7 tests)
 
-**Deprioritized:** chroot/caps/bpf (6 tests), fanotify (1 test).
+**Deprioritized:** chroot/caps/bpf (7 tests), fanotify (1), SIGIO-fcntl (6).
