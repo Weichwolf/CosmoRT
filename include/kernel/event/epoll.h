@@ -18,6 +18,10 @@ typedef struct {
     int        flags;
     int        refcount;
     spinlock_t lock;
+    /* Blocked waiters: one reader + one writer at a time (Linux: wait_queue,
+     * but eventfd is so simple that two slots suffice for all callers we have). */
+    struct thread *blocked_reader;
+    struct thread *blocked_writer;
 } eventfd_t;
 
 /* ── timerfd_t — exposed so syscall.c can check expiration for readiness ── */
@@ -69,9 +73,10 @@ void timerfd_destroy(void *obj);
 void inotify_incref(void *obj);
 void inotify_destroy(void *obj);
 
-/* Read/write hooks for do_read/do_write */
-long eventfd_read(void *obj, void *buf, long count);
-long eventfd_write(void *obj, const void *buf, long count);
+/* Read/write hooks for do_read/do_write.
+ * nonblock=1 when the caller's fd has O_NONBLOCK; 0 blocks via event_wait. */
+long eventfd_read(void *obj, void *buf, long count, int nonblock);
+long eventfd_write(void *obj, const void *buf, long count, int nonblock);
 long timerfd_read(void *obj, void *buf, long count);
 long inotify_read(void *obj, void *buf, long count);
 int  inotify_has_events(void *obj);

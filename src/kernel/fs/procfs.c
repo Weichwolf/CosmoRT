@@ -371,16 +371,36 @@ static uint64_t proc_count_rss(process_t *p) {
     return rss;
 }
 
+/* Linux-konforme State-Ableitung: 'R' running, 'S' interruptible-sleep,
+ * 'T' stopped, 'Z' zombie, 'X' dead. Basiert auf main_thread->state, weil
+ * PROC_ALIVE alleine nicht zwischen running und blocked unterscheidet. */
+static char proc_state_char(const process_t *p) {
+    if (p->state == PROC_ZOMBIE) return 'Z';
+    thread_t *t = p->main_thread;
+    if (!t) return 'R';
+    switch (t->state) {
+    case THREAD_BLOCKED: return 'S';
+    case THREAD_STOPPED: return 'T';
+    case THREAD_DEAD:    return 'X';
+    default:             return 'R';
+    }
+}
+
+static const char *proc_state_str(char c) {
+    switch (c) {
+    case 'Z': return "Z (zombie)";
+    case 'S': return "S (sleeping)";
+    case 'T': return "T (stopped)";
+    case 'X': return "X (dead)";
+    default:  return "R (running)";
+    }
+}
+
 static int procfs_pid_status(char *buf, int size, int offset, void *ctx) {
     process_t *p = ctx ? (process_t *)ctx : proc_current();
     if (!p) return 0;
 
-    const char *state_str;
-    switch (p->state) {
-    case PROC_ALIVE:  state_str = "R (running)"; break;
-    case PROC_ZOMBIE: state_str = "Z (zombie)";  break;
-    default:          state_str = "S (sleeping)"; break;
-    }
+    const char *state_str = proc_state_str(proc_state_char(p));
 
     uint64_t vm_bytes, data_bytes, stk_bytes, exe_bytes, rss_bytes;
     uint64_t irqf;
@@ -445,12 +465,7 @@ static int procfs_pid_stat(char *buf, int size, int offset, void *ctx) {
     process_t *p = ctx ? (process_t *)ctx : proc_current();
     if (!p) return 0;
 
-    char state_c;
-    switch (p->state) {
-    case PROC_ALIVE:  state_c = 'R'; break;
-    case PROC_ZOMBIE: state_c = 'Z'; break;
-    default:          state_c = 'S'; break;
-    }
+    char state_c = proc_state_char(p);
 
     uint64_t vsize_b = 0;
     uint64_t rss_pages = 0;

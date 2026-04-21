@@ -339,14 +339,214 @@ static void test_epoll_pwait05(void) {
     sc1(SYS_CLOSE, pipefd[1]);
 }
 
+/* ── epoll_wait03: events-Pointer nicht schreibbar → EFAULT ── */
+
+static void test_epoll_wait03_efault(void) {
+    puts("\n[ltp/epoll_wait03-efault]\n");
+
+    int pipefd[2];
+    sc1(SYS_PIPE, (long)pipefd);
+
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    check("epoll_create1", epfd >= 0);
+    if (epfd < 0) { sc1(SYS_CLOSE, pipefd[0]); sc1(SYS_CLOSE, pipefd[1]); return; }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data = (uint64_t)pipefd[0];
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[0], (long)&ev);
+
+    /* PROT_READ-only Seite via mmap (Linux: PROT_READ=1, MAP_PRIVATE|MAP_ANONYMOUS=2|0x20) */
+    long ro = sc6(SYS_MMAP, 0, 4096, 1, 0x22, -1, 0);
+    check("mmap PROT_READ", ro > 0);
+
+    long r = sc4(SYS_EPOLL_WAIT, epfd, ro, 1, -1);
+    check_val("epoll_wait RO buffer EFAULT", r, -EFAULT);
+
+    sc2(SYS_MUNMAP, ro, 4096);
+    sc1(SYS_CLOSE, epfd);
+    sc1(SYS_CLOSE, pipefd[0]);
+    sc1(SYS_CLOSE, pipefd[1]);
+}
+
+/* ── epoll_pwait04: sigmask-Pointer ungueltig → EFAULT ── */
+
+static void test_epoll_pwait04(void) {
+    puts("\n[ltp/epoll_pwait04]\n");
+
+    int pipefd[2];
+    sc1(SYS_PIPE, (long)pipefd);
+
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    check("epoll_create1", epfd >= 0);
+    if (epfd < 0) { sc1(SYS_CLOSE, pipefd[0]); sc1(SYS_CLOSE, pipefd[1]); return; }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data = (uint64_t)pipefd[0];
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[0], (long)&ev);
+    sc3(SYS_WRITE, pipefd[1], (long)"w", 1);
+
+    struct epoll_event ret;
+    /* Kernel-Space-Pointer → EFAULT */
+    long bad = 0xffffffff00000000UL;
+    long r = sc6(SYS_EPOLL_PWAIT, epfd, (long)&ret, 1, 0, bad, 8);
+    check_val("epoll_pwait bad sigmask EFAULT", r, -EFAULT);
+
+    char buf[4];
+    sc3(SYS_READ, pipefd[0], (long)buf, 1);
+    sc1(SYS_CLOSE, epfd);
+    sc1(SYS_CLOSE, pipefd[0]);
+    sc1(SYS_CLOSE, pipefd[1]);
+}
+
+/* ── epoll_wait06-etalt: Pipe EPOLLET mit was_full-Semantik ── */
+
+static void test_epoll_wait06_etfull(void) {
+    puts("\n[ltp/epoll_wait06-etfull]\n");
+
+    int pipefd[2];
+    long r = sc2(SYS_PIPE2, (long)pipefd, O_NONBLOCK);
+    if (r != 0) return;
+
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    if (epfd < 0) { sc1(SYS_CLOSE, pipefd[0]); sc1(SYS_CLOSE, pipefd[1]); return; }
+
+    struct epoll_event ev;
+    ev.events = EPOLLOUT | EPOLLET;
+    ev.data = (uint64_t)pipefd[1];
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[1], (long)&ev);
+
+    /* Pipe komplett fuellen (4096 Bytes) */
+    char buf[4096];
+    for (int i = 0; i < 4096; i++) buf[i] = 'a';
+    sc3(SYS_WRITE, pipefd[1], (long)buf, 4096);
+
+    /* was_full=1; EPOLLOUT darf nicht ready sein */
+    struct epoll_event ret;
+    r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
+    check_val("full pipe no EPOLLOUT", r, 0);
+
+    /* Halb leeren */
+    sc3(SYS_READ, pipefd[0], (long)buf, 2048);
+    r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
+    check_val("half-drained pipe still no EPOLLOUT", r, 0);
+
+    /* Komplett leeren → EPOLLOUT edge */
+    sc3(SYS_READ, pipefd[0], (long)buf, 2048);
+    r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
+    check_val("fully drained pipe EPOLLOUT", r, 1);
+
+    sc1(SYS_CLOSE, epfd);
+    sc1(SYS_CLOSE, pipefd[0]);
+    sc1(SYS_CLOSE, pipefd[1]);
+}
+
+/* ── eventfd-blocking: read blockiert + wird geweckt via write ── */
+
+static void test_eventfd_blocking_read(void) {
+    puts("\n[ltp/eventfd-blocking-read]\n");
+
+    /* Kein EFD_NONBLOCK: read blockiert bei counter==0 */
+    long fd = sc2(SYS_EVENTFD2, 0, 0);
+    check("eventfd2(0, 0)", fd >= 0);
+    if (fd < 0) return;
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Kind: read blockiert bis parent schreibt */
+        uint64_t val = 0;
+        long r = sc3(SYS_READ, fd, (long)&val, 8);
+        sc1(SYS_EXIT_GROUP, (r == 8 && val == 7) ? 0 : 1);
+        __builtin_unreachable();
+    }
+
+    /* Parent wartet kurz, dann schreibt */
+    struct { long sec; long nsec; } ts = { 0, 50000000L };
+    sc2(SYS_NANOSLEEP, (long)&ts, 0);
+    uint64_t val = 7;
+    sc3(SYS_WRITE, fd, (long)&val, 8);
+
+    int wstatus = 0;
+    sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+    check_val("child got value", WEXITSTATUS(wstatus), 0);
+
+    sc1(SYS_CLOSE, fd);
+}
+
+/* ── eventfd2: invalid flags → EINVAL ── */
+
+static void test_eventfd2_einval_flags(void) {
+    puts("\n[ltp/eventfd2-einval-flags]\n");
+
+    long fd = sc2(SYS_EVENTFD2, 0, 0x80000000);
+    check_val("eventfd2 bogus flag EINVAL", fd, -EINVAL);
+}
+
+/* ── EPOLLRDHUP fuer TCP-Socket nach shutdown(SHUT_RD) ── */
+
+static void test_epoll_rdhup_shutdown(void) {
+    puts("\n[ltp/epoll-rdhup-shutdown]\n");
+
+    /* Setup socket-pair over localhost */
+    long s1 = sc3(SYS_SOCKET, 2 /*AF_INET*/, 1 /*SOCK_STREAM*/, 0);
+    long s2 = sc3(SYS_SOCKET, 2, 1, 0);
+    if (s1 < 0 || s2 < 0) { if (s1>=0) sc1(SYS_CLOSE, s1); if (s2>=0) sc1(SYS_CLOSE, s2); return; }
+
+    /* Bind s1 auf lo, listen */
+    struct { uint16_t fam; uint16_t port; uint32_t addr; uint8_t pad[8]; } sa = {0};
+    sa.fam = 2;
+    sa.port = __builtin_bswap16(0);
+    sa.addr = __builtin_bswap32(0x7f000001);
+    sc3(SYS_BIND, s1, (long)&sa, sizeof(sa));
+    sc2(SYS_LISTEN, s1, 1);
+    /* getsockname holt den assigned port */
+    uint32_t salen = sizeof(sa);
+    sc3(SYS_GETSOCKNAME, s1, (long)&sa, (long)&salen);
+
+    /* connect s2 → s1 */
+    long cres = sc3(SYS_CONNECT, s2, (long)&sa, sizeof(sa));
+    if (cres < 0) { sc1(SYS_CLOSE, s1); sc1(SYS_CLOSE, s2); return; }
+
+    long s1a = sc3(SYS_ACCEPT, s1, 0, 0);
+    if (s1a < 0) { sc1(SYS_CLOSE, s1); sc1(SYS_CLOSE, s2); return; }
+
+    /* epoll auf s2 mit EPOLLRDHUP */
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    struct epoll_event ev;
+    ev.events = EPOLLRDHUP;
+    ev.data = (uint64_t)s2;
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, s2, (long)&ev);
+
+    /* shutdown SHUT_RD auf s2 */
+    sc2(SYS_SHUTDOWN, s2, 0);
+
+    struct epoll_event ret;
+    long r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 500);
+    check_val("EPOLLRDHUP after shutdown(SHUT_RD)", r, 1);
+    if (r == 1)
+        check("events contains EPOLLRDHUP", (ret.events & EPOLLRDHUP) != 0);
+
+    sc1(SYS_CLOSE, epfd);
+    sc1(SYS_CLOSE, s1a);
+    sc1(SYS_CLOSE, s1);
+    sc1(SYS_CLOSE, s2);
+}
+
 TEST("ltp/epoll_wait01-out",              test_epoll_wait01_out);
 TEST("ltp/epoll_wait01-in",               test_epoll_wait01_in);
 TEST("ltp/epoll_wait03-ebadf",            test_epoll_wait03_ebadf);
 TEST("ltp/epoll_wait03-einval-notepoll",  test_epoll_wait03_einval_notepoll);
 TEST("ltp/epoll_wait03-einval-maxevents", test_epoll_wait03_einval_maxevents);
+TEST("ltp/epoll_wait03-efault",           test_epoll_wait03_efault);
 TEST("ltp/epoll_wait04",                  test_epoll_wait04);
 TEST("ltp/epoll_wait06",                  test_epoll_wait06);
+TEST("ltp/epoll_wait06-etfull",           test_epoll_wait06_etfull);
 TEST("ltp/epoll_wait07",                  test_epoll_wait07);
 TEST("ltp/epoll_pwait01",                 test_epoll_pwait01);
 TEST("ltp/epoll_pwait02",                 test_epoll_pwait02);
+TEST("ltp/epoll_pwait04",                 test_epoll_pwait04);
+TEST("ltp/eventfd-blocking-read",         test_eventfd_blocking_read);
+TEST("ltp/eventfd2-einval-flags",         test_eventfd2_einval_flags);
+TEST("ltp/epoll-rdhup-shutdown",          test_epoll_rdhup_shutdown);
 TEST("ltp/epoll_pwait05",                 test_epoll_pwait05);

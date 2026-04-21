@@ -12,6 +12,7 @@ struct pipe {
     uint8_t buf[PIPE_BUF_SIZE];
     int read_pos, write_pos, count;
     int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
+    int was_full;               /* Linux-Ring-Semantik: EPOLLOUT-Edge nur nach komplettem Drain */
     thread_t *blocked_reader;   /* thread blocked in pipe read */
     thread_t *blocked_writer;   /* thread blocked in pipe write */
     spinlock_t lock;
@@ -40,6 +41,7 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
         pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
     }
     pp->count -= (int)n;
+    if (pp->count == 0) pp->was_full = 0;
     /* Wake blocked writer if space freed */
     thread_t *writer = pp->blocked_writer;
     pp->blocked_writer = 0;
@@ -73,6 +75,7 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
         pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
     }
     pp->count += (int)n;
+    if (pp->count >= PIPE_BUF_SIZE) pp->was_full = 1;
     /* Wake blocked reader */
     thread_t *reader = pp->blocked_reader;
     pp->blocked_reader = 0;
@@ -106,6 +109,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
                 pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
             }
             pp->count -= (int)n;
+            if (pp->count == 0) pp->was_full = 0;
             /* Wake blocked writer */
             thread_t *writer = pp->blocked_writer;
             pp->blocked_writer = 0;
@@ -153,6 +157,7 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
                 pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
             }
             pp->count += (int)n;
+            if (pp->count >= PIPE_BUF_SIZE) pp->was_full = 1;
             /* Wake blocked reader */
             thread_t *reader = pp->blocked_reader;
             pp->blocked_reader = 0;
@@ -188,6 +193,7 @@ long do_pipe2(int *fds, int flags) {
 
     pp->read_pos = pp->write_pos = pp->count = 0;
     pp->read_open = pp->write_open = 1;
+    pp->was_full = 0;
     pp->blocked_reader = 0;
     pp->blocked_writer = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
@@ -410,6 +416,12 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             /* Non-blocking connect failed */
             if ((s->sockflags & SOCKF_CONNECTING) && s->tcp.got_rst)
                 ready |= EPOLLERR;
+            /* EPOLLRDHUP: reading half closed (SHUT_RD oder Peer-FIN).
+             * Wird in epoll.c immer gemeldet, unabhaengig von interest-Mask,
+             * analog Linux-Verhalten fuer EPOLLHUP/EPOLLERR. */
+            if (s->shut_rd || s->tcp.state == TCP_CLOSE_WAIT ||
+                s->tcp.state == TCP_CLOSED)
+                ready |= EPOLLRDHUP;
         }
         break;
     }
@@ -426,7 +438,10 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             if (!pp->write_open) ready |= EPOLLRDHUP;
         } else {
             if (interest & EPOLLOUT) {
-                if (pp->count < PIPE_BUF_SIZE) ready |= EPOLLOUT;
+                /* Linux-Ring-Semantik: Einmal voll, erst nach komplettem Drain
+                 * wieder writable. Matcht pipe_release_buf (fs/pipe.c). */
+                if (pp->count < PIPE_BUF_SIZE && !pp->was_full)
+                    ready |= EPOLLOUT;
                 if (!pp->read_open) ready |= EPOLLERR | EPOLLHUP;
             }
         }

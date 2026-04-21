@@ -543,7 +543,35 @@ long do_openat2(int dirfd, const char *pathname, void *how, size_t size) {
     return do_openat(dirfd, pathname, (int)fields[0], (int)fields[1]);
 }
 
-/* epoll_pwait2: delegate to epoll_wait (ignore sigmask + timespec precision) */
+/* epoll_pwait: Linux-ABI — wie epoll_wait, aber mit sigmask-Swap waehrend wait.
+ * Blockiert sigmask, wartet, restauriert. Bei Fault auf sigmask-Pointer: -EFAULT. */
+long do_epoll_pwait(int epfd, struct epoll_event *events, int maxevents,
+                    int timeout, const uint64_t *sigmask, size_t sigsetsize) {
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+
+    uint64_t saved = 0;
+    int have_mask = 0;
+    if (sigmask) {
+        /* musl uebergibt _NSIG/8 = 16 bytes (128 bits). Linux akzeptiert genau
+         * sigsetsize == sizeof(kernel_sigset_t) = 8 auf x86_64. Accept 8/16. */
+        if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
+        uint64_t mask;
+        int r = copy_from_user(&mask, sigmask, 8);
+        if (r) return r;
+        mask &= ~(SIG_BIT(9) | SIG_BIT(19)); /* SIGKILL/SIGSTOP nicht blockbar */
+        saved = t->sig_blocked;
+        t->sig_blocked = mask;
+        have_mask = 1;
+    }
+
+    long ret = do_epoll_wait(epfd, events, maxevents, timeout);
+
+    if (have_mask) t->sig_blocked = saved;
+    return ret;
+}
+
+/* epoll_pwait2: wie epoll_pwait, aber mit struct timespec statt int ms. */
 long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout) {
     int timeout_ms = -1;
     if (timeout) {

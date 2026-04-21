@@ -216,7 +216,7 @@
     X(SYS_INOTIFY_INIT1, inotify_init1, do_inotify_init1((int)a1)) \
     X(SYS_INOTIFY_ADD_WATCH, inotify_add_watch, do_inotify_add_watch((int)a1, (const char *)a2, (uint32_t)a3)) \
     X(SYS_INOTIFY_RM_WATCH, inotify_rm_watch, do_inotify_rm_watch((int)a1, (int)a2)) \
-    X(SYS_EPOLL_PWAIT, epoll_pwait, do_epoll_wait((int)a1, (struct epoll_event *)a2, (int)a3, (int)a4)) \
+    X(SYS_EPOLL_PWAIT, epoll_pwait, do_epoll_pwait((int)a1, (struct epoll_event *)a2, (int)a3, (int)a4, (const uint64_t *)a5, (size_t)a6)) \
     /* select / pselect / ppoll */ \
     X(SYS_SELECT, select, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_SELECT)) \
     X(SYS_PSELECT6, pselect6, do_pselect6((int)a1, (uint64_t *)a2, a3, a4, a5, SYS_PSELECT6)) \

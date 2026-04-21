@@ -1,6 +1,8 @@
 #!/bin/sh
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export LTPROOT=/opt/ltp/install
+# LTP: Kein /proc/config.gz verfuegbar; alle needs_kconfigs wuerden TBROK werfen.
+export KCONFIG_SKIP_CHECK=1
 mount -t proc none /proc 2>/dev/null || true
 mount -t sysfs none /sys 2>/dev/null || true
 mount -t tmpfs none /tmp 2>/dev/null || true

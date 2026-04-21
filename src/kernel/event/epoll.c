@@ -359,8 +359,6 @@ uint64_t epoll_nearest_deadline_tsc(int core_id) {
 
 long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
     if (maxevents <= 0) return -EINVAL;
-    if (!events || !user_ok((uint64_t)events, (size_t)maxevents * sizeof(*events)))
-        return -EFAULT;
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
@@ -370,6 +368,17 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     if (epfde->type != FD_EPOLL) return -EINVAL;
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EINVAL;
+
+    /* EFAULT-Check nach EBADF/EINVAL (Linux-Reihenfolge).
+     * user_ok prueft nur Adressbereich; fuer PROT_READ-only Pages schlaegt
+     * erst der tatsaechliche write-Versuch (extable) fehl. Test-write byte 0
+     * triggert den fault sofort, konsistent mit Linux access_ok + write. */
+    if (!events || !user_ok((uint64_t)events, (size_t)maxevents * sizeof(*events)))
+        return -EFAULT;
+    {
+        uint8_t probe = 0;
+        if (copy_to_user(events, &probe, 1) != 0) return -EFAULT;
+    }
 
     /* Use absolute deadline to avoid timeout reset on re-execute.
      * On first call: compute deadline. On re-execute after wakeup:
@@ -397,11 +406,13 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
         for (epoll_entry_t *ent = ep->entries; ent && nready < maxevents; ent = ent->next) {
             uint32_t interest = ent->events & ~(EPOLLET | EPOLLONESHOT);
             if (!interest) continue;
-            uint32_t r = fd_poll_readiness(ent->fd, interest);
+            /* Linux: HUP/ERR/RDHUP werden immer geliefert, auch wenn
+             * nicht explizit in interest. Query maskiert also nur IN/OUT. */
+            uint32_t r = fd_poll_readiness(ent->fd, interest | EPOLLHUP | EPOLLERR | EPOLLRDHUP);
             if (r) {
                 struct epoll_event ev;
                 ev.events = r & interest;
-                ev.events |= r & (EPOLLHUP | EPOLLERR);
+                ev.events |= r & (EPOLLHUP | EPOLLERR | EPOLLRDHUP);
                 if (ev.events) {
                     if (ent->events & EPOLLET) {
                         uint32_t new_bits = ev.events & ~ent->et_last;

@@ -168,7 +168,7 @@ long do_write(int fd, const void *buf, size_t count) {
         return pipe_write_blocking(pp, buf, count);
     }
     if (fde->type == FD_EVENTFD)
-        return eventfd_write(fde->obj, buf, (long)count);
+        return eventfd_write(fde->obj, buf, (long)count, fde->flags & O_NONBLOCK);
     if (fde->type == FD_PTY_SLAVE) {
         int pty_id = (int)(long)fde->obj;
         uint8_t kbuf[256];
@@ -316,7 +316,7 @@ long do_read(int fd, void *buf, size_t count) {
         return pipe_read_blocking(pp, buf, count);
     }
     if (fde->type == FD_EVENTFD)
-        return eventfd_read(fde->obj, buf, (long)count);
+        return eventfd_read(fde->obj, buf, (long)count, fde->flags & O_NONBLOCK);
     if (fde->type == FD_TIMERFD)
         return timerfd_read(fde->obj, buf, (long)count);
     if (fde->type == FD_INOTIFY)
