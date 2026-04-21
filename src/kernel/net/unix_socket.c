@@ -223,13 +223,21 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 
     if (k_addr.sun_family != 1 /* AF_UNIX */) return -EINVAL;
 
-    int path_len = copy_len - 2; /* minus sun_family */
-    if (path_len <= 0 || path_len >= 108) return -EINVAL;
+    int max_path = copy_len - 2; /* minus sun_family */
+    if (max_path <= 0) return -EINVAL;
+    if (max_path > 108) max_path = 108;
 
     /* Stage path into local buffer, then commit only after collision check
-     * so a failed bind() leaves s->path untouched (Linux semantics). */
-    char new_path[108];
-    kmemcpy(new_path, k_addr.sun_path, (size_t)path_len);
+     * so a failed bind() leaves s->path untouched (Linux semantics).
+     * sun_path need not be null-terminated; find NUL up to max_path. */
+    char new_path[109];
+    int path_len = 0;
+    for (int i = 0; i < max_path; i++) {
+        if (k_addr.sun_path[i] == '\0') break;
+        new_path[i] = k_addr.sun_path[i];
+        path_len++;
+    }
+    if (path_len == 0) return -EINVAL;
     new_path[path_len] = '\0';
 
     /* Pathname socket (sun_path[0] != 0): verify parent directory is a dir.

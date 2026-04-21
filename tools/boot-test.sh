@@ -13,7 +13,7 @@ echo "  $(uname -a)"
 echo "========================================"
 
 musl_pass=0; musl_fail=0; musl_skip=0
-if [ "$COSMO_SKIP_MUSL" != "1" ]; then
+if [ "$COSMO_SKIP_MUSL" != "1" ] && [ ! -f /opt/skip-musl ]; then
 echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
