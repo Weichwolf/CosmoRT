@@ -41,14 +41,14 @@ static void test_fcntl_getlk_unlck_keeps_range(void) {
     lk.l_whence = SEEK_SET;
     lk.l_start = 42;
     lk.l_len = 7;
-    lk.l_pid = 0;
+    lk.l_pid = 12345;  /* must stay unchanged on no-conflict */
 
     long r = sc3(SYS_FCNTL, fd, F_GETLK, (long)&lk);
     check_val("F_GETLK no conflict rc", r, 0);
     check_val("l_type == F_UNLCK", (long)lk.l_type, F_UNLCK);
     check_val("l_start preserved", (long)lk.l_start, 42);
     check_val("l_len preserved", (long)lk.l_len, 7);
-    check_val("l_pid zeroed", (long)lk.l_pid, 0);
+    check_val("l_pid preserved (Linux fs/locks.c)", (long)lk.l_pid, 12345);
 
     sc1(SYS_CLOSE, fd);
     sc1(SYS_UNLINK, (long)"/tmp/fcntl_gq");
@@ -418,6 +418,23 @@ static void test_fcntl_getlk_reports_range(void) {
     sc1(SYS_UNLINK, (long)"/tmp/fcntl_gr");
 }
 
+/* ── fcntl13 testcase 3: bad l_whence on non-seekable fd returns EINVAL ── */
+
+static void test_fcntl_bad_whence_order(void) {
+    puts("\n[ltp/fcntl_bad_whence_order]\n");
+
+    /* stderr is non-FD_FILE (FD_SERIAL). flock.l_whence=-1 must give EINVAL,
+     * not EBADF or success. */
+    struct k_flock lk;
+    lk.l_type = F_WRLCK;
+    lk.l_whence = -1;
+    lk.l_start = 0;
+    lk.l_len = 0;
+    lk.l_pid = 0;
+    long r = sc3(SYS_FCNTL, 2, F_SETLK, (long)&lk);
+    check_val("F_SETLK bad whence on serial EINVAL", r, -EINVAL);
+}
+
 /* ── F_SETLEASE on pipe must fail ── */
 
 static void test_fcntl_setlease_pipe(void) {
@@ -460,3 +477,4 @@ TEST("ltp/fcntl_bad_ptrs",             test_fcntl_bad_ptrs);
 TEST("ltp/fcntl_getlk_range",          test_fcntl_getlk_reports_range);
 TEST("ltp/fcntl_setlease_pipe",        test_fcntl_setlease_pipe);
 TEST("ltp/fcntl_notify",               test_fcntl_notify_noop);
+TEST("ltp/fcntl_bad_whence_order",     test_fcntl_bad_whence_order);

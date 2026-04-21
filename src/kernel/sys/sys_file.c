@@ -1317,6 +1317,11 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
     /* OFD locks require l_pid == 0 on input */
     if (kind == FL_OFD && ufl.l_pid != 0) return -EINVAL;
 
+    /* Validate whence before file-type check: Linux fs/fcntl.c path
+     * (flock_to_posix_lock) rejects bad whence with EINVAL on any fd. */
+    if (ufl.l_whence != SEEK_SET && ufl.l_whence != SEEK_CUR &&
+        ufl.l_whence != SEEK_END) return -EINVAL;
+
     if (fde->type != FD_FILE) return is_get ? -EBADF : -EINVAL;
     uint64_t ino = flock_ino(fde);
     if (!ino) return -EBADF;
@@ -1339,8 +1344,9 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
             ufl.l_pid    = (c->kind == FL_OFD) ? -1 : (int)c->pid;
         } else {
             ufl.l_type = F_UNLCK;
-            /* Preserve l_whence/l_start/l_len as query, per POSIX */
-            ufl.l_pid = 0;
+            /* POSIX: leave l_whence/l_start/l_len/l_pid unchanged on no
+             * conflict. Linux fs/locks.c:posix_test_lock only overwrites
+             * fields when a conflict is found. */
         }
         spin_unlock(&flock_lock);
         if (copy_to_user((void *)arg, &ufl, sizeof(ufl)) < 0) return -EFAULT;
@@ -1367,8 +1373,12 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
     return r;
 }
 
-/* F_SETLEASE — Linux allows F_RDLCK only on O_RDONLY; F_WRLCK only when the
- * caller is sole fd holder of the inode (refcount == 1). */
+/* F_SETLEASE — Linux fs/locks.c:generic_add_lease:
+ *   F_RDLCK: fails -EAGAIN if any writable opens of the inode exist.
+ *   F_WRLCK: fails -EAGAIN if any other open of this inode exists
+ *            (refcount > 1 means dup or fork shared this file-description).
+ *   F_UNLCK: removes existing lease.
+ * Lease-break SIGIO delivery is not wired up. */
 static long fcntl_setlease(fd_entry_t *fde, long arg) {
     if (fde->type != FD_FILE) return -EINVAL;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -1377,6 +1387,9 @@ static long fcntl_setlease(fd_entry_t *fde, long arg) {
     if (t != F_RDLCK && t != F_WRLCK && t != F_UNLCK) return -EINVAL;
     int acc = f->flags & O_ACCMODE;
     if (t == F_WRLCK && f->refcount > 1) return -EAGAIN;
+    /* F_RDLCK on a writable fd is always a conflict — even for the caller's
+     * own open, since a reader-lease means "signal me if anyone opens for
+     * write". Caller must open O_RDONLY to take a read-lease. */
     if (t == F_RDLCK && acc != O_RDONLY) return -EAGAIN;
 
     uint64_t ino = flock_ino(fde);
