@@ -142,6 +142,15 @@ int cred_can_chmod(process_t *p, uint32_t owner_uid);
 int cred_can_chown_gid(process_t *p, uint32_t owner_uid,
                        uint32_t target_gid, int gid_specified);
 
+/* DAC permission check on an inode's (uid, gid, mode) triple.
+ * want is bitmask of MAY_READ|MAY_WRITE|MAY_EXEC.
+ * Returns 0 on allow, -EACCES on deny. Root euid always passes. */
+#define MAY_EXEC   1
+#define MAY_WRITE  2
+#define MAY_READ   4
+int cred_may_access(process_t *p, uint32_t owner_uid, uint32_t owner_gid,
+                    uint32_t mode, int want);
+
 /* PID/TID ceiling — Linux kernel.pid_max default for 64-bit (2^22).
  * RLIMIT_NPROC caps per-user; this is only the absolute slot-index ceiling. */
 #define PID_MAX_CEILING (1 << 22)

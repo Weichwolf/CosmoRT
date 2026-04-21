@@ -50,6 +50,19 @@ restart:
 
         if (cur->inode->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
 
+        /* DAC: need MAY_EXEC on each intermediate directory to traverse.
+         * Root euid bypasses. Only check when descending (is_last=0) or
+         * when the last component still needs an intermediate look-up
+         * (which also goes through this loop). */
+        {
+            process_t *pcur = proc_current();
+            if (pcur && pcur->euid != 0) {
+                int rc = cred_may_access(pcur, cur->inode->uid, cur->inode->gid,
+                                         cur->inode->mode, MAY_EXEC);
+                if (rc < 0) { if (err) *err = rc; return 0; }
+            }
+        }
+
         struct vfs_node *child = cur->inode->children;
         struct vfs_node *found = 0;
         while (child) {

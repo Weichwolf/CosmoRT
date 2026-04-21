@@ -225,6 +225,31 @@ static void test_mkdir_sgid_inherit(void) {
     credtest_fork(child_mkdir_sgid_inherit);
 }
 
+/* ── path traversal requires MAY_EXEC on each dir (non-root) ── */
+
+static void child_eacces_path(void) {
+    sc2(SYS_MKDIR, (long)"/tmp/credtest_eadir", 0777);
+    long fd = sc3(SYS_OPEN, (long)"/tmp/credtest_eadir/f", O_RDWR|O_CREAT, 0644);
+    sc1(SYS_CLOSE, fd);
+    /* Strip X-bit on directory, become nobody (non-owner): traversal EACCES */
+    sc2(SYS_CHMOD, (long)"/tmp/credtest_eadir", 0644);
+    sc2(SYS_SETREUID, (long)-1, NOBODY);
+    struct k_stat st;
+    long r = sc2(SYS_STAT, (long)"/tmp/credtest_eadir/f", (long)&st);
+    check_val("stat EACCES via unreachable dir", r, -EACCES);
+    r = sc2(SYS_CHMOD, (long)"/tmp/credtest_eadir/f", 0666);
+    check_val("chmod EACCES via unreachable dir", r, -EACCES);
+    sc2(SYS_SETREUID, (long)-1, 0);
+    sc2(SYS_CHMOD, (long)"/tmp/credtest_eadir", 0777);
+    sc1(SYS_UNLINK, (long)"/tmp/credtest_eadir/f");
+    sc1(SYS_RMDIR, (long)"/tmp/credtest_eadir");
+}
+
+static void test_eacces_path(void) {
+    puts("\n[cred/eacces_path]\n");
+    credtest_fork(child_eacces_path);
+}
+
 /* ── fork inherits credentials ── */
 
 static void child_fork_inherit(void) {
@@ -257,4 +282,5 @@ TEST("cred/chmod_sgid_strip",    test_chmod_sgid_strip);
 TEST("cred/creat_owner",         test_creat_owner);
 TEST("cred/creat_sgid_inherit",  test_creat_sgid_inherit);
 TEST("cred/mkdir_sgid_inherit",  test_mkdir_sgid_inherit);
+TEST("cred/eacces_path",         test_eacces_path);
 TEST("cred/fork_inherit",        test_fork_inherit);

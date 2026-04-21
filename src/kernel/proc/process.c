@@ -733,6 +733,21 @@ int cred_can_chown_gid(process_t *p, uint32_t owner_uid,
     return cred_in_group(p, target_gid);
 }
 
+int cred_may_access(process_t *p, uint32_t owner_uid, uint32_t owner_gid,
+                    uint32_t mode, int want) {
+    if (!p || p->euid == 0) return 0;
+    uint32_t perms;
+    if (p->euid == owner_uid) {
+        perms = (mode >> 6) & 7;
+    } else if (cred_in_group(p, owner_gid)) {
+        perms = (mode >> 3) & 7;
+    } else {
+        perms = mode & 7;
+    }
+    if ((want & perms) != (uint32_t)want) return -EACCES;
+    return 0;
+}
+
 /* ── Address space helpers ───────────────────────── */
 
 /* Read PTE for a user virtual address. Returns 0 if not mapped.
