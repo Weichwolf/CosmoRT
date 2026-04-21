@@ -839,7 +839,7 @@ not_pts:
             return -ENOMEM;
         }
         f->type = is_dir ? VFS_DIR : VFS_FILE;
-        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+        f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH);
         f->refcount = 1;
         f->backend = VFS_BACKEND_EXT4;
         f->f_ops = &ext4_file_ops;
@@ -938,7 +938,7 @@ not_pts:
         return -ENOMEM;
     }
     f->type = node->inode->type;
-    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC);
+    f->flags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_APPEND | O_CLOEXEC | O_PATH);
     f->refcount = 1;
     f->backend = VFS_BACKEND_RAM;
     f->f_ops = &tmpfs_file_ops;
