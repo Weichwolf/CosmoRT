@@ -1432,10 +1432,12 @@ static long fcntl_getlease(fd_entry_t *fde) {
     return r;
 }
 
-/* F_SETPIPE_SZ limits (Linux default: 1MiB; kernel enforces ≥ PAGE_SIZE).
- * We advertise a fixed 64 KiB buffer and validate arg against the same
- * bounds Linux does: EINVAL for >= 2^31, EPERM for beyond unprivileged cap. */
-#define FCNTL_PIPE_SZ_DEFAULT 65536
+/* F_SETPIPE_SZ — pipe buffer size. Unsere pipe_t hat fest PIPE_BUF_SIZE=4096
+ * (siehe sys_ipc.c). F_GETPIPE_SZ meldet diese Groesse; F_SETPIPE_SZ
+ * akzeptiert Requests bis FCNTL_PIPE_SZ_MAX und gibt die gerundete Groesse
+ * zurueck. Echter Resize ist nicht implementiert. Linux /proc/sys/fs/pipe-max-size
+ * cap gilt fuer Unprivileged-User. */
+#define FCNTL_PIPE_SZ_DEFAULT 4096
 #define FCNTL_PIPE_SZ_MAX     1048576   /* /proc/sys/fs/pipe-max-size */
 
 long do_fcntl(int fd, int cmd, long arg) {
@@ -1498,6 +1500,8 @@ long do_fcntl(int fd, int cmd, long arg) {
         if (fde->type != FD_PIPE) return -EINVAL;
         if ((unsigned long)arg >= (1UL << 31)) return -EINVAL;
         if ((unsigned long)arg > FCNTL_PIPE_SZ_MAX) return -EPERM;
+        /* Echter Pipe-Resize nicht implementiert — wir returnen die maximal
+         * moegliche Groesse (FCNTL_PIPE_SZ_DEFAULT). */
         return FCNTL_PIPE_SZ_DEFAULT;
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
