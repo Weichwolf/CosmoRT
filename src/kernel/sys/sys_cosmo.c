@@ -5,6 +5,7 @@
 #include "core/clocksource.h"
 #include "hw/acpi.h"
 #include "hw/hyperv.h"
+#include "hw/kvmclock.h"
 #include "arch/hpet.h"
 #include "config.h"
 #include "memops.h"
@@ -711,6 +712,95 @@ static long hvcs_raw_times_tick(void) {
     return (ns == raw * 100ULL) ? 0 : -1;
 }
 
+/* ── KVM pvclock selftests (subcases 60-63) ─
+ * On TCG / non-KVM hosts kvmclock_available()==0 and the register/monotonic
+ * cases decay to no-op success (mirrors the Hyper-V pattern). */
+
+#define KVMCS_EXPECTED_RATING  CLOCKSOURCE_RATING_KVM_PVCLOCK
+#define KVMCS_FAKE_VERSION_OK  2u
+#define KVMCS_FAKE_SYSTEM_TIME 1000000ULL
+#define KVMCS_FAKE_TSC_TS      0ULL
+#define KVMCS_FAKE_TSC_MUL     0x80000000u   /* (delta*mul)>>32 = delta/2 */
+#define KVMCS_FAKE_TSC_SHIFT   1             /* then << 1 → identity */
+#define KVMCS_FAKE_TSC_SAMPLE  1024ULL
+
+static int kvmcs_name_equals(const char *s) {
+    const char *want = "kvm-clock";
+    while (*want) { if (*s++ != *want++) return 0; }
+    return *s == '\0';
+}
+
+static long kvmcs_init_no_kvm(void) {
+    if (kvmclock_available()) return 0;
+    kvmclock_init();
+    if (kvmclock_pvti() != 0) return -1;
+    struct clocksource *cs = clocksource_current();
+    while (cs) {
+        if (cs->name && kvmcs_name_equals(cs->name)) return -2;
+        cs = cs->next;
+    }
+    return 0;
+}
+
+static long kvmcs_register_present(void) {
+    if (!kvmclock_available()) return 0;
+    if (!kvmclock_pvti()) return -1;
+    struct clocksource *cs = clocksource_current();
+    while (cs) {
+        if (cs->name && kvmcs_name_equals(cs->name)) {
+            if (cs->rating != KVMCS_EXPECTED_RATING) return -2;
+            if (cs->mult != 1 || cs->shift != 0)     return -3;
+            if (cs->mask != CLOCKSOURCE_MASK_64)     return -4;
+            return 0;
+        }
+        cs = cs->next;
+    }
+    return -5;
+}
+
+static long kvmcs_seqlock_retry(void) {
+    struct pvclock_vcpu_time_info ti = {
+        .version           = KVMCS_FAKE_VERSION_OK,
+        .pad0              = 0,
+        .tsc_timestamp     = KVMCS_FAKE_TSC_TS,
+        .system_time       = KVMCS_FAKE_SYSTEM_TIME,
+        .tsc_to_system_mul = KVMCS_FAKE_TSC_MUL,
+        .tsc_shift         = KVMCS_FAKE_TSC_SHIFT,
+        .flags             = PVCLOCK_TSC_STABLE_BIT,
+        .pad               = { 0, 0 },
+    };
+
+    uint64_t ns_live = kvmclock_read_from(&ti);
+    if (ns_live < KVMCS_FAKE_SYSTEM_TIME) return -1;
+
+    uint64_t composed = kvmclock_compose_ns(&ti, KVMCS_FAKE_TSC_SAMPLE);
+    uint64_t want = KVMCS_FAKE_SYSTEM_TIME + KVMCS_FAKE_TSC_SAMPLE;
+    if (composed != want) return -2;
+
+    ti.version = 1;  /* Odd → update-in-progress. */
+    uint64_t odd_ver = ((const volatile struct pvclock_vcpu_time_info *)&ti)->version;
+    if ((odd_ver & 1u) == 0) return -3;
+
+    struct pvclock_vcpu_time_info neg = ti;
+    neg.version           = KVMCS_FAKE_VERSION_OK;
+    neg.tsc_shift         = -1;
+    neg.tsc_to_system_mul = 0x80000000u;
+    uint64_t shifted = kvmclock_compose_ns(&neg, 4);
+    if (shifted != KVMCS_FAKE_SYSTEM_TIME + 1ULL) return -4;
+
+    return 0;
+}
+
+static long kvmcs_monotonic(void) {
+    if (!kvmclock_available() || !kvmclock_pvti()) return 0;
+    uint64_t a = kvmclock_read_ns();
+    uint64_t b = kvmclock_read_ns();
+    uint64_t c = kvmclock_read_ns();
+    if (b < a) return -1;
+    if (c < b) return -2;
+    return 0;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -757,6 +847,10 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 51: return hvcs_register_present();
     case 52: return hvcs_monotonic();
     case 53: return hvcs_raw_times_tick();
+    case 60: return kvmcs_init_no_kvm();
+    case 61: return kvmcs_register_present();
+    case 62: return kvmcs_seqlock_retry();
+    case 63: return kvmcs_monotonic();
     default: return -EINVAL;
     }
 }

@@ -221,6 +221,12 @@ void kernel_main(struct boot_info *info) {
     extern void sched_loop(void);
     (void)sched_loop;
 
+    /* KVM pvclock — independent of Hyper-V, probed via KVM CPUID signature.
+     * Register clocksource before Hyper-V so the highest-rated source wins
+     * deterministically when both paravirt surfaces are exposed. */
+    extern void kvmclock_init(void);
+    kvmclock_init();
+
     /* Drivers — probe and self-register with subsystems */
     extern int hyperv_detect(void);
     extern void hyperv_init(void);
