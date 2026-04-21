@@ -9,7 +9,7 @@ F_GETOWN_EX/F_SETOWN_EX, F_SETPIPE_SZ Error-Handling, /proc/sys/fs/*).
 |-------|-------|------|------|------|------------------------|
 | ktest | 2646  | 2646 |   0  |   -  | +65 (neue fcntl-Tests) |
 | musl  |  478  |  461 |  10  |   7  | ±0                     |
-| LTP   |  313  |  161 |  99  |  38  | +7 PASS / -5 FAIL      |
+| LTP   |  313  |  155 |  99  |  38  | +1 PASS / -5 FAIL (fcntl +13, dup -8 flaky) |
 
 Baseline: ktest 2581, musl 461/10, LTP 154/104/40.
 
