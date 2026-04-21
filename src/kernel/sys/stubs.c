@@ -113,8 +113,34 @@ long do_umask(int mask) {
     return old;
 }
 
-long do_getgroups(void) { return 0; }
-long do_setgroups(void) { return 0; }
+long do_getgroups(int size, uint32_t *list) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (size == 0) return p->ngroups;
+    if (size < p->ngroups) return -EINVAL;
+    if (!user_ok((uint64_t)list, (size_t)p->ngroups * sizeof(uint32_t)))
+        return -EFAULT;
+    if (p->ngroups > 0 && copy_to_user(list, p->groups,
+                                       (size_t)p->ngroups * sizeof(uint32_t)))
+        return -EFAULT;
+    return p->ngroups;
+}
+
+long do_setgroups(int size, const uint32_t *list) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (p->euid != 0) return -EPERM;
+    if (size < 0 || size > NGROUPS_MAX) return -EINVAL;
+    if (size == 0) { p->ngroups = 0; return 0; }
+    if (!user_ok((uint64_t)list, (size_t)size * sizeof(uint32_t)))
+        return -EFAULT;
+    uint32_t tmp[NGROUPS_MAX];
+    if (copy_from_user(tmp, list, (size_t)size * sizeof(uint32_t)))
+        return -EFAULT;
+    for (int i = 0; i < size; i++) p->groups[i] = tmp[i];
+    p->ngroups = size;
+    return 0;
+}
 
 /* personality(2): PER_LINUX = 0 */
 long do_personality(unsigned long persona) {

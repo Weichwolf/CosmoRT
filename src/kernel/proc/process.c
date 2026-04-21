@@ -704,6 +704,35 @@ thread_t *thread_find_by_tid(int tid) {
     return 0;
 }
 
+/* ── Credential helpers ─────────────────────────── */
+
+int cred_in_group(process_t *p, uint32_t gid) {
+    if (!p) return 0;
+    if (p->egid == gid) return 1;
+    for (int i = 0; i < p->ngroups; i++)
+        if (p->groups[i] == gid) return 1;
+    return 0;
+}
+
+int cred_owns(process_t *p, uint32_t owner_uid) {
+    return p && p->euid == owner_uid;
+}
+
+int cred_can_chmod(process_t *p, uint32_t owner_uid) {
+    if (!p) return 0;
+    if (p->euid == 0) return 1;
+    return p->euid == owner_uid;
+}
+
+int cred_can_chown_gid(process_t *p, uint32_t owner_uid,
+                       uint32_t target_gid, int gid_specified) {
+    if (!p) return 0;
+    if (p->euid == 0) return 1;
+    if (p->euid != owner_uid) return 0;
+    if (!gid_specified) return 1;
+    return cred_in_group(p, target_gid);
+}
+
 /* ── Address space helpers ───────────────────────── */
 
 /* Read PTE for a user virtual address. Returns 0 if not mapped.

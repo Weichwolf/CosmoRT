@@ -183,10 +183,31 @@ static int tmpfs_op_chmod(struct mount *mnt, const char *relpath, uint32_t mode)
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_err(abs, &err);
     if (!node) return err;
+    process_t *cur = proc_current();
+    if (!cred_can_chmod(cur, node->inode->uid)) return -EPERM;
+    uint32_t new_mode = mode & 07777;
+    if (cur && cur->euid != 0 && (new_mode & S_ISGID) &&
+        !cred_in_group(cur, node->inode->gid))
+        new_mode &= ~(uint32_t)S_ISGID;
     extern uint32_t timer_epoch_sec(void);
-    node->inode->mode = mode & 07777;
+    node->inode->mode = new_mode;
     node->inode->ctime = timer_epoch_sec();
     inotify_event(abs, IN_ATTRIB);
+    return 0;
+}
+
+static int tmpfs_chown_common(struct vfs_inode *inode, uint32_t uid, uint32_t gid) {
+    process_t *cur = proc_current();
+    if (cur && cur->euid != 0) {
+        if (uid != (uint32_t)-1 && uid != inode->uid) return -EPERM;
+        if (!cred_owns(cur, inode->uid)) return -EPERM;
+        if (gid != (uint32_t)-1 && !cred_in_group(cur, gid)) return -EPERM;
+    }
+    extern uint32_t timer_epoch_sec(void);
+    if (uid != (uint32_t)-1) inode->uid = uid;
+    if (gid != (uint32_t)-1) inode->gid = gid;
+    inode_drop_suid_sgid(inode);
+    inode->ctime = timer_epoch_sec();
     return 0;
 }
 
@@ -196,13 +217,9 @@ static int tmpfs_op_chown(struct mount *mnt, const char *relpath,
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_err(abs, &err);
     if (!node) return err;
-    extern uint32_t timer_epoch_sec(void);
-    if (uid != (uint32_t)-1) node->inode->uid = uid;
-    if (gid != (uint32_t)-1) node->inode->gid = gid;
-    inode_drop_suid_sgid(node->inode);
-    node->inode->ctime = timer_epoch_sec();
-    inotify_event(abs, IN_ATTRIB);
-    return 0;
+    int rc = tmpfs_chown_common(node->inode, uid, gid);
+    if (rc == 0) inotify_event(abs, IN_ATTRIB);
+    return rc;
 }
 
 static int tmpfs_op_lchown(struct mount *mnt, const char *relpath,
@@ -211,13 +228,9 @@ static int tmpfs_op_lchown(struct mount *mnt, const char *relpath,
     int err = -ENOENT;
     struct vfs_node *node = vfs_lookup_nofollow(abs, &err);
     if (!node) return err;
-    extern uint32_t timer_epoch_sec(void);
-    if (uid != (uint32_t)-1) node->inode->uid = uid;
-    if (gid != (uint32_t)-1) node->inode->gid = gid;
-    inode_drop_suid_sgid(node->inode);
-    node->inode->ctime = timer_epoch_sec();
-    inotify_event(abs, IN_ATTRIB);
-    return 0;
+    int rc = tmpfs_chown_common(node->inode, uid, gid);
+    if (rc == 0) inotify_event(abs, IN_ATTRIB);
+    return rc;
 }
 
 static int tmpfs_op_truncate(struct mount *mnt, const char *relpath, int64_t length) {
@@ -394,20 +407,21 @@ static int tmpfs_op_ftruncate(struct vfs_file *f, int64_t length) {
 
 static int tmpfs_op_fchmod(struct vfs_file *f, uint32_t mode) {
     if (!f->inode) return -EBADF;
+    process_t *cur = proc_current();
+    if (!cred_can_chmod(cur, f->inode->uid)) return -EPERM;
+    uint32_t new_mode = mode & 07777;
+    if (cur && cur->euid != 0 && (new_mode & S_ISGID) &&
+        !cred_in_group(cur, f->inode->gid))
+        new_mode &= ~(uint32_t)S_ISGID;
     extern uint32_t timer_epoch_sec(void);
-    f->inode->mode = mode & 07777;
+    f->inode->mode = new_mode;
     f->inode->ctime = timer_epoch_sec();
     return 0;
 }
 
 static int tmpfs_op_fchown(struct vfs_file *f, uint32_t uid, uint32_t gid) {
     if (!f->inode) return -EBADF;
-    extern uint32_t timer_epoch_sec(void);
-    if (uid != (uint32_t)-1) f->inode->uid = uid;
-    if (gid != (uint32_t)-1) f->inode->gid = gid;
-    inode_drop_suid_sgid(f->inode);
-    f->inode->ctime = timer_epoch_sec();
-    return 0;
+    return tmpfs_chown_common(f->inode, uid, gid);
 }
 
 static int tmpfs_op_fsync(struct vfs_file *f) {

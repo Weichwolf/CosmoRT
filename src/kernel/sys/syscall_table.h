@@ -102,8 +102,8 @@
     X(SYS_PRLIMIT64, prlimit64, do_prlimit64((int)a1, (int)a2, (const void *)a3, (void *)a4)) \
     X(SYS_UMASK, umask, do_umask((int)a1)) \
     X(SYS_SYSINFO, sysinfo, do_sysinfo((void *)a1)) \
-    X(SYS_GETGROUPS, getgroups, do_getgroups()) \
-    X(SYS_SETGROUPS, setgroups, do_setgroups()) \
+    X(SYS_GETGROUPS, getgroups, do_getgroups((int)a1, (uint32_t *)a2)) \
+    X(SYS_SETGROUPS, setgroups, do_setgroups((int)a1, (const uint32_t *)a2)) \
     /* Stubs for npm/node compatibility */ \
     X(SYS_MSYNC, msync, do_msync((unsigned long)a1, (size_t)a2, (int)a3)) \
     X(SYS_SENDFILE, sendfile, do_sendfile()) \

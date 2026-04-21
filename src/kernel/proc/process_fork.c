@@ -279,6 +279,17 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->rlim_cpu_soft = parent->rlim_cpu_soft;
         child->rlim_cpu_hard = parent->rlim_cpu_hard;
         child->umask_val = parent->umask_val;
+        child->ruid = parent->ruid;
+        child->euid = parent->euid;
+        child->suid = parent->suid;
+        child->fsuid = parent->fsuid;
+        child->rgid = parent->rgid;
+        child->egid = parent->egid;
+        child->sgid = parent->sgid;
+        child->fsgid = parent->fsgid;
+        child->ngroups = parent->ngroups;
+        for (int i = 0; i < parent->ngroups && i < NGROUPS_MAX; i++)
+            child->groups[i] = parent->groups[i];
         child->stack_top = parent->stack_top;
         child->is_driver = 0;
         for (int i = 0; i < 256; i++) {

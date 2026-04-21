@@ -9,6 +9,7 @@
 #include "fs/bcache.h"
 #include "hw/serial.h"
 #include "memops.h"
+#include "proc/process.h"
 
 /* Forward declarations for helpers defined in vfs.c (will migrate later) */
 extern uint64_t ext4_walk_err(const char *path, int *err);
@@ -200,7 +201,13 @@ static int ext4_vfs_chmod(struct mount *mnt, const char *relpath, uint32_t mode)
     if (ino == 0) return werr;
     struct ext4_inode ip;
     if (ext4_inode_read(ino, &ip) < 0) return -EIO;
-    ip.i_mode = (ip.i_mode & EXT4_S_IFMT) | (uint16_t)(mode & 07777);
+    process_t *cur = proc_current();
+    if (!cred_can_chmod(cur, ip.i_uid)) return -EPERM;
+    uint32_t new_mode = mode & 07777;
+    if (cur && cur->euid != 0 && (new_mode & S_ISGID) &&
+        !cred_in_group(cur, ip.i_gid))
+        new_mode &= ~(uint32_t)S_ISGID;
+    ip.i_mode = (ip.i_mode & EXT4_S_IFMT) | (uint16_t)new_mode;
     ip.i_ctime = timer_epoch_sec();
     ext4_inode_write(ino, &ip);
     inotify_event(relpath, IN_ATTRIB);
@@ -209,10 +216,26 @@ static int ext4_vfs_chmod(struct mount *mnt, const char *relpath, uint32_t mode)
 
 static void ext4_drop_suid_sgid(struct ext4_inode *ip) {
     if ((ip->i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR) return;
-    if (ip->i_mode & 04000)
-        ip->i_mode &= (uint16_t)~04000;
-    if ((ip->i_mode & (02000 | 00010)) == (02000 | 00010))
-        ip->i_mode &= (uint16_t)~02000;
+    if (ip->i_mode & S_ISUID)
+        ip->i_mode &= (uint16_t)~S_ISUID;
+    if ((ip->i_mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP))
+        ip->i_mode &= (uint16_t)~S_ISGID;
+}
+
+static int ext4_chown_common(uint32_t ino, struct ext4_inode *ip,
+                             uint32_t uid, uint32_t gid) {
+    process_t *cur = proc_current();
+    if (cur && cur->euid != 0) {
+        if (uid != (uint32_t)-1 && uid != ip->i_uid) return -EPERM;
+        if (!cred_owns(cur, ip->i_uid)) return -EPERM;
+        if (gid != (uint32_t)-1 && !cred_in_group(cur, gid)) return -EPERM;
+    }
+    if (uid != (uint32_t)-1) ip->i_uid = (uint16_t)uid;
+    if (gid != (uint32_t)-1) ip->i_gid = (uint16_t)gid;
+    ext4_drop_suid_sgid(ip);
+    ip->i_ctime = timer_epoch_sec();
+    ext4_inode_write(ino, ip);
+    return 0;
 }
 
 static int ext4_vfs_chown(struct mount *mnt, const char *relpath,
@@ -224,13 +247,9 @@ static int ext4_vfs_chown(struct mount *mnt, const char *relpath,
     if (ino == 0) return werr;
     struct ext4_inode ip;
     if (ext4_inode_read(ino, &ip) < 0) return -EIO;
-    if (uid != (uint32_t)-1) ip.i_uid = (uint16_t)uid;
-    if (gid != (uint32_t)-1) ip.i_gid = (uint16_t)gid;
-    ext4_drop_suid_sgid(&ip);
-    ip.i_ctime = timer_epoch_sec();
-    ext4_inode_write(ino, &ip);
-    inotify_event(relpath, IN_ATTRIB);
-    return 0;
+    int rc = ext4_chown_common(ino, &ip, uid, gid);
+    if (rc == 0) inotify_event(relpath, IN_ATTRIB);
+    return rc;
 }
 
 static int ext4_vfs_truncate(struct mount *mnt, const char *relpath, int64_t length) {
@@ -470,7 +489,13 @@ static int ext4_vfs_ftruncate(struct vfs_file *f, int64_t length) {
 static int ext4_vfs_fchmod(struct vfs_file *f, uint32_t mode) {
     struct ext4_inode ip;
     if (ext4_inode_read((uint32_t)f->disk_ino, &ip) < 0) return -EIO;
-    ip.i_mode = (ip.i_mode & EXT4_S_IFMT) | (uint16_t)(mode & 07777);
+    process_t *cur = proc_current();
+    if (!cred_can_chmod(cur, ip.i_uid)) return -EPERM;
+    uint32_t new_mode = mode & 07777;
+    if (cur && cur->euid != 0 && (new_mode & S_ISGID) &&
+        !cred_in_group(cur, ip.i_gid))
+        new_mode &= ~(uint32_t)S_ISGID;
+    ip.i_mode = (ip.i_mode & EXT4_S_IFMT) | (uint16_t)new_mode;
     ip.i_ctime = timer_epoch_sec();
     ext4_inode_write((uint32_t)f->disk_ino, &ip);
     return 0;
@@ -479,12 +504,7 @@ static int ext4_vfs_fchmod(struct vfs_file *f, uint32_t mode) {
 static int ext4_vfs_fchown(struct vfs_file *f, uint32_t uid, uint32_t gid) {
     struct ext4_inode ip;
     if (ext4_inode_read((uint32_t)f->disk_ino, &ip) < 0) return -EIO;
-    if (uid != (uint32_t)-1) ip.i_uid = (uint16_t)uid;
-    if (gid != (uint32_t)-1) ip.i_gid = (uint16_t)gid;
-    ext4_drop_suid_sgid(&ip);
-    ip.i_ctime = timer_epoch_sec();
-    ext4_inode_write((uint32_t)f->disk_ino, &ip);
-    return 0;
+    return ext4_chown_common((uint32_t)f->disk_ino, &ip, uid, gid);
 }
 
 static int ext4_vfs_fsync(struct vfs_file *f) {

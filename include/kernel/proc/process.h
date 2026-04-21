@@ -10,6 +10,8 @@
 #include "event/fd.h"
 #include "mm/vma.h"
 
+#define NGROUPS_MAX 32
+
 /* k_sigaction, SA_* flags — from linux.h (via syscall.h) */
 
 /* Process states */
@@ -113,7 +115,32 @@ typedef struct process {
 
     /* File creation mask (umask) — default 0022 */
     uint32_t    umask_val;
+
+    /* POSIX Credentials — Linux struct cred subset.
+     * Init: ruid=euid=suid=0, rgid=egid=sgid=0 (root).
+     * fork: inherited. execve: inherited (SUID-exec handling future).
+     * setuid/seteuid/setreuid/setresuid update per POSIX rules.
+     * ngroups = number of valid supplementary GIDs in groups[]. */
+    uint32_t    ruid, euid, suid, fsuid;
+    uint32_t    rgid, egid, sgid, fsgid;
+    int         ngroups;
+    uint32_t    groups[NGROUPS_MAX];
 } process_t;
+
+/* Credential helpers: in-group test (egid + supplementary) and
+ * DAC access decision for a given inode-owner/mode.
+ * cred_in_group: 1 if gid ∈ {egid} ∪ groups[], else 0.
+ * cred_can_chmod: 1 if euid==0 or euid==owner_uid.
+ * cred_can_chown_gid: non-root may only chown gid if euid==owner_uid and
+ *   target_gid ∈ in-groups (egid or supplementary).
+ * cred_must_clear_sgid: true if setting S_ISGID on a file-GID the caller
+ *   is not a member of (used in chmod for non-root).
+ * cred_owns: euid==owner_uid. */
+int cred_in_group(process_t *p, uint32_t gid);
+int cred_owns(process_t *p, uint32_t owner_uid);
+int cred_can_chmod(process_t *p, uint32_t owner_uid);
+int cred_can_chown_gid(process_t *p, uint32_t owner_uid,
+                       uint32_t target_gid, int gid_specified);
 
 /* PID/TID ceiling — Linux kernel.pid_max default for 64-bit (2^22).
  * RLIMIT_NPROC caps per-user; this is only the absolute slot-index ceiling. */
