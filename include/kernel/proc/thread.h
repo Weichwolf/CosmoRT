@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "config.h"
 #include "core/event_queue.h"
+#include "spinlock.h"
 
 /* Thread states */
 #define THREAD_FREE      0
@@ -130,6 +131,9 @@ typedef struct thread {
     void           *rcu_blocked_node;  /* rcu_node_t* if preempted during CS, else NULL */
     struct thread  *rcu_next;          /* blocked reader list: forward link */
     struct thread  *rcu_prev;          /* blocked reader list: back link (O(1) removal) */
+
+    /* Serializes eq producers (IRQ + syscall) and ring growth. */
+    spinlock_t      eq_lock;
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */

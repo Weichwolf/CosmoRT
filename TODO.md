@@ -14,16 +14,16 @@ Stand: ktest **2427/0** (Varianz 0), musl 462/10, LTP Alpine-Baseline im Fluss. 
 
 ## Phase 7.3 — Offene Pools
 
-12 migriert, 5 offen. Einer pro Task-Session.
+13 migriert, 4 offen. Einer pro Task-Session.
 
 **Erledigt (diese Session):**
 - [x] `EQ_MAX_EVENTS=16` → Ring-Wachstum bei Overflow. Initial 256 Events (1 Page), verdoppelt bei Bedarf via `pages_alloc` unter `eq_lock`. Events lossless (kein Overwrite mehr), bei OOM Fallback auf alten Overwrite-Pfad. `event_queue_init/destroy` aus `thread_alloc/free` + exec-Reset via `event_queue_reset`. Keine Header-Inline-Änderung am Fast-Path (eq_pop/eq_push weiter inline, Feld-basiert statt Makro-Mask).
 - [x] `PTY_MAX=12` → dynamischer Slab + linked list. `pty_alloc()` liefert auto-increment ID, `pty_get(int id)` macht Linear-Search durch Liste. `/dev/pts/N`-Namespace via neue Konstante `PTY_DEV_ID_MAX=256` begrenzt (nicht Pool-Grenze, nur valide ID-Range).
+- [x] `EQ_LOCK_MAX=512` → `spinlock_t eq_lock` in `thread_t` (ans Ende der Struct, keine ABI-Offset-Shifts). TID-Hash-Array entfernt. Lock lebt mit dem Thread, Init via `kmemset` in `thread_alloc`. thread_t-Größe unverändert 3136 (Padding absorbiert).
 
 **Offen:**
 - [ ] `PID_TABLE_MAX=4096` → Radix-Tree/IDR (aufwändig; 4096 für Single-User praktisch genug).
 - [ ] `TID_TABLE_MAX=4096` → wie PID.
-- [ ] `EQ_LOCK_MAX=512` → struktureller Umbau, per-thread Lock.
 - [ ] `EXECVE_MAX_*` → 128KB-Buffer ist laut Audit bereits Linux-kompatibel; Verify-only.
 - [ ] `EXT4_OPEN_MAX=256` (`fs/vfs.c:283`) → lineare Suche unter Lock. Hash-Table. Aus 7.4-Audit abgeleitet.
 - [ ] `_Static_assert` auf kritische Slab-Struct-Größen.

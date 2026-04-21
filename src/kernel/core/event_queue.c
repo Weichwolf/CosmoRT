@@ -18,12 +18,6 @@
 #include "hal/hal.h"
 #include "spinlock.h"
 
-/* Per-thread producer lock — indexed by TID.
- * Protects head writes for multi-producer safety (IRQ + syscall).
- * Also serializes ring growth. */
-#define EQ_LOCK_MAX 512
-static spinlock_t eq_locks[EQ_LOCK_MAX] = { [0 ... EQ_LOCK_MAX-1] = {0, 0} };
-
 /* Size of one page in bytes — grow step is always page-aligned. */
 #define EQ_PAGE_BYTES 4096
 
@@ -31,12 +25,6 @@ _Static_assert((EQ_INIT_CAPACITY & (EQ_INIT_CAPACITY - 1)) == 0,
                "EQ_INIT_CAPACITY must be power of 2");
 _Static_assert(sizeof(event_t) * EQ_INIT_CAPACITY <= EQ_PAGE_BYTES,
                "EQ_INIT_CAPACITY must fit in one page");
-
-static inline spinlock_t *eq_lock_for(thread_t *t) {
-    int idx = t->tid;
-    if (idx < 0 || idx >= EQ_LOCK_MAX) idx = 0;
-    return &eq_locks[idx];
-}
 
 static inline int eq_pages_for(uint32_t capacity) {
     uint64_t bytes = (uint64_t)capacity * sizeof(event_t);
@@ -97,12 +85,11 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     if (!target) return;
     event_queue_t *eq = &target->eq;
 
-    spinlock_t *lk = eq_lock_for(target);
     uint64_t irqf;
-    spin_lock_irq(lk, &irqf);
+    spin_lock_irq(&target->eq_lock, &irqf);
 
     if (!eq->events) {
-        spin_unlock_irq(lk, irqf);
+        spin_unlock_irq(&target->eq_lock, irqf);
         return;
     }
 
@@ -123,7 +110,7 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
     eq->events[h & eq->mask].data = data;
     hal_cpu_store_release(&eq->head, h + 1);
 
-    spin_unlock_irq(lk, irqf);
+    spin_unlock_irq(&target->eq_lock, irqf);
 
     extern void sched_wake(struct thread *t);
     sched_wake(target);

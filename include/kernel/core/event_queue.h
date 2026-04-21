@@ -4,7 +4,7 @@
  * calling sched_wake. If the target isn't sleeping yet, it finds the
  * event on next event_wait. If already sleeping, sched_wake wakes it.
  *
- * MPSC ringbuffer: multiple producers (serialized by eq_lock spinlock),
+ * MPSC ringbuffer: multiple producers (serialized by thread->eq_lock),
  * single consumer (owner thread). Monotonic head/tail, power-of-2 masking.
  *
  * Unbounded: ring grows on overflow (page-backed, power-of-2 capacity).
