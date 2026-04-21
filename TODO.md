@@ -7,7 +7,9 @@ Stand: ktest **2505/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/
 | # | Phase | Status | Aufwand | Blocker für |
 |---|-------|--------|---------|-------------|
 | 7.3 Rest | abgeschlossen | — | — | — |
+| **7.7** | **Timer-Treiber (clocksource + ACPI + virtio + Hyper-V)** | neu | ~11 Tage | RT-Audio-Präzision |
 | 8.1 | Audio | neu | langer Neubau | RT-Audio-Identität |
+| musl/LTP Fails | nach Timer | — | — | — |
 | 9 | aarch64-Port | neu | mehrere Sessions | Multi-Arch |
 
 ---
@@ -31,6 +33,24 @@ Stand: ktest **2505/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/
 - [x] FD-Tabelle `FD_MAX=1024` → dynamische Expansion (Linux `expand_fdtable`). Initial 64 Slots (`FD_INIT_SLOTS` = BITS_PER_LONG), verdoppelt on-demand in `fd_alloc`/`fd_dup_at`/`fd_install_at` bis `FD_CEILING=65536` (2MB buddy-Cap für `fd_entry_t`-Array). Default `rlim_nofile=0` bleibt „unset" → `FD_DEFAULT_NOFILE=1024` (Linux ulimit -n Default). `entries[]` + `free_bitmap[]` jetzt Pointer, page-alloziert. `fd_table_init`/`fd_table_free`/`fd_table_alloc_empty`-API. Fork: `dup_fd_table` respektiert child's `rlim_nofile` (overshoot → dropped). dup/dup2/dup3/F_DUPFD: `fd_entry_t`-Kopie auf Stack vor potentieller Re-Alloc (Pointer-Stability). setrlimit(NOFILE, 4096) + 2000 dups getestet.
 
 **Offen:** —
+
+---
+
+## Phase 7.7 — Timer-Treiber (Clocksource-Abstraktion + Hardware-Treiber)
+
+Research: `notes/TIMER_DRIVERS.md` (Commit `e4ff691`). Kernbefund: Hyper-V TSC-Page gemappt aber ungenutzt, keine `struct clocksource`-Abstraktion, kein ACPI-Parser. Motivation: RT-Audio-Präzision + Hypervisor-bounded Latenz.
+
+Priorität nach Aufwand × ROI (bindende Reihenfolge):
+
+- [ ] **7.7.1** `struct clocksource`/`clock_event_device` Core (`src/kernel/core/clocksource.{c,h}`) — Voraussetzung für alles. HAL-API (`hal_timer_now_ns`) bleibt unverändert, intern → `clocksource_read_ns()`. ~350 LOC, 2d.
+- [ ] **7.7.2** ACPI Table-Parser (`src/kernel/hw/acpi.{c,h}`) — RSDP aus UEFI-Config-Tables → XSDT → FADT/HPET/MADT/MCFG. Kein ACPICA, nur Table-Parsing. ~400 LOC, 2d.
+- [ ] **7.7.3** HPET-Treiber (`src/arch/x86_64/timer/hpet.c`) — clocksource rating 250 + clock_event pro Comparator. Eliminiert 10ms PIT-Kalibration. ~300 LOC, 1.5d.
+- [ ] **7.7.4** Hyper-V TSC-Page als clocksource (`src/arch/x86_64/hw/hyperv_clocksource.c`) — trivialer Wrapper um bestehenden `hyperv_tsc_time_ns`, rating 400. Fix für latenten Bug unter Hyper-V/WSL2. ~60 LOC, 0.3d.
+- [ ] **7.7.5** KVM pvclock (`src/arch/x86_64/hw/kvmclock.c`) — `wall_clock` + `system_time` MSRs, TSC-Scale vom Host. rating 400. Läuft unter `make qemu-*`. ~200 LOC, 1d.
+- [ ] **7.7.6** Hyper-V STimer (`src/arch/x86_64/hw/hyperv_stimer.c`) — 4 synthetic timer pro vCPU, SynIC-Interrupts, hypercall-basiert. clock_event rating 400. ~400 LOC, 2d.
+- [ ] **7.7.7** ACPI PM_TMR (`src/arch/x86_64/timer/acpi_pm.c`) — Fallback-clocksource rating 110, 3.579545 MHz. ~120 LOC, 0.5d.
+- [ ] **7.7.8** virtio-rtc (`src/drivers/virtio/virtio_rtc.c`) — optional, für Guest-Umgebungen. ~300 LOC, 1.5d.
+- [ ] **7.7.9** TSC-Invariant-Check (`CPUID.80000007H:EDX[8]`) + Boot-Zeit-Kalibrierung via HPET statt PIT.
 
 ---
 
