@@ -20,26 +20,30 @@ RUNNER=src/common/runtest.exe
 # Complex signal+fork: raise-race (fork in signal handler + RT signals)
 # Hang: fgetwc-buffering (dynamic variant deadlocks after fgetwc-buffering-static)
 SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering"
-musl_pass=0; musl_fail=0; musl_skip=0
-# RUNNING-Heartbeat vor jedem Test: ohne den fliegt ein Hang unter dem Radar
-# ("stilles find|sort|for" sieht aus wie Kernel-Hang, ist aber nur fehlender Output).
-for exe in $(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort); do
+MUSL_EXES=$(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort)
+musl_total_exes=$(echo "$MUSL_EXES" | wc -l)
+musl_pass=0; musl_fail=0; musl_skip=0; musl_idx=0
+for exe in $MUSL_EXES; do
+    musl_idx=$((musl_idx + 1))
     name=$(basename "$exe" .exe)
     skip=0; for s in $SKIP; do [ "$name" = "$s" ] && skip=1; done
-    if [ $skip -eq 1 ]; then musl_skip=$((musl_skip + 1)); continue; fi
-    echo "RUNNING $name"
+    if [ $skip -eq 1 ]; then
+        echo "[$musl_idx/$musl_total_exes] $name ... SKIP"
+        musl_skip=$((musl_skip + 1)); continue
+    fi
+    echo -n "[$musl_idx/$musl_total_exes] $name ... "
     timeout 60 "$RUNNER" -t 45 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
-        echo "PASS $name"
+        echo "PASS"
         musl_pass=$((musl_pass + 1))
     else
-        echo "FAIL $name (rc=$rc)"
+        echo "FAIL (rc=$rc)"
         musl_fail=$((musl_fail + 1))
         cat /tmp/musl_out.txt
     fi
 done
-echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL"
+echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL, $musl_skip SKIP"
 
 echo ""
 echo "=== LTP REQUIRED TESTS ==="
