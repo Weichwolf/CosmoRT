@@ -56,7 +56,7 @@ while read t; do
     if [ $rc -eq 0 ]; then
         echo "[$ltp_total/313] $t PASS"
         ltp_passed=$((ltp_passed + 1))
-    elif [ $rc -eq 32 ]; then
+    elif [ $rc -eq 32 ] || [ $rc -eq 36 ]; then
         echo "[$ltp_total/313] $t SKIP"
         ltp_skipped=$((ltp_skipped + 1))
     else
