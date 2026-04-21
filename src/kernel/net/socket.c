@@ -212,6 +212,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
     /* Copy sockaddr to kernel to prevent TOCTOU */
     struct k_sockaddr_in k_addr;
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
+    if (k_addr.sin_family != AF_INET) return -EAFNOSUPPORT;
     uint32_t ip_be = k_addr.sin_addr;
     uint8_t dst_ip[4] = {
         (uint8_t)(ip_be & 0xFF),
@@ -219,6 +220,10 @@ long do_connect(int fd, const void *addr, int addrlen) {
         (uint8_t)((ip_be >> 16) & 0xFF),
         (uint8_t)((ip_be >> 24) & 0xFF)
     };
+    /* Linux semantic: connect(INADDR_ANY) maps to loopback (127.0.0.1). */
+    if (dst_ip[0] == 0 && dst_ip[1] == 0 && dst_ip[2] == 0 && dst_ip[3] == 0) {
+        dst_ip[0] = 127; dst_ip[1] = 0; dst_ip[2] = 0; dst_ip[3] = 1;
+    }
     /* sin_port is big-endian, net_tcp_connect expects host uint16_t */
     uint16_t port = bswap16(k_addr.sin_port);
 
@@ -565,6 +570,28 @@ long do_bind(int fd, const void *addr, int addrlen) {
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
     if (k_addr.sin_family != 2 /* AF_INET */) return -EAFNOSUPPORT;
 
+    /* Privileged port: <1024 requires euid==0 (CAP_NET_BIND_SERVICE in Linux) */
+    if (k_addr.sin_port != 0) {
+        uint16_t port_host = bswap16(k_addr.sin_port);
+        if (port_host < SOCKET_PRIVILEGED_PORT_MAX) {
+            process_t *cp = proc_current();
+            if (cp && cp->euid != 0) return -EACCES;
+        }
+    }
+
+    /* Reject non-local IPs (Linux: must match a local interface).
+     * Allowed: INADDR_ANY (0.0.0.0), loopback (127/8), or our DHCP-assigned IP. */
+    if (k_addr.sin_addr != 0) {
+        uint8_t b0 = (uint8_t)(k_addr.sin_addr & 0xFF);
+        uint8_t b1 = (uint8_t)((k_addr.sin_addr >>  8) & 0xFF);
+        uint8_t b2 = (uint8_t)((k_addr.sin_addr >> 16) & 0xFF);
+        uint8_t b3 = (uint8_t)((k_addr.sin_addr >> 24) & 0xFF);
+        int is_loopback = (b0 == 127);
+        int is_local = (net_my_ip[0] == b0 && net_my_ip[1] == b1 &&
+                        net_my_ip[2] == b2 && net_my_ip[3] == b3);
+        if (!is_loopback && !is_local) return -EADDRNOTAVAIL;
+    }
+
     /* Assign ephemeral port if port 0 requested */
     if (k_addr.sin_port == 0) {
         extern int random_get(void *, unsigned long);
@@ -651,6 +678,8 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     if (p) {
         fd_entry_t *fde = fd_get(&p->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
+        /* O_PATH fds have no struct file, so any file-op → EBADF (Linux). */
+        if (fde->flags & O_PATH) return -EBADF;
         if (fde->type == FD_UNIX_SOCK)
             return usock_accept4(fd, addr, addrlen, 0);
         if (fde->type != FD_SOCKET) return -ENOTSOCK;
@@ -857,6 +886,22 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
             /* TFO: enable for this socket — cookie lookup happens on connect */
             s->tcp.tfo_enabled = val ? 1 : 0;
             return 0;
+        default:
+            return 0;
+        }
+    }
+
+    /* SOL_IP (0) — IGMP multicast: we have no multicast implementation, but
+     * must reject LEAVE_GROUP without a prior JOIN per Linux (CVE-2017-8890:
+     * accept()-cloned sockets must NOT inherit multicast group membership). */
+    if (level == SOL_IP) {
+        switch (optname) {
+        case SOCKOPT_MCAST_JOIN_GROUP:
+        case SOCKOPT_IP_ADD_MEMBERSHIP:
+            return 0; /* no-op: accept but never actually join */
+        case SOCKOPT_MCAST_LEAVE_GROUP:
+        case SOCKOPT_IP_DROP_MEMBERSHIP:
+            return -EADDRNOTAVAIL;
         default:
             return 0;
         }

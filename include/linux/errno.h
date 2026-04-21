@@ -48,6 +48,7 @@
 #define EOPNOTSUPP      95
 #define EAFNOSUPPORT    97
 #define EADDRINUSE      98
+#define EADDRNOTAVAIL   99
 #define ENETUNREACH     101
 #define ECONNRESET      104
 #define EISCONN         106

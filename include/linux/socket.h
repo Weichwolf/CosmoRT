@@ -9,7 +9,19 @@
 #define AF_INET6        10
 #define SOCK_STREAM     1
 #define SOCK_DGRAM      2
+#define SOCK_SEQPACKET  5
+#define SOL_IP          0
 #define SOL_SOCKET      1
+
+/* IP/Multicast options (SOL_IP / IPPROTO_IP) */
+#define SOCKOPT_IP_ADD_MEMBERSHIP   35
+#define SOCKOPT_IP_DROP_MEMBERSHIP  36
+#define SOCKOPT_MCAST_JOIN_GROUP    42
+#define SOCKOPT_MCAST_LEAVE_GROUP   45
+
+/* Well-known/privileged port ceiling (BSD IPPORT_RESERVED) — bind <this requires
+ * euid==root (CAP_NET_BIND_SERVICE in Linux). */
+#define SOCKET_PRIVILEGED_PORT_MAX  1024
 #define SO_REUSEADDR    2
 #define SO_BROADCAST    6
 #define SO_SNDBUF       7
