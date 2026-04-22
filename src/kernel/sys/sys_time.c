@@ -67,9 +67,15 @@ static uint64_t thread_cpu_time_ns(void) {
 long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     if (!tp) return -EFAULT;
     struct k_timespec kts;
-    uint64_t ms = timer_ms();
-    kts.tv_sec = (long)(ms / MSEC_PER_SEC);
-    kts.tv_nsec = (long)((ms % MSEC_PER_SEC) * NSEC_PER_MSEC);
+    /* ns = (tsc - boot_tsc) * 1e6 / tsc_per_ms, same origin wie timer_ms.
+     * Splitten um Overflow bei langer Uptime zu vermeiden. */
+    uint64_t tsc_delta = timer_tsc_now() - timer_boot_tsc;
+    uint64_t tpms = timer_tsc_per_ms ? timer_tsc_per_ms : 1;
+    uint64_t ms = tsc_delta / tpms;
+    uint64_t sub_tsc = tsc_delta - ms * tpms;
+    uint64_t sub_ns = (sub_tsc * (uint64_t)NSEC_PER_MSEC) / tpms;
+    kts.tv_sec  = (long)(ms / MSEC_PER_SEC);
+    kts.tv_nsec = (long)((ms % MSEC_PER_SEC) * NSEC_PER_MSEC + sub_ns);
     switch (clk_id) {
     case CLOCK_REALTIME:
     case CLOCK_REALTIME_COARSE: {
@@ -112,7 +118,11 @@ long do_clock_getres(int clk_id, struct k_timespec *tp) {
         return -EINVAL;
     }
     if (tp) {
-        struct k_timespec kts = { .tv_sec = 0, .tv_nsec = NSEC_PER_MSEC };
+        /* TSC-basierte Aufloesung: 1 ns (real), aber COARSE-Varianten
+         * laufen weiter ueber timer_ms (1 ms). */
+        long res_ns = (clk_id == CLOCK_REALTIME_COARSE ||
+                       clk_id == CLOCK_MONOTONIC_COARSE) ? NSEC_PER_MSEC : 1;
+        struct k_timespec kts = { .tv_sec = 0, .tv_nsec = res_ns };
         int r = copy_to_user(tp, &kts, sizeof(kts));
         if (r) return r;
     }
