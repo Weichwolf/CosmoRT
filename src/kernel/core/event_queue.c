@@ -21,6 +21,10 @@
 /* Size of one page in bytes — grow step is always page-aligned. */
 #define EQ_PAGE_BYTES 4096
 
+/* SIG_DFL-ignored signals that must not generate spurious EINTR.
+ * Bit (N-1): SIGCHLD=17 SIGURG=23 SIGWINCH=28 SIGIO=29. */
+#define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
+
 _Static_assert((EQ_INIT_CAPACITY & (EQ_INIT_CAPACITY - 1)) == 0,
                "EQ_INIT_CAPACITY must be power of 2");
 _Static_assert(sizeof(event_t) * EQ_INIT_CAPACITY <= EQ_PAGE_BYTES,
@@ -133,17 +137,30 @@ static void timeout_wake(hrtimer_t *timer) {
  *   (b) signal nach `state = BLOCKED`, vor `schedule()`: kill_one sees BLOCKED
  *       and event_post → sched_wake CAS flips state→RUNNABLE; schedule() picks
  *       us immediately (prev == next → early return). */
+/* Same ignore set as event_wait to keep SIGCHLD/URG/WINCH/IO from
+ * interrupting a pure timeout sleep. Duplicated because thread_block_ms
+ * predates SIG_DFL_IGNORE; consolidating both sites later. */
+static uint64_t thread_block_deliverable(thread_t *cur) {
+    if (!cur->proc) return 0;
+    uint64_t deliverable = (cur->proc->sig_pending | cur->sig_thread_pending)
+                         & ~cur->sig_blocked;
+    uint64_t real = deliverable;
+    for (int s = 1; s < 64 && real; s++) {
+        if (!(real & (1ULL << (s-1)))) continue;
+        if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+            ((1ULL << (s-1)) & SIG_DFL_IGNORE))
+            real &= ~(1ULL << (s-1));
+    }
+    return real;
+}
+
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
 
     thread_t *cur = thread_current();
     if (!cur) return;
 
-    if (cur->proc) {
-        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        uint64_t deliverable = all_pending & ~cur->sig_blocked;
-        if (deliverable) return;
-    }
+    if (thread_block_deliverable(cur)) return;
 
     hrtimer_t timer;
     hrtimer_init(&timer, timeout_wake, cur);
@@ -152,17 +169,13 @@ void thread_block_ms(int timeout_ms) {
     cur->state = THREAD_BLOCKED;
     hal_cpu_mfence();
 
-    if (cur->proc) {
-        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        uint64_t deliverable = all_pending & ~cur->sig_blocked;
-        if (deliverable) {
-            /* CAS back to RUNNING only if sched_wake didn't already flip us
-             * to RUNNABLE+rq. Otherwise fall through to schedule() — cur is
-             * the leftmost entry and gets picked immediately. */
-            if (__sync_bool_compare_and_swap(&cur->state, THREAD_BLOCKED, THREAD_RUNNING)) {
-                hrtimer_cancel(&timer);
-                return;
-            }
+    if (thread_block_deliverable(cur)) {
+        /* CAS back to RUNNING only if sched_wake didn't already flip us
+         * to RUNNABLE+rq. Otherwise fall through to schedule() — cur is
+         * the leftmost entry and gets picked immediately. */
+        if (__sync_bool_compare_and_swap(&cur->state, THREAD_BLOCKED, THREAD_RUNNING)) {
+            hrtimer_cancel(&timer);
+            return;
         }
     }
 
@@ -195,7 +208,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
             uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
             uint64_t deliverable = all_pending & ~cur->sig_blocked;
             if (deliverable) {
-                #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
                 uint64_t real = deliverable;
                 for (int s = 1; s < 64 && real; s++) {
                     if (!(real & (1ULL << (s-1)))) continue;
