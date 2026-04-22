@@ -6,11 +6,13 @@ Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
 |-------|-------|------|------|------|-----------------|
-| ktest | 2760  | 2760 |   0  |   -  | +28 (neue LTP-bind/connect/accept Fehlerpfade + AF_UNIX abstract) |
-| musl  |  478  |  458 |  13  |   7  | =/= (stabil)    |
-| LTP   |  313  |  228 |  27  |  43  | stabil — **accept4_01** + **bind04** bleiben FAIL (s.u.) |
+| ktest | 2761  | 2761 |   0  |   -  | +1 (test_time_ns.c)         |
+| musl  |  478  |  459 |  12  |   7  | +1 PASS (Flake stabilisiert)|
+| LTP   |  313  |  228 |  27  |  43  | stabil                      |
 
-Baseline diesem Run vorher: ktest 2732, musl 458/13, LTP 228/27/43.
+Baseline: ktest 2760 post-NEWTIME. Signal-Wake-Agent (9 commits 00bf941..c4f8f23)
+reverted in 22b3ab5 — Deadlock in clock_nanosleep01 (kompletter Hang, kein
+timeout-fire). Retry braucht Bisect + kleineren Scope.
 
 ## Socket-Cluster (bind/accept/connect) — dieser Task
 
