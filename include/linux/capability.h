@@ -12,6 +12,10 @@
 #define _LINUX_CAPABILITY_U32S_2      2
 #define _LINUX_CAPABILITY_U32S_3      2
 
+/* capability(7) bit numbers (subset; see linux/capability.h in Linux tree) */
+#define CAP_SYS_ADMIN                 21
+#define CAP_LAST_CAP                  40
+
 struct __user_cap_header_struct {
     uint32_t version;
     int      pid;
