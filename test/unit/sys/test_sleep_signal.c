@@ -188,7 +188,41 @@ static void test_clock_nanosleep_sigstorm(void) {
 }
 TEST("sleep-signal-sigstorm", test_clock_nanosleep_sigstorm);
 
-/* ── Test 6: clock_nanosleep TIMER_ABSTIME interrupted ── */
+/* ── Test 6: SA_RESTART must NOT restart nanosleep (Linux-compat) ── */
+static void test_sa_restart_no_nanosleep_restart(void) {
+    puts("\n[sleep-signal: SA_RESTART excludes nanosleep]\n");
+
+    /* Install handler WITH SA_RESTART — clock_nanosleep must still return EINTR */
+    struct ksigaction_t sa = {
+        .handler = (void *)h,
+        .flags = SA_RESTORER | SA_RESTART,
+        .restorer = (void *)sr,
+        .mask = 0,
+    };
+    sc4(SYS_RT_SIGACTION, SIGINT, (long)&sa, 0, 8);
+    h_sig = 0;
+
+    long self = sc0(SYS_GETPID);
+    long child = spawn_signaler(self, SIGINT, 100);
+    check("signaler forked", child > 0);
+
+    struct { long sec, nsec; } req = { .sec = 5, .nsec = 0 };
+    struct { long sec, nsec; } rem = { .sec = -1, .nsec = -1 };
+
+    long t0 = mono_ms();
+    long r = sc4(SYS_CLOCK_NANOSLEEP, CLOCK_MONOTONIC, 0, (long)&req, (long)&rem);
+    long elapsed = mono_ms() - t0;
+
+    puts("  elapsed="); put_int(elapsed); puts("ms\n");
+    check_val("clock_nanosleep returns -EINTR (SA_RESTART ignored)", r, -EINTR);
+    check("returns within 2s (not restart-looped)", elapsed < 2000);
+
+    int st = 0;
+    sc4(SYS_WAIT4, child, (long)&st, 0, 0);
+}
+TEST("sleep-signal-sa_restart", test_sa_restart_no_nanosleep_restart);
+
+/* ── Test 7: clock_nanosleep TIMER_ABSTIME interrupted ── */
 static void test_clock_nanosleep_abs_eintr(void) {
     puts("\n[sleep-signal: clock_nanosleep ABS EINTR]\n");
 
