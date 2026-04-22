@@ -50,25 +50,19 @@ static int path_copy(char *dst, const char *src, int maxlen) {
     return i;
 }
 
-/* Compare abspath der Watch mit Event-Pfad. Event-Pfad ist immer der
- * volle Pfad einer Kindinode (z.B. /tmp/dir/file). Watch matcht wenn
- * Event direkt in Watch-Verzeichnis liegt oder der Watch-Pfad selbst
- * getroffen ist (Attrib-Event auf die Directory).
- * Linux: fsnotify_parent liefert das Parent-Inode fuer children-Events,
- * was sowohl Watches auf Parent als auch auf Child-Directory matcht. */
-static int dn_path_matches(const char *watch, const char *event) {
+/* Match-Semantik:
+ *   allow_self=1: DN_ATTRIB-artige Events, bei denen Linux auch Watches auf
+ *                 der Inode selbst triggert (fsnotify(inode, FS_ATTRIB)).
+ *   allow_self=0: DN_CREATE/DELETE/RENAME — Linux feuert nur fuer Parent-
+ *                 Watches (fsnotify_parent). */
+static int dn_path_matches(const char *watch, const char *event, int allow_self) {
     int wn = 0; while (watch[wn]) wn++;
-    /* ignore trailing slash on watch */
     if (wn > 1 && watch[wn - 1] == '/') wn--;
     int i = 0;
     for (; i < wn; i++) if (watch[i] != event[i]) return 0;
     char c = event[i];
-    /* exakt gleich */
-    if (c == 0) return 1;
-    /* Child: watch + '/' + name ohne weitere Slashes */
+    if (c == 0) return allow_self;
     if (c != '/') return 0;
-    /* Pruefen, dass zwischen i+1 und Ende kein weiterer '/' liegt -
-     * Linux liefert Events nur fuer direkte Kinder. */
     i++;
     for (; event[i]; i++)
         if (event[i] == '/') return 0;
@@ -202,6 +196,7 @@ void dnotify_proc_exit(process_t *p) {
  * Pfad selbst (DN_ATTRIB auf Directory) werden gematcht. */
 void dnotify_fire(const char *event_path, uint32_t mask) {
     if (!event_path) return;
+    int allow_self = (mask & DN_ATTRIB) ? 1 : 0;
     struct {
         process_t *p;
         int sig;
@@ -213,7 +208,7 @@ void dnotify_fire(const char *event_path, uint32_t mask) {
     spin_lock_irq(&dn_lock, &flags);
     for (struct dnotify_watch *w = dn_head; w && np < 32; w = w->next) {
         if (!(w->mask & mask)) continue;
-        if (!dn_path_matches(w->abspath, event_path)) continue;
+        if (!dn_path_matches(w->abspath, event_path, allow_self)) continue;
         pending[np].p = w->p;
         pending[np].sig = w->sig ? w->sig : 29 /* SIGIO */;
         pending[np].fd = w->fd;
