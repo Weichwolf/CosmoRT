@@ -13,6 +13,7 @@
 #define O_TRUNC         0x0200
 #define O_APPEND        0x0400
 #define O_NONBLOCK      0x0800
+#define O_ASYNC         0x2000    /* FASYNC: SIGIO/SIGIO bei I/O-Readiness */
 #define O_NOCTTY        0x100
 #define O_DIRECTORY     0x10000
 #define O_NOFOLLOW      0x20000

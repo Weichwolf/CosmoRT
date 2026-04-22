@@ -210,6 +210,11 @@ long pipe_close(fd_entry_t *fde);
 long do_pipe2(int *fds, int flags);
 long pipe_resize(struct pipe *pp, int new_size);
 int  pipe_get_size(struct pipe *pp);
+long pipe_fcntl_getown(struct pipe *pp, int end);
+long pipe_fcntl_setown(struct pipe *pp, int end, int arg);
+long pipe_fcntl_getsig(struct pipe *pp, int end);
+long pipe_fcntl_setsig(struct pipe *pp, int end, int sig);
+void pipe_set_async(struct pipe *pp, int end, int on);
 
 /* ── Forward declarations: sys_net.c ── */
 long do_sendmsg(int fd, const void *msg, int flags);

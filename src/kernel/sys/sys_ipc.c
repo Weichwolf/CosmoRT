@@ -9,6 +9,15 @@
 #define PIPE_BUF_DEFAULT  4096
 #define PIPE_BUF_MAX      1048576   /* /proc/sys/fs/pipe-max-size cap */
 
+/* Async-signal owner per pipe-end. Linux F_SETOWN/F_SETSIG sind per
+ * struct file — wir haben nur einen struct pipe fuer beide Enden,
+ * speichern deshalb getrennte Owner fuer Lese/Schreib-Seite. */
+struct pipe_owner {
+    int pid;        /* > 0 = pid, < 0 = pgid (Linux F_SETOWN Konvention), 0 = keiner */
+    int sig;        /* Signal-Nummer (0 = default SIGIO) */
+    int o_async;    /* O_ASYNC aktiv (F_SETFL) — ohne das kein Signal */
+};
+
 struct pipe {
     uint8_t *buf;               /* dynamically allocated, size == buf_size (page-multiple) */
     int buf_size;               /* current ring capacity in bytes */
@@ -17,6 +26,7 @@ struct pipe {
     int was_full;               /* Linux-Ring-Semantik: EPOLLOUT-Edge nur nach komplettem Drain */
     thread_t *blocked_reader;   /* thread blocked in pipe read */
     thread_t *blocked_writer;   /* thread blocked in pipe write */
+    struct pipe_owner owner[2]; /* [0] = reader-end, [1] = writer-end */
     spinlock_t lock;
 };
 
@@ -90,6 +100,58 @@ long pipe_resize(struct pipe *pp, int new_size) {
     return rounded;
 }
 
+/* Linux SIGIO default fuer Async-FD-Events. fcntl F_SETSIG kann das
+ * ueberschreiben (0 = Default SIGIO). */
+#define PIPE_SIGIO_DEFAULT  29   /* SIGIO */
+
+static void pipe_notify_end(struct pipe_owner *o) {
+    if (!o->o_async || o->pid == 0) return;
+    int sig = o->sig ? o->sig : PIPE_SIGIO_DEFAULT;
+    /* do_kill handles pid > 0 (process) und pid < -1 (pgid) analog Linux. */
+    do_kill(o->pid, sig);
+}
+
+/* fcntl F_SETOWN/F_GETOWN/F_SETSIG/F_GETSIG Zugriff ueber fd-end-Index */
+long pipe_fcntl_getown(struct pipe *pp, int end) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    int v = pp->owner[end].pid;
+    spin_unlock_irq(&pp->lock, flags);
+    return v;
+}
+
+long pipe_fcntl_setown(struct pipe *pp, int end, int arg) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    pp->owner[end].pid = arg;
+    spin_unlock_irq(&pp->lock, flags);
+    return 0;
+}
+
+long pipe_fcntl_getsig(struct pipe *pp, int end) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    int v = pp->owner[end].sig;
+    spin_unlock_irq(&pp->lock, flags);
+    return v;
+}
+
+long pipe_fcntl_setsig(struct pipe *pp, int end, int sig) {
+    if (sig < 0 || sig >= 64) return -EINVAL;
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    pp->owner[end].sig = sig;
+    spin_unlock_irq(&pp->lock, flags);
+    return 0;
+}
+
+void pipe_set_async(struct pipe *pp, int end, int on) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    pp->owner[end].o_async = on ? 1 : 0;
+    spin_unlock_irq(&pp->lock, flags);
+}
+
 long pipe_read(struct pipe *pp, void *buf, size_t count) {
     uint64_t flags;
     spin_lock_irq(&pp->lock, &flags);
@@ -109,11 +171,14 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     /* Wake blocked writer if space freed */
     thread_t *writer = pp->blocked_writer;
     pp->blocked_writer = 0;
+    /* Snapshot writer-end owner fuer SIGIO nach Lock-Release */
+    struct pipe_owner notify_w = pp->owner[1];
     spin_unlock_irq(&pp->lock, flags);
     if (writer) {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
     }
+    pipe_notify_end(&notify_w);
     /* Wake epoll/poll sleepers — pipe now writable */
     extern void epoll_wake_all(void);
     epoll_wake_all();
@@ -143,11 +208,14 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     /* Wake blocked reader */
     thread_t *reader = pp->blocked_reader;
     pp->blocked_reader = 0;
+    /* Snapshot reader-end owner fuer SIGIO nach Lock-Release */
+    struct pipe_owner notify_r = pp->owner[0];
     spin_unlock_irq(&pp->lock, flags);
     if (reader) {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
     }
+    pipe_notify_end(&notify_r);
     /* Wake epoll/poll sleepers — pipe now readable */
     extern void epoll_wake_all(void);
     epoll_wake_all();
@@ -177,9 +245,11 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
             /* Wake blocked writer */
             thread_t *writer = pp->blocked_writer;
             pp->blocked_writer = 0;
+            struct pipe_owner notify_w = pp->owner[1];
             spin_unlock_irq(&pp->lock, irqf);
             if (writer)
                 event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+            pipe_notify_end(&notify_w);
             return (long)n;
         }
         if (!pp->write_open) {
@@ -225,9 +295,11 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
             /* Wake blocked reader */
             thread_t *reader = pp->blocked_reader;
             pp->blocked_reader = 0;
+            struct pipe_owner notify_r = pp->owner[0];
             spin_unlock_irq(&pp->lock, irqf);
             if (reader)
                 event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+            pipe_notify_end(&notify_r);
             return (long)n;
         }
         if (!pp->read_open) {
@@ -263,6 +335,8 @@ long do_pipe2(int *fds, int flags) {
     pp->was_full = 0;
     pp->blocked_reader = 0;
     pp->blocked_writer = 0;
+    pp->owner[0].pid = pp->owner[0].sig = pp->owner[0].o_async = 0;
+    pp->owner[1].pid = pp->owner[1].sig = pp->owner[1].o_async = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
 
     process_t *p = proc_current();

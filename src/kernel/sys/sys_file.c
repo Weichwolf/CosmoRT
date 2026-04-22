@@ -1451,7 +1451,13 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_GETFL: return fde->flags & ~O_CLOEXEC;
     case F_SETFL: {
         int keep = fde->flags & (O_RDONLY | O_WRONLY | O_RDWR | O_CLOEXEC);
-        fde->flags = keep | ((int)arg & (O_APPEND | O_NONBLOCK));
+        int new_bits = (int)arg & (O_APPEND | O_NONBLOCK | O_ASYNC);
+        fde->flags = keep | new_bits;
+        /* O_ASYNC auf Pipe aktiviert SIGIO-Delivery via pipe_owner */
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            pipe_set_async((struct pipe *)fde->obj, end, !!(new_bits & O_ASYNC));
+        }
         return 0;
     }
     case F_GETFD: return (fde->flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
@@ -1469,11 +1475,26 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_OFD_SETLKW:
         return fcntl_do_lock(cmd, FL_OFD, fde, p->pid, arg);
     case F_GETOWN:
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            return pipe_fcntl_getown((struct pipe *)fde->obj, end);
+        }
         return 0;
     case F_SETOWN:
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            return pipe_fcntl_setown((struct pipe *)fde->obj, end, (int)arg);
+        }
         return 0;
     case F_GETOWN_EX: {
         struct k_f_owner_ex ex = { F_OWNER_PID, 0 };
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            int pid = (int)pipe_fcntl_getown((struct pipe *)fde->obj, end);
+            /* Linux: negative Wert = PGRP-Owner; sonst PID bzw. 0 */
+            if (pid < 0) { ex.type = F_OWNER_PGRP; ex.pid = -pid; }
+            else         { ex.type = F_OWNER_PID;  ex.pid = pid; }
+        }
         if (copy_to_user((void *)arg, &ex, sizeof(ex)) < 0) return -EFAULT;
         return 0;
     }
@@ -1482,12 +1503,26 @@ long do_fcntl(int fd, int cmd, long arg) {
         if (copy_from_user(&ex, (void *)arg, sizeof(ex)) < 0) return -EFAULT;
         if (ex.type != F_OWNER_TID && ex.type != F_OWNER_PID &&
             ex.type != F_OWNER_PGRP) return -EINVAL;
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            int pid = ex.pid;
+            if (ex.type == F_OWNER_PGRP) pid = -pid;
+            pipe_fcntl_setown((struct pipe *)fde->obj, end, pid);
+        }
         return 0;
     }
     case F_GETSIG:
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            return pipe_fcntl_getsig((struct pipe *)fde->obj, end);
+        }
         return 0;
     case F_SETSIG:
         if ((int)arg < 0 || (int)arg > 64) return -EINVAL;
+        if (fde->type == FD_PIPE) {
+            int end = (fde->flags & O_WRONLY) ? 1 : 0;
+            return pipe_fcntl_setsig((struct pipe *)fde->obj, end, (int)arg);
+        }
         return 0;
     case F_SETLEASE:
         return fcntl_setlease(fde, arg);
