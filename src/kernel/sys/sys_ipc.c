@@ -607,7 +607,10 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
         eventfd_t *efd = (eventfd_t *)fde->obj;
         if (!efd) { ready |= EPOLLERR; break; }
         if ((interest & EPOLLIN) && efd->counter > 0) ready |= EPOLLIN;
-        if (interest & EPOLLOUT) ready |= EPOLLOUT;
+        /* Linux fs/eventfd.c: writable wenn counter < EVENTFD_ULLONG_MAX-1
+         * (noch Platz fuer +1); sonst kein EPOLLOUT. Matcht eventfd04. */
+        if ((interest & EPOLLOUT) && efd->counter < 0xFFFFFFFFFFFFFFFEULL)
+            ready |= EPOLLOUT;
         break;
     }
 
