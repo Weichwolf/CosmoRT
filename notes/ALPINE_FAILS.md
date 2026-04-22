@@ -94,17 +94,40 @@ DHCP nutzt die zuletzt registrierte NIC (virtio-net → 10.0.3.15).
 Multi-NIC-Routing-Support ist separates Thema (netif-pointer in
 `net.c` ist noch singleton).
 
-## LTP FAIL (27) — verbleibende Gruppen
+## LTP FAIL (25) — verbleibende Gruppen
 
 | Gruppe         | Anzahl | Tests                                              | Ursache                |
 |----------------|--------|----------------------------------------------------|------------------------|
 | fcntl          |    5   | fcntl35/35_64, fcntl38/38_64, fcntl14             | procfs-write, nested sigreturn, perf |
 | epoll_wait     |    2   | epoll_wait02, epoll_wait05                        | timing, TCP loopback   |
-| clock_*        |    5   | clock_gettime03/04, clock_nanosleep01/02/03       | NEWTIME NS             |
+| clock_*        |    3   | clock_gettime04, clock_nanosleep01/02              | Clock-Jitter / Sched-Perf, KEIN NEWTIME |
 | clone/dup      |    2   | clone09 (procfs TBROK), dup05/dup201              | -                      |
 | bind/accept    |    2   | accept4_01 (TCP half-open), bind04 (SOCK_SEQPACKET+IPv6) | siehe oben     |
 | access         |    2   | access01, access04                                | DAC edge-cases         |
 | rest           |    9   | abort01, acct01, fchdir03, fchownat03, fdatasync02, fallocate02, fgetxattr02, copy_file_range03, stack_clash | diverse |
+
+## clock_*-Cluster (2026-04-22)
+
+NEWTIME-Integration implementiert: time_namespace + CLONE_NEWTIME +
+unshare/setns + /proc/self/ns/time{,_for_children} + /proc/self/timens_offsets
+Write-Handler + Offset-Anwendung in clock_gettime(MONOTONIC/BOOTTIME) +
+clock_nanosleep(TIMER_ABSTIME). Siehe Commits time_ns: *.
+
+Gewonnen: clock_gettime03, clock_nanosleep03 (2/5).
+Offen:
+- **clock_gettime04**: TFAIL weil aufeinanderfolgende clock_gettime-Aufrufe
+  >5ms Differenz zeigen. Das ist ein reines Clock-Read-Perf-Problem
+  (QEMU-TSC-Drift, sched-Interferenz waehrend 6000 Iterationen). Kein
+  NEWTIME-Bug.
+- **clock_nanosleep01**: PASS fuer NORMAL-Cases (3x EINVAL). TBROK auf
+  SEND_SIGINT: child sendet 40x alle 500ms SIGINT an parent, parent
+  schlaeft 10s. Parent muss per EINTR zurueckkehren; SIGKILL nach 30s
+  LTP-Watchdog deutet auf steckende signal-wake aus thread_block_ms-hrtimer.
+- **clock_nanosleep02**: TBROK — 500 Iterationen 1ms-Sleep dauern >30s.
+  Scheduler-Overhead oder hrtimer-Granularitaet. Vermutlich derselbe
+  root cause wie 01.
+
+Alle 3 sind Scheduling/Clock-Praezisions-Buckets, kein NEWTIME.
 
 ## musl FAIL (13)
 
@@ -116,8 +139,9 @@ pthread_atfork-errno-clobber). Keine systematische Regression.
 **Top Fix-Kandidaten:**
 
 1. **TCP half-open queue** — fixt accept4_01 + epoll_wait-Timing
-2. **clock_nanosleep NEWTIME** — 3 Tests auf einen Schlag
-3. **procfs-write** — fixt fcntl35/35_64 + einige rest-bucket
+2. **Signal wake aus hrtimer-block** — fixt clock_nanosleep01 + etliche SIGINT-empfindliche Tests
+3. **procfs-write (als Konzept)** — Infrastruktur jetzt vorhanden (siehe time_ns),
+   Integration fuer fcntl35/35_64 waere trivial
 4. **AF_UNIX SOCK_SEQPACKET** — fixt eine bind04-Variante (noch nicht IPv6)
 
 **Deprioritized:**
