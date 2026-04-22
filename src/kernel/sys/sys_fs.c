@@ -213,6 +213,9 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
 long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
     if (mode & ~FALLOC_FL_ALL) return -EOPNOTSUPP;
     if (offset < 0 || len <= 0) return -EINVAL;
+    /* Linux fs/open.c vfs_fallocate: (s64)end < 0 (overflow) → EFBIG.
+     * LLONG_MAX / 1024 * BLOCK_SIZE schlaegt hier zu. */
+    if (offset > (int64_t)0x7FFFFFFFFFFFFFFFLL - len) return -EFBIG;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);

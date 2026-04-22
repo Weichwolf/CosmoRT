@@ -83,6 +83,13 @@ static void test_fallocate02(void) {
     r = sc4(SYS_FALLOCATE, fdw, 0, 0, 0);
     check_val("zero length EINVAL", r, -EINVAL);
 
+    /* EFBIG: offset + len ueberlaeuft int64_t (LLONG_MAX / 1024 * 1024 ~ LLONG_MAX). */
+    long huge = 0x7FFFFFFFFFFFFC00LL; /* LLONG_MAX / 1024 * 1024 */
+    r = sc4(SYS_FALLOCATE, fdw, 0, huge, 1024);
+    check_val("offset huge EFBIG", r, -EFBIG);
+    r = sc4(SYS_FALLOCATE, fdw, 0, 1024, huge);
+    check_val("len huge EFBIG", r, -EFBIG);
+
     sc1(SYS_CLOSE, fdw);
     sc1(SYS_UNLINK, (long)"/tmp/falloc02w");
 }
