@@ -52,6 +52,12 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         p->vfork_parent_tid = 0;
     }
 
+    /* POSIX: byte-range locks are released when any fd referencing the file
+     * is closed by the process. Exit closes every fd at once, so release all
+     * POSIX locks up-front — matches Linux locks_remove_posix in exit_files. */
+    extern void flock_release_pid(uint32_t pid);
+    flock_release_pid(p->pid);
+
     /* Close all FDs immediately so pipe writers/readers see EOF.
      * proc_cleanup() will fd_table_free() — here we only decrement refs
      * and clear entries so blocked I/O wakes up. */

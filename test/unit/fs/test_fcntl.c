@@ -52,4 +52,56 @@ static void test_fcntl(void) {
     sc1(SYS_CLOSE, fd);
 }
 
+#define WIFEXITED(s)    (((s) & 0x7F) == 0)
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
+
+/* ── POSIX-Lock wird bei Prozess-Exit freigegeben, nicht erst bei wait4 ── */
+static void test_posix_lock_on_exit(void) {
+    puts("\n[POSIX_LOCK_ON_EXIT]\n");
+
+    long fd = sc3(SYS_OPEN, (long)"/tmp/fcntl_exit_lock",
+                  O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check("open", fd >= 0);
+    if (fd < 0) return;
+    sc3(SYS_WRITE, fd, (long)"hello_world", 11);
+
+    long pid = sc0(SYS_FORK);
+    check("fork", pid >= 0);
+    if (pid == 0) {
+        long cfd = sc3(SYS_OPEN, (long)"/tmp/fcntl_exit_lock", O_RDWR, 0);
+        struct k_flock lk = { F_WRLCK, SEEK_SET, 0, 10, 0 };
+        sc3(SYS_FCNTL, cfd, F_SETLK, (long)&lk);
+        sc1(SYS_EXIT_GROUP, 0);
+        __builtin_unreachable();
+    }
+
+    /* Child has taken lock. Before wait4, parent probes — must see child's lock. */
+    for (int spin = 0; spin < 200; spin++) {
+        struct k_flock probe = { F_WRLCK, SEEK_SET, 0, 10, 0 };
+        sc3(SYS_FCNTL, fd, F_GETLK, (long)&probe);
+        if (probe.l_type != F_UNLCK && probe.l_pid == (int)pid) break;
+        for (volatile int i = 0; i < 100000; i++) ;
+    }
+
+    /* Child exits without close. POSIX locks must be released by
+     * exit_kill_process, not only by proc_cleanup (which runs in wait4). */
+    for (int spin = 0; spin < 200; spin++) {
+        struct k_flock probe = { F_WRLCK, SEEK_SET, 0, 10, 0 };
+        sc3(SYS_FCNTL, fd, F_GETLK, (long)&probe);
+        if (probe.l_type == F_UNLCK) break;
+        for (volatile int i = 0; i < 100000; i++) ;
+    }
+
+    struct k_flock final = { F_WRLCK, SEEK_SET, 0, 10, 0 };
+    sc3(SYS_FCNTL, fd, F_GETLK, (long)&final);
+    check_val("lock released before wait4", final.l_type, F_UNLCK);
+
+    int status = 0;
+    sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+
+    sc1(SYS_CLOSE, fd);
+    sc1(SYS_UNLINK, (long)"/tmp/fcntl_exit_lock");
+}
+
 TEST("fcntl", test_fcntl);
+TEST("posix_lock_on_exit", test_posix_lock_on_exit);
