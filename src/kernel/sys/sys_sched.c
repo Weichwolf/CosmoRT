@@ -1,6 +1,7 @@
 /* CosmoRT — Scheduling syscalls */
 
 #include "internal.h"
+#include "core/smp.h"
 
 /* ── SYS_sched_yield (24) ────────────────────────── */
 
@@ -33,11 +34,18 @@ long do_sched_getaffinity(int pid, size_t cpusetsize, uint64_t *mask) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     if (cpusetsize < 8 || !mask) return -EINVAL;
+    /* Linux: sched_getaffinity returns the set of all CPUs the thread
+     * could possibly run on. musl sysconf(_SC_NPROCESSORS_ONLN/_CONF)
+     * popcount() on the mask — returning ~0ULL yields 64 spurious CPUs. */
     uint64_t kmask;
-    if (t->cpu_affinity >= 0)
+    if (t->cpu_affinity >= 0) {
         kmask = 1ULL << t->cpu_affinity;
-    else
-        kmask = ~0ULL;  /* all 64 cores */
+    } else {
+        int n = smp_num_cores();
+        if (n <= 0) n = 1;
+        if (n >= 64) kmask = ~0ULL;
+        else kmask = (1ULL << n) - 1;
+    }
     { int r = copy_to_user(mask, &kmask, 8); if (r) return r; }
     return (long)sizeof(uint64_t);
 }
