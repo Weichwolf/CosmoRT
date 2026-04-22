@@ -233,7 +233,9 @@ long kill_one(process_t *target, int sig) {
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 thread_t *w = target->threads;
                 while (w) {
-                    event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    hal_cpu_mfence();
+                    if (w->state == THREAD_BLOCKED)
+                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     w = w->proc_next;
                 }
             }
@@ -328,7 +330,9 @@ long kill_one(process_t *target, int sig) {
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 thread_t *wt = target->threads;
                 while (wt) {
-                    event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    hal_cpu_mfence();
+                    if (wt->state == THREAD_BLOCKED)
+                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     wt = wt->proc_next;
                 }
                 return 0;
@@ -471,8 +475,10 @@ long do_tgkill(int tgid, int tid, int sig) {
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
             if (SIG_BIT(sig) & target->sig_blocked) {
                 __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
+                hal_cpu_mfence();
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-                event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                if (target->state == THREAD_BLOCKED)
+                    event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             }
             return 0;
         }
@@ -495,8 +501,10 @@ long do_tgkill(int tgid, int tid, int sig) {
      * (not process-level) to ensure the correct thread handles it. */
     __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
     if (!(SIG_BIT(sig) & target->sig_blocked)) {
+        hal_cpu_mfence();
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-        event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+        if (target->state == THREAD_BLOCKED)
+            event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
     }
     return 0;
 }
