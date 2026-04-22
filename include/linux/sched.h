@@ -31,6 +31,12 @@
 #define CLONE_NEWPID         0x20000000
 #define CLONE_NEWNET         0x40000000
 
+/* Time namespace (Linux 5.6+) — offset-adjusted CLOCK_MONOTONIC/BOOTTIME
+ * per process. Real implementation in kernel/core/time_ns.c. */
+#define CLONE_NEWTIME        0x00000080
+
+/* Namespace flags we recognise but treat as no-op (single-user kernel).
+ * CLONE_NEWTIME is NOT in this set — it has a real implementation. */
 #define CLONE_NS_FLAGS       (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
                               CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | \
                               CLONE_NEWNET)

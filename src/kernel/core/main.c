@@ -166,6 +166,11 @@ void kernel_main(struct boot_info *info) {
     vma_init();
     ipc_init();
 
+    /* Time namespace slab — must be ready before first clone/fork
+     * since every process ref-counts init_time_ns. */
+    extern void time_ns_init(void);
+    time_ns_init();
+
     extern void alarm_init(void);
     alarm_init();
 

@@ -6,6 +6,7 @@
 
 #include "proc/proc_internal.h"
 #include "linux/capability.h"
+#include "core/time_ns.h"
 
 /* ── Slab pools ─────────────────────────────────── */
 
@@ -176,6 +177,11 @@ process_t *proc_alloc(void) {
         p->cap_permitted = CAP_FULL_SET;
         p->cap_inheritable = CAP_FULL_SET;
         p->cap_bounding   = CAP_FULL_SET;
+
+        /* Default time namespace — init_time_ns (pinned, frozen).
+         * clone()/do_fork overrides via time_ns_for_children inheritance. */
+        p->time_ns              = time_ns_get(&init_time_ns);
+        p->time_ns_for_children = time_ns_get(&init_time_ns);
     }
     return p;
 }

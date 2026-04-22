@@ -234,6 +234,11 @@ long kernel_clone(unsigned long flags, void *child_stack,
         flags &= ~CLONE_NS_FLAGS;
     }
 
+    /* Linux forbids CLONE_NEWTIME on clone(): a task can't atomically
+     * switch its own time_ns with the child fork, so the flag must be
+     * applied via unshare(CLONE_NEWTIME) instead. */
+    if (flags & CLONE_NEWTIME) return -EINVAL;
+
     int is_thread = !!(flags & CLONE_THREAD);
     int is_vfork  = (flags & CLONE_VFORK) && !is_thread;
     /* CLONE_VM without CLONE_THREAD: new process ID but shared mm
@@ -259,6 +264,18 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->notify_signal = exit_sig;
         child->vma_root = 0;
         child->mm_shared = 0;
+
+        /* time_namespace inheritance: child inherits parent's
+         * time_ns_for_children for BOTH time_ns and time_ns_for_children.
+         * proc_alloc() already set both to init_time_ns; swap them now. */
+        {
+            extern void time_ns_put(struct time_namespace *);
+            extern struct time_namespace *time_ns_get(struct time_namespace *);
+            time_ns_put(child->time_ns);
+            time_ns_put(child->time_ns_for_children);
+            child->time_ns              = time_ns_get(parent->time_ns_for_children);
+            child->time_ns_for_children = time_ns_get(parent->time_ns_for_children);
+        }
 
         if (mm_share) {
             /* Share parent's address space. Child exec/exit must not free it. */

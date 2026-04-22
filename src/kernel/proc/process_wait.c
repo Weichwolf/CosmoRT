@@ -1,6 +1,7 @@
 /* CosmoRT Process — wait4, process cleanup */
 
 #include "proc/proc_internal.h"
+#include "core/time_ns.h"
 
 /* ── Process cleanup (2.3) ───────────────────────── */
 
@@ -71,6 +72,10 @@ void proc_cleanup(process_t *p) {
     }
     p->pml4 = 0;
     p->vma_root = 0;
+
+    /* Drop time_namespace references (init_time_ns is pinned). */
+    if (p->time_ns)              { time_ns_put(p->time_ns);              p->time_ns = 0; }
+    if (p->time_ns_for_children) { time_ns_put(p->time_ns_for_children); p->time_ns_for_children = 0; }
 
     /* Clear lookup table entry */
     if ((int)p->pid < pid_table_capacity())

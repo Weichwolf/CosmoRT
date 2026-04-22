@@ -161,6 +161,17 @@ typedef struct process {
     uint64_t    cap_permitted;
     uint64_t    cap_inheritable;
     uint64_t    cap_bounding;
+
+    /* Time namespace (CLONE_NEWTIME). Linux task_struct::nsproxy::time_ns.
+     * time_ns           — observed by clock_gettime et al.
+     * time_ns_for_children — used by clone() for the new child.
+     *
+     * Both references hold refcounts. Init process starts with both →
+     * &init_time_ns. On unshare(CLONE_NEWTIME) only time_ns_for_children
+     * swaps to a fresh NS, matching Linux semantics (the current task
+     * keeps its old time_ns). */
+    struct time_namespace *time_ns;
+    struct time_namespace *time_ns_for_children;
 } process_t;
 
 /* Credential helpers: in-group test (egid + supplementary) and
