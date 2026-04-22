@@ -215,9 +215,7 @@ static int is_restartable_syscall(long num) {
 }
 
 void check_signals_syscall_path(long *result_ptr, long num) {
-    /* SYS_RT_SIGRETURN completes signal handling — we still check for *new*
-     * pending signals so dnotify/RT repends deliver nested handlers before
-     * returning to user (Linux: signals queued during handler run on return). */
+    if (num == SYS_RT_SIGRETURN) return;
     thread_t *t = thread_current();
     if (!t || !t->proc) return;
     process_t *p = t->proc;
