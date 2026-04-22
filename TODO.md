@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2694/0**, musl 458/13, LTP **198/62/38** (+11 PASS nach fcntl-Phase 2). fcntl-Cluster +9 Tests/×2=18 PASS zusätzlich: fcntl11/13/15/21/23/27/30/39 PASS, fcntl33 SKIP. Offen: fcntl12/14/17/31/34-38 (Timeout, SIGIO-Order, multi-thread stress). Regression: pthread_robust(-static) vs Futex-Shared-Key. Branch: `ltp`.
+Stand: ktest **2694/0**, musl 460/11, LTP **198/62/38**. fcntl-Cluster +9 Tests/×2=18 PASS: fcntl11/13/15/21/23/27/30/39 PASS, fcntl33 SKIP. Offen: fcntl12/14/17/31/34-38 (Timeout, SIGIO-Order, multi-thread stress). pthread_robust(-static)-Regression gefixt (FUTEX_LOCK_PI shared-Key). Branch: `ltp`.
 
 ## Offene Phasen
 

@@ -1,17 +1,16 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-21 nach fcntl-Phase 2 (F_SETPIPE_SZ real, SIGIO auf Pipe,
-EDEADLK, dnotify mit SA_SIGINFO si_fd, FUTEX_SHARED PA-Key).
+Run: 2026-04-22 nach pthread_robust-Fix (FUTEX_LOCK_PI shared-Key).
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher        |
 |-------|-------|------|------|------|------------------------|
 | ktest | 2694  | 2694 |   0  |   -  | -                      |
-| musl  |  478  |  458 |  13  |   7  | -3 (pthread_robust x2 Regression) |
-| LTP   |  298  |  198 |  62  |  38  | +11 PASS / -11 FAIL    |
+| musl  |  478  |  460 |  11  |   7  | +2 (pthread_robust x2 gefixt) |
+| LTP   |  298  |  198 |  62  |  38  | unverändert            |
 
-Baseline: ktest 2694, musl 461/10, LTP 187/73/38.
+Baseline: ktest 2694, musl 461/10, LTP 198/62/38.
 
 ## fcntl-Cluster
 
@@ -45,10 +44,14 @@ Verbleibend FAIL (8 Tests + _64 = 16):
 
 ## Regressionen
 
-- **pthread_robust + pthread_robust-static**: bislang PASS, jetzt FAIL rc=1.
-  Wahrscheinlich Interaktion mit FUTEX-Key-Aenderungen fuer FUTEX_PRIVATE vs.
-  shared. Tests haben 60s-Internal-Timeout und hitten den; root cause
-  noch offen.
+Keine.
+
+**Behoben (2026-04-22):** pthread_robust + pthread_robust-static. Root Cause:
+FUTEX_LOCK_PI ignorierte den shared-Flag und queuete Waiter immer mit
+(vaddr, pid). Das Cleanup im Thread-Exit rief aber FUTEX_WAKE shared
+(PA-Key) und traf den PI-Waiter nie bei pshared=1 + PTHREAD_PRIO_INHERIT.
+Fix: futex_lock_pi/unlock_pi akzeptieren shared-Parameter, leiten ihn an
+Bucket-Hash und futex_wake durch.
 
 ## LTP FAIL (62) — verbleibende Gruppen
 
@@ -64,14 +67,16 @@ Verbleibend FAIL (8 Tests + _64 = 16):
 | access         |    2   | access01, access04                              | DAC edge-cases            |
 | rest           |  ~13   | abort01, acct01, adjtimex02, fchdir03, leapsec01, stack_clash, flock03 | diverse |
 
-## musl FAIL (13) — Baseline +3 Regression
+## musl FAIL (11) — Baseline +1 Flake
 
 Baseline (10): fma, fmal, powf, remquol (softfma), malloc-brk-fail,
 pthread_atfork-errno-clobber +static, rlimit-open-files +static,
 tls_get_new-dtv.
 
-Neu (3): pthread_robust + pthread_robust-static (Timeout, Regression),
-scanf-bytes-consumed (flaky?).
+Flaky (1): tls_init-static — passiert/scheitert zufaellig. Auch
+pthread_cond-smasher, pthread_once-deadlock, pthread-robust-detach
+sind intermittent (nicht jeder Run gleich). Nicht durch Kernel-Fix
+verursacht — vor der pthread_robust-Regression ebenfalls zu sehen.
 
 ## Kernel-PFs
 
@@ -79,14 +84,13 @@ scanf-bytes-consumed (flaky?).
 mit grossen Stacks + parallel eager-alloc?) und ein SEGFAULT im
 bekannten tls_get_new-dtv-Fail.
 
-## Priorisierung (nach fcntl-Phase 2)
+## Priorisierung
 
 **Top Fix-Kandidaten:**
 
-1. **pthread_robust-Regression** (2 tests) — Futex-Key-Mismatch finden
-2. **fcntl17 TBROK** (2 tests) — Deadlock-Detection-Setup-Issue
-3. **fcntl31 SIGIO** (2 tests) — sigtimedwait sieht pending nicht
-4. **eventfd/epoll** (~9 tests) — EPOLLET-Semantik
+1. **fcntl17 TBROK** (2 tests) — Deadlock-Detection-Setup-Issue
+2. **fcntl31 SIGIO** (2 tests) — sigtimedwait sieht pending nicht
+3. **eventfd/epoll** (~9 tests) — EPOLLET-Semantik
 
 **Deprioritized:** fcntl14/34/36 (perf), fcntl38 (dnotify si_fd Detail),
 chroot/caps/bpf (7 tests), cve/regressions.
