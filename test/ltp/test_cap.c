@@ -122,10 +122,112 @@ static void test_capset03_efault(void) {
     check_val("NULL data EFAULT", r, -EFAULT);
 }
 
+/* ── capset02-eperm: subset-check EPERM branches ─
+ * Fork → set narrow pP, then try to widen / violate pE ⊆ pP / pI rules. */
+
+#define CAP_KILL_BIT     5
+#define CAP_SETPCAP_BIT  8
+#define CAP_CHOWN_BIT    0
+#define CAP_NET_RAW_BIT  13
+#define CAP1 ((1u<<CAP_NET_RAW_BIT)|(1u<<CAP_CHOWN_BIT)|(1u<<CAP_SETPCAP_BIT))
+#define CAP2 (CAP1 | (1u<<CAP_KILL_BIT))
+
+static void test_capset02_eperm(void) {
+    puts("\n[ltp/capset02-eperm]\n");
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        struct cap_header hdr = { .version = LINUX_CAPABILITY_VERSION_3, .pid = 0 };
+        struct cap_data data[2];
+        for (int i = 0; i < (int)sizeof(data); i++) ((char *)&data)[i] = 0;
+        data[0].effective = CAP1; data[0].permitted = CAP1; data[0].inheritable = CAP1;
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != 0) sc1(SYS_EXIT, 10);
+
+        if (sc5(SYS_PRCTL, 24, CAP_KILL_BIT, 0, 0, 0) != 0) sc1(SYS_EXIT, 11);
+
+        data[0].effective = CAP2; data[0].permitted = CAP1; data[0].inheritable = CAP1;
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != -EPERM) sc1(SYS_EXIT, 20);
+
+        data[0].effective = CAP1; data[0].permitted = CAP2; data[0].inheritable = CAP1;
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != -EPERM) sc1(SYS_EXIT, 21);
+
+        data[0].effective = CAP1; data[0].permitted = CAP1; data[0].inheritable = CAP2;
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != -EPERM) sc1(SYS_EXIT, 22);
+
+        sc1(SYS_EXIT, 0);
+    }
+    check("fork", pid > 0);
+    if (pid > 0) {
+        int status = 0;
+        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        int code = (status >> 8) & 0xFF;
+        check_val("capset subset checks", (long)code, 0);
+    }
+}
+
+/* ── capset03-inh: pI new ⊆ old pI ∪ (old pP ∩ bounding) ── */
+
+static void test_capset03_inh(void) {
+    puts("\n[ltp/capset03-inh]\n");
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        struct cap_header hdr = { .version = LINUX_CAPABILITY_VERSION_3, .pid = 0 };
+        struct cap_data data[2];
+        for (int i = 0; i < (int)sizeof(data); i++) ((char *)&data)[i] = 0;
+        uint32_t only_kill = 1u << CAP_KILL_BIT;
+        data[0].effective = only_kill; data[0].permitted = only_kill;
+        data[0].inheritable = only_kill;
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != 0) sc1(SYS_EXIT, 10);
+
+        data[0].inheritable = only_kill | (1u << CAP_NET_RAW_BIT);
+        if (sc2(SYS_CAPSET, (long)&hdr, (long)data) != -EPERM) sc1(SYS_EXIT, 20);
+
+        sc1(SYS_EXIT, 0);
+    }
+    check("fork", pid > 0);
+    if (pid > 0) {
+        int status = 0;
+        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        int code = (status >> 8) & 0xFF;
+        check_val("pI subset rule", (long)code, 0);
+    }
+}
+
+/* ── prctl PR_CAPBSET_READ (23) / PR_CAPBSET_DROP (24) ── */
+
+static void test_capbset(void) {
+    puts("\n[ltp/capbset]\n");
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        long r = sc5(SYS_PRCTL, 23, CAP_KILL_BIT, 0, 0, 0);
+        if (r != 1) sc1(SYS_EXIT, 10);
+
+        if (sc5(SYS_PRCTL, 24, CAP_KILL_BIT, 0, 0, 0) != 0) sc1(SYS_EXIT, 11);
+
+        if (sc5(SYS_PRCTL, 23, CAP_KILL_BIT, 0, 0, 0) != 0) sc1(SYS_EXIT, 12);
+
+        if (sc5(SYS_PRCTL, 24, 41, 0, 0, 0) != -EINVAL) sc1(SYS_EXIT, 13);
+
+        sc1(SYS_EXIT, 0);
+    }
+    check("fork", pid > 0);
+    if (pid > 0) {
+        int status = 0;
+        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        int code = (status >> 8) & 0xFF;
+        check_val("capbset ops", (long)code, 0);
+    }
+}
+
 TEST("ltp/capget01",              test_capget01);
 TEST("ltp/capget02-einval-ver",   test_capget02_einval_version);
 TEST("ltp/capget02-einval-pid",   test_capget02_einval_pid);
 TEST("ltp/capget02-esrch",        test_capget02_esrch);
 TEST("ltp/capset01",              test_capset01);
 TEST("ltp/capset02-einval",       test_capset02_einval);
+TEST("ltp/capset02-eperm",        test_capset02_eperm);
 TEST("ltp/capset03-efault",       test_capset03_efault);
+TEST("ltp/capset03-inh",          test_capset03_inh);
+TEST("ltp/capbset",               test_capbset);

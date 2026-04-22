@@ -322,11 +322,16 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->cap_effective = parent->cap_effective;
         child->cap_permitted = parent->cap_permitted;
         child->cap_inheritable = parent->cap_inheritable;
+        child->cap_bounding = parent->cap_bounding;
         child->stack_top = parent->stack_top;
         child->is_driver = 0;
         for (int i = 0; i < 256; i++) {
             child->cwd[i] = parent->cwd[i];
             if (!parent->cwd[i]) break;
+        }
+        for (int i = 0; i < 256; i++) {
+            child->root[i] = parent->root[i];
+            if (!parent->root[i]) break;
         }
         for (int i = 0; i < 256; i++) {
             child->exe_path[i] = parent->exe_path[i];

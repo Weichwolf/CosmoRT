@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — process, thread syscalls */
 
 #include "internal.h"
+#include "linux/capability.h"
 
 /* ── SYS_arch_prctl (158) ────────────────────────── */
 
@@ -401,6 +402,18 @@ long do_prctl(int option, unsigned long a2, unsigned long a3,
 
     case PR_GET_NAME:
         return copy_to_user((void *)a2, p->comm, 16);
+
+    case PR_CAPBSET_READ: {
+        if (a2 > CAP_LAST_CAP) return -EINVAL;
+        return (p->cap_bounding & CAP_TO_MASK(a2)) ? 1 : 0;
+    }
+
+    case PR_CAPBSET_DROP: {
+        if (a2 > CAP_LAST_CAP) return -EINVAL;
+        if (!(p->cap_effective & CAP_TO_MASK(CAP_SETPCAP))) return -EPERM;
+        p->cap_bounding &= ~CAP_TO_MASK(a2);
+        return 0;
+    }
 
     default:
         return -EINVAL;

@@ -172,10 +172,10 @@ process_t *proc_alloc(void) {
 
         /* Single-user kernel: start with full capability set. Subsequent
          * capset() calls can narrow the effective/permitted bits. */
-        uint64_t all_caps = ((uint64_t)1 << (CAP_LAST_CAP + 1)) - 1;
-        p->cap_effective = all_caps;
-        p->cap_permitted = all_caps;
-        p->cap_inheritable = all_caps;
+        p->cap_effective = CAP_FULL_SET;
+        p->cap_permitted = CAP_FULL_SET;
+        p->cap_inheritable = CAP_FULL_SET;
+        p->cap_bounding   = CAP_FULL_SET;
     }
     return p;
 }

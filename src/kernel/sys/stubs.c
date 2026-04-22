@@ -1,6 +1,7 @@
 /* CosmoRT — Stub syscalls (no-op or fixed return values) */
 
 #include "internal.h"
+#include "linux/capability.h"
 
 long do_set_robust_list(void *head, size_t len) {
     thread_t *t = thread_current();
@@ -96,7 +97,6 @@ long do_mount(const char *source, const char *target, const char *fstype,
 }
 long do_sethostname(void)     { return 0; }
 long do_rseq(void)            { return -ENOSYS; }
-#include "linux/capability.h"
 
 /* capget/capset — single-user kernel: all caps always set. Still enforce
  * Linux ABI validation (version, pid, EFAULT). */
@@ -174,13 +174,15 @@ long do_capset(void *hdrp, const void *datap) {
     uint64_t inh = (uint64_t)data[0].inheritable |
                    ((u32s > 1) ? (uint64_t)data[1].inheritable << 32 : 0);
 
-    /* POSIX capability rules (simplified for single-user):
-     * - permitted may only narrow (new_permitted ⊆ old_permitted)
-     * - effective ⊆ new_permitted
-     * - inheritable ⊆ (old_inheritable ∪ old_permitted) */
+    /* POSIX capability rules (Linux security/commoncap.c cap_capset):
+     * - pP_new ⊆ pP_old                          (may only narrow)
+     * - pE_new ⊆ pP_new
+     * - pI_new ⊆ pI_old ∪ (pP_old ∩ bounding)
+     *   → inheritable additions only from permitted caps still in bounding. */
     if (perm & ~p->cap_permitted) return -EPERM;
     if (eff & ~perm) return -EPERM;
-    if (inh & ~(p->cap_inheritable | p->cap_permitted)) return -EPERM;
+    if (inh & ~(p->cap_inheritable | (p->cap_permitted & p->cap_bounding)))
+        return -EPERM;
 
     p->cap_effective = eff;
     p->cap_permitted = perm;

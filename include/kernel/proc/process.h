@@ -148,10 +148,14 @@ typedef struct process {
 
     /* POSIX Capabilities — Linux capget/capset ABI (V3: 64 bits in u32[2]).
      * Single-user kernel: proc_alloc() initialises everything granted.
-     * fork() inherits, execve() preserves, capset() narrows per POSIX rules. */
+     * fork() inherits, execve() preserves, capset() narrows per POSIX rules.
+     * cap_bounding: per-task bounding set (Linux task->cred->cap_bset).
+     *   Caps may only enter pI/pP from within bounding. Monotonic: prctl
+     *   PR_CAPBSET_DROP narrows, never widens. fork inherits, execve keeps. */
     uint64_t    cap_effective;
     uint64_t    cap_permitted;
     uint64_t    cap_inheritable;
+    uint64_t    cap_bounding;
 } process_t;
 
 /* Credential helpers: in-group test (egid + supplementary) and
