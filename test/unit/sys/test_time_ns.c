@@ -52,6 +52,30 @@ static void test_time_ns(void) {
     int status = 0;
     sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
     check("fork after unshare exited 42", (status >> 8) == 42);
+
+    /* timens_offsets: open RW and write CLOCK_MONOTONIC offset. */
+    r = sc1(SYS_UNSHARE, CLONE_NEWTIME);
+    check_val("unshare pre-offsets -> 0", r, 0);
+    long tfd = sc4(SYS_OPENAT, -100, (long)"/proc/self/timens_offsets",
+                   1 /*O_WRONLY*/, 0);
+    check_ge("open timens_offsets", tfd, 0);
+    if (tfd >= 0) {
+        /* CLOCK_MONOTONIC == 1 */
+        const char *line = "1 5 0\n";
+        long w = sc3(SYS_WRITE, tfd, (long)line, 6);
+        check("write 1 offset line", w == 6);
+        /* Write bad clockid -> EINVAL */
+        const char *bad = "99 5 0\n";
+        w = sc3(SYS_WRITE, tfd, (long)bad, 7);
+        check("write bogus clockid -> negative", w < 0);
+        sc1(SYS_CLOSE, tfd);
+    }
+    /* Read of timens_offsets returns EACCES since we didn't install a
+     * read handler; opening as O_RDONLY is allowed but read returns 0. */
+    long rfd = sc4(SYS_OPENAT, -100, (long)"/proc/self/timens_offsets",
+                   0 /*O_RDONLY*/, 0);
+    check_ge("open timens_offsets RDONLY", rfd, 0);
+    if (rfd >= 0) sc1(SYS_CLOSE, rfd);
 }
 
 TEST("time_ns", test_time_ns);

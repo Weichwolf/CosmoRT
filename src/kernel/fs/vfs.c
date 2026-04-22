@@ -738,6 +738,11 @@ not_pts:
             return fd;
         }
 
+        /* Write-access requested? Entry must expose a write handler or
+         * we return -EACCES like Linux read-only procfs files. */
+        int want_write = (flags & O_ACCMODE) != O_RDONLY;
+        if (want_write && !procfs_writable(pname)) return -EACCES;
+
         procfs_fd_t *pf = procfs_fd_alloc();
         if (!pf) return -ENOMEM;
         pf->handle = handle;
@@ -746,7 +751,8 @@ not_pts:
         process_t *p = proc_current();
         if (!p) { procfs_fd_free(pf); return -EFAULT; }
 
-        int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+        int fd = fd_alloc(&p->fds, FD_PROCFS, pf,
+                          flags & (O_ACCMODE | O_CLOEXEC));
         if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
         return fd;
     }

@@ -8,6 +8,11 @@
  * Returns bytes written to buf. */
 typedef int (*procfs_read_fn)(char *buf, int size, int offset, void *ctx);
 
+/* Write callback: consume up to size bytes of buf starting at offset.
+ * Returns bytes consumed, or a negative errno on error. Entries without
+ * a write handler return -EACCES on write. */
+typedef long (*procfs_write_fn)(const char *buf, int size, int offset, void *ctx);
+
 /* Per-fd state for an open procfs file */
 typedef struct {
     int handle;     /* procfs entry index + 1, or -2 for per-pid dynamic */
@@ -17,6 +22,18 @@ typedef struct {
 
 /* Register a procfs entry. name is the filename under /proc (e.g. "dmesg"). */
 void procfs_register(const char *name, procfs_read_fn fn, void *ctx);
+
+/* Register a read-write procfs entry. Either read or write may be NULL to
+ * restrict the respective direction (open returns -EACCES for forbidden
+ * modes). */
+void procfs_register_rw(const char *name, procfs_read_fn rfn,
+                        procfs_write_fn wfn, void *ctx);
+
+/* Write to an open procfs handle. Returns bytes consumed, or -errno. */
+long procfs_write(int handle, const char *buf, int size, int offset);
+
+/* Query writability of an entry by name. Returns 1 if writable, else 0. */
+int procfs_writable(const char *name);
 
 /* Initialize procfs and register built-in entries (/proc/dmesg, etc.) */
 void procfs_init(void);

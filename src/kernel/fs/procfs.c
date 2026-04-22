@@ -13,6 +13,8 @@
 #include "config.h"
 #include "proc/proc_internal.h"
 #include "mm/vma.h"
+#include "linux/errno.h"
+#include "core/time_ns.h"
 
 #define PROCFS_HUGE_PAGE (2ULL * 1024 * 1024)
 
@@ -22,21 +24,28 @@
 
 typedef struct {
     char name[64];
-    procfs_read_fn fn;
+    procfs_read_fn  fn;
+    procfs_write_fn wfn;
     void *ctx;
 } procfs_entry_t;
 
 static procfs_entry_t entries[PROCFS_MAX];
 static int num_entries;
 
-void procfs_register(const char *name, procfs_read_fn fn, void *ctx) {
+void procfs_register_rw(const char *name, procfs_read_fn rfn,
+                        procfs_write_fn wfn, void *ctx) {
     if (num_entries >= PROCFS_MAX) return;
     procfs_entry_t *e = &entries[num_entries++];
     int i = 0;
     while (name[i] && i < 63) { e->name[i] = name[i]; i++; }
     e->name[i] = 0;
-    e->fn = fn;
+    e->fn  = rfn;
+    e->wfn = wfn;
     e->ctx = ctx;
+}
+
+void procfs_register(const char *name, procfs_read_fn fn, void *ctx) {
+    procfs_register_rw(name, fn, 0, ctx);
 }
 
 static int find_entry(const char *name) {
@@ -60,7 +69,21 @@ int procfs_open(const char *name) {
 int procfs_read(int handle, char *buf, int size, int offset) {
     if (handle < 1 || handle > num_entries) return 0;
     procfs_entry_t *e = &entries[handle - 1];
+    if (!e->fn) return 0;
     return e->fn(buf, size, offset, e->ctx);
+}
+
+long procfs_write(int handle, const char *buf, int size, int offset) {
+    if (handle < 1 || handle > num_entries) return -EBADF;
+    procfs_entry_t *e = &entries[handle - 1];
+    if (!e->wfn) return -EACCES;
+    return e->wfn(buf, size, offset, e->ctx);
+}
+
+int procfs_writable(const char *name) {
+    int idx = find_entry(name);
+    if (idx < 0) return 0;
+    return entries[idx].wfn ? 1 : 0;
 }
 
 void procfs_close(int handle) {
@@ -956,6 +979,47 @@ int procfs_pid_exists(const char *name) {
     return 0;
 }
 
+/* ── /proc/self/timens_offsets — CLONE_NEWTIME offsets (write-only) ─────
+ *
+ * Linux: procfs entry created by proc_timens_set_offset on CONFIG_TIME_NS.
+ * We surface the same API via procfs's write-handler hook. Writes target
+ * the caller's time_ns_for_children — matches Linux timens_install. The
+ * file is not readable (matches proc_tid_ns → open(.., O_RDONLY) returns
+ * the raw offsets; we keep it write-only for now, tests don't read). */
+
+static long procfs_timens_offsets_write(const char *buf, int size, int offset,
+                                        void *ctx) {
+    (void)offset; (void)ctx;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    struct time_namespace *ns = p->time_ns_for_children;
+    if (!ns || ns == &init_time_ns) return -EACCES;
+    if (ns->frozen) return -EACCES;
+
+    /* Process buf line by line; Linux accepts multiple offsets per write,
+     * one per line, and rolls back the whole write on any per-line error. */
+    int total = 0;
+    while (total < size) {
+        /* Locate newline or end of buffer */
+        int eol = total;
+        while (eol < size && buf[eol] != '\n') eol++;
+        int line_len = eol - total;
+        /* Skip blank lines */
+        int only_ws = 1;
+        for (int i = total; i < eol; i++)
+            if (buf[i] != ' ' && buf[i] != '\t') { only_ws = 0; break; }
+        if (only_ws) {
+            total = (eol < size) ? eol + 1 : eol;
+            continue;
+        }
+        long r = time_ns_write_offset_line(ns, buf + total,
+                                           line_len + (eol < size ? 1 : 0));
+        if (r < 0) return r;
+        total += (int)r;
+    }
+    return total;
+}
+
 /* ── Init ────────────────────────────────────────── */
 
 __attribute__((cold))
@@ -984,7 +1048,9 @@ void procfs_init(void) {
     procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
-    serial_puts("procfs: init (24 entries)\n");
+    procfs_register_rw("self/timens_offsets", 0,
+                       procfs_timens_offsets_write, 0);
+    serial_puts("procfs: init (25 entries)\n");
 }
 
 /* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */
@@ -1008,9 +1074,12 @@ static int procfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat 
     int pid_type = procfs_pid_exists(pn);
     if (procfs_stat(pn, &dummy) < 0 && !pid_type) return -ENOENT;
     kmemset(buf, 0, sizeof(struct k_stat));
+    /* Writable entries advertise S_IWUSR for fopen("w"), O_WRONLY opens. */
+    int writable = procfs_writable(pn);
+    uint32_t reg_mode = S_IFREG | S_IRUSR | (writable ? S_IWUSR : 0);
     buf->st_mode = (pid_type == 2) ? (S_IFLNK | 0777) :
                    (pid_type == 3) ? (S_IFDIR | 0555) :
-                                     (S_IFREG | S_IRUSR);
+                                     reg_mode;
     buf->st_ino = 0xFFFF0001;
     buf->st_blksize = 4096;
     return 0;

@@ -148,6 +148,25 @@ long do_write(int fd, const void *buf, size_t count) {
     }
     if (fde->type == FD_FILE)
         return vfs_write(fd, buf, count);
+    if (fde->type == FD_PROCFS) {
+        procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
+        if (!pf || pf->handle < 1) return -EACCES;
+        /* Bounded chunk copy into kernel stack before writing. */
+        size_t actual = count > 0x10000 ? 0x10000 : count;
+        char kbuf[512];
+        size_t total = 0;
+        while (total < actual) {
+            size_t chunk = actual - total > sizeof(kbuf) ? sizeof(kbuf) : actual - total;
+            int cr = copy_from_user(kbuf, (const char *)buf + total, chunk);
+            if (cr) return cr;
+            long w = procfs_write(pf->handle, kbuf, (int)chunk, pf->offset);
+            if (w < 0) return total ? (long)total : w;
+            pf->offset += (int)w;
+            total += (size_t)w;
+            if ((size_t)w < chunk) break;
+        }
+        return (long)total;
+    }
     if (fde->type == FD_SOCKET)
         return socket_write(fd, buf, (long)count);
     if (fde->type == FD_UNIX_SOCK) {
