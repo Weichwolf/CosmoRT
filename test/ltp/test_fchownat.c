@@ -166,6 +166,37 @@ static void test_fchownat03_eloop(void) {
     sc1(SYS_UNLINK, (long)"/tmp/fchownat03_loop2");
 }
 
+/* ── fchownat03-eperm: non-root kann Fremddateien nicht chownen ── */
+
+static void test_fchownat03_eperm(void) {
+    puts("\n[ltp/fchownat03-eperm]\n");
+
+    /* File als root anlegen, dann als nobody chownen → EPERM. */
+    long fd = sc3(SYS_OPEN, (long)"/tmp/fchownat03_eperm", O_CREAT | O_RDWR, 0644);
+    check("create", fd >= 0);
+    if (fd < 0) return;
+    sc1(SYS_CLOSE, fd);
+
+    long r = sc3(SYS_SETRESUID, (unsigned long)-1, 65534, (unsigned long)-1);
+    check_val("setresuid nobody", r, 0);
+    if (r == 0) {
+        r = sc5(SYS_FCHOWNAT, AT_FDCWD, (long)"/tmp/fchownat03_eperm",
+                65534, 65534, 0);
+        check_val("fchownat EPERM nicht-owner", r, -EPERM);
+        sc3(SYS_SETRESUID, (unsigned long)-1, 0, (unsigned long)-1);
+    }
+
+    /* /dev/null als nobody chownen → EPERM (owner=root, wir=nobody). */
+    r = sc3(SYS_SETRESUID, (unsigned long)-1, 65534, (unsigned long)-1);
+    if (r == 0) {
+        r = sc5(SYS_FCHOWNAT, AT_FDCWD, (long)"/dev/null", 65534, 65534, 0);
+        check_val("fchownat EPERM /dev/null", r, -EPERM);
+        sc3(SYS_SETRESUID, (unsigned long)-1, 0, (unsigned long)-1);
+    }
+
+    sc1(SYS_UNLINK, (long)"/tmp/fchownat03_eperm");
+}
+
 TEST("ltp/fchownat01-atcwd",       test_fchownat01_atcwd);
 TEST("ltp/fchownat01-dirfd",       test_fchownat01_dirfd);
 TEST("ltp/fchownat02",             test_fchownat02);
@@ -175,3 +206,4 @@ TEST("ltp/fchownat03-einval",      test_fchownat03_einval);
 TEST("ltp/fchownat03-enoent",      test_fchownat03_enoent);
 TEST("ltp/fchownat03-enametoolong", test_fchownat03_enametoolong);
 TEST("ltp/fchownat03-eloop",       test_fchownat03_eloop);
+TEST("ltp/fchownat03-eperm",       test_fchownat03_eperm);

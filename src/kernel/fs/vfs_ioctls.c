@@ -7,6 +7,7 @@
 #include "fs/vfs_internal.h"
 #include "core/timer.h"
 #include "linux/signal.h"
+#include "linux/capability.h"
 
 /* ── Stat helpers (used by tmpfs + ext4_vfs) ────── */
 
@@ -170,16 +171,31 @@ int vfs_chmod(const char *path, uint32_t mode) {
     return r;
 }
 
+/* Linux fs/open.c chown_common: non-root darf nur eigene Dateien chownen,
+ * und uid nur auf sich selbst setzen. CAP_CHOWN umgeht den Check. */
+static int chown_perm_check(uint32_t file_uid, uint32_t uid, uint32_t gid) {
+    process_t *p = proc_current();
+    if (!p || p->euid == 0) return 0;
+    if (p->cap_effective & CAP_TO_MASK(CAP_CHOWN)) return 0;
+    if (uid != (uint32_t)-1 && uid != p->euid) return -EPERM;
+    if (p->euid != file_uid) return -EPERM;
+    if (gid != (uint32_t)-1 && !cred_in_group(p, gid)) return -EPERM;
+    return 0;
+}
+
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
-    if (!mnt || !mnt->i_ops || !mnt->i_ops->chown)
+    if (!mnt || !mnt->i_ops)
         return vfs_path_error(mnt, relpath);
+    struct k_stat st;
     if (mnt->i_ops->stat) {
-        struct k_stat st;
         int rc = mnt->i_ops->stat(mnt, relpath, &st);
         if (rc < 0) return rc;
+        int rc2 = chown_perm_check(st.st_uid, uid, gid);
+        if (rc2 < 0) return rc2;
     }
+    if (!mnt->i_ops->chown) return -EPERM;
     int ro = vfs_mount_writable(mnt);
     if (ro < 0) return ro;
     return mnt->i_ops->chown(mnt, relpath, uid, gid);
@@ -189,18 +205,19 @@ int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
     const char *relpath;
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (!mnt || !mnt->i_ops) return -ENOENT;
+    struct k_stat st;
     if (mnt->i_ops->lstat) {
-        struct k_stat st;
         int rc = mnt->i_ops->lstat(mnt, relpath, &st);
         if (rc < 0) return rc;
+        int rc2 = chown_perm_check(st.st_uid, uid, gid);
+        if (rc2 < 0) return rc2;
     }
+    if (!mnt->i_ops->lchown && !mnt->i_ops->chown) return -EPERM;
     int ro = vfs_mount_writable(mnt);
     if (ro < 0) return ro;
     if (mnt->i_ops->lchown)
         return mnt->i_ops->lchown(mnt, relpath, uid, gid);
-    if (mnt->i_ops->chown)
-        return mnt->i_ops->chown(mnt, relpath, uid, gid);
-    return -ENOENT;
+    return mnt->i_ops->chown(mnt, relpath, uid, gid);
 }
 
 /* ── fchmod/fchown — dispatch via f_ops ─────────── */
