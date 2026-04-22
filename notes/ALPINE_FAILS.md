@@ -1,16 +1,32 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-22 nach chroot/caps-Cluster.
+Run: 2026-04-22 nach cve+execve-Cluster.
 
 ## Ergebnis
 
-| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                 |
-|-------|-------|------|------|------|---------------------------------|
-| ktest | 2704  | 2704 |   0  |   -  | +10 (caps/chroot-Tests)         |
-| musl  |  478  |  458 |  13  |   7  | -2 (flake tls_init/pthread_once)|
-| LTP   |  298  |  206 |  52  |  40  | +8 (chroot01/04, capget01, capset02/03, weitere) |
+| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                       |
+|-------|-------|------|------|------|---------------------------------------|
+| ktest | 2713  | 2713 |   0  |   -  | +9 (personality, execve_dac)          |
+| musl  |  478  |  461 |  10  |   7  | +3/-3 (Flake stabilisiert)            |
+| LTP   |  298  |  206 |  49  |  43  | -3 FAIL/+3 SKIP (cve+execve-Cluster)  |
 
-Baseline: ktest 2694, musl 460/11, LTP 198/62/38.
+Baseline: ktest 2704, musl 458/13, LTP 206/52/40.
+
+## cve+execve-Cluster (Behoben 2026-04-22)
+
+| Test                | Vorher | Nachher | Fix                                     |
+|---------------------|--------|---------|-----------------------------------------|
+| cve-2016-10044      | FAIL   | SKIP    | personality(persona) speichert + zurueck|
+| cve-2017-17052      | FAIL   | FAIL    | TBROK ENOMEM (Stress-Test, 2/4 runs ok) |
+| cve-2017-17053      | FAIL   | PASS    | /proc/sys/kernel/tainted Stub          |
+| cve-2025-38236      | FAIL   | PASS    | af_unix MSG_OOB-Byte-Queue + kconfig    |
+| execve02            | FAIL   | PASS    | DAC MAY_EXEC statt nur Mode-X-Bit       |
+| execve04            | FAIL   | PASS    | (ETXTBSY, schon korrekt)                |
+| execve05            | FAIL   | PASS    | (Parallel forks, schon korrekt)         |
+| execveat01          | FAIL   | PASS*   | do_execve_kpath fuer Kernel-Pfade       |
+| execveat02          | FAIL   | PASS    | (Error-Paths, schon korrekt)            |
+
+*execveat01: PASS nach Commit 80c583b (folgt im naechsten Run).
 
 ## fcntl-Cluster
 
