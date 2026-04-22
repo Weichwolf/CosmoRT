@@ -295,11 +295,12 @@ long do_fsync(int fd) {
         return 0;
     }
     case FD_PROCFS:
-    case FD_DEVICE:
     case FD_SERIAL:
     case FD_PTY_MASTER:
     case FD_PTY_SLAVE:
         return 0;
+    /* Linux: file_operations ohne ->fsync → EINVAL.
+     * Gilt fuer null/zero/urandom/pipes/sockets/epoll/eventfd/timerfd/signalfd/inotify. */
     default:
         return -EINVAL;
     }

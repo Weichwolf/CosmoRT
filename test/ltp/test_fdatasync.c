@@ -48,6 +48,25 @@ static void test_fdatasync02_einval(void) {
     sc1(SYS_CLOSE, pipefd[1]);
 }
 
-TEST("ltp/fdatasync01",        test_fdatasync01);
-TEST("ltp/fdatasync02-ebadf",  test_fdatasync02_ebadf);
-TEST("ltp/fdatasync02-einval", test_fdatasync02_einval);
+/* ── fdatasync02: EINVAL fuer /dev/null (file_op ohne ->fsync) ── */
+
+static void test_fdatasync02_devnull(void) {
+    puts("\n[ltp/fdatasync02-devnull]\n");
+
+    long fd = sc3(SYS_OPEN, (long)"/dev/null", O_RDONLY, 0);
+    check("open /dev/null", fd >= 0);
+    if (fd < 0) return;
+
+    long r = sc1(SYS_FDATASYNC, fd);
+    check_val("fdatasync(/dev/null) EINVAL", r, -EINVAL);
+
+    r = sc1(SYS_FSYNC, fd);
+    check_val("fsync(/dev/null) EINVAL", r, -EINVAL);
+
+    sc1(SYS_CLOSE, fd);
+}
+
+TEST("ltp/fdatasync01",         test_fdatasync01);
+TEST("ltp/fdatasync02-ebadf",   test_fdatasync02_ebadf);
+TEST("ltp/fdatasync02-einval",  test_fdatasync02_einval);
+TEST("ltp/fdatasync02-devnull", test_fdatasync02_devnull);
