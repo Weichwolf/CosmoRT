@@ -55,10 +55,7 @@ fi
 while read t; do
     [ -z "$t" ] && continue
     if [ -n "$FILTER" ]; then
-        case "$t" in
-            $FILTER) ;;
-            *) continue ;;
-        esac
+        eval "case \"\$t\" in $FILTER) : ;; *) continue ;; esac"
     fi
     ltp_total=$((ltp_total + 1))
     if [ ! -x "$LTP_BIN/$t" ]; then
@@ -78,7 +75,7 @@ while read t; do
     else
         echo "[$ltp_total/313] $t FAIL rc=$rc"
         case "$t" in
-            bind0*|accept0*|accept4_*|connect0*|cve-*|execve*|eventfd0*|epoll_wait0*|epoll_pwait0*)
+            bind0*|accept0*|accept4_*|connect0*|cve-*|execve*|eventfd0*|epoll_wait0*|epoll_pwait0*|abort0*|acct0*|fchdir0*|fchownat0*|fdatasync0*|fgetxattr0*|fallocate0*|stack_clash)
                 echo "--- OUTPUT ($t) ---"
                 cat /tmp/ltp_out.txt
                 echo "--- END ($t) ---"

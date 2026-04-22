@@ -188,16 +188,19 @@ int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
     struct mount *mnt = vfs_resolve_mount(path, &relpath);
     if (!mnt || !mnt->i_ops)
         return vfs_path_error(mnt, relpath);
+    /* Linux: mnt_want_write vor notify_change → EROFS vor EPERM. */
     struct k_stat st;
     if (mnt->i_ops->stat) {
         int rc = mnt->i_ops->stat(mnt, relpath, &st);
         if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    if (mnt->i_ops->stat) {
         int rc2 = chown_perm_check(st.st_uid, uid, gid);
         if (rc2 < 0) return rc2;
     }
     if (!mnt->i_ops->chown) return -EPERM;
-    int ro = vfs_mount_writable(mnt);
-    if (ro < 0) return ro;
     return mnt->i_ops->chown(mnt, relpath, uid, gid);
 }
 
@@ -209,12 +212,14 @@ int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
     if (mnt->i_ops->lstat) {
         int rc = mnt->i_ops->lstat(mnt, relpath, &st);
         if (rc < 0) return rc;
+    }
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+    if (mnt->i_ops->lstat) {
         int rc2 = chown_perm_check(st.st_uid, uid, gid);
         if (rc2 < 0) return rc2;
     }
     if (!mnt->i_ops->lchown && !mnt->i_ops->chown) return -EPERM;
-    int ro = vfs_mount_writable(mnt);
-    if (ro < 0) return ro;
     if (mnt->i_ops->lchown)
         return mnt->i_ops->lchown(mnt, relpath, uid, gid);
     return mnt->i_ops->chown(mnt, relpath, uid, gid);

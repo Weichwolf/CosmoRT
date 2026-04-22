@@ -406,20 +406,34 @@ long do_acct(const char *path) {
     char kpath_raw[PATH_MAX];
     int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
     if (len < 0) return len;
+    /* Linux behandelt 'foo/' als Traversal-Request: wenn foo kein Dir → ENOTDIR.
+     * Wir muessen den Slash ERHALTEN bis nach der Typ-Pruefung. */
+    int rawlen = 0;
+    while (kpath_raw[rawlen]) rawlen++;
+    int had_trailing_slash = (rawlen > 1 && kpath_raw[rawlen - 1] == '/');
     char kpath[PATH_MAX];
     resolve_path(kpath_raw, kpath, PATH_MAX);
-    extern struct vfs_node *vfs_lookup_err(const char *p, int *err);
-    int lerr = -ENOENT;
-    struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
-    if (!node) return lerr;
-    if (node->inode->type == VFS_DIR) return -EISDIR;
-    if (node->inode->type != VFS_FILE) return -EACCES;
-    /* DAC: MAY_WRITE pruefen (Linux filp_open(O_WRONLY|O_APPEND)). */
+
+    const char *relpath;
+    struct mount *mnt = vfs_resolve_mount(kpath, &relpath);
+    struct k_stat st;
+    int rc = -ENOENT;
+    if (mnt && mnt->i_ops && mnt->i_ops->stat)
+        rc = mnt->i_ops->stat(mnt, relpath, &st);
+    if (rc < 0) return rc;
+
+    uint32_t fmt = st.st_mode & S_IFMT;
+    if (fmt == S_IFDIR) return -EISDIR;
+    if (had_trailing_slash && fmt != S_IFDIR) return -ENOTDIR;
+    if (fmt != S_IFREG) return -EACCES;
+
+    int ro = vfs_mount_writable(mnt);
+    if (ro < 0) return ro;
+
     if (p && p->euid != 0 &&
         !(p->cap_effective & CAP_TO_MASK(CAP_DAC_OVERRIDE))) {
-        int rc = cred_may_access(p, node->inode->uid, node->inode->gid,
-                                 node->inode->mode, MAY_WRITE);
-        if (rc < 0) return rc;
+        int rc2 = cred_may_access(p, st.st_uid, st.st_gid, st.st_mode, MAY_WRITE);
+        if (rc2 < 0) return rc2;
     }
     return 0;
 }
