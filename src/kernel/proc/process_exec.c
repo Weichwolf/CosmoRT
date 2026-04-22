@@ -512,11 +512,16 @@ shebang_retry:;
      * (we're currently running with p->pml4 in CR3) */
     hal_mmu_switch(virt_to_phys(pml4));
 
-    /* Free current address space */
+    /* Free current address space.
+     * mm_shared (CLONE_VM child doing execve, e.g. vfork pattern): parent
+     * still owns the pml4/vmas, so don't free them — just detach. */
     uint64_t exec_irqf;
     spin_lock_irq(&p->lock, &exec_irqf);
-    free_address_space(p->pml4);
-    vma_free_tree(p->vma_root);
+    if (!p->mm_shared) {
+        free_address_space(p->pml4);
+        vma_free_tree(p->vma_root);
+    }
+    p->mm_shared = 0;
     p->vma_root = 0;
     spin_unlock_irq(&p->lock, exec_irqf);
 

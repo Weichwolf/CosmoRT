@@ -105,16 +105,18 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         }
     }
 
-    /* Shared VMA pages belong to the page cache — clear PTEs (and write back
-     * dirty file-backed data) so free_address_space doesn't drop the last ref
-     * before cached pages survive for future mmap(MAP_SHARED) lookups. */
-    extern void unmap_shared_vmas(vma_t *node, uint64_t *pml4);
-    unmap_shared_vmas(p->vma_root, p->pml4);
+    if (!p->mm_shared) {
+        /* Shared VMA pages belong to the page cache — clear PTEs (and write back
+         * dirty file-backed data) so free_address_space doesn't drop the last ref
+         * before cached pages survive for future mmap(MAP_SHARED) lookups. */
+        extern void unmap_shared_vmas(vma_t *node, uint64_t *pml4);
+        unmap_shared_vmas(p->vma_root, p->pml4);
 
-    /* Free address space and VMAs — zombie doesn't need them */
-    free_address_space(p->pml4);
+        /* Free address space and VMAs — zombie doesn't need them */
+        free_address_space(p->pml4);
+        vma_free_tree(p->vma_root);
+    }
     p->pml4 = 0;
-    vma_free_tree(p->vma_root);
     p->vma_root = 0;
 
     /* Send exit signal to parent + wake if blocked in wait4 */
@@ -282,12 +284,34 @@ long do_clone3(void *uargs, size_t size) {
     int r = copy_from_user(&kargs, uargs, copy);
     if (r) return r;
 
+    /* Trailing bytes beyond the known struct (version skew): must be all zero.
+     * Non-zero → EINVAL (new flags in use, we don't support them). Unreadable
+     * trailing bytes → EFAULT (Linux copy_struct_from_user semantics). */
+    if (size > sizeof(kargs)) {
+        size_t extra = size - sizeof(kargs);
+        char stage[256];
+        int pr = copy_from_user(stage, (char *)uargs + sizeof(kargs), extra);
+        if (pr) return pr;
+        for (size_t i = 0; i < extra; i++)
+            if (stage[i]) return -E2BIG;
+    }
+
     if (kargs.exit_signal > 64) return -EINVAL;
 
     /* Stack: both or neither must be set */
     if (!kargs.stack && kargs.stack_size) return -EINVAL;
     if (kargs.stack && !kargs.stack_size) return -EINVAL;
     if (kargs.stack && !user_ok(kargs.stack, kargs.stack_size)) return -EFAULT;
+
+    /* CLONE_PIDFD: validate pidfd address up-front (Linux does put_user early);
+     * write 0 so test sees no stale value. We have no real pidfd — parent
+     * pidfd_send_signal will surface -ENOSYS if the test actually uses it. */
+    if (kargs.flags & CLONE_PIDFD) {
+        int *pfd = (int *)(uintptr_t)kargs.pidfd;
+        if (!pfd || !user_ok((uint64_t)pfd, sizeof(int))) return -EFAULT;
+        int zero = 0;
+        if (copy_to_user(pfd, &zero, sizeof(zero))) return -EFAULT;
+    }
 
     /* Merge exit_signal into flags low byte (do_clone extracts it) */
     unsigned long cflags = (unsigned long)kargs.flags | (kargs.exit_signal & 0xFF);

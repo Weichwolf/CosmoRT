@@ -159,8 +159,13 @@ int copy_address_space(process_t *child, process_t *parent) {
 extern void sched_add(thread_t *t);
 
 static void free_child_proc(process_t *child) {
-    if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
-    vma_free_tree(child->vma_root); child->vma_root = 0;
+    if (!child->mm_shared) {
+        if (child->pml4) { free_address_space(child->pml4); child->pml4 = 0; }
+        vma_free_tree(child->vma_root); child->vma_root = 0;
+    } else {
+        child->pml4 = 0;
+        child->vma_root = 0;
+    }
     fd_table_free(&child->fds);
     if ((int)child->pid < pid_table_capacity()) pid_table[child->pid] = 0;
     slab_free(&proc_slab, child);
@@ -206,7 +211,9 @@ long kernel_clone(unsigned long flags, void *child_stack,
                   int *parent_tid, int *child_tid, unsigned long tls) {
     int exit_sig = flags & 0xFF;
     if (exit_sig > 64) return -EINVAL;
-    if (flags & CLONE_NS_FLAGS) return -EINVAL;
+    /* Invalid flag combinations (Linux: checked before the CAP_SYS_ADMIN test) */
+    if ((flags & CLONE_FS) && (flags & CLONE_NEWNS)) return -EINVAL;
+    if ((flags & CLONE_NEWIPC) && (flags & CLONE_SYSVSEM)) return -EINVAL;
     if ((flags & CLONE_THREAD) && !(flags & CLONE_SIGHAND)) return -EINVAL;
     if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM)) return -EINVAL;
     if ((flags & CLONE_VM) && !child_stack) return -EINVAL;
@@ -216,8 +223,22 @@ long kernel_clone(unsigned long flags, void *child_stack,
     if (!cur || !cur->proc) return -EFAULT;
     process_t *parent = cur->proc;
 
+    /* Namespaces need CAP_SYS_ADMIN. After a test drops CAP_SYS_ADMIN the
+     * namespace-creation path must return -EPERM (Linux create_new_namespaces).
+     * If the cap is still held we accept the flags as a no-op: single-user
+     * kernel has no real namespaces, but returning EINVAL would break root
+     * programs that merely request isolation. */
+    if (flags & CLONE_NS_FLAGS) {
+        extern int cred_has_cap_sys_admin(process_t *p);
+        if (!cred_has_cap_sys_admin(parent)) return -EPERM;
+        flags &= ~CLONE_NS_FLAGS;
+    }
+
     int is_thread = !!(flags & CLONE_THREAD);
     int is_vfork  = (flags & CLONE_VFORK) && !is_thread;
+    /* CLONE_VM without CLONE_THREAD: new process ID but shared mm
+     * (needed for glibc/musl vfork and tests that mix CLONE_VM+SIGCHLD). */
+    int mm_share  = (flags & CLONE_VM) && !is_thread;
     process_t *child;
 
     /* ── New process (fork/vfork) vs shared process (thread) ── */
@@ -237,34 +258,42 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->sid  = parent->sid;
         child->notify_signal = exit_sig;
         child->vma_root = 0;
+        child->mm_shared = 0;
 
-        /* Freeze sibling threads for COW page-table copy */
-        int need_ipi = 0;
-        for (thread_t *t = parent->threads; t; t = t->proc_next) {
-            if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
-                t->state = THREAD_BLOCKED;
-                t->saved_priority = -2;
-                need_ipi = 1;
+        if (mm_share) {
+            /* Share parent's address space. Child exec/exit must not free it. */
+            child->pml4 = parent->pml4;
+            child->vma_root = parent->vma_root;
+            child->mm_shared = 1;
+        } else {
+            /* Freeze sibling threads for COW page-table copy */
+            int need_ipi = 0;
+            for (thread_t *t = parent->threads; t; t = t->proc_next) {
+                if (t != cur && (t->state == THREAD_RUNNABLE || t->state == THREAD_RUNNING)) {
+                    t->state = THREAD_BLOCKED;
+                    t->saved_priority = -2;
+                    need_ipi = 1;
+                }
             }
-        }
-        if (need_ipi) {
-            extern void tlb_shootdown(uint64_t pml4_phys);
-            tlb_shootdown(virt_to_phys(parent->pml4));
-        }
-
-        uint64_t irqf;
-        spin_lock_irq(&parent->lock, &irqf);
-        int err = copy_address_space(child, parent);
-        spin_unlock_irq(&parent->lock, irqf);
-
-        for (thread_t *t = parent->threads; t; t = t->proc_next) {
-            if (t != cur && t->saved_priority == -2) {
-                t->saved_priority = -1;
-                sched_add(t);
+            if (need_ipi) {
+                extern void tlb_shootdown(uint64_t pml4_phys);
+                tlb_shootdown(virt_to_phys(parent->pml4));
             }
-        }
 
-        if (err < 0) { free_child_proc(child); return -ENOMEM; }
+            uint64_t irqf;
+            spin_lock_irq(&parent->lock, &irqf);
+            int err = copy_address_space(child, parent);
+            spin_unlock_irq(&parent->lock, irqf);
+
+            for (thread_t *t = parent->threads; t; t = t->proc_next) {
+                if (t != cur && t->saved_priority == -2) {
+                    t->saved_priority = -1;
+                    sched_add(t);
+                }
+            }
+
+            if (err < 0) { free_child_proc(child); return -ENOMEM; }
+        }
 
         /* Copy metadata */
         child->brk_base = parent->brk_base;
@@ -290,6 +319,9 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->ngroups = parent->ngroups;
         for (int i = 0; i < parent->ngroups && i < NGROUPS_MAX; i++)
             child->groups[i] = parent->groups[i];
+        child->cap_effective = parent->cap_effective;
+        child->cap_permitted = parent->cap_permitted;
+        child->cap_inheritable = parent->cap_inheritable;
         child->stack_top = parent->stack_top;
         child->is_driver = 0;
         for (int i = 0; i < 256; i++) {

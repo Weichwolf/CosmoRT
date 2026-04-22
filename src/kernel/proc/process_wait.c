@@ -54,16 +54,18 @@ void proc_cleanup(process_t *p) {
     p->main_thread = 0;
     p->thread_count = 0;
 
-    /* Shared VMA pages belong to the allocator — clear PTEs so
-     * free_address_space doesn't double-free them. */
-    unmap_shared_vmas(p->vma_root, p->pml4);
+    if (!p->mm_shared) {
+        /* Shared VMA pages belong to the allocator — clear PTEs so
+         * free_address_space doesn't double-free them. */
+        unmap_shared_vmas(p->vma_root, p->pml4);
 
-    /* Free address space (pages + page tables) */
-    free_address_space(p->pml4);
+        /* Free address space (pages + page tables) */
+        free_address_space(p->pml4);
+
+        /* Free VMAs */
+        vma_free_tree(p->vma_root);
+    }
     p->pml4 = 0;
-
-    /* Free VMAs */
-    vma_free_tree(p->vma_root);
     p->vma_root = 0;
 
     /* Clear lookup table entry */
@@ -170,27 +172,33 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
         if (wnohang) return 0;
 
         /* Block until child state change.
-         * Temporarily suppress SIGCHLD during event_wait to prevent spurious
-         * EINTR (we handle child state changes ourselves by re-scanning).
-         * If a user handler is registered, re-post SIGCHLD after wait so
-         * check_signals_syscall_path delivers it on syscall return. */
+         * Temporarily suppress SIGCHLD and every child's configured exit
+         * signal during event_wait. Linux do_wait() is woken by event_post,
+         * not by signal delivery, and does not return EINTR when the child's
+         * exit signal arrives — we rescan for zombies after the wake. */
         {
-            (void)parent; /* sig_actions checked later by check_signals_syscall_path */
-
-            /* Suppress SIGCHLD for event_wait (prevent -EINTR loop) */
-            cur->sig_blocked |= SIG_BIT(SIGCHLD);
+            (void)parent;
+            uint64_t wait_block = SIG_BIT(SIGCHLD);
+            int cap2 = pid_table_capacity();
+            for (int i = 1; i < cap2; i++) {
+                process_t *c = pid_table[i];
+                if (c && c->parent_pid == parent->pid && c->notify_signal > 0
+                    && c->notify_signal <= 63)
+                    wait_block |= SIG_BIT(c->notify_signal);
+            }
+            uint64_t save_blocked = cur->sig_blocked;
+            cur->sig_blocked |= wait_block;
 
             event_t ev;
             int _wr = event_wait(&cur->eq, &ev, -1);
 
-            /* Restore SIGCHLD unblocked */
-            cur->sig_blocked &= ~SIG_BIT(SIGCHLD);
+            cur->sig_blocked = save_blocked;
 
             if (_wr == -4) {
-                /* Signal interrupted wait. If non-SIGCHLD signals remain,
-                 * return -EINTR. Otherwise re-scan children. */
+                /* Signal interrupted wait. Rescan once; only if still nothing
+                 * matches surface -EINTR for the non-child signal. */
                 uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending)
-                                   & ~cur->sig_blocked & ~SIG_BIT(SIGCHLD);
+                                   & ~cur->sig_blocked & ~wait_block;
                 if (remaining)
                     return -EINTR;
             }
