@@ -1,123 +1,109 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-22 nach cve+execve-Cluster.
+Run: 2026-04-22 nach eventfd+epoll-Cluster.
 
 ## Ergebnis
 
-| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                       |
-|-------|-------|------|------|------|---------------------------------------|
-| ktest | 2713  | 2713 |   0  |   -  | +9 (personality, execve_dac)          |
-| musl  |  478  |  460 |  11  |   7  | +2/-2 (eine Flake)                    |
-| LTP   |  298  |  207 |  48  |  43  | +1 PASS, -4 FAIL, +3 SKIP (cve+execve)|
+| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                         |
+|-------|-------|------|------|------|-----------------------------------------|
+| ktest | 2719  | 2719 |   0  |   -  | +6 (epoll/eventfd-Regressionstests)     |
+| musl  |  478  |  460 |  11  |   7  | =/= (stabil)                            |
+| LTP   |  298  |  215 |  40  |  43  | +8 PASS, -8 FAIL (eventfd+epoll+clock)  |
 
-Baseline: ktest 2704, musl 458/13, LTP 206/52/40.
+Baseline: ktest 2713, musl 460/11, LTP 207/48/43.
 
-## cve+execve-Cluster (Behoben 2026-04-22)
+## eventfd+epoll-Cluster (Behoben 2026-04-22)
 
-| Test                | Vorher | Nachher | Fix                                     |
-|---------------------|--------|---------|-----------------------------------------|
-| cve-2016-10044      | FAIL   | SKIP    | personality(persona) speichert + zurueck|
-| cve-2017-17052      | FAIL   | FAIL    | TBROK ENOMEM (Stress, 1/4 runs ok)     |
-| cve-2017-17053      | FAIL   | PASS    | /proc/sys/kernel/tainted Stub          |
-| cve-2025-38236      | FAIL   | PASS    | af_unix MSG_OOB-Byte-Queue + kconfig    |
-| execve02            | FAIL   | PASS    | DAC MAY_EXEC statt nur Mode-X-Bit       |
-| execve04            | FAIL   | PASS    | (ETXTBSY, schon korrekt)                |
-| execve05            | FAIL   | PASS    | (Parallel forks, schon korrekt)         |
-| execveat01          | FAIL   | PASS    | do_execve_kpath fuer Kernel-Pfade       |
-| execveat02          | FAIL   | PASS    | (Error-Paths, schon korrekt)            |
+| Test                | Vorher | Nachher | Fix                                       |
+|---------------------|--------|---------|-------------------------------------------|
+| eventfd01           | FAIL   | PASS    | (probe-remove, siehe unten)               |
+| eventfd02           | FAIL   | PASS    | (probe-remove)                            |
+| eventfd03           | FAIL   | PASS    | pselect6 Kernel-seitiges pfd-Array        |
+| eventfd04           | FAIL   | PASS    | EPOLLOUT nicht ready bei counter==MAX-1   |
+| eventfd05           | FAIL   | PASS    | (probe-remove)                            |
+| epoll_pwait01       | FAIL   | PASS    | epoll_pwait2 sigmask-Handling             |
+| epoll_pwait04       | FAIL   | PASS    | epoll_pwait2 EFAULT auf bad sigmask       |
+| epoll_wait06        | FAIL   | PASS    | probe-remove (EPOLLET events=0-Bug)       |
+| epoll_wait07        | FAIL   | PASS    | probe-remove (EPOLLONESHOT events=0-Bug)  |
+| epoll_wait02        | FAIL   | FAIL    | **Offen** — 500 iter*1ms TBROK (timing)   |
 
-8/9 behoben. cve-2017-17052 bleibt: Page-Allocator-Erschoepfung unter
-fork+pthread+mmap-Stress (16 MB pro mmap, RUNS=4). Out of Scope fuer
-diesen Cluster — ist Memory-Reclaim-Issue.
+**9/10 Scope-Tests behoben.** epoll_wait02 bleibt offen: tst_timer_test
+killt Test nach 39s statt erwarteten ~500ms; Root Cause vermutlich in
+hrtimer-Programmierung oder Wake-Latenz (nicht im epoll-Core).
+
+### Root Causes
+
+1. **Probe-Write in do_epoll_wait**: `copy_to_user(events, 0x00, 1)` am
+   Funktionsanfang setzte byte 0 des ersten Events auf 0. Bei LTP-Makros
+   die TST_EXP_EQ_LI(epoll_wait(...), X) nutzen (doppelte Evaluation!),
+   ueberschrieb der zweite Call den ersten Event — leerer Scan schreibt
+   nichts, nur der Probe-Zero blieb stehen. User sah events=0 obwohl
+   erster Call korrekt events=EPOLLIN/EPOLLOUT lieferte.
+
+2. **pselect6 → do_poll**: do_pselect6 baute pfd[] auf Kernel-Stack
+   und rief do_poll(pfd, ...). do_poll macht aber copy_from_user auf
+   fds_ptr → -EFAULT fuer Kernel-Adresse. Folge: `select()` in
+   eventfd03/04 und vielen anderen Tests lieferte EFAULT statt zu
+   funktionieren.
+
+3. **eventfd fd_poll_readiness**: EPOLLOUT wurde immer zurueckgegeben,
+   auch wenn counter == MAX-1 und weitere Writes EAGAIN liefern
+   wuerden. Linux fs/eventfd.c prueft `counter < EVENTFD_ULLONG_MAX-1`.
+
+4. **epoll_pwait2 war Stub**: do_epoll_pwait2 ignorierte sigmask komplett
+   und delegierte direkt an do_epoll_wait → sigmask-Blocking und
+   EFAULT-Semantik fehlten, beide epoll_pwait-Tests (variant 1 =
+   epoll_pwait2) TFAIL.
+
+5. **clock_gettime 1ms-Granularitaet**: timer_ms() liefert nur
+   Millisekunden → CLOCK_MONOTONIC-Aufloesung 1e6 ns. LTP
+   tst_timer_test rechnet Thresholds gegen clock_getres; bei 1 ms
+   waren viele Timing-Tests flaky oder TFAIL. Jetzt TSC-ns direkt,
+   Resolution 1 ns. **Nebenprofit**: leapsec01 PASS.
+
+## cve+execve-Cluster (Behoben vorher)
+
+8/9 behoben (cve-2017-17052 flaky wegen Memory-Stress).
 
 ## fcntl-Cluster
 
-Zuwachs: fcntl11/13/15/21/23/27/30/33/39 nun PASS/SKIP.
+Verbleibend FAIL (16): fcntl12/14/17/31/34-38 (+_64). Unveraendert zu
+letztem Run — nicht im Scope dieser Phase.
 
-Verbleibend FAIL (8 Tests + _64 = 16):
-- **fcntl12/12_64**: EMFILE-Edge bei F_DUPFD nach rlimit exhaust
-- **fcntl14/14_64**: 5000 Random-Iterationen, 10s Timeout zu knapp (perf)
-- **fcntl17/17_64**: Deadlock-Detection rc=5 (TBROK — setup-Issue?)
-- **fcntl31/31_64**: SIGIO-Delivery via F_SETSIG — Pipe-Owner-Pfad fired,
-                      aber Test sigtimedwait sieht nichts (order?)
-- **fcntl34/34_64**: Multi-Thread OFD-Lock-Stress, pages_alloc too large
-- **fcntl35/35_64**: getpwnam("nobody") Aufruf failt rc=6 (nicht rc=36 SKIP)
-- **fcntl36/36_64**: OFD vs POSIX Race (threads)
-- **fcntl37/37_64**: F_SETPIPE_SZ spezifischer EBUSY/EPERM-Check
-- **fcntl38/38_64**: dnotify DN_ATTRIB — self-watch fires aber Parent nicht?
+## LTP FAIL (40) — verbleibende Gruppen
 
-## Neue Features (diese Phase)
+| Gruppe         | Anzahl | Tests                                              | Ursache                |
+|----------------|--------|----------------------------------------------------|------------------------|
+| fcntl          |   16   | fcntl12/14/17/31/34-38 (+_64)                      | perf, SIGIO, TCONF     |
+| epoll_wait     |    2   | epoll_wait02 (timing), epoll_wait05 (connect TBROK)| timing, TCP loopback   |
+| clock_*        |    4   | clock_gettime03/04, clock_nanosleep01-03           | NEWTIME NS             |
+| clone          |    1   | clone09 (procfs TBROK)                             | -                      |
+| bind/accept    |    2   | accept4_01, bind04                                 | AF_UNIX, TBROK         |
+| cve            |    1   | cve-2017-17052 (fork+pthread+mmap Stress)          | memory-reclaim         |
+| access         |    2   | access01, access04                                 | DAC edge-cases         |
+| rest           |   12   | abort01, acct01, fchdir03, fchownat03, fdatasync02,| diverse                |
+|                |        | dup05, dup201, fgetxattr02, fallocate02, stack_clash,|                      |
+|                |        | copy_file_range03, epoll-ltp                       |                        |
 
-1. **pipe: dynamischer Puffer** (pages_alloc page-multiple) + F_SETPIPE_SZ
-   mit EBUSY/EPERM/EINVAL. Default 64KB = Linux PIPE_DEF_BUFFERS.
-2. **pipe: SIGIO-Owner** per Ende (reader/writer), F_SETOWN/F_SETSIG/
-   O_ASYNC, do_kill-Delivery bei Data-Arrival/Drain.
-3. **fcntl F_SETLKW Deadlock-Detection**: Wait-Graph-BFS in flock_waiter_head,
-   Depth-Limit 32, OFD-Locks uebergangen (Linux-Semantik).
-4. **dnotify**: F_NOTIFY/DN_CREATE/DELETE/RENAME/ATTRIB mit SA_SIGINFO-
-   siginfo.si_fd via per-Process-FIFO. VFS-Hooks in mkdir/rmdir/unlink/
-   rename/chmod.
-5. **FUTEX_SHARED**: Physische Adresse als Key, damit MAP_SHARED|MAP_ANON
-   Futexe ueber fork-Grenzen funktionieren (tst_checkpoint).
+## musl FAIL (11)
 
-## Regressionen
-
-Keine. musl-Differenz -2 ist die bekannte Flake bei tls_init-static /
-pthread_once-deadlock / pthread-robust-detach (nicht deterministisch).
-
-**Behoben (2026-04-22):** chroot01, chroot04, capget01, capset02, capset03.
-- Kein CAP_SYS_CHROOT-Gate auf chroot (chroot01 EPERM via seteuid-drop)
-- DAC-Check vor CAP-Check (chroot04 EACCES, Linux-Order ksys_chroot)
-- cap_bounding pro Prozess + PR_CAPBSET_DROP/READ (capset02 bounding-Fall)
-- capset pI-Subset nutzt bounding (Linux cap_capset Formel)
-- setuid-Transition cleart pE/pP (cap_emulate_setxuid)
-- capget/capset hdr.pid als TID interpretiert (Linux-ABI per-thread caps)
-
-**Behoben (vorher):** pthread_robust + pthread_robust-static. Root Cause:
-FUTEX_LOCK_PI ignorierte den shared-Flag und queuete Waiter immer mit
-(vaddr, pid). Das Cleanup im Thread-Exit rief aber FUTEX_WAKE shared
-(PA-Key) und traf den PI-Waiter nie bei pshared=1 + PTHREAD_PRIO_INHERIT.
-Fix: futex_lock_pi/unlock_pi akzeptieren shared-Parameter, leiten ihn an
-Bucket-Hash und futex_wake durch.
-
-## LTP FAIL (62) — verbleibende Gruppen
-
-| Gruppe         | Anzahl | Tests                                           | Ursache                   |
-|----------------|--------|-------------------------------------------------|---------------------------|
-| fcntl          |   16   | fcntl12/14/17/31/34-38 (+_64)                   | perf, SIGIO-order, TCONF  |
-| eventfd/epoll  |    9   | eventfd01-05, epoll_pwait01/04, _wait02/06/07  | EPOLLET/EFD_SEMAPHORE     |
-| clock_*        |    4   | clock_gettime03/04, clock_nanosleep01-03        | NEWTIME NS                |
-| clone          |    2   | clone09/11 (TBROK procfs/net), clone301         | fixed: 03/05/302          |
-| bind/accept    |    6   | accept02/03, accept4_01, bind01-04, connect01   | AF_UNIX, SO_REUSEPORT     |
-| bpf            |    1   | bpf_prog04                                      | bpf                       |
-| cve            |    3   | cve-2016-10044, cve-2017-1705x, cve-2025-38236  | regression tests          |
-| access         |    2   | access01, access04                              | DAC edge-cases            |
-| rest           |  ~13   | abort01, acct01, adjtimex02, fchdir03, leapsec01, stack_clash, flock03 | diverse |
-
-## musl FAIL (11) — Baseline +1 Flake
-
-Baseline (10): fma, fmal, powf, remquol (softfma), malloc-brk-fail,
+Stabil zu Baseline: fma, fmal, powf, remquol (softfma),
 pthread_atfork-errno-clobber +static, rlimit-open-files +static,
-tls_get_new-dtv.
-
-Flaky (1): tls_init-static — passiert/scheitert zufaellig. Auch
-pthread_cond-smasher, pthread_once-deadlock, pthread-robust-detach
-sind intermittent (nicht jeder Run gleich). Nicht durch Kernel-Fix
-verursacht — vor der pthread_robust-Regression ebenfalls zu sehen.
+pthread-robust-detach (flaky), tls_get_new-dtv, tls_init-static (flaky).
 
 ## Kernel-PFs
 
-**Keine.** Nur "pages_alloc: order too large"-Warnung in fcntl34 (threads
-mit grossen Stacks + parallel eager-alloc?) und ein SEGFAULT im
-bekannten tls_get_new-dtv-Fail.
+**Keine.** Nur "pages_alloc: order too large"-Warnung in fcntl34
+(threads mit grossen Stacks) und SEGFAULT im bekannten tls_get_new-dtv.
 
 ## Priorisierung
 
-**Top Fix-Kandidaten:**
+**Top Fix-Kandidaten (naechste Phase):**
 
-1. **fcntl17 TBROK** (2 tests) — Deadlock-Detection-Setup-Issue
-2. **fcntl31 SIGIO** (2 tests) — sigtimedwait sieht pending nicht
-3. **eventfd/epoll** (~9 tests) — EPOLLET-Semantik
+1. **fcntl17 TBROK** (2 tests) — Deadlock-Detection-Setup
+2. **fcntl31 SIGIO** (2 tests) — sigtimedwait-Order
+3. **epoll_wait02** (1 test) — hrtimer-Latenz bei 500×1ms
+4. **clock_nanosleep01-03** (3 tests) — NEWTIME
 
-**Deprioritized:** fcntl14/34/36 (perf), fcntl38 (dnotify si_fd Detail),
-chroot/caps/bpf (7 tests), cve/regressions.
+**Deprioritized:** fcntl14/34/36 (perf), fcntl38 (dnotify si_fd),
+access01/04 (DAC), cve-17052 (memory-reclaim).
