@@ -47,10 +47,10 @@
 
 /* ── Time helper ── */
 extern uint64_t timer_ms(void);
-extern uint64_t rtc_epoch_sec;
+extern int64_t rtc_epoch_sec;
 
 static int64_t current_time_sec(void) {
-    return (int64_t)(timer_ms() / 1000) + (int64_t)rtc_epoch_sec;
+    return (int64_t)(timer_ms() / 1000) + rtc_epoch_sec;
 }
 
 static int32_t current_pid(void) {

@@ -35,7 +35,7 @@ static inline uint64_t timer_deadline_tsc(uint64_t ms_from_now) {
 }
 
 /* Seconds since Unix epoch at boot (from CMOS RTC) */
-extern uint64_t rtc_epoch_sec;
+extern int64_t rtc_epoch_sec;
 
 /* Read CMOS RTC and set rtc_epoch_sec. Call once at boot. */
 void rtc_init(void);

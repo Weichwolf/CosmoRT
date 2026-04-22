@@ -177,8 +177,8 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     /* time(2): inline epoch calculation */
     case SYS_TIME: {
         extern uint64_t timer_ms(void);
-        extern uint64_t rtc_epoch_sec;
-        long secs = (long)(timer_ms() / 1000 + rtc_epoch_sec);
+        extern int64_t rtc_epoch_sec;
+        long secs = (long)((int64_t)(timer_ms() / 1000) + rtc_epoch_sec);
         if (a1) copy_to_user((void *)a1, &secs, sizeof(secs));
         return secs;
     }

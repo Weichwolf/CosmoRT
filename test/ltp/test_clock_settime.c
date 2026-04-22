@@ -94,6 +94,36 @@ static void test_clock_settime_efault(void) {
     check_val("NULL timespec EFAULT", r, -EFAULT);
 }
 
+/* ── clock_settime01: recede CLOCK_REALTIME by 10s, then restore ── */
+
+static void test_clock_settime_recede(void) {
+    puts("\n[ltp/clock_settime01-recede]\n");
+
+    struct k_timespec before, change, after;
+
+    long r = sc2(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (long)&before);
+    check_val("gettime before", r, 0);
+
+    change.tv_sec = before.tv_sec - 10;
+    change.tv_nsec = before.tv_nsec;
+
+    r = sc2(SYS_CLOCK_SETTIME, CLOCK_REALTIME, (long)&change);
+    check_val("settime recede", r, 0);
+
+    r = sc2(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (long)&after);
+    check_val("gettime after", r, 0);
+
+    long elapsed = after.tv_sec - before.tv_sec;
+    check("time receded", elapsed <= -9 && elapsed >= -11);
+
+    /* restore forward */
+    struct k_timespec restore;
+    restore.tv_sec = after.tv_sec + 10;
+    restore.tv_nsec = after.tv_nsec;
+    sc2(SYS_CLOCK_SETTIME, CLOCK_REALTIME, (long)&restore);
+}
+
+TEST("ltp/clock_settime01-recede",         test_clock_settime_recede);
 TEST("ltp/clock_settime01-advance",        test_clock_settime_advance);
 TEST("ltp/clock_settime02-neg-sec",        test_clock_settime_einval_neg_sec);
 TEST("ltp/clock_settime02-neg-nsec",       test_clock_settime_einval_neg_nsec);

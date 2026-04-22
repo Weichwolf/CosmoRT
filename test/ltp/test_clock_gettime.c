@@ -85,7 +85,52 @@ static void test_clock_gettime04(void) {
     }
 }
 
-TEST("ltp/clock_gettime01", test_clock_gettime01);
-TEST("ltp/clock_gettime02", test_clock_gettime02);
-TEST("ltp/clock_gettime03", test_clock_gettime03);
-TEST("ltp/clock_gettime04", test_clock_gettime04);
+/* ── clock_gettime05: CLOCK_PROCESS_CPUTIME_ID advances monotonically ── */
+
+#ifndef CLOCK_PROCESS_CPUTIME_ID
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#endif
+#ifndef CLOCK_THREAD_CPUTIME_ID
+#define CLOCK_THREAD_CPUTIME_ID 3
+#endif
+
+static void test_clock_gettime05_cputime(void) {
+    puts("\n[ltp/clock_gettime05-cputime]\n");
+
+    struct k_timespec t1, t2;
+    long r1 = sc2(SYS_CLOCK_GETTIME, CLOCK_PROCESS_CPUTIME_ID, (long)&t1);
+    check_val("proc_cputime 1", r1, 0);
+    for (volatile int i = 0; i < 100000; i++) {}
+    long r2 = sc2(SYS_CLOCK_GETTIME, CLOCK_PROCESS_CPUTIME_ID, (long)&t2);
+    check_val("proc_cputime 2", r2, 0);
+    if (r1 == 0 && r2 == 0) {
+        long diff = (t2.tv_sec - t1.tv_sec) * 1000000000L + (t2.tv_nsec - t1.tv_nsec);
+        check("proc_cputime forward", diff >= 0);
+    }
+
+    struct k_timespec t3;
+    long r3 = sc2(SYS_CLOCK_GETTIME, CLOCK_THREAD_CPUTIME_ID, (long)&t3);
+    check_val("thread_cputime ok", r3, 0);
+    check("thread_cputime nsec valid", t3.tv_nsec >= 0 && t3.tv_nsec < 1000000000L);
+}
+
+/* ── clock_gettime06: EFAULT for bad pointer on all valid clocks ── */
+
+static void test_clock_gettime06_efault(void) {
+    puts("\n[ltp/clock_gettime06-efault]\n");
+
+    int clocks[] = { CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID,
+                     CLOCK_THREAD_CPUTIME_ID, CLOCK_REALTIME_COARSE,
+                     CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_BOOTTIME };
+    for (unsigned i = 0; i < sizeof(clocks)/sizeof(clocks[0]); i++) {
+        long r = sc2(SYS_CLOCK_GETTIME, clocks[i], 0);
+        check_val("NULL ptr EFAULT", r, -EFAULT);
+    }
+}
+
+TEST("ltp/clock_gettime01",         test_clock_gettime01);
+TEST("ltp/clock_gettime02",         test_clock_gettime02);
+TEST("ltp/clock_gettime03",         test_clock_gettime03);
+TEST("ltp/clock_gettime04",         test_clock_gettime04);
+TEST("ltp/clock_gettime05-cputime", test_clock_gettime05_cputime);
+TEST("ltp/clock_gettime06-efault",  test_clock_gettime06_efault);

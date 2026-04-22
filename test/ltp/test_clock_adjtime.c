@@ -64,6 +64,35 @@ static void test_clock_adjtime_efault(void) {
     check_val("NULL timex EFAULT", r, -EFAULT);
 }
 
-TEST("ltp/clock_adjtime01-read",         test_clock_adjtime_read);
+/* ── clock_adjtime03: SET cycle — values persist across read ── */
+
+#define ADJ_OFFSET    0x0001
+#define ADJ_FREQUENCY 0x0002
+#define ADJ_TICK      0x4000
+
+static void test_clock_adjtime_roundtrip(void) {
+    puts("\n[ltp/clock_adjtime03-roundtrip]\n");
+
+    struct k_timex tx;
+    for (int i = 0; i < (int)sizeof(tx); i++) ((char *)&tx)[i] = 0;
+    tx.modes = ADJ_OFFSET | ADJ_FREQUENCY | ADJ_TICK;
+    tx.offset = 42;
+    tx.freq = 1000;
+    tx.tick = 10002;
+    long r = sc2(SYS_CLOCK_ADJTIME, CLOCK_REALTIME, (long)&tx);
+    check_ge("clock_adjtime SET", r, 0);
+
+    struct k_timex verify;
+    for (int i = 0; i < (int)sizeof(verify); i++) ((char *)&verify)[i] = 0;
+    verify.modes = 0;
+    r = sc2(SYS_CLOCK_ADJTIME, CLOCK_REALTIME, (long)&verify);
+    check_ge("clock_adjtime READ", r, 0);
+    check_val("offset persisted", verify.offset, 42);
+    check_val("freq persisted",   verify.freq,   1000);
+    check_val("tick persisted",   verify.tick,   10002);
+}
+
+TEST("ltp/clock_adjtime01-read",          test_clock_adjtime_read);
 TEST("ltp/clock_adjtime02-einval-clock",  test_clock_adjtime_einval_clock);
 TEST("ltp/clock_adjtime02-efault",        test_clock_adjtime_efault);
+TEST("ltp/clock_adjtime03-roundtrip",     test_clock_adjtime_roundtrip);

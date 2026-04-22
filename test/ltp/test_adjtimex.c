@@ -129,8 +129,61 @@ static void test_adjtimex03(void) {
     check_val("tai is zero (no leak)", (long)buf.tai, 0);
 }
 
-TEST("ltp/adjtimex01",           test_adjtimex01);
-TEST("ltp/adjtimex02-tick-low",  test_adjtimex02_tick_low);
-TEST("ltp/adjtimex02-tick-high", test_adjtimex02_tick_high);
-TEST("ltp/adjtimex02-efault",    test_adjtimex02_efault);
-TEST("ltp/adjtimex03",           test_adjtimex03);
+/* ── adjtimex04: SET → READ round-trip keeps values ── */
+
+#define STA_PLL_TEST 0x0001
+
+static void test_adjtimex04_roundtrip(void) {
+    puts("\n[ltp/adjtimex04-roundtrip]\n");
+
+    struct k_timex buf;
+    memzero(&buf, sizeof(buf));
+    buf.modes = 0;
+    long r = sc1(SYS_ADJTIMEX, (long)&buf);
+    check_ge("adjtimex read", r, 0);
+
+    memzero(&buf, sizeof(buf));
+    buf.modes    = ADJ_OFFSET | ADJ_FREQUENCY | ADJ_MAXERROR | ADJ_ESTERROR |
+                   ADJ_STATUS | ADJ_TIMECONST | ADJ_TICK;
+    buf.offset   = 12345;
+    buf.freq     = 6789;
+    buf.maxerror = 100000;
+    buf.esterror = 50000;
+    buf.status   = STA_PLL_TEST;
+    buf.constant = 7;
+    buf.tick     = 10001;
+    r = sc1(SYS_ADJTIMEX, (long)&buf);
+    check_ge("adjtimex SET", r, 0);
+
+    struct k_timex verify;
+    memzero(&verify, sizeof(verify));
+    verify.modes = 0;
+    r = sc1(SYS_ADJTIMEX, (long)&verify);
+    check_ge("adjtimex VERIFY", r, 0);
+    check_val("offset persisted",   verify.offset,   12345);
+    check_val("freq persisted",     verify.freq,     6789);
+    check_val("maxerror persisted", verify.maxerror, 100000);
+    check_val("esterror persisted", verify.esterror, 50000);
+    check_val("tick persisted",     verify.tick,     10001);
+}
+
+/* ── adjtimex05: invalid freq range rejected ── */
+
+static void test_adjtimex05_freq_range(void) {
+    puts("\n[ltp/adjtimex05-freq-range]\n");
+
+    struct k_timex buf;
+    memzero(&buf, sizeof(buf));
+    buf.modes = ADJ_FREQUENCY;
+    buf.freq = 100000000L; /* > TIMEX_MAXFREQ */
+    long r = sc1(SYS_ADJTIMEX, (long)&buf);
+    check_val("freq too high EINVAL", r, -EINVAL);
+}
+
+TEST("ltp/adjtimex01",             test_adjtimex01);
+TEST("ltp/adjtimex02-tick-low",    test_adjtimex02_tick_low);
+TEST("ltp/adjtimex02-tick-high",   test_adjtimex02_tick_high);
+TEST("ltp/adjtimex02-efault",      test_adjtimex02_efault);
+TEST("ltp/adjtimex03",             test_adjtimex03);
+TEST("ltp/adjtimex04-roundtrip",   test_adjtimex04_roundtrip);
+TEST("ltp/adjtimex05-freq-range",  test_adjtimex05_freq_range);

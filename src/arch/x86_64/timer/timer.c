@@ -181,7 +181,7 @@ uint64_t timer_ms(void) {
 }
 
 uint32_t timer_epoch_sec(void) {
-    return (uint32_t)(rtc_epoch_sec + timer_ms() / 1000);
+    return (uint32_t)(rtc_epoch_sec + (int64_t)(timer_ms() / 1000));
 }
 
 /* Kernel-only non-preemptible delay. For HW init timing (SMP SIPI, device
@@ -200,7 +200,7 @@ void timer_sleep_ms(uint32_t ms) {
 
 /* ── CMOS RTC → Unix epoch ────────────────────── */
 
-uint64_t rtc_epoch_sec = 0;
+int64_t rtc_epoch_sec = 0;
 
 static uint8_t cmos_read(uint8_t reg) {
     arch_outb(0x70, reg);
@@ -248,12 +248,12 @@ void rtc_init(void) {
 
     int full_year = 2000 + (int)year;
     uint64_t days = days_since_epoch(full_year, (int)mon, (int)day);
-    rtc_epoch_sec = days * 86400 + (uint64_t)hour * 3600
-                  + (uint64_t)min * 60 + (uint64_t)sec;
+    rtc_epoch_sec = (int64_t)(days * 86400 + (uint64_t)hour * 3600
+                  + (uint64_t)min * 60 + (uint64_t)sec);
 
     serial_puts("RTC: ");
     char tmp[20]; int ti = 0;
-    uint64_t v = rtc_epoch_sec;
+    uint64_t v = (uint64_t)rtc_epoch_sec;
     do { tmp[ti++] = '0' + v % 10; v /= 10; } while (v);
     while (ti--) serial_putchar(tmp[ti]);
     serial_puts(" epoch sec\n");

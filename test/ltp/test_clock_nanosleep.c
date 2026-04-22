@@ -109,7 +109,26 @@ static void test_clock_nanosleep04(void) {
     check("abstime elapsed >= 10ms", elapsed_ns >= 10000000);
 }
 
+/* ── clock_nanosleep05: CLOCK_THREAD_CPUTIME_ID → ENOTSUP (LTP semantic) ── */
+
+#ifndef CLOCK_THREAD_CPUTIME_ID
+#define CLOCK_THREAD_CPUTIME_ID 3
+#endif
+#ifndef ENOTSUP
+#define ENOTSUP 95
+#endif
+
+static void test_clock_nanosleep05_thread_cputime(void) {
+    puts("\n[ltp/clock_nanosleep05-thread-cputime]\n");
+
+    struct k_timespec rq = { .tv_sec = 0, .tv_nsec = 500000 };
+    long r = sc4(SYS_CLOCK_NANOSLEEP, CLOCK_THREAD_CPUTIME_ID, 0,
+                 (long)&rq, 0);
+    check_val("thread_cputime ENOTSUP", r, -ENOTSUP);
+}
+
 TEST("ltp/clock_nanosleep01", test_clock_nanosleep01);
 TEST("ltp/clock_nanosleep02", test_clock_nanosleep02);
 TEST("ltp/clock_nanosleep03", test_clock_nanosleep03);
 TEST("ltp/clock_nanosleep04", test_clock_nanosleep04);
+TEST("ltp/clock_nanosleep05-thread-cputime", test_clock_nanosleep05_thread_cputime);

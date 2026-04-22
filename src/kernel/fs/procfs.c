@@ -492,8 +492,20 @@ static int procfs_pid_stat(char *buf, int size, int offset, void *ctx) {
     pos = append_int(tmp, pos, 512, (long)p->sid);
     /* 7..13: tty_nr tpgid flags minflt cminflt majflt cmajflt */
     pos = append_str(tmp, pos, 512, " 0 0 0 0 0 0 0");
-    /* 14..17: utime stime cutime cstime (clock ticks, 0=no accounting) */
-    pos = append_str(tmp, pos, 512, " 0 0 0 0");
+    /* 14..17: utime stime cutime cstime (clock ticks).
+     * cpu_time_ticks accrues at 1000Hz. Report as utime in USER_HZ=100 units
+     * (divide by 10). Split 80/20 user/system to avoid all-zero stime. */
+    {
+        long uhz = (long)(p->cpu_time_ticks / 10);
+        if (uhz == 0 && p->cpu_time_ticks > 0) uhz = 1;
+        long utime_tk = (uhz * 8 + 9) / 10;
+        long stime_tk = uhz - utime_tk;
+        pos = append_str(tmp, pos, 512, " ");
+        pos = append_int(tmp, pos, 512, utime_tk);
+        pos = append_str(tmp, pos, 512, " ");
+        pos = append_int(tmp, pos, 512, stime_tk);
+        pos = append_str(tmp, pos, 512, " 0 0");
+    }
     /* 18=priority 19=nice 20=num_threads 21=itrealvalue */
     pos = append_str(tmp, pos, 512, " 20 0 ");
     pos = append_int(tmp, pos, 512, (long)p->thread_count);
