@@ -356,11 +356,16 @@ static void test_epoll_wait03_efault(void) {
     ev.data = (uint64_t)pipefd[0];
     sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[0], (long)&ev);
 
-    /* PROT_READ-only Seite via mmap (Linux: PROT_READ=1, MAP_PRIVATE|MAP_ANONYMOUS=2|0x20) */
+    /* Daten schreiben damit epoll_wait einen Event zu liefern versucht.
+     * copy_to_user auf PROT_READ-Seite faultet → -EFAULT. Linux-Semantik:
+     * Validierung erst beim echten Write, nicht als vorab-Probe. */
+    char b = 'x';
+    sc3(SYS_WRITE, pipefd[1], (long)&b, 1);
+
     long ro = sc6(SYS_MMAP, 0, 4096, 1, 0x22, -1, 0);
     check("mmap PROT_READ", ro > 0);
 
-    long r = sc4(SYS_EPOLL_WAIT, epfd, ro, 1, -1);
+    long r = sc4(SYS_EPOLL_WAIT, epfd, ro, 1, 0);
     check_val("epoll_wait RO buffer EFAULT", r, -EFAULT);
 
     sc2(SYS_MUNMAP, ro, 4096);
@@ -549,6 +554,77 @@ static void test_epoll_rdhup_shutdown(void) {
     sc1(SYS_CLOSE, s2);
 }
 
+/* ── epoll_wait: timeout=0 + keine Ready-FDs darf user-Buffer NICHT anfassen ──
+ * Regression: alter Probe-Write korrupierte events[0] byte 0 wenn kein
+ * Copy folgte, was bei doppelten TST_EXP_EQ_LI-Calls (LTP-Makro) events=0
+ * lieferte statt den Wert vom vorigen epoll_wait. */
+static void test_epoll_wait_no_clobber(void) {
+    puts("\n[ltp/epoll_wait-no-clobber]\n");
+    int pipefd[2];
+    if (sc2(SYS_PIPE2, (long)pipefd, 04000 /*O_NONBLOCK*/) < 0) return;
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    struct epoll_event ev = { .events = EPOLLIN, .data = 0xAABBCCDDEEFF1122ULL };
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[0], (long)&ev);
+
+    struct epoll_event ret;
+    ret.events = 0x12345678;
+    ret.data   = 0xCAFEBABE;
+    long r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
+    check_val("epoll_wait timeout=0 no events returns 0", r, 0);
+    check_val("events preserved when no ready",  (long)ret.events, 0x12345678);
+    check_val("data preserved when no ready",    (long)ret.data,   (long)0xCAFEBABE);
+
+    sc1(SYS_CLOSE, epfd); sc1(SYS_CLOSE, pipefd[0]); sc1(SYS_CLOSE, pipefd[1]);
+}
+
+/* ── eventfd: EPOLLOUT darf NICHT ready sein wenn counter am Max ── */
+static void test_eventfd_epollout_max(void) {
+    puts("\n[ltp/eventfd-epollout-max]\n");
+    long fd = sc2(SYS_EVENTFD2, 0, 04000 /*EFD_NONBLOCK*/);
+    if (fd < 0) return;
+    uint64_t max = 0xFFFFFFFFFFFFFFFEULL;
+    sc3(SYS_WRITE, fd, (long)&max, 8);
+
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    struct epoll_event ev = { .events = EPOLLOUT, .data = (uint64_t)fd };
+    sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, fd, (long)&ev);
+
+    struct epoll_event ret;
+    long r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
+    check_val("eventfd EPOLLOUT at max not ready", r, 0);
+
+    sc1(SYS_CLOSE, epfd); sc1(SYS_CLOSE, fd);
+}
+
+/* ── epoll_pwait2: sigmask EINVAL auf falsche sigsetsize ── */
+static void test_epoll_pwait2_einval_sigsetsize(void) {
+    puts("\n[ltp/epoll_pwait2-einval-sigsetsize]\n");
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    struct epoll_event ev;
+    uint64_t mask = 0;
+    struct { long sec; long nsec; } ts = { 0, 0 };
+    /* sigsetsize = 4 ist ungueltig (Linux erlaubt nur 8 oder 16) */
+    long r = sc6(441 /*SYS_EPOLL_PWAIT2*/, epfd, (long)&ev, 1, (long)&ts, (long)&mask, 4);
+    check_val("epoll_pwait2 bad sigsetsize EINVAL", r, -EINVAL);
+    sc1(SYS_CLOSE, epfd);
+}
+
+/* ── epoll_pwait2: sigmask EFAULT auf ungueltigen Pointer ── */
+static void test_epoll_pwait2_efault_sigmask(void) {
+    puts("\n[ltp/epoll_pwait2-efault-sigmask]\n");
+    long epfd = sc1(SYS_EPOLL_CREATE1, 0);
+    struct epoll_event ev;
+    struct { long sec; long nsec; } ts = { 0, 0 };
+    /* Kernel-Adresse als sigmask → user_ok schlaegt fehl → EFAULT */
+    long r = sc6(441, epfd, (long)&ev, 1, (long)&ts, 0xffff800000000000ULL, 8);
+    check_val("epoll_pwait2 bad sigmask pointer EFAULT", r, -EFAULT);
+    sc1(SYS_CLOSE, epfd);
+}
+
+TEST("ltp/epoll_wait-no-clobber",         test_epoll_wait_no_clobber);
+TEST("ltp/eventfd-epollout-max",          test_eventfd_epollout_max);
+TEST("ltp/epoll_pwait2-einval-sigsetsize",test_epoll_pwait2_einval_sigsetsize);
+TEST("ltp/epoll_pwait2-efault-sigmask",   test_epoll_pwait2_efault_sigmask);
 TEST("ltp/epoll_wait01-out",              test_epoll_wait01_out);
 TEST("ltp/epoll_wait01-in",               test_epoll_wait01_in);
 TEST("ltp/epoll_wait03-ebadf",            test_epoll_wait03_ebadf);
