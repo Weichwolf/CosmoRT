@@ -147,7 +147,10 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
                         .tv_sec = (long)(left / MSEC_PER_SEC),
                         .tv_nsec = (long)((left % MSEC_PER_SEC) * NSEC_PER_MSEC)
                     };
-                    copy_to_user(rem, &krem, sizeof(krem));
+                    /* EFAULT-on-rem gewinnt gegen EINTR (Linux-Verhalten,
+                     * vgl. hrtimer_nanosleep-Pfad mit restart_block). */
+                    if (copy_to_user(rem, &krem, sizeof(krem)) < 0)
+                        return -EFAULT;
                 }
                 return -EINTR;
             }
