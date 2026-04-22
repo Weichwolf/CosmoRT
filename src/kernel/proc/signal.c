@@ -215,8 +215,31 @@ long kill_one(process_t *target, int sig) {
 
     /* SIG_DFL: kill the process for fatal signals */
     if (handler == SIG_DFL) {
-        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
-        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
+        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO.
+         * Linux-Kompatibilitaet: wenn das Signal auf allen Threads
+         * blockiert ist (z.B. sigprocmask() + sigtimedwait()), traegt
+         * der Kernel es trotzdem als pending ein — sigtimedwait
+         * konsumiert es dann, bevor die Default-Ignore-Aktion greift. */
+        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
+            int any_blocked = 0;
+            thread_t *t = target->threads;
+            while (t) {
+                if (SIG_BIT(sig) & t->sig_blocked) { any_blocked = 1; break; }
+                t = t->proc_next;
+            }
+            if (any_blocked) {
+                target->sig_pending |= SIG_BIT(sig);
+                /* Wake Threads in sigtimedwait (sind BLOCKED mit event_wait). */
+                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                thread_t *w = target->threads;
+                while (w) {
+                    if (w->state == THREAD_BLOCKED)
+                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    w = w->proc_next;
+                }
+            }
+            return 0;
+        }
         /* Stop: SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU */
         if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
             /* Stop all threads immediately — don't defer to check_pending_signals.
@@ -432,8 +455,17 @@ long do_tgkill(int tgid, int tid, int sig) {
     if (handler == SIG_IGN) return 0;
 
     if (handler == SIG_DFL) {
-        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO */
-        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) return 0;
+        /* Ignore: SIGCHLD, SIGURG, SIGWINCH, SIGIO — pending-Bit setzen
+         * wenn blockiert (sigtimedwait-Pfad). Siehe kill_one-Kommentar. */
+        if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
+            if (SIG_BIT(sig) & target->sig_blocked) {
+                target->sig_thread_pending |= SIG_BIT(sig);
+                extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
+                if (target->state == THREAD_BLOCKED)
+                    event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+            }
+            return 0;
+        }
         /* Stop/Continue: delegate to kill_one (process-level) */
         if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU ||
             sig == SIGCONT)
