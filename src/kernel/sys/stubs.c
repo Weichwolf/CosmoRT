@@ -317,6 +317,15 @@ long do_vhangup(void) { return 0; }
 long do_adjtimex(void *tx) { return do_clock_adjtime(CLOCK_REALTIME, tx); }
 
 long do_chroot(const char *path) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    /* Linux: chroot requires CAP_SYS_CHROOT in the effective set. Non-root
+     * without the cap → EPERM, before any path work (matches fs/open.c
+     * ksys_chroot → path_permission after capable()). */
+    if (!(p->cap_effective & CAP_TO_MASK(CAP_SYS_CHROOT)))
+        return -EPERM;
+
     char kpath_raw[PATH_MAX];
     int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
     if (len < 0) return len;
@@ -335,8 +344,17 @@ long do_chroot(const char *path) {
     if (!node) return lerr;
     if (node->inode->type != VFS_DIR) return -ENOTDIR;
 
-    process_t *p = proc_current();
-    if (!p) return -EFAULT;
+    /* DAC: need MAY_EXEC (search) on the target directory for non-root
+     * (CAP_DAC_OVERRIDE/CAP_DAC_READ_SEARCH bypass). Intermediate path
+     * traversal has already been DAC-checked by vfs_lookup_err. */
+    if (p->euid != 0 &&
+        !(p->cap_effective & (CAP_TO_MASK(CAP_DAC_OVERRIDE) |
+                              CAP_TO_MASK(CAP_DAC_READ_SEARCH)))) {
+        int rc = cred_may_access(p, node->inode->uid, node->inode->gid,
+                                 node->inode->mode, MAY_EXEC);
+        if (rc < 0) return rc;
+    }
+
     int i = 0;
     while (kpath[i] && i < (int)sizeof(p->root) - 1) { p->root[i] = kpath[i]; i++; }
     p->root[i] = '\0';

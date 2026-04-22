@@ -1,13 +1,40 @@
 /* LTP chroot01-04 — ported to ktest */
 #include "ktest.h"
 
-/* ── chroot01: EPERM for non-root ── */
-/* CosmoRT single-user: always root. EPERM never triggers.
-   Skip with note. */
+#define LINUX_CAPABILITY_VERSION_3 0x20080522
+#define CAP_SYS_CHROOT_BIT 18
+
+struct cap_header { uint32_t version; int pid; };
+struct cap_data   { uint32_t effective, permitted, inheritable; };
+
+/* ── chroot01: EPERM when CAP_SYS_CHROOT is not in pE ──
+ * Fork a child, drop CAP_SYS_CHROOT via capset(), verify chroot → EPERM. */
 
 static void test_chroot01(void) {
     puts("\n[ltp/chroot01]\n");
-    puts("  SKIP  single-user: always uid 0, EPERM test not applicable\n");
+
+    sc2(SYS_MKDIR, (long)"/tmp/chroot01_root", 0755);
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        struct cap_header hdr = { .version = LINUX_CAPABILITY_VERSION_3, .pid = 0 };
+        struct cap_data data[2] = {0};
+        sc2(SYS_CAPGET, (long)&hdr, (long)data);
+        data[0].effective &= ~(1u << CAP_SYS_CHROOT_BIT);
+        long cs = sc2(SYS_CAPSET, (long)&hdr, (long)data);
+        if (cs != 0) sc1(SYS_EXIT, 10);
+
+        long r = sc1(SYS_CHROOT, (long)"/tmp/chroot01_root");
+        sc1(SYS_EXIT, r == -EPERM ? 0 : 20);
+    }
+    check("fork", pid > 0);
+    if (pid > 0) {
+        int status = 0;
+        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        int code = (status >> 8) & 0xFF;
+        check_val("EPERM on dropped CAP_SYS_CHROOT", (long)code, 0);
+    }
+    sc1(SYS_RMDIR, (long)"/tmp/chroot01_root");
 }
 
 /* ── chroot02: basic chroot + stat file in new root ── */
