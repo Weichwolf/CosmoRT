@@ -201,25 +201,36 @@ long do_clock_nanosleep(int clk_id, int flags,
     if (kreq_chk.tv_sec < 0) return -EINVAL;
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
     if (flags & TIMER_ABSTIME) {
-        uint64_t target_ms = (uint64_t)kreq_chk.tv_sec * MSEC_PER_SEC
-                           + (uint64_t)(kreq_chk.tv_nsec / NSEC_PER_MSEC);
+        int64_t target_ns = (int64_t)kreq_chk.tv_sec * NSEC_PER_SEC
+                          + (int64_t)kreq_chk.tv_nsec;
+        /* time_namespace offset: user-supplied absolute deadline is in
+         * the task's virtual clock space; subtract the offset to get
+         * kernel-time ns. time_ns_adjust_abs freezes the NS. */
+        if (time_ns_clock_affected(clk_id)) {
+            process_t *cur_p = proc_current();
+            if (cur_p && cur_p->time_ns)
+                target_ns = time_ns_adjust_abs(cur_p->time_ns, clk_id, target_ns);
+        }
+        int64_t target_ms = target_ns / (int64_t)NSEC_PER_MSEC;
         if (clk_id == CLOCK_REALTIME || clk_id == CLOCK_REALTIME_COARSE) {
             extern int64_t rtc_epoch_sec;
             int64_t epoch_ms = rtc_epoch_sec * MSEC_PER_SEC;
-            int64_t rel_ms = (int64_t)target_ms - epoch_ms;
+            int64_t rel_ms = target_ms - epoch_ms;
             if (rel_ms <= 0) return 0;
-            target_ms = (uint64_t)rel_ms;
+            target_ms = rel_ms;
         }
+        if (target_ms < 0) target_ms = 0;
+        uint64_t target_ms_u = (uint64_t)target_ms;
 
-        while (timer_ms() < target_ms) {
+        while (timer_ms() < target_ms_u) {
             thread_t *t = thread_current();
             if (t && t->proc) {
                 uint64_t deliverable = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
                 if (deliverable) return -EINTR;
             }
             uint64_t now = timer_ms();
-            if (now >= target_ms) break;
-            uint64_t delta = target_ms - now;
+            if (now >= target_ms_u) break;
+            uint64_t delta = target_ms_u - now;
             thread_block_ms((int)(delta > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : delta));
         }
         return 0;

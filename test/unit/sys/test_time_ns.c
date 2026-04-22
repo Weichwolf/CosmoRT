@@ -108,6 +108,44 @@ static void test_time_ns(void) {
     sc4(SYS_WAIT4, cpid, 0, 0, 0);
     check("child clock_gettime sees offset",
           mono_child.sec - mono_parent.sec >= 120);
+
+    /* clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME) sees the offset too:
+     * child sleeps until (offset_based_now + 50ms). Sleep must terminate
+     * in < 500ms (if it sleeps for 123s, something is wrong). */
+    r = sc1(SYS_UNSHARE, CLONE_NEWTIME);
+    check_val("unshare for abs-sleep -> 0", r, 0);
+    long afd = sc4(SYS_OPENAT, -100, (long)"/proc/self/timens_offsets", 1, 0);
+    if (afd >= 0) {
+        const char *off = "1 50 0\n";
+        sc3(SYS_WRITE, afd, (long)off, 7);
+        sc1(SYS_CLOSE, afd);
+    }
+    int pfd2[2] = {0, 0};
+    sc1(SYS_PIPE, (long)pfd2);
+    long cpid2 = sc0(SYS_FORK);
+    if (cpid2 == 0) {
+        struct { long sec; long nsec; } ns_now;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&ns_now);
+        /* Deadline = now + 50ms expressed in child's virtual time */
+        struct { long sec; long nsec; } deadline = {
+            ns_now.sec, ns_now.nsec + 50*1000*1000
+        };
+        if (deadline.nsec >= 1000000000) {
+            deadline.sec  += 1;
+            deadline.nsec -= 1000000000;
+        }
+        long rc = sc4(SYS_CLOCK_NANOSLEEP, CLOCK_MONOTONIC, 1 /*ABSTIME*/,
+                      (long)&deadline, 0);
+        sc3(SYS_WRITE, pfd2[1], (long)&rc, sizeof(rc));
+        sc1(SYS_EXIT_GROUP, 0);
+    }
+    sc1(SYS_CLOSE, pfd2[1]);
+    long sleep_rc = -1;
+    sc3(SYS_READ, pfd2[0], (long)&sleep_rc, sizeof(sleep_rc));
+    sc1(SYS_CLOSE, pfd2[0]);
+    sc4(SYS_WAIT4, cpid2, 0, 0, 0);
+    check_val("clock_nanosleep ABS with ns-offset returned 0",
+              sleep_rc, 0);
 }
 
 TEST("time_ns", test_time_ns);
