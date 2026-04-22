@@ -1,104 +1,127 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-22 nach fcntl-Cluster.
+Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 
 ## Ergebnis
 
-| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                         |
-|-------|-------|------|------|------|-----------------------------------------|
-| ktest | 2732  | 2732 |   0  |   -  | +13 (fcntl/dnotify/sched Regressionstests) |
-| musl  |  478  |  460 |  11  |   7  | =/= (stabil)                            |
-| LTP   |  298  |  224 |  31  |  43  | +9 PASS, -9 FAIL (fcntl-Cluster)       |
+| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
+|-------|-------|------|------|------|-----------------|
+| ktest | 2760  | 2760 |   0  |   -  | +28 (neue LTP-bind/connect/accept Fehlerpfade + AF_UNIX abstract) |
+| musl  |  478  |  458 |  13  |   7  | =/= (stabil)    |
+| LTP   |  313  |  228 |  27  |  43  | stabil — **accept4_01** + **bind04** bleiben FAIL (s.u.) |
 
-Baseline: ktest 2719, musl 460/11, LTP 215/40/43.
+Baseline diesem Run vorher: ktest 2732, musl 458/13, LTP 228/27/43.
+
+## Socket-Cluster (bind/accept/connect) — dieser Task
+
+Prompt-Annahme: 9 FAILs (bind01/02/03/04, accept02/03/4_01, connect01/02).
+**Realität**: Nur **2 FAILs** (accept4_01, bind04). Die anderen 7 waren bereits
+PASS. ALPINE_FAILS war bei „bind/accept=2" korrekt.
+
+### Status nach diesem Task
+
+| Test        | Vorher | Nachher | Ursache / Fix                                      |
+|-------------|--------|---------|----------------------------------------------------|
+| accept01    | PASS   | PASS    | —                                                  |
+| accept02    | PASS   | PASS    | —                                                  |
+| accept03    | PASS   | PASS    | —                                                  |
+| accept4_01  | FAIL   | FAIL    | **Offen** — ETIMEDOUT: TCP-Handshake ohne accept() |
+| bind01      | PASS   | PASS    | —                                                  |
+| bind02      | PASS   | PASS    | —                                                  |
+| bind03      | PASS   | PASS    | —                                                  |
+| bind04      | FAIL   | FAIL    | **Teilfortschritt**: AF_UNIX pathname stream PASSt jetzt (FS-Node + unlink), restliche Cases TBROK (SOCK_SEQPACKET + IPv6) |
+| bind05      | SKIP   | SKIP    | needs_root+setuid                                  |
+| connect01   | PASS   | PASS    | —                                                  |
+| connect02   | SKIP   | SKIP    | needs_checkpoint                                   |
+
+### Nebeneffekt-Fixes (flossen mit)
+
+1. **AF_UNIX abstract namespace** (sun_path[0]==0 + Länge):
+   `usock_bind`/`usock_connect` akzeptierten abstract Pfade bisher mit
+   EINVAL, da der First-NUL-Terminator-Heuristik kollidiert. Neu: explizites
+   `path_len`-Feld, separate Logik für abstract vs pathname.
+
+2. **AF_UNIX pathname erzeugt FS-Node**: `usock_bind` legt via
+   `vfs_open(O_CREAT|O_EXCL|O_WRONLY)` eine reguläre Datei an. Existiert
+   sie schon → `-EADDRINUSE`. Damit funktioniert SAFE_UNLINK nach Nutzung.
+
+3. **O_PATH Flag bei Device-fds erhalten**: `vfs_open("/dev/null", O_PATH)`
+   hat O_PATH verloren (`flags & 3` maskierte alles außer RW-Modes).
+   Konsequenz: `accept()` auf O_PATH-fd lieferte ENOTSOCK statt EBADF.
+   Fix in allen Device-Pfaden (/dev/null, /dev/zero, /dev/urandom,
+   /dev/console, /dev/tty, /dev/tty\*, /dev/pts/\*).
+
+### Verbleibend
+
+**accept4_01** (TCP half-open queue fehlt):
+```
+accept4_01.c:105: TBROK: connect(4, 127.0.0.1:61322, 16) failed: ETIMEDOUT
+```
+Testablauf: `listen_fd = bind+listen; connect(client); accept4()`.
+Unser TCP: SYN landet nur in `q_tcp`-Queue, Bearbeitung erst in `accept()`.
+Client-Connect blockiert → 30s-Timeout → TBROK.
+
+Linux: tcp_input auf SYN bei bestehendem Listener sendet sofort SYN-ACK
+und legt half-open Eintrag in Listen-Backlog; accept() dequeued später.
+Fix-Umfang: TCP-SYN-Pfad in `tcp_input` + Listen-Backlog-Slab +
+Race gegen `net_tcp_accept`. Eigener Task.
+
+**bind04** (SOCK_SEQPACKET + IPv6):
+```
+bind04.c:117: TINFO: Testing AF_UNIX pathname stream
+bind04.c:149: TPASS: Communication successful
+<fällt auf SEQPACKET tcase mit TBROK in SAFE_SOCKET>
+```
+AF_UNIX SOCK_SEQPACKET liefert EPROTONOSUPPORT. IPv6 (AF_INET6=10)
+auch. Beide blockieren SAFE_SOCKET → TBROK. Separate Tasks:
+- SEQPACKET: Message-Boundary-Semantik in unix_socket.c
+- IPv6: TCP-IPv6-Stack (neues Adressformat, Socket-Lookup-Hash, DAD)
 
 ## fcntl-Cluster (2026-04-22)
 
-| Test           | Vorher | Nachher | Fix / Commit                                    |
-|----------------|--------|---------|-------------------------------------------------|
-| fcntl12/12_64  | FAIL   | PASS    | vfs-Slabs dynamisch (7cc5391)                   |
-| fcntl14        | FAIL   | PASS    | (nebenbei via sched_getaffinity — 4ac39c4)      |
-| fcntl14_64     | FAIL   | PASS    | (nebenbei)                                      |
-| fcntl17/17_64  | FAIL   | PASS    | POSIX-Lock-Release bei exit (8b45873)           |
-| fcntl31/31_64  | FAIL   | PASS    | F_SETOWN_EX(F_OWNER_TID) do_tgkill (a7db5db)    |
-| fcntl34/34_64  | FAIL   | PASS    | sched_getaffinity echte CPU-Anzahl (4ac39c4)    |
-| fcntl35/35_64  | FAIL   | FAIL    | **Offen** — procfs schreibbar fuer pipe-max-size nicht implementiert |
-| fcntl36/36_64  | FAIL   | PASS    | Deadlock-Detection Cross-Process (8f182fe)      |
-| fcntl37/37_64  | PASS   | PASS    | =                                               |
-| fcntl38/38_64  | FAIL   | FAIL    | **Offen** — siehe Verbleibend                   |
+12/14 behoben, unverändert.
 
-**12/14 Scope-Tests behoben.** (fcntl37 war bereits PASS; fcntl14 war intermittierend)
+## QEMU: Zweit-NIC (virtio-net-pci)
 
-## Verbleibend
+Flags ergänzt in `Makefile`: `-device virtio-net-pci,netdev=net1
+-netdev user,id=net1,net=10.0.3.0/24`. Dmesg zeigt beide NICs:
+```
+e1000: MAC=52:54:00:12:34:56 IRQ 11 → netif: e1000 up
+virtio-net: MAC=52:54:00:12:34:57 IRQ 11 → netif: virtio-net up
+netif: lo up
+```
+DHCP nutzt die zuletzt registrierte NIC (virtio-net → 10.0.3.15).
+Multi-NIC-Routing-Support ist separates Thema (netif-pointer in
+`net.c` ist noch singleton).
 
-### fcntl35 (SAFE_FILE_PRINTF /proc/sys/fs/pipe-max-size)
-Tests erwartet dass /proc/sys/fs/pipe-max-size SCHREIBBAR ist. Unsere
-procfs hat read-only-Architektur (procfs_read_fn, kein Write-Callback).
-Dazu kommt: pipe2() muesste das Userspace-Limit beachten (unpriv
-user pipe init size = min(default, pipe-max-size)). Beides verlangt
-groesseren Umbau: procfs-Write-Pfad + CAP_SYS_RESOURCE-Check in
-pipe_alloc. Ausserhalb dieses Clusters.
-
-### fcntl38 (DN_ATTRIB Parent-Watch via SA_SIGINFO)
-dnotify_fire queued beide Matches in dnotify_q, ruft do_kill zweimal.
-sig_pending ist 1-Bit → zweiter Kill koalesziert. Unser deliver_signal
-repending't nach dnotify-Queue-Peek, aber SYS_RT_SIGRETURN darf keinen
-neuen Signal-Check triggern (broke musl pthread_cond-smasher +
-capset04 — commit 528d571 revertiert). fcntl38 bleibt ohne nested
-Sigreturn-Delivery offen.
-
-Fix waere: deliver_signal-Loop (mehrere pending Bits in einem
-Syscall-Return), aber das verlangt Sigframe-Verkettung ohne Sigreturn-
-Recursion. Nicht trivial — eigener Commit.
-
-### fcntl14 (Mandatory-Locking variant 1)
-Variant 0 (5000 POSIX-Lock-Iterationen) passt. Variant 1 setzt
-file_mode = S_ISGID|0600 und wiederholt. Unser Kernel hat keine
-Mandatory-Lock-Semantik (Linux >=5.15 auch nicht mehr); in-kernel-
-Perf ist marginal — Variant-1-Budget laeuft kurz vor Ende aus.
-
-## cve+execve-Cluster (vorher)
-
-8/9 behoben (cve-2017-17052 flaky).
-
-## eventfd+epoll-Cluster (vorher)
-
-9/10 behoben (epoll_wait02 timing).
-
-## LTP FAIL (31) — verbleibende Gruppen
+## LTP FAIL (27) — verbleibende Gruppen
 
 | Gruppe         | Anzahl | Tests                                              | Ursache                |
 |----------------|--------|----------------------------------------------------|------------------------|
 | fcntl          |    5   | fcntl35/35_64, fcntl38/38_64, fcntl14             | procfs-write, nested sigreturn, perf |
-| epoll_wait     |    2   | epoll_wait02 (timing), epoll_wait05 (connect TBROK)| timing, TCP loopback   |
-| clock_*        |    4   | clock_gettime03/04, clock_nanosleep01-03           | NEWTIME NS             |
-| clone          |    1   | clone09 (procfs TBROK)                             | -                      |
-| bind/accept    |    2   | accept4_01, bind04                                 | AF_UNIX, TBROK         |
-| cve            |    1   | cve-2017-17052                                     | memory-reclaim         |
-| access         |    2   | access01, access04                                 | DAC edge-cases         |
-| rest           |   14   | abort01, acct01, fchdir03, fchownat03, fdatasync02,| diverse                |
-|                |        | dup05, dup201, fgetxattr02, fallocate02, stack_clash,|                      |
-|                |        | copy_file_range03, abort01, adjtimex01, alarm02    |                        |
+| epoll_wait     |    2   | epoll_wait02, epoll_wait05                        | timing, TCP loopback   |
+| clock_*        |    5   | clock_gettime03/04, clock_nanosleep01/02/03       | NEWTIME NS             |
+| clone/dup      |    2   | clone09 (procfs TBROK), dup05/dup201              | -                      |
+| bind/accept    |    2   | accept4_01 (TCP half-open), bind04 (SOCK_SEQPACKET+IPv6) | siehe oben     |
+| access         |    2   | access01, access04                                | DAC edge-cases         |
+| rest           |    9   | abort01, acct01, fchdir03, fchownat03, fdatasync02, fallocate02, fgetxattr02, copy_file_range03, stack_clash | diverse |
 
-## musl FAIL (11)
+## musl FAIL (13)
 
-Stabil zu Baseline: fma, fmal, powf, remquol (softfma),
-pthread_atfork-errno-clobber +static, rlimit-open-files +static,
-pthread-robust-detach (flaky), tls_get_new-dtv, tls_init-static (flaky).
-
-## Kernel-PFs
-
-**Keine.** fcntl34's "pages_alloc: order too large" per sched_getaffinity-
-Fix beseitigt.
+13 = 11 Baseline + 2 neue (zeitweilig flaky: pthread_mutex_pi-static,
+pthread_atfork-errno-clobber). Keine systematische Regression.
 
 ## Priorisierung
 
-**Top Fix-Kandidaten (naechste Phase):**
+**Top Fix-Kandidaten:**
 
-1. **fcntl38** — Loop-Delivery in deliver_signal statt Sigreturn-Nesting
-2. **fcntl35** — procfs-Write-Pfad + pipe-max-size-Sysctl
-3. **clock_nanosleep01-03** — NEWTIME NS
-4. **epoll_wait02** — hrtimer-Latenz
+1. **TCP half-open queue** — fixt accept4_01 + epoll_wait-Timing
+2. **clock_nanosleep NEWTIME** — 3 Tests auf einen Schlag
+3. **procfs-write** — fixt fcntl35/35_64 + einige rest-bucket
+4. **AF_UNIX SOCK_SEQPACKET** — fixt eine bind04-Variante (noch nicht IPv6)
 
-**Deprioritized:** fcntl14 (perf, Mandatory-Locking in Linux entfernt),
-access01/04 (DAC), cve-17052 (memory-reclaim).
+**Deprioritized:**
+- IPv6-Stack (großer Rewrite, eigenes Milestone)
+- fcntl14 (Mandatory-Locking in Linux auch entfernt)
+- access01/04 (DAC edge-cases im Single-User)
+- cve-17052 (memory-reclaim)
