@@ -5,6 +5,7 @@
  */
 
 #include "proc/proc_internal.h"
+#include "linux/capability.h"
 
 /* ── Slab pools ─────────────────────────────────── */
 
@@ -168,8 +169,20 @@ process_t *proc_alloc(void) {
         pid_table[pid] = p;
         spin_unlock_irq(&pid_lock, flags);
         p->state = PROC_ALIVE;
+
+        /* Single-user kernel: start with full capability set. Subsequent
+         * capset() calls can narrow the effective/permitted bits. */
+        uint64_t all_caps = ((uint64_t)1 << (CAP_LAST_CAP + 1)) - 1;
+        p->cap_effective = all_caps;
+        p->cap_permitted = all_caps;
+        p->cap_inheritable = all_caps;
     }
     return p;
+}
+
+int cred_has_cap_sys_admin(process_t *p) {
+    if (!p) return 0;
+    return (p->cap_effective & ((uint64_t)1 << CAP_SYS_ADMIN)) != 0;
 }
 
 /* ── Page table management ──────────────────────── */

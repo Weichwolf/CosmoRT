@@ -123,17 +123,19 @@ long do_capget(void *hdrp, void *datap) {
         return -EINVAL;
     }
     if (hdr.pid < 0) return -EINVAL;
-    if (hdr.pid > 0) {
-        process_t *target = proc_find((uint32_t)hdr.pid);
-        if (!target) return -ESRCH;
-    }
+    process_t *target = (hdr.pid > 0) ? proc_find((uint32_t)hdr.pid) : proc_current();
+    if (!target) return (hdr.pid > 0) ? -ESRCH : -EFAULT;
     if (!datap) return 0;
     if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
         return -EFAULT;
 
     struct __user_cap_data_struct data[2] = {
-        { .effective = 0xFFFFFFFFu, .permitted = 0xFFFFFFFFu, .inheritable = 0xFFFFFFFFu },
-        { .effective = 0xFFFFFFFFu, .permitted = 0xFFFFFFFFu, .inheritable = 0xFFFFFFFFu },
+        { .effective = (uint32_t)target->cap_effective,
+          .permitted = (uint32_t)target->cap_permitted,
+          .inheritable = (uint32_t)target->cap_inheritable },
+        { .effective = (uint32_t)(target->cap_effective >> 32),
+          .permitted = (uint32_t)(target->cap_permitted >> 32),
+          .inheritable = (uint32_t)(target->cap_inheritable >> 32) },
     };
     return copy_to_user(datap, data, u32s * sizeof(struct __user_cap_data_struct));
 }
@@ -153,19 +155,36 @@ long do_capset(void *hdrp, const void *datap) {
         return -EINVAL;
     }
     if (hdr.pid < 0) return -EINVAL;
+    process_t *p = proc_current();
     /* Linux: capset only supports pid==0 or pid==self — others -EPERM. */
-    if (hdr.pid > 0) {
-        process_t *p = proc_current();
-        if (!p || (uint32_t)hdr.pid != p->pid) return -EPERM;
-    }
+    if (hdr.pid > 0 && (!p || (uint32_t)hdr.pid != p->pid)) return -EPERM;
+    if (!p) return -EFAULT;
     if (!datap) return -EFAULT;
     if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
         return -EFAULT;
 
-    struct __user_cap_data_struct data[2];
+    struct __user_cap_data_struct data[2] = {{0}};
     r = copy_from_user(data, datap, u32s * sizeof(struct __user_cap_data_struct));
     if (r) return r;
-    /* Single-user: accept any capset as no-op — all caps already granted. */
+
+    uint64_t eff = (uint64_t)data[0].effective |
+                   ((u32s > 1) ? (uint64_t)data[1].effective << 32 : 0);
+    uint64_t perm = (uint64_t)data[0].permitted |
+                    ((u32s > 1) ? (uint64_t)data[1].permitted << 32 : 0);
+    uint64_t inh = (uint64_t)data[0].inheritable |
+                   ((u32s > 1) ? (uint64_t)data[1].inheritable << 32 : 0);
+
+    /* POSIX capability rules (simplified for single-user):
+     * - permitted may only narrow (new_permitted ⊆ old_permitted)
+     * - effective ⊆ new_permitted
+     * - inheritable ⊆ (old_inheritable ∪ old_permitted) */
+    if (perm & ~p->cap_permitted) return -EPERM;
+    if (eff & ~perm) return -EPERM;
+    if (inh & ~(p->cap_inheritable | p->cap_permitted)) return -EPERM;
+
+    p->cap_effective = eff;
+    p->cap_permitted = perm;
+    p->cap_inheritable = inh;
     return 0;
 }
 

@@ -38,6 +38,10 @@ typedef struct process {
     /* vfork: TID of parent thread blocked until this child execs/exits (0 = none) */
     int         vfork_parent_tid;
 
+    /* CLONE_VM without CLONE_THREAD: child shares parent's pml4/vma_root.
+     * Free paths must not touch these; exec/exit hands ownership back. */
+    int         mm_shared;
+
     /* Address space */
     uint64_t   *pml4;
 
@@ -132,6 +136,13 @@ typedef struct process {
     uint32_t    rgid, egid, sgid, fsgid;
     int         ngroups;
     uint32_t    groups[NGROUPS_MAX];
+
+    /* POSIX Capabilities — Linux capget/capset ABI (V3: 64 bits in u32[2]).
+     * Single-user kernel: proc_alloc() initialises everything granted.
+     * fork() inherits, execve() preserves, capset() narrows per POSIX rules. */
+    uint64_t    cap_effective;
+    uint64_t    cap_permitted;
+    uint64_t    cap_inheritable;
 } process_t;
 
 /* Credential helpers: in-group test (egid + supplementary) and
