@@ -582,6 +582,51 @@ static int procfs_overcommit(char *buf, int size, int offset, void *ctx) {
     return 2;
 }
 
+/* ── /proc/cmdline — Kernel-Command-Line ───────────── */
+
+static int procfs_cmdline(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "BOOT_IMAGE=/boot/cosmo\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+/* ── /proc/mounts — Mount-Tabelle ───────────────────
+ * Format: <src> <mountpoint> <fstype> <options> <freq> <passno>\n
+ * Linux referenziert /proc/self/mounts; /proc/mounts ist historisch
+ * ein Symlink auf /proc/self/mounts. */
+
+static int procfs_mounts(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s =
+        "rootfs / rootfs rw 0 0\n"
+        "tmpfs /tmp tmpfs rw 0 0\n"
+        "proc /proc proc rw 0 0\n"
+        "sysfs /sys sysfs rw 0 0\n"
+        "devfs /dev devfs rw 0 0\n";
+    int len = 0; while (s[len]) len++;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
+/* ── /proc/sys/vm/mmap_min_addr ─────────────────────
+ * Linux default: 65536 (x86_64). */
+
+static int procfs_mmap_min_addr(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char *s = "65536\n";
+    int len = 6;
+    int out = 0;
+    for (int i = offset; i < len && out < size; i++)
+        buf[out++] = s[i];
+    return out;
+}
+
 /* ── /proc/self/statm ──────────────────────────────── */
 
 static int procfs_self_statm(char *buf, int size, int offset, void *ctx) {
@@ -1050,7 +1095,11 @@ void procfs_init(void) {
     procfs_register("self/environ", procfs_pid_environ, 0);
     procfs_register_rw("self/timens_offsets", 0,
                        procfs_timens_offsets_write, 0);
-    serial_puts("procfs: init (25 entries)\n");
+    procfs_register("cmdline", procfs_cmdline, 0);
+    procfs_register("mounts", procfs_mounts, 0);
+    procfs_register("self/mounts", procfs_mounts, 0);
+    procfs_register("sys/vm/mmap_min_addr", procfs_mmap_min_addr, 0);
+    serial_puts("procfs: init (29 entries)\n");
 }
 
 /* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */

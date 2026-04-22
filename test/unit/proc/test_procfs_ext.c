@@ -96,6 +96,53 @@ static void test_procfs_ext(void) {
             sc1(SYS_CLOSE, fd);
         }
     }
+
+    /* /proc/cmdline — non-empty */
+    {
+        long fd = sc3(SYS_OPEN, (long)"/proc/cmdline", O_RDONLY, 0);
+        check("open /proc/cmdline", fd >= 0);
+        if (fd >= 0) {
+            char buf[256] = {0};
+            long r = sc3(SYS_READ, fd, (long)buf, 255);
+            check("cmdline > 0", r > 0);
+            sc1(SYS_CLOSE, fd);
+        }
+    }
+
+    /* /proc/mounts — enthaelt rootfs */
+    {
+        long fd = sc3(SYS_OPEN, (long)"/proc/mounts", O_RDONLY, 0);
+        check("open /proc/mounts", fd >= 0);
+        if (fd >= 0) {
+            char buf[512] = {0};
+            long r = sc3(SYS_READ, fd, (long)buf, 511);
+            check("mounts > 0", r > 0);
+            if (r > 0)
+                check("mounts hat rootfs", contains(buf, (int)r, "rootfs"));
+            sc1(SYS_CLOSE, fd);
+        }
+    }
+
+    /* /proc/self/mounts — gleicher Inhalt */
+    {
+        long fd = sc3(SYS_OPEN, (long)"/proc/self/mounts", O_RDONLY, 0);
+        check("open /proc/self/mounts", fd >= 0);
+        if (fd >= 0) sc1(SYS_CLOSE, fd);
+    }
+
+    /* /proc/sys/vm/mmap_min_addr — Zahl */
+    {
+        long fd = sc3(SYS_OPEN, (long)"/proc/sys/vm/mmap_min_addr", O_RDONLY, 0);
+        check("open mmap_min_addr", fd >= 0);
+        if (fd >= 0) {
+            char buf[32] = {0};
+            long r = sc3(SYS_READ, fd, (long)buf, 31);
+            check("mmap_min_addr > 0", r > 0);
+            if (r > 0)
+                check("mmap_min_addr Ziffer", buf[0] >= '0' && buf[0] <= '9');
+            sc1(SYS_CLOSE, fd);
+        }
+    }
 }
 
 TEST("procfs_ext", test_procfs_ext);
