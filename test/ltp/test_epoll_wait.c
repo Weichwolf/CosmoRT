@@ -417,10 +417,16 @@ static void test_epoll_wait06_etfull(void) {
     ev.data = (uint64_t)pipefd[1];
     sc4(SYS_EPOLL_CTL, epfd, EPOLL_CTL_ADD, pipefd[1], (long)&ev);
 
-    /* Pipe komplett fuellen (4096 Bytes) */
+    /* Pipe komplett fuellen bis EAGAIN — Pipe-Kapazitaet ist Linux-Default
+     * 64KB (vorher 4KB). Per Schleife 4KB-Chunks schreiben bis voll. */
     char buf[4096];
     for (int i = 0; i < 4096; i++) buf[i] = 'a';
-    sc3(SYS_WRITE, pipefd[1], (long)buf, 4096);
+    long total_written = 0;
+    for (;;) {
+        long w = sc3(SYS_WRITE, pipefd[1], (long)buf, 4096);
+        if (w <= 0) break;
+        total_written += w;
+    }
 
     /* was_full=1; EPOLLOUT darf nicht ready sein */
     struct epoll_event ret;
@@ -428,12 +434,22 @@ static void test_epoll_wait06_etfull(void) {
     check_val("full pipe no EPOLLOUT", r, 0);
 
     /* Halb leeren */
-    sc3(SYS_READ, pipefd[0], (long)buf, 2048);
+    long half = total_written / 2;
+    long drained = 0;
+    while (drained < half) {
+        long n = sc3(SYS_READ, pipefd[0], (long)buf, 4096);
+        if (n <= 0) break;
+        drained += n;
+    }
     r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
     check_val("half-drained pipe still no EPOLLOUT", r, 0);
 
     /* Komplett leeren → EPOLLOUT edge */
-    sc3(SYS_READ, pipefd[0], (long)buf, 2048);
+    while (drained < total_written) {
+        long n = sc3(SYS_READ, pipefd[0], (long)buf, 4096);
+        if (n <= 0) break;
+        drained += n;
+    }
     r = sc4(SYS_EPOLL_WAIT, epfd, (long)&ret, 1, 0);
     check_val("fully drained pipe EPOLLOUT", r, 1);
 
