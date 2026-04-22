@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2694/0**, musl 461/10, LTP **187/73/38** (+32 PASS nach clock-Phase). Clock-Cluster 12/4/1: adjtimex01-03, clock_adjtime01/02, clock_getres01, clock_gettime01/02, clock_nanosleep04, clock_settime01/02, leapsec01 PASS. Offen: gettime03/nanosleep03 (CLONE_NEWTIME), gettime04 (tight-loop), nanosleep01/02 (BAD_TS_ADDR, tst_timer_test). Branch: `ltp`.
+Stand: ktest **2694/0**, musl 458/13, LTP **198/62/38** (+11 PASS nach fcntl-Phase 2). fcntl-Cluster +9 Tests/×2=18 PASS zusätzlich: fcntl11/13/15/21/23/27/30/39 PASS, fcntl33 SKIP. Offen: fcntl12/14/17/31/34-38 (Timeout, SIGIO-Order, multi-thread stress). Regression: pthread_robust(-static) vs Futex-Shared-Key. Branch: `ltp`.
 
 ## Offene Phasen
 
