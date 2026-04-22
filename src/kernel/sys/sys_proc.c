@@ -165,6 +165,14 @@ void do_exit(int status) {
                         (fval & FUTEX_TID_MASK) == tid) {
                         uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
                         __sync_val_compare_and_swap(futex_addr, fval, nval);
+                        /* robust_list mutex-cleanup: wake kann gemischt
+                         * private/shared sein. Wir triggern BEIDE Keys:
+                         * einmal mit PRIVATE (vaddr,pid) — pthread-Waiter —
+                         * und einmal ohne — ggf. cross-process-Waiter auf
+                         * MAP_SHARED-Mutex. Linux faehrt fuer Robust ein
+                         * anderes Protokoll (FPM-Flag), wir haben das nicht
+                         * und bleiben konservativ. */
+                        do_futex(futex_addr, 1 /* FUTEX_WAKE */ | FUTEX_PRIVATE_FLAG, 0x7FFFFFFF, 0, 0, 0);
                         do_futex(futex_addr, 1 /* FUTEX_WAKE */, 0x7FFFFFFF, 0, 0, 0);
                     }
                 }
@@ -179,6 +187,7 @@ void do_exit(int status) {
                         (fval & FUTEX_TID_MASK) == tid) {
                         uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
                         __sync_val_compare_and_swap(pf, fval, nval);
+                        do_futex(pf, 1 | FUTEX_PRIVATE_FLAG, 0x7FFFFFFF, 0, 0, 0);
                         do_futex(pf, 1, 0x7FFFFFFF, 0, 0, 0);
                     }
                 }
@@ -192,7 +201,11 @@ void do_exit(int status) {
         /* Ensure user page tables for user memory access */
         hal_mmu_switch(virt_to_phys(p->pml4));
         if (!copy_to_user(t->clear_child_tid, &(int){0}, 4)) {
-            long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
+            /* pthread_join wartet per FUTEX_WAIT | FUTEX_PRIVATE_FLAG auf
+             * diese Adresse (intra-mm). Wake muss deshalb denselben Key
+             * verwenden, sonst greift der Shared-PA-Pfad und der Waiter
+             * wird nie getroffen. */
+            long wr = do_futex((uint32_t *)t->clear_child_tid, 1 /* FUTEX_WAKE */ | FUTEX_PRIVATE_FLAG, 1, 0, 0, 0);
             (void)wr;
         }
         t->clear_child_tid = 0;
