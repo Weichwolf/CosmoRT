@@ -48,8 +48,18 @@ echo ""
 echo "=== LTP REQUIRED TESTS ==="
 LTP_BIN=/opt/ltp/install/testcases/bin
 ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
+FILTER=""
+if [ -f /opt/ltp_filter ]; then
+    FILTER=$(cat /opt/ltp_filter)
+fi
 while read t; do
     [ -z "$t" ] && continue
+    if [ -n "$FILTER" ]; then
+        case "$t" in
+            $FILTER) ;;
+            *) continue ;;
+        esac
+    fi
     ltp_total=$((ltp_total + 1))
     if [ ! -x "$LTP_BIN/$t" ]; then
         ltp_skipped=$((ltp_skipped + 1))
