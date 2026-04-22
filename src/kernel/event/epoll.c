@@ -369,33 +369,13 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EINVAL;
 
-    /* EFAULT-Check nach EBADF/EINVAL (Linux-Reihenfolge).
-     * user_ok prueft nur Adressbereich; fuer PROT_READ-only Pages schlaegt
-     * erst der tatsaechliche write-Versuch (extable) fehl. Test-write byte 0
-     * triggert den fault sofort, konsistent mit Linux access_ok + write. */
     if (!events || !user_ok((uint64_t)events, (size_t)maxevents * sizeof(*events)))
         return -EFAULT;
-    {
-        uint8_t probe = 0;
-        if (copy_to_user(events, &probe, 1) != 0) return -EFAULT;
-    }
 
-    /* Use absolute deadline to avoid timeout reset on re-execute.
-     * On first call: compute deadline. On re-execute after wakeup:
-     * check if the saved wake_at has passed. */
     thread_t *ct = thread_current();
-    uint64_t deadline;
-    int infinite;
-    if (ct && ct->wake_at && timeout > 0) {
-        /* Re-execute: use previously saved deadline */
-        deadline = ct->wake_at;
-        infinite = 0;
-    } else {
-        deadline = (timeout < 0)  ? 0
-                 : (timeout == 0) ? 0
-                 : (timer_ms() + (uint64_t)timeout);
-        infinite = (timeout < 0);
-    }
+    if (ct) ct->wake_at = 0;
+    uint64_t deadline = (timeout <= 0) ? 0 : (timer_ms() + (uint64_t)timeout);
+    int infinite = (timeout < 0);
 
     for (;;) {
         /* Scan entries under lock. EPOLLET state must be updated atomically. */
@@ -421,7 +401,10 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
                         ent->et_last = ev.events | ent->et_last;
                     }
                     ev.data = ent->data;
-                    copy_to_user(&events[nready], &ev, sizeof(ev));
+                    if (copy_to_user(&events[nready], &ev, sizeof(ev)) != 0) {
+                        spin_unlock_irq(&ep->lock, irqf);
+                        return nready > 0 ? nready : -EFAULT;
+                    }
                     nready++;
                     if (ent->events & EPOLLONESHOT)
                         ent->events &= ~(EPOLLIN | EPOLLOUT | EPOLLRDHUP);
@@ -434,21 +417,19 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
         spin_unlock_irq(&ep->lock, irqf);
 
-        if (nready > 0) { ct->wake_at = 0; return nready; }
+        if (nready > 0) return nready;
         if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) { ct->wake_at = 0; return 0; }
+        if (!infinite && timer_ms() >= deadline) return 0;
 
-        /* No events ready — block via event_wait.
-         * epoll_wake_all / epoll_check_timeouts will event_post us.
-         * If event pre-queued (spurious), event_wait returns immediately
-         * and we loop back to re-scan. */
+        /* No events ready — block via event_wait. epoll_wake_all / timeouts
+         * event_post us. Add to sleeper list BEFORE final scan to avoid lost
+         * wake race (writer calls epoll_wake_all during our scan window). */
         {
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
-            t->wake_at = infinite ? 0 : deadline;
             epoll_sleeper_add(t);
             int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) { t->wake_at = 0; return 0; }
+            if (timeout_ms <= 0 && !infinite) return 0;
             event_t ev;
             int _wr = event_wait(&t->eq, &ev, timeout_ms);
             if (_wr == -4) return -EINTR;
