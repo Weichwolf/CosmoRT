@@ -383,15 +383,17 @@ long kill_one(process_t *target, int sig) {
     __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
 
     /* Wake blocked threads that have this signal unblocked.
-     * Atomic-or pairs with mfence in thread_block_ms: either we see BLOCKED
-     * and sched_wake flips it RUNNABLE, or the sleeper's post-BLOCKED recheck
-     * observes sig_pending and aborts schedule(). No-sleep-on-pending-signal.
-     * event_post additionally feeds sigtimedwait/event_wait consumers. */
+     * Atomic-or publishes sig_pending before we check state; mfence in
+     * thread_block_ms's post-BLOCKED recheck ensures either we see BLOCKED
+     * here and event_post wakes, or the sleeper observes sig_pending and
+     * aborts. event_post only on BLOCKED to avoid stale type=1 events in
+     * running threads' queues (pthread_cond treats those as spurious). */
     {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         thread_t *t = target->threads;
         while (t) {
-            if (!(SIG_BIT(sig) & t->sig_blocked))
+            hal_cpu_mfence();
+            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
                 event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             t = t->proc_next;
         }
