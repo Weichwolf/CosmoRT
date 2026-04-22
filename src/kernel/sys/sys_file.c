@@ -1456,7 +1456,11 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
         spin_lock(&flock_lock);
         struct flock_entry *c = flock_byterange_conflict(ino, kind, pid, owner,
                                                           ufl.l_type, start, end);
-        if (c && kind == FL_POSIX) {
+        /* Deadlock-Detection nur fuer POSIX-vs-POSIX-Konflikte. OFD-Locks
+         * haben keine Prozess-Identitaet (mehrere OFD-Owner im selben pid),
+         * und POSIX-Lock-Holder mit gleichem pid kollidieren nicht — beide
+         * Faelle wuerden flock_deadlock(pid, pid==pid) false-positive. */
+        if (c && kind == FL_POSIX && c->kind == FL_POSIX && c->pid != pid) {
             if (flock_deadlock(pid, c->pid)) {
                 if (waiter_slot) flock_waiter_remove(waiter_slot);
                 spin_unlock(&flock_lock);
