@@ -76,6 +76,38 @@ static void test_time_ns(void) {
                    0 /*O_RDONLY*/, 0);
     check_ge("open timens_offsets RDONLY", rfd, 0);
     if (rfd >= 0) sc1(SYS_CLOSE, rfd);
+
+    /* Offset application: write +123s CLOCK_MONOTONIC into
+     * time_ns_for_children, fork a child, child reads clock_gettime and
+     * returns (ns/1e6) mod 256 as exit code — offset ≥ 123s, so mod ≠ 0
+     * only if clock keeps advancing. We simply verify the child reads a
+     * much larger value than the parent (≥ 100s delta). */
+    r = sc1(SYS_UNSHARE, CLONE_NEWTIME);
+    check_val("unshare for offset test -> 0", r, 0);
+    long ofd = sc4(SYS_OPENAT, -100, (long)"/proc/self/timens_offsets", 1, 0);
+    if (ofd >= 0) {
+        const char *off = "1 123 0\n";
+        sc3(SYS_WRITE, ofd, (long)off, 8);
+        sc1(SYS_CLOSE, ofd);
+    }
+    struct { long sec; long nsec; } mono_parent;
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&mono_parent);
+    int pipefd[2] = {0, 0};
+    sc1(SYS_PIPE, (long)pipefd);
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        struct { long sec; long nsec; } mono_child;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&mono_child);
+        sc3(SYS_WRITE, pipefd[1], (long)&mono_child, sizeof(mono_child));
+        sc1(SYS_EXIT_GROUP, 0);
+    }
+    sc1(SYS_CLOSE, pipefd[1]);
+    struct { long sec; long nsec; } mono_child = { -1, 0 };
+    sc3(SYS_READ, pipefd[0], (long)&mono_child, sizeof(mono_child));
+    sc1(SYS_CLOSE, pipefd[0]);
+    sc4(SYS_WAIT4, cpid, 0, 0, 0);
+    check("child clock_gettime sees offset",
+          mono_child.sec - mono_parent.sec >= 120);
 }
 
 TEST("time_ns", test_time_ns);

@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — time and clock syscalls */
 
 #include "internal.h"
+#include "core/time_ns.h"
 
 /* struct k_timespec defined in epoll.h, k_timeval in internal.h */
 
@@ -74,35 +75,40 @@ long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     uint64_t ms = tsc_delta / tpms;
     uint64_t sub_tsc = tsc_delta - ms * tpms;
     uint64_t sub_ns = (sub_tsc * (uint64_t)NSEC_PER_MSEC) / tpms;
-    kts.tv_sec  = (long)(ms / MSEC_PER_SEC);
-    kts.tv_nsec = (long)((ms % MSEC_PER_SEC) * NSEC_PER_MSEC + sub_ns);
+    int64_t raw_ns = (int64_t)ms * NSEC_PER_MSEC + (int64_t)sub_ns;
     switch (clk_id) {
     case CLOCK_REALTIME:
     case CLOCK_REALTIME_COARSE: {
         extern int64_t rtc_epoch_sec;
-        kts.tv_sec += (long)rtc_epoch_sec;
+        raw_ns += (int64_t)rtc_epoch_sec * NSEC_PER_SEC;
         break;
     }
     case CLOCK_MONOTONIC:
     case CLOCK_MONOTONIC_RAW:
     case CLOCK_MONOTONIC_COARSE:
-    case CLOCK_BOOTTIME:
-        break;
-    case CLOCK_PROCESS_CPUTIME_ID: {
-        uint64_t ns = proc_cpu_time_ns();
-        kts.tv_sec = (long)(ns / NSEC_PER_SEC);
-        kts.tv_nsec = (long)(ns % NSEC_PER_SEC);
-        break;
-    }
-    case CLOCK_THREAD_CPUTIME_ID: {
-        uint64_t ns = thread_cpu_time_ns();
-        kts.tv_sec = (long)(ns / NSEC_PER_SEC);
-        kts.tv_nsec = (long)(ns % NSEC_PER_SEC);
+    case CLOCK_BOOTTIME: {
+        /* time_namespace offset applied for affected clocks. */
+        process_t *p = proc_current();
+        if (p && p->time_ns)
+            raw_ns = time_ns_adjust_read(p->time_ns, clk_id, raw_ns);
         break;
     }
+    case CLOCK_PROCESS_CPUTIME_ID:
+        raw_ns = (int64_t)proc_cpu_time_ns();
+        break;
+    case CLOCK_THREAD_CPUTIME_ID:
+        raw_ns = (int64_t)thread_cpu_time_ns();
+        break;
     default:
         return -EINVAL;
     }
+    /* Normalise sec/nsec from raw_ns; raw_ns can be negative when a
+     * time_ns offset is steeper than current uptime. */
+    int64_t sec  = raw_ns / NSEC_PER_SEC;
+    int64_t nsec = raw_ns - sec * NSEC_PER_SEC;
+    if (nsec < 0) { sec -= 1; nsec += NSEC_PER_SEC; }
+    kts.tv_sec  = (long)sec;
+    kts.tv_nsec = (long)nsec;
     { int r = copy_to_user(tp, &kts, sizeof(kts)); if (r) return r; }
     return 0;
 }
