@@ -44,7 +44,7 @@ Verbleibende fcntl-Fails (10 fcntl* FAIL + _64-Varianten):
 | fcntl          |   27   | fcntl12/14/15/17/30/31/34/35/36/37/38/39 (+_64) | SIGIO, dnotify, timeouts       |
 | eventfd/epoll  |   13   | eventfd01-05+2_03, epoll_pwait01/04, _wait02-06 | EPOLLET, EFD_SEMAPHORE         |
 | clock_*        |    9   | clock_adjtime01/02, clock_gettime01-04, nanosleep01-04, settime02 | CLOCK_TAI, ns-Präzision |
-| clone          |    5   | clone03/05/09/11/301/302                        | CLONE_NEWNS, SETTID, PIDFD     |
+| clone          |    2   | clone09 (TBROK procfs/net), clone301 (pidfd tcase) | fixed: 03/05/11/302 |
 | bind/accept    |    7   | accept02/03, accept4_01, bind01-04, connect01/02 | AF_UNIX, SO_REUSEPORT         |
 | chroot         |    2   | chroot01/04                                     | chroot() + DAC                 |
 | caps           |    2   | capget01, capset02                              | Capabilities nicht impl.       |

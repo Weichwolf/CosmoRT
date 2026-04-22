@@ -199,8 +199,10 @@ static void test_clone07(void) {
     sc2(SYS_MUNMAP, (long)stack, STACK_SIZE);
 }
 
-/* ── clone09: CLONE_NEWNET requires CAP_SYS_ADMIN — skip as namespace test ── */
-/* CosmoRT doesn't support namespaces. Test that CLONE_NEWNET returns EINVAL. */
+/* ── clone09: CLONE_NEWNET with CAP_SYS_ADMIN accepted as no-op ───── */
+/* CosmoRT has no real namespaces, but Linux convention is that CLONE_NEW*
+ * succeeds when the caller holds CAP_SYS_ADMIN (single-user kernel default),
+ * and fails with EPERM after the cap is dropped (covered by alpine-test). */
 
 static void test_clone09(void) {
     puts("\n[ltp/clone09]\n");
@@ -211,13 +213,14 @@ static void test_clone09(void) {
 
     long r = sc5(SYS_CLONE, CLONE_NEWNET | CLONE_VM | SIGCHLD,
                  (long)stack + STACK_SIZE, 0, 0, 0);
-    /* Should fail — CosmoRT doesn't support namespaces */
-    check("CLONE_NEWNET fails", r < 0);
+    if (r == 0) sc1(SYS_EXIT, 0);
+    check("CLONE_NEWNET accepted (cap held)", r > 0);
+    if (r > 0) { int ws = 0; sc4(SYS_WAIT4, r, (long)&ws, 0, 0); }
 
     sc2(SYS_MUNMAP, (long)stack, STACK_SIZE);
 }
 
-/* ── clone11: CLONE_NEWPID without CAP_SYS_ADMIN — should fail ── */
+/* ── clone11: CLONE_NEWPID with CAP_SYS_ADMIN accepted as no-op ───── */
 
 static void test_clone11(void) {
     puts("\n[ltp/clone11]\n");
@@ -226,9 +229,11 @@ static void test_clone11(void) {
     check("mmap stack", (long)stack > 0);
     if ((long)stack <= 0) return;
 
-    long r = sc5(SYS_CLONE, CLONE_NEWPID, (long)stack + STACK_SIZE, 0, 0, 0);
-    /* CosmoRT doesn't support namespaces — should fail */
-    check("CLONE_NEWPID fails", r < 0);
+    long r = sc5(SYS_CLONE, CLONE_NEWPID | SIGCHLD,
+                 (long)stack + STACK_SIZE, 0, 0, 0);
+    if (r == 0) sc1(SYS_EXIT, 0);
+    check("CLONE_NEWPID accepted (cap held)", r > 0);
+    if (r > 0) { int ws = 0; sc4(SYS_WAIT4, r, (long)&ws, 0, 0); }
 
     sc2(SYS_MUNMAP, (long)stack, STACK_SIZE);
 }
