@@ -601,12 +601,26 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         for (sig = 1; sig < 64; sig++)
             if (match & SIG_BIT(sig)) break;
         p->sig_pending &= ~SIG_BIT(sig);
+        /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
+         * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
+        extern int dnotify_queue_pop_fd(process_t *p, int sig);
+        extern int dnotify_queue_peek_fd(process_t *p, int sig);
+        int dn_fd = dnotify_queue_pop_fd(p, sig);
         if (uinfo) {
             int ksi[32];
             kmemset(ksi, 0, sizeof(ksi));
             ksi[0] = sig;
+            if (dn_fd >= 0) {
+                ksi[2] = -6; /* SI_POLL */
+                /* band=0 at byte 16, fd at byte 24 */
+                long band = 0;
+                kmemcpy((char *)ksi + 16, &band, 8);
+                kmemcpy((char *)ksi + 24, &dn_fd, 4);
+            }
             copy_to_user(uinfo, ksi, 128);
         }
+        if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
         t->nanosleep_deadline = 0;
         return sig;
     }
@@ -631,12 +645,26 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         for (sig = 1; sig < 64; sig++)
             if (match & SIG_BIT(sig)) break;
         p->sig_pending &= ~SIG_BIT(sig);
+        /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
+         * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
+        extern int dnotify_queue_pop_fd(process_t *p, int sig);
+        extern int dnotify_queue_peek_fd(process_t *p, int sig);
+        int dn_fd = dnotify_queue_pop_fd(p, sig);
         if (uinfo) {
             int ksi[32];
             kmemset(ksi, 0, sizeof(ksi));
             ksi[0] = sig;
+            if (dn_fd >= 0) {
+                ksi[2] = -6; /* SI_POLL */
+                /* band=0 at byte 16, fd at byte 24 */
+                long band = 0;
+                kmemcpy((char *)ksi + 16, &band, 8);
+                kmemcpy((char *)ksi + 24, &dn_fd, 4);
+            }
             copy_to_user(uinfo, ksi, 128);
         }
+        if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
         return sig;
     }
 

@@ -463,6 +463,69 @@ static void test_fcntl_notify_noop(void) {
     sc1(SYS_CLOSE, fd);
 }
 
+/* ── DN_ATTRIB: parent + subdir watch beide queued sich ein ──────────
+ * LTP fcntl38-Regression: bei chmod auf Kind sollen sowohl Self-Watch
+ * auf dem Kind als auch Parent-Watch auf dem Verzeichnis feuern. Ueber
+ * SYS_SIGTIMEDWAIT werden beide pending Eintraege konsekutiv geerntet. */
+#define T_SIGRTMIN_1 35   /* SIGRTMIN(34) + 1 */
+
+struct k_siginfo_32 {
+    int32_t  si_signo;
+    int32_t  si_errno;
+    int32_t  si_code;
+    int32_t  _pad0;
+    uint64_t _pad[16];
+};
+
+static void test_dnotify_parent_plus_subdir(void) {
+    puts("\n[ltp/fcntl38_dnotify_parent_subdir]\n");
+
+    sc3(SYS_MKDIR, (long)"/tmp/dn38_parent", 0700, 0);
+    sc3(SYS_MKDIR, (long)"/tmp/dn38_parent/kid", 0700, 0);
+
+    long parent_fd = sc3(SYS_OPEN, (long)"/tmp/dn38_parent",
+                         O_RDONLY | O_DIRECTORY, 0);
+    long subdir_fd = sc3(SYS_OPEN, (long)"/tmp/dn38_parent/kid",
+                         O_RDONLY | O_DIRECTORY, 0);
+    check("open parent dir", parent_fd >= 0);
+    check("open subdir", subdir_fd >= 0);
+    if (parent_fd < 0 || subdir_fd < 0) return;
+
+    /* Block SIGRTMIN+1 so sigtimedwait konsumiert die Pendings gezielt */
+    uint64_t mask = 1ULL << (T_SIGRTMIN_1 - 1);
+    sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&mask, 0, 8);
+
+    sc3(SYS_FCNTL, parent_fd, F_SETSIG, T_SIGRTMIN_1);
+    sc3(SYS_FCNTL, subdir_fd, F_SETSIG, T_SIGRTMIN_1);
+    sc3(SYS_FCNTL, parent_fd, F_NOTIFY, DN_ATTRIB | DN_MULTISHOT);
+    sc3(SYS_FCNTL, subdir_fd, F_NOTIFY, DN_ATTRIB | DN_MULTISHOT);
+
+    sc3(SYS_CHMOD, (long)"/tmp/dn38_parent/kid", 0755, 0);
+
+    /* Beide fds müssen signalisiert worden sein — ernte über sigtimedwait */
+    int saw_parent = 0, saw_subdir = 0;
+    for (int i = 0; i < 4; i++) {
+        struct k_siginfo_32 info = {0};
+        struct k_timespec ts = { 0, 100000000 }; /* 100 ms */
+        long r = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, (long)&info, (long)&ts, 8);
+        if (r != T_SIGRTMIN_1) break;
+        int fd = *(int *)((char *)&info + 24);
+        if (fd == (int)parent_fd) saw_parent = 1;
+        if (fd == (int)subdir_fd) saw_subdir = 1;
+        if (saw_parent && saw_subdir) break;
+    }
+
+    check("parent watch fired", saw_parent);
+    check("subdir watch fired", saw_subdir);
+
+    sc3(SYS_FCNTL, parent_fd, F_NOTIFY, 0);
+    sc3(SYS_FCNTL, subdir_fd, F_NOTIFY, 0);
+    sc1(SYS_CLOSE, parent_fd);
+    sc1(SYS_CLOSE, subdir_fd);
+    sc1(SYS_RMDIR, (long)"/tmp/dn38_parent/kid");
+    sc1(SYS_RMDIR, (long)"/tmp/dn38_parent");
+}
+
 TEST("ltp/fcntl13_bad_ptr",            test_fcntl13_bad_ptr);
 TEST("ltp/fcntl_getlk_unlck_range",    test_fcntl_getlk_unlck_keeps_range);
 TEST("ltp/fcntl_range_split",          test_fcntl_range_split);
@@ -477,4 +540,5 @@ TEST("ltp/fcntl_bad_ptrs",             test_fcntl_bad_ptrs);
 TEST("ltp/fcntl_getlk_range",          test_fcntl_getlk_reports_range);
 TEST("ltp/fcntl_setlease_pipe",        test_fcntl_setlease_pipe);
 TEST("ltp/fcntl_notify",               test_fcntl_notify_noop);
+TEST("ltp/fcntl38_dnotify_both",       test_dnotify_parent_plus_subdir);
 TEST("ltp/fcntl_bad_whence_order",     test_fcntl_bad_whence_order);

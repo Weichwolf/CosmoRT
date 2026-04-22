@@ -240,12 +240,19 @@ void deliver_signal(thread_t *t, int signo) {
          * Unser sig_siginfo_t hat _pad ab Byte 16: bytes 16-23 = band,
          * bytes 24-27 = fd. */
         extern int dnotify_queue_pop_fd(process_t *p, int sig);
+        extern int dnotify_queue_peek_fd(process_t *p, int sig);
         int fd = dnotify_queue_pop_fd(p, signo);
         if (fd >= 0) {
             si.si_code = -6; /* SI_POLL (Linux include/uapi/asm-generic/siginfo.h) */
             long band = 0;
             kmemcpy(&si._pad[0], &band, 8);
             kmemcpy(&si._pad[8], &fd, 4);
+            /* Linux behandelt dnotify als RT-signal: mehrfach gleichzeitig
+             * queueable. Unser sig_pending ist 1-Bit — Re-Pend wenn weitere
+             * Eintraege fuer diesen sig vorhanden, damit naechster Iteration
+             * von check_pending_signals den naechsten fd ausliefert. */
+            if (dnotify_queue_peek_fd(p, signo) >= 0)
+                __sync_fetch_and_or(&p->sig_pending, SIG_BIT(signo));
         } else {
             si.si_code = 0; /* SI_USER */
         }

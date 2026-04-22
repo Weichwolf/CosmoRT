@@ -79,6 +79,19 @@ static void dn_queue_push(process_t *p, int sig, int fd) {
     p->dnotify_q_tail = next;
 }
 
+/* Peek: gibt es noch einen Eintrag fuer diesen sig? Kein Pop — nur Prueffen,
+ * damit deliver_signal nach Pop entscheiden kann, ob sig erneut pending bleibt
+ * (RT-Signal-Queue-Semantik in 1-Bit-sig_pending nachbilden). */
+int dnotify_queue_peek_fd(process_t *p, int sig) {
+    if (!p) return -1;
+    int h = p->dnotify_q_head;
+    while (h != p->dnotify_q_tail) {
+        if (p->dnotify_q_sig[h] == sig) return p->dnotify_q_fd[h];
+        h = (h + 1) & 15;
+    }
+    return -1;
+}
+
 /* Fuer deliver_signal: nehme den ersten Eintrag mit passendem sig. -1 wenn
  * keiner — Caller faellt dann auf Default zurueck. */
 int dnotify_queue_pop_fd(process_t *p, int sig) {
