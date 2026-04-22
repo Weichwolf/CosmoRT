@@ -1,16 +1,16 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-22 nach pthread_robust-Fix (FUTEX_LOCK_PI shared-Key).
+Run: 2026-04-22 nach chroot/caps-Cluster.
 
 ## Ergebnis
 
-| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher        |
-|-------|-------|------|------|------|------------------------|
-| ktest | 2694  | 2694 |   0  |   -  | -                      |
-| musl  |  478  |  460 |  11  |   7  | +2 (pthread_robust x2 gefixt) |
-| LTP   |  298  |  198 |  62  |  38  | unverändert            |
+| Suite | Total | PASS | FAIL | SKIP | Delta vs vorher                 |
+|-------|-------|------|------|------|---------------------------------|
+| ktest | 2704  | 2704 |   0  |   -  | +10 (caps/chroot-Tests)         |
+| musl  |  478  |  458 |  13  |   7  | -2 (flake tls_init/pthread_once)|
+| LTP   |  298  |  206 |  52  |  40  | +8 (chroot01/04, capget01, capset02/03, weitere) |
 
-Baseline: ktest 2694, musl 461/10, LTP 198/62/38.
+Baseline: ktest 2694, musl 460/11, LTP 198/62/38.
 
 ## fcntl-Cluster
 
@@ -44,9 +44,18 @@ Verbleibend FAIL (8 Tests + _64 = 16):
 
 ## Regressionen
 
-Keine.
+Keine. musl-Differenz -2 ist die bekannte Flake bei tls_init-static /
+pthread_once-deadlock / pthread-robust-detach (nicht deterministisch).
 
-**Behoben (2026-04-22):** pthread_robust + pthread_robust-static. Root Cause:
+**Behoben (2026-04-22):** chroot01, chroot04, capget01, capset02, capset03.
+- Kein CAP_SYS_CHROOT-Gate auf chroot (chroot01 EPERM via seteuid-drop)
+- DAC-Check vor CAP-Check (chroot04 EACCES, Linux-Order ksys_chroot)
+- cap_bounding pro Prozess + PR_CAPBSET_DROP/READ (capset02 bounding-Fall)
+- capset pI-Subset nutzt bounding (Linux cap_capset Formel)
+- setuid-Transition cleart pE/pP (cap_emulate_setxuid)
+- capget/capset hdr.pid als TID interpretiert (Linux-ABI per-thread caps)
+
+**Behoben (vorher):** pthread_robust + pthread_robust-static. Root Cause:
 FUTEX_LOCK_PI ignorierte den shared-Flag und queuete Waiter immer mit
 (vaddr, pid). Das Cleanup im Thread-Exit rief aber FUTEX_WAKE shared
 (PA-Key) und traf den PI-Waiter nie bei pshared=1 + PTHREAD_PRIO_INHERIT.
@@ -62,7 +71,7 @@ Bucket-Hash und futex_wake durch.
 | clock_*        |    4   | clock_gettime03/04, clock_nanosleep01-03        | NEWTIME NS                |
 | clone          |    2   | clone09/11 (TBROK procfs/net), clone301         | fixed: 03/05/302          |
 | bind/accept    |    6   | accept02/03, accept4_01, bind01-04, connect01   | AF_UNIX, SO_REUSEPORT     |
-| chroot/caps/bpf|    7   | chroot01/04, capget01, capset02, bpf_prog02-04  | DAC/capabilities/bpf      |
+| bpf            |    1   | bpf_prog04                                      | bpf                       |
 | cve            |    3   | cve-2016-10044, cve-2017-1705x, cve-2025-38236  | regression tests          |
 | access         |    2   | access01, access04                              | DAC edge-cases            |
 | rest           |  ~13   | abort01, acct01, adjtimex02, fchdir03, leapsec01, stack_clash, flock03 | diverse |
