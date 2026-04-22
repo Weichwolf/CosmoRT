@@ -117,6 +117,13 @@ cp tools/boot-test.sh "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 chmod +x "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 cp tools/ltp_required.txt "$ALPINE_ROOT/opt/ltp_required.txt" 2>/dev/null || true
 
+# ── Boot-config fuer LTP tst_kconfig_check() ─────────
+# LTP sucht /boot/config-$(uname -r); ohne file -> TBROK statt TCONF.
+# Release "0.1.0" kommt aus sys_uname. Config-Entries listen alle Features
+# die unser Kernel bereitstellt (=y) bzw. explizit nicht (=n).
+mkdir -p "$ALPINE_ROOT/boot"
+cp tools/kconfig-cosmort "$ALPINE_ROOT/boot/config-0.1.0" 2>/dev/null || true
+
 # ── Step 2: Create ext4 image ────────────────────────
 echo "mkalpine: creating ext4 ($FS_MB MB) from $ALPINE_ROOT"
 dd if=/dev/zero of="$EXT4_TMP" bs=1M count="$FS_MB" 2>/dev/null

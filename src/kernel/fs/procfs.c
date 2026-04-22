@@ -730,6 +730,18 @@ static int procfs_filesystems(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/sys/kernel/tainted ──────────────────────── */
+
+static int procfs_sys_tainted(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    const char tmp[] = "0\n";
+    int pos = (int)sizeof(tmp) - 1;
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++)
+        buf[out++] = tmp[i];
+    return out;
+}
+
 /* ── /proc/sys/kernel/pid_max ──────────────────────── */
 
 static int procfs_sys_pid_max(char *buf, int size, int offset, void *ctx) {
@@ -951,12 +963,13 @@ void procfs_init(void) {
     procfs_register("bus/pci/devices", procfs_pci_devices, 0);
     procfs_register("filesystems", procfs_filesystems, 0);
     procfs_register("sys/kernel/pid_max", procfs_sys_pid_max, 0);
+    procfs_register("sys/kernel/tainted", procfs_sys_tainted, 0);
     procfs_register("sys/kernel/hostname", procfs_sys_hostname, 0);
     procfs_register("sys/fs/pipe-max-size", procfs_sys_pipe_max_size, 0);
     procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
-    serial_puts("procfs: init (23 entries)\n");
+    serial_puts("procfs: init (24 entries)\n");
 }
 
 /* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */
