@@ -125,21 +125,20 @@ static void test_chroot03_eloop(void) {
     sc1(SYS_UNLINK, (long)"/tmp/chroot03_loop2");
 }
 
-/* ── chroot04: EACCES for directory without search permission ── */
-/* CosmoRT single-user: root bypasses permission checks.
-   Root can chroot anywhere. Note this as expected. */
+/* ── chroot04: EACCES for directory without search permission ──
+ * Fork → seteuid(nobody) → chroot 0222 dir → expect EACCES. DAC-Check
+ * kommt VOR CAP_SYS_CHROOT-Check (Linux fs/open.c ksys_chroot order). */
 
 static void test_chroot04(void) {
     puts("\n[ltp/chroot04]\n");
-    puts("  NOTE  single-user: root bypasses EACCES\n");
 
     sc2(SYS_MKDIR, (long)"/tmp/chroot04_dir", 0222);
 
-    /* As root, chroot should succeed even without search permission */
     long pid = sc0(SYS_FORK);
     if (pid == 0) {
+        if (sc2(SYS_SETREUID, -1, 65534) != 0) sc1(SYS_EXIT, 10);
         long r = sc1(SYS_CHROOT, (long)"/tmp/chroot04_dir");
-        sc1(SYS_EXIT, r == 0 ? 0 : 1);
+        sc1(SYS_EXIT, r == -EACCES ? 0 : 20);
     }
     check("fork", pid > 0);
 
@@ -147,7 +146,7 @@ static void test_chroot04(void) {
         int status = 0;
         sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
         int code = (status >> 8) & 0xFF;
-        check_val("root chroot to 0222 dir succeeds", (long)code, 0);
+        check_val("EACCES on 0222 dir as non-root", (long)code, 0);
     }
 
     sc1(SYS_RMDIR, (long)"/tmp/chroot04_dir");

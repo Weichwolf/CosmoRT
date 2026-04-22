@@ -123,7 +123,18 @@ long do_capget(void *hdrp, void *datap) {
         return -EINVAL;
     }
     if (hdr.pid < 0) return -EINVAL;
-    process_t *target = (hdr.pid > 0) ? proc_find((uint32_t)hdr.pid) : proc_current();
+    process_t *target = 0;
+    if (hdr.pid == 0) {
+        target = proc_current();
+    } else {
+        /* Linux: hdr.pid is a TID (capabilities are per-thread). A TID that
+         * matches a thread-group leader also equals the process pid. Look up
+         * via tid_table first, then fall back to pid_table for compatibility
+         * with tests that pass tgid explicitly. */
+        thread_t *th = thread_find_by_tid((int)hdr.pid);
+        if (th) target = th->proc;
+        else    target = proc_find((uint32_t)hdr.pid);
+    }
     if (!target) return (hdr.pid > 0) ? -ESRCH : -EFAULT;
     if (!datap) return 0;
     if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
@@ -156,9 +167,14 @@ long do_capset(void *hdrp, const void *datap) {
     }
     if (hdr.pid < 0) return -EINVAL;
     process_t *p = proc_current();
-    /* Linux: capset only supports pid==0 or pid==self — others -EPERM. */
-    if (hdr.pid > 0 && (!p || (uint32_t)hdr.pid != p->pid)) return -EPERM;
     if (!p) return -EFAULT;
+    /* Linux: capset only supports pid==0, pid==self (tgid) or TID of a
+     * thread in the caller's process — others -EPERM. Capabilities are
+     * per-thread; hdr.pid is actually a TID in Linux ABI. */
+    if (hdr.pid > 0 && (uint32_t)hdr.pid != p->pid) {
+        thread_t *th = thread_find_by_tid((int)hdr.pid);
+        if (!th || th->proc != p) return -EPERM;
+    }
     if (!datap) return -EFAULT;
     if (!user_ok((uint64_t)datap, u32s * sizeof(struct __user_cap_data_struct)))
         return -EFAULT;
@@ -320,12 +336,6 @@ long do_chroot(const char *path) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
-    /* Linux: chroot requires CAP_SYS_CHROOT in the effective set. Non-root
-     * without the cap → EPERM, before any path work (matches fs/open.c
-     * ksys_chroot → path_permission after capable()). */
-    if (!(p->cap_effective & CAP_TO_MASK(CAP_SYS_CHROOT)))
-        return -EPERM;
-
     char kpath_raw[PATH_MAX];
     int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
     if (len < 0) return len;
@@ -344,9 +354,11 @@ long do_chroot(const char *path) {
     if (!node) return lerr;
     if (node->inode->type != VFS_DIR) return -ENOTDIR;
 
-    /* DAC: need MAY_EXEC (search) on the target directory for non-root
-     * (CAP_DAC_OVERRIDE/CAP_DAC_READ_SEARCH bypass). Intermediate path
-     * traversal has already been DAC-checked by vfs_lookup_err. */
+    /* Linux fs/open.c ksys_chroot: path_permission(MAY_EXEC) BEFORE the
+     * CAP_SYS_CHROOT check. Order matters: a non-root user without search
+     * permission on the target gets EACCES, not EPERM. DAC bypass via
+     * CAP_DAC_OVERRIDE/CAP_DAC_READ_SEARCH. Intermediate traversal is
+     * already covered by vfs_lookup_err. */
     if (p->euid != 0 &&
         !(p->cap_effective & (CAP_TO_MASK(CAP_DAC_OVERRIDE) |
                               CAP_TO_MASK(CAP_DAC_READ_SEARCH)))) {
@@ -354,6 +366,9 @@ long do_chroot(const char *path) {
                                  node->inode->mode, MAY_EXEC);
         if (rc < 0) return rc;
     }
+
+    if (!(p->cap_effective & CAP_TO_MASK(CAP_SYS_CHROOT)))
+        return -EPERM;
 
     int i = 0;
     while (kpath[i] && i < (int)sizeof(p->root) - 1) { p->root[i] = kpath[i]; i++; }
