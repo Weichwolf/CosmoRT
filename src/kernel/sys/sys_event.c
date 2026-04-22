@@ -4,12 +4,22 @@
 #include "core/event_queue.h"
 #include "event/fd.h"
 
+struct k_pollfd { int fd; short events; short revents; };
+#define POLLIN  0x0001
+#define POLLOUT 0x0004
+
+extern void epoll_sleeper_add_ext(thread_t *t);
+extern void epoll_sleeper_remove_ext(thread_t *t);
+
+static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
+                      int timeout, thread_t *t);
+
 /* ── pselect6 / select → convert to poll ── */
 
 long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long num) {
     uint64_t *writefds = (uint64_t *)a3;
     uint64_t *exceptfds = (uint64_t *)a4;
-    (void)exceptfds; /* exceptfds: not yet supported */
+    (void)exceptfds;
 
     if (nfds <= 0) return 0;
     if (nfds > 256) nfds = 256;
@@ -17,15 +27,19 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
     int nwords = (nfds + 63) / 64;
     if (nwords > 4) nwords = 4;
 
-    /* Read fd_set bitmaps from userspace */
     uint64_t kread[4] = {0}, kwrite[4] = {0};
-    if (readfds && user_ok((uint64_t)readfds, (uint64_t)(nwords * 8)))
-        copy_from_user(kread, readfds, (size_t)(nwords * 8));
-    if (writefds && user_ok((uint64_t)writefds, (uint64_t)(nwords * 8)))
-        copy_from_user(kwrite, writefds, (size_t)(nwords * 8));
+    if (readfds) {
+        if (!user_ok((uint64_t)readfds, (size_t)(nwords * 8)) ||
+            copy_from_user(kread, readfds, (size_t)(nwords * 8)))
+            return -EFAULT;
+    }
+    if (writefds) {
+        if (!user_ok((uint64_t)writefds, (size_t)(nwords * 8)) ||
+            copy_from_user(kwrite, writefds, (size_t)(nwords * 8)))
+            return -EFAULT;
+    }
 
-    /* Build pollfd array */
-    struct { int fd; short events; short revents; } pfd[256];
+    struct k_pollfd pfd[256];
     int npfd = 0;
     for (int i = 0; i < nfds && npfd < 256; i++) {
         int in_read  = kread[i / 64]  & (1ULL << (i % 64));
@@ -33,69 +47,64 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
         if (in_read || in_write) {
             pfd[npfd].fd = i;
             pfd[npfd].events = 0;
-            if (in_read)  pfd[npfd].events |= 1; /* POLLIN */
-            if (in_write) pfd[npfd].events |= 4; /* POLLOUT */
+            if (in_read)  pfd[npfd].events |= POLLIN;
+            if (in_write) pfd[npfd].events |= POLLOUT;
             pfd[npfd].revents = 0;
             npfd++;
         }
     }
-    if (npfd == 0) return 0;
 
-    /* Compute timeout in ms */
     int timeout_ms = -1;
-    if (num == 270 && a5) { /* pselect6: timespec */
+    if (num == 270 && a5) {
         struct { long sec; long nsec; } ts;
-        if (user_ok(a5, 16)) {
-            copy_from_user(&ts, (void *)a5, 16);
-            timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
-        }
-    } else if (num == 23 && a5) { /* select: timeval */
+        if (!user_ok(a5, 16) || copy_from_user(&ts, (void *)a5, 16)) return -EFAULT;
+        timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
+    } else if (num == 23 && a5) {
         struct { long sec; long usec; } tv;
-        if (user_ok(a5, 16)) {
-            copy_from_user(&tv, (void *)a5, 16);
-            timeout_ms = (int)(tv.sec * 1000 + tv.usec / 1000);
-        }
+        if (!user_ok(a5, 16) || copy_from_user(&tv, (void *)a5, 16)) return -EFAULT;
+        timeout_ms = (int)(tv.sec * 1000 + tv.usec / 1000);
     }
 
-    long ret = do_poll(pfd, npfd, timeout_ms);
+    long ret = 0;
+    if (npfd > 0) {
+        thread_t *t = thread_current();
+        if (!t) return -EFAULT;
+        ret = poll_loop(pfd, npfd, 0, timeout_ms, t);
+        epoll_sleeper_remove_ext(t);
+        t->wake_at = 0;
+        if (ret < 0 && ret != -EINTR) return ret;
+    }
 
-    /* Write back fd_set bitmaps */
-    uint64_t out_read[4] = {0}, out_write[4] = {0};
+    uint64_t out_read[4] = {0}, out_write[4] = {0}, out_except[4] = {0};
     int total_ready = 0;
     for (int i = 0; i < npfd; i++) {
-        if (pfd[i].revents & 1) { /* POLLIN */
+        if (pfd[i].revents & POLLIN) {
             out_read[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
         }
-        if (pfd[i].revents & 4) { /* POLLOUT */
+        if (pfd[i].revents & POLLOUT) {
             out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
         }
-        if (pfd[i].revents & 0x18) { /* POLLERR|POLLHUP → both read and write */
+        if (pfd[i].revents & 0x18) {
             out_read[pfd[i].fd / 64]  |= (1ULL << (pfd[i].fd % 64));
             out_write[pfd[i].fd / 64] |= (1ULL << (pfd[i].fd % 64));
             total_ready++;
         }
     }
-    if (readfds && user_ok((uint64_t)readfds, (uint64_t)(nwords * 8)))
-        copy_to_user(readfds, out_read, (size_t)(nwords * 8));
-    if (writefds && user_ok((uint64_t)writefds, (uint64_t)(nwords * 8)))
-        copy_to_user(writefds, out_write, (size_t)(nwords * 8));
-    if (exceptfds && user_ok((uint64_t)exceptfds, (uint64_t)(nwords * 8))) {
-        uint64_t zero[4] = {0};
-        copy_to_user(exceptfds, zero, (size_t)(nwords * 8));
+    if (readfds && copy_to_user(readfds, out_read, (size_t)(nwords * 8)))
+        return -EFAULT;
+    if (writefds && copy_to_user(writefds, out_write, (size_t)(nwords * 8)))
+        return -EFAULT;
+    if (exceptfds && user_ok((uint64_t)exceptfds, (size_t)(nwords * 8))) {
+        if (copy_to_user(exceptfds, out_except, (size_t)(nwords * 8)))
+            return -EFAULT;
     }
-    return total_ready > 0 ? (long)total_ready : (ret == 0 ? 0 : ret);
+    if (ret == -EINTR) return -EINTR;
+    return total_ready;
 }
 
 /* ── SYS_POLL (7) — generic FD polling ── */
-
-struct k_pollfd { int fd; short events; short revents; };
-#define POLLIN  0x0001
-#define POLLOUT 0x0004
-
-extern void epoll_sleeper_add_ext(thread_t *t);
-extern void epoll_sleeper_remove_ext(thread_t *t);
 
 static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
                       int timeout, thread_t *t) {
@@ -120,7 +129,8 @@ static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
             if (kfds[i].revents) ready++;
         }
         if (ready > 0) {
-            copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
+            if (fds_ptr)
+                copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
             return ready;
         }
         if (timeout == 0) return 0;
