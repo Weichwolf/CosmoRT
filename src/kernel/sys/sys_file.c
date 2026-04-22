@@ -1161,6 +1161,69 @@ static struct flock_entry *flock_lease_find(uint64_t ino, void *owner) {
     return 0;
 }
 
+/* ── Deadlock-Detection fuer F_SETLKW ────────────
+ *
+ * Jeder Blocker-Wait traegt sich in flock_waiters ein: waiter_pid -> blocker_pid.
+ * Vor dem Schlafen fuer (me -> target) prueft flock_deadlock ob target -> X
+ * -> ... -> me existiert (Zyklus). Linux fs/locks.c:posix_locks_deadlock macht
+ * das ebenfalls mit einem BFS im blocked_lock_list. */
+
+#define FLOCK_DEADLOCK_MAX_DEPTH 32
+
+struct flock_waiter {
+    struct flock_waiter *next;
+    uint32_t waiter_pid;   /* Prozess, der im F_SETLKW haengt */
+    uint32_t blocker_pid;  /* Besitzer der blockierenden Lock */
+};
+
+static slab_t flock_waiter_slab;
+static int flock_waiter_slab_inited;
+static struct flock_waiter *flock_waiter_head;
+
+static void flock_waiter_slab_ensure(void) {
+    if (__builtin_expect(flock_waiter_slab_inited, 1)) return;
+    slab_init_dynamic(&flock_waiter_slab, (int)sizeof(struct flock_waiter), 4);
+    flock_waiter_slab_inited = 1;
+}
+
+/* Caller holds flock_lock. Liefert 1 wenn waiter_pid irgendwann ueber die
+ * Wait-Kette wieder auf my_pid zeigt (Zyklus). FIFO-BFS, Depth-limit gegen
+ * pathologische Graphen. */
+static int flock_deadlock(uint32_t my_pid, uint32_t blocker_pid) {
+    if (blocker_pid == 0) return 0;
+    if (blocker_pid == my_pid) return 1;
+    uint32_t cur = blocker_pid;
+    for (int depth = 0; depth < FLOCK_DEADLOCK_MAX_DEPTH; depth++) {
+        uint32_t next = 0;
+        for (struct flock_waiter *w = flock_waiter_head; w; w = w->next) {
+            if (w->waiter_pid == cur) { next = w->blocker_pid; break; }
+        }
+        if (!next) return 0;
+        if (next == my_pid) return 1;
+        cur = next;
+    }
+    return 0;
+}
+
+static struct flock_waiter *flock_waiter_add(uint32_t waiter_pid, uint32_t blocker_pid) {
+    flock_waiter_slab_ensure();
+    struct flock_waiter *w = (struct flock_waiter *)slab_alloc(&flock_waiter_slab);
+    if (!w) return 0;
+    w->waiter_pid = waiter_pid;
+    w->blocker_pid = blocker_pid;
+    w->next = flock_waiter_head;
+    flock_waiter_head = w;
+    return w;
+}
+
+static void flock_waiter_remove(struct flock_waiter *w) {
+    if (!w) return;
+    struct flock_waiter **pp = &flock_waiter_head;
+    while (*pp && *pp != w) pp = &(*pp)->next;
+    if (*pp) *pp = w->next;
+    slab_free(&flock_waiter_slab, w);
+}
+
 /* Remove all locks held by pid on a given inode — called on close(fd).
  * POSIX: close() releases all byte-range POSIX locks held by the calling
  * process on the underlying file. OFD/FLOCK locks persist until the last
@@ -1359,17 +1422,43 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
     spin_unlock(&flock_lock);
     if (!is_wait) return r;
 
+    /* Waiter-Eintrag fuer Deadlock-Detection. POSIX-Lock-Konflikte werden
+     * ueber pid tracked; OFD-Lock-Konflikte ebenfalls via pid des Haltenden
+     * (owner-Kette zu pid im struct flock_entry mapped). */
+    struct flock_waiter *waiter_slot = 0;
+
     while (r == -EAGAIN) {
         thread_t *th = thread_current();
         if (th && th->proc) {
             uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
-            if (deliverable) return -EINTR;
+            if (deliverable) {
+                if (waiter_slot) { spin_lock(&flock_lock); flock_waiter_remove(waiter_slot); spin_unlock(&flock_lock); }
+                return -EINTR;
+            }
         }
+        /* Vor dem Blocken: Deadlock-Check. Finde aktuellen Blocker, registriere
+         * Wait-Edge, pruefe auf Zyklus (nur bei POSIX-Locks — OFD-Locks haben
+         * keine Prozess-Identitaet in Linux deadlock-detection). */
+        spin_lock(&flock_lock);
+        struct flock_entry *c = flock_byterange_conflict(ino, kind, pid, owner,
+                                                          ufl.l_type, start, end);
+        if (c && kind == FL_POSIX) {
+            if (flock_deadlock(pid, c->pid)) {
+                if (waiter_slot) flock_waiter_remove(waiter_slot);
+                spin_unlock(&flock_lock);
+                return -EDEADLK;
+            }
+            if (!waiter_slot) waiter_slot = flock_waiter_add(pid, c->pid);
+            else waiter_slot->blocker_pid = c->pid;
+        }
+        spin_unlock(&flock_lock);
+
         thread_block_ms(10);
         spin_lock(&flock_lock);
         r = flock_byterange_setlk(ino, kind, pid, owner, ufl.l_type, start, end);
         spin_unlock(&flock_lock);
     }
+    if (waiter_slot) { spin_lock(&flock_lock); flock_waiter_remove(waiter_slot); spin_unlock(&flock_lock); }
     return r;
 }
 
