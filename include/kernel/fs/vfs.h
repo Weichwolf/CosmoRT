@@ -168,6 +168,12 @@ struct vfs_file {
     uint64_t disk_ino;          /* ext4 */
     uint64_t disk_size;         /* ext4 cached size */
     uint64_t disk_dir_ino;      /* ext4 dir iteration */
+
+    /* fcntl F_SETOWN/F_SETSIG fuer SIGIO/dnotify.
+     * f_owner < 0: PGRP-Owner (do_kill-Konvention)
+     * f_sig == 0: default SIGIO (29) */
+    int f_owner;
+    int f_sig;
 };
 
 /* ── Mount table API ────────────────────────────── */

@@ -69,6 +69,15 @@ typedef struct process {
     /* alarm(2): per-process SIGALRM timer (ms deadline, 0 = inactive) */
     uint64_t    alarm_deadline_ms;
 
+    /* dnotify (F_NOTIFY): Ring pending {sig, fd}-Events fuer SA_SIGINFO.
+     * Linux haelt rt-sigqueue pro (prozess, signal); wir serialisieren
+     * die (sig, fd)-Paare in einer kleinen FIFO. Wird in deliver_signal
+     * beim Passenden Signal geleert -> si_fd. */
+    int         dnotify_q_sig[16];
+    int         dnotify_q_fd[16];
+    int         dnotify_q_head;
+    int         dnotify_q_tail;
+
     /* Executable path (set by execve, read by /proc/self/exe) */
     char        exe_path[256];
 

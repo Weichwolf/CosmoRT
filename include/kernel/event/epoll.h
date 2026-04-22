@@ -84,6 +84,15 @@ int  inotify_has_events(void *obj);
 /* Queue inotify event (called from VFS operations) */
 void inotify_event(const char *path, uint32_t mask);
 
+/* dnotify (fcntl F_NOTIFY) — directory-watch mit Legacy-SIGIO-Delivery.
+ * dnotify_ctl wird aus do_fcntl aufgerufen; dnotify_fire aus VFS-Ops. */
+struct process;
+long dnotify_ctl(int fd, const char *abspath, uint32_t arg, int sig);
+void dnotify_fd_closed(struct process *p, int fd);
+void dnotify_proc_exit(struct process *p);
+void dnotify_fire(const char *event_path, uint32_t mask);
+int  dnotify_queue_pop_fd(struct process *p, int sig);
+
 /* FD readiness check — implemented in syscall.c (has access to all FD types) */
 uint32_t fd_poll_readiness(int fd, uint32_t interest);
 

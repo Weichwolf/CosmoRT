@@ -234,7 +234,21 @@ void deliver_signal(thread_t *t, int signo) {
         uint64_t fault = t->fault_addr;
         kmemcpy(&si._pad[0], &fault, 8);
     } else {
-        si.si_code = 0; /* SI_USER */
+        /* Linux siginfo_t fuer POLL/dnotify: si_code = SI_POLL (-6),
+         * si_band im ersten _pad-Slot, si_fd im zweiten (Layout-Offsets
+         * entsprechen siginfo_t._sifields._sigpoll.{si_band=long, si_fd=int}).
+         * Unser sig_siginfo_t hat _pad ab Byte 16: bytes 16-23 = band,
+         * bytes 24-27 = fd. */
+        extern int dnotify_queue_pop_fd(process_t *p, int sig);
+        int fd = dnotify_queue_pop_fd(p, signo);
+        if (fd >= 0) {
+            si.si_code = -6; /* SI_POLL (Linux include/uapi/asm-generic/siginfo.h) */
+            long band = 0;
+            kmemcpy(&si._pad[0], &band, 8);
+            kmemcpy(&si._pad[8], &fd, 4);
+        } else {
+            si.si_code = 0; /* SI_USER */
+        }
     }
 
     uint64_t restorer_addr;

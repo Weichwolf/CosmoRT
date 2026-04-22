@@ -17,6 +17,10 @@ void proc_cleanup(process_t *p) {
     extern void flock_release_pid(uint32_t pid);
     flock_release_pid(p->pid);
 
+    /* Release dnotify-Watches des Prozesses */
+    extern void dnotify_proc_exit(struct process *p);
+    dnotify_proc_exit(p);
+
     /* Close all FDs — decrement refcount, free when last ref.
      * exit_kill_process already does this, so entries may be FD_NONE. */
     for (int i = 0; i < p->fds.max_slots; i++) {

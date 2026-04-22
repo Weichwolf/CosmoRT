@@ -92,7 +92,8 @@ KERN_EVENT = $(BUILD)/kernel/event/epoll.o \
              $(BUILD)/kernel/event/eventfd.o \
              $(BUILD)/kernel/event/timerfd.o \
              $(BUILD)/kernel/event/signalfd.o \
-             $(BUILD)/kernel/event/inotify.o
+             $(BUILD)/kernel/event/inotify.o \
+             $(BUILD)/kernel/event/dnotify.o
 
 KERN_VT   = $(BUILD)/kernel/vt/vt.o \
             $(BUILD)/kernel/vt/pty.o \

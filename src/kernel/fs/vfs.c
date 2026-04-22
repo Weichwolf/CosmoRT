@@ -538,7 +538,9 @@ int wc_peek_writers(int backend, uint64_t ino) {
 /* ── File alloc/free ─────────────────────────────── */
 
 struct vfs_file *file_alloc(void) {
-    return (struct vfs_file *)slab_alloc(&file_slab);
+    struct vfs_file *f = (struct vfs_file *)slab_alloc(&file_slab);
+    if (f) { f->f_owner = 0; f->f_sig = 0; }
+    return f;
 }
 
 void file_free(struct vfs_file *f) {

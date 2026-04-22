@@ -2,6 +2,7 @@
 
 #include "internal.h"
 #include "core/event_queue.h"
+#include "event/epoll.h"
 
 /* Resolve a relative path against CWD, handling "." and ".." components.
  * chroot root (p->root) prepended to absolute paths; ".." above root
@@ -437,6 +438,8 @@ long do_close(int fd) {
     if (!p) return -EFAULT;
     fd_entry_t *fde = fd_get(&p->fds, fd);
     if (!fde) return -EBADF;
+    /* dnotify-Watches auf diesen fd freigeben (no-op wenn keiner). */
+    dnotify_fd_closed(p, fd);
     if (fde->type == FD_FILE) {
         uint64_t ino = flock_ino(fde);
         if (ino) flock_release(ino, p->pid);
@@ -1568,22 +1571,29 @@ long do_fcntl(int fd, int cmd, long arg) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
             return pipe_fcntl_getown((struct pipe *)fde->obj, end);
         }
+        if (fde->type == FD_FILE && fde->obj)
+            return ((struct vfs_file *)fde->obj)->f_owner;
         return 0;
     case F_SETOWN:
         if (fde->type == FD_PIPE) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
             return pipe_fcntl_setown((struct pipe *)fde->obj, end, (int)arg);
         }
+        if (fde->type == FD_FILE && fde->obj) {
+            ((struct vfs_file *)fde->obj)->f_owner = (int)arg;
+        }
         return 0;
     case F_GETOWN_EX: {
         struct k_f_owner_ex ex = { F_OWNER_PID, 0 };
+        int pid = 0;
         if (fde->type == FD_PIPE) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
-            int pid = (int)pipe_fcntl_getown((struct pipe *)fde->obj, end);
-            /* Linux: negative Wert = PGRP-Owner; sonst PID bzw. 0 */
-            if (pid < 0) { ex.type = F_OWNER_PGRP; ex.pid = -pid; }
-            else         { ex.type = F_OWNER_PID;  ex.pid = pid; }
+            pid = (int)pipe_fcntl_getown((struct pipe *)fde->obj, end);
+        } else if (fde->type == FD_FILE && fde->obj) {
+            pid = ((struct vfs_file *)fde->obj)->f_owner;
         }
+        if (pid < 0) { ex.type = F_OWNER_PGRP; ex.pid = -pid; }
+        else         { ex.type = F_OWNER_PID;  ex.pid = pid; }
         if (copy_to_user((void *)arg, &ex, sizeof(ex)) < 0) return -EFAULT;
         return 0;
     }
@@ -1592,11 +1602,13 @@ long do_fcntl(int fd, int cmd, long arg) {
         if (copy_from_user(&ex, (void *)arg, sizeof(ex)) < 0) return -EFAULT;
         if (ex.type != F_OWNER_TID && ex.type != F_OWNER_PID &&
             ex.type != F_OWNER_PGRP) return -EINVAL;
+        int pid = ex.pid;
+        if (ex.type == F_OWNER_PGRP) pid = -pid;
         if (fde->type == FD_PIPE) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
-            int pid = ex.pid;
-            if (ex.type == F_OWNER_PGRP) pid = -pid;
             pipe_fcntl_setown((struct pipe *)fde->obj, end, pid);
+        } else if (fde->type == FD_FILE && fde->obj) {
+            ((struct vfs_file *)fde->obj)->f_owner = pid;
         }
         return 0;
     }
@@ -1605,6 +1617,8 @@ long do_fcntl(int fd, int cmd, long arg) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
             return pipe_fcntl_getsig((struct pipe *)fde->obj, end);
         }
+        if (fde->type == FD_FILE && fde->obj)
+            return ((struct vfs_file *)fde->obj)->f_sig;
         return 0;
     case F_SETSIG:
         if ((int)arg < 0 || (int)arg > 64) return -EINVAL;
@@ -1612,13 +1626,21 @@ long do_fcntl(int fd, int cmd, long arg) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
             return pipe_fcntl_setsig((struct pipe *)fde->obj, end, (int)arg);
         }
+        if (fde->type == FD_FILE && fde->obj) {
+            ((struct vfs_file *)fde->obj)->f_sig = (int)arg;
+        }
         return 0;
     case F_SETLEASE:
         return fcntl_setlease(fde, arg);
     case F_GETLEASE:
         return fcntl_getlease(fde);
-    case F_NOTIFY:
-        return 0;
+    case F_NOTIFY: {
+        /* dnotify: nur auf Directory-FDs zulaessig. Pfad kommt aus vfs_file. */
+        if (fde->type != FD_FILE) return -ENOTDIR;
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (!f || f->type != VFS_DIR) return -ENOTDIR;
+        return dnotify_ctl(fd, f->path, (uint32_t)arg, f->f_sig);
+    }
     case F_GETPIPE_SZ: {
         if (fde->type != FD_PIPE) return -EINVAL;
         struct pipe *pp = (struct pipe *)fde->obj;

@@ -162,7 +162,12 @@ int vfs_chmod(const char *path, uint32_t mode) {
     }
     int ro = vfs_mount_writable(mnt);
     if (ro < 0) return ro;
-    return mnt->i_ops->chmod(mnt, relpath, mode);
+    int r = mnt->i_ops->chmod(mnt, relpath, mode);
+    if (r == 0) {
+        extern void dnotify_fire(const char *event_path, uint32_t mask);
+        dnotify_fire(path, 0x00000020 /* DN_ATTRIB */);
+    }
+    return r;
 }
 
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
