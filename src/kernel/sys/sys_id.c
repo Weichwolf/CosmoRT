@@ -11,6 +11,27 @@
 
 static process_t *cred_self(void) { return proc_current(); }
 
+/* Linux security/commoncap.c cap_emulate_setxuid: on uid transitions
+ * involving root, narrow the effective/permitted cap sets so that an
+ * unprivileged uid actually loses its capabilities. Called after the
+ * new r/e/s uids are written, with the prior values passed in.
+ * Assumes SECURE_KEEP_CAPS is off (we don't implement securebits). */
+static void cap_emulate_setxuid(process_t *p, uint32_t old_ruid,
+                                uint32_t old_euid, uint32_t old_suid) {
+    int had_root = (old_ruid == UID_ROOT) || (old_euid == UID_ROOT) ||
+                   (old_suid == UID_ROOT);
+    int has_root = (p->ruid == UID_ROOT) || (p->euid == UID_ROOT) ||
+                   (p->suid == UID_ROOT);
+    if (had_root && !has_root) {
+        p->cap_permitted = 0;
+        p->cap_effective = 0;
+    }
+    if (old_euid != UID_ROOT && p->euid == UID_ROOT)
+        p->cap_effective = 0;
+    if (old_euid == UID_ROOT && p->euid != UID_ROOT)
+        p->cap_effective = 0;
+}
+
 long do_getuid(void)  { process_t *p = cred_self(); return p ? (long)p->ruid : 0; }
 long do_getgid(void)  { process_t *p = cred_self(); return p ? (long)p->rgid : 0; }
 long do_geteuid(void) { process_t *p = cred_self(); return p ? (long)p->euid : 0; }
@@ -25,13 +46,16 @@ long do_setuid(long uid) {
     process_t *p = cred_self();
     if (!p) return -EFAULT;
     uint32_t u = (uint32_t)uid;
+    uint32_t old_ruid = p->ruid, old_euid = p->euid, old_suid = p->suid;
     if (p->euid == UID_ROOT) {
         p->ruid = p->euid = p->suid = p->fsuid = u;
+        cap_emulate_setxuid(p, old_ruid, old_euid, old_suid);
         return 0;
     }
     if (u == p->ruid || u == p->suid) {
         p->euid = u;
         p->fsuid = u;
+        cap_emulate_setxuid(p, old_ruid, old_euid, old_suid);
         return 0;
     }
     return -EPERM;
@@ -71,11 +95,13 @@ long do_setreuid(long ruid, long euid) {
         if (euid != -1 && new_euid != p->ruid && new_euid != p->euid && new_euid != p->suid)
             return -EPERM;
     }
+    uint32_t old_ruid = p->ruid, old_euid = p->euid, old_suid = p->suid;
     int set_saved = (ruid != -1) || (euid != -1 && new_euid != p->ruid);
     p->ruid = new_ruid;
     p->euid = new_euid;
     p->fsuid = new_euid;
     if (set_saved) p->suid = new_euid;
+    cap_emulate_setxuid(p, old_ruid, old_euid, old_suid);
     return 0;
 }
 
@@ -112,10 +138,12 @@ long do_setresuid(long ruid, long euid, long suid) {
         if (suid != -1 && new_suid != p->ruid && new_suid != p->euid && new_suid != p->suid)
             return -EPERM;
     }
+    uint32_t old_ruid = p->ruid, old_euid = p->euid, old_suid = p->suid;
     p->ruid = new_ruid;
     p->euid = new_euid;
     p->suid = new_suid;
     p->fsuid = new_euid;
+    cap_emulate_setxuid(p, old_ruid, old_euid, old_suid);
     return 0;
 }
 

@@ -221,6 +221,34 @@ static void test_capbset(void) {
     }
 }
 
+/* ── setuid clears capability sets (Linux cap_emulate_setxuid) ── */
+static void test_caps_setxuid_clear(void) {
+    puts("\n[ltp/caps-setxuid-clear]\n");
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        struct cap_header hdr = { .version = LINUX_CAPABILITY_VERSION_3, .pid = 0 };
+        struct cap_data data[2];
+        for (int i = 0; i < (int)sizeof(data); i++) ((char *)&data)[i] = 0;
+
+        /* setresuid(1000, 1000, 1000) from root → non-root everywhere */
+        if (sc3(SYS_SETRESUID, 1000, 1000, 1000) != 0) sc1(SYS_EXIT, 10);
+
+        sc2(SYS_CAPGET, (long)&hdr, (long)data);
+        if (data[0].effective != 0) sc1(SYS_EXIT, 20);
+        if (data[0].permitted != 0) sc1(SYS_EXIT, 21);
+        sc1(SYS_EXIT, 0);
+    }
+    check("fork", pid > 0);
+    if (pid > 0) {
+        int status = 0;
+        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+        int code = (status >> 8) & 0xFF;
+        check_val("setuid clears caps", (long)code, 0);
+    }
+}
+
+TEST("ltp/caps-setxuid-clear",    test_caps_setxuid_clear);
 TEST("ltp/capget01",              test_capget01);
 TEST("ltp/capget02-einval-ver",   test_capget02_einval_version);
 TEST("ltp/capget02-einval-pid",   test_capget02_einval_pid);
