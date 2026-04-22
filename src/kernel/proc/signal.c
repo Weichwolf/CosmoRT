@@ -482,12 +482,6 @@ long do_tgkill(int tgid, int tid, int sig) {
         /* Everything else (fatal): check if signal is blocked on target thread */
         if (SIG_BIT(sig) & target->sig_blocked) {
             target->sig_thread_pending |= SIG_BIT(sig);
-            /* Wake a thread sleeping in sigtimedwait on this sig. Linux
-             * signalfd_notify/recalc_sigpending_and_wake does the same for
-             * thread-directed pending bits. */
-            extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-            if (target->state == THREAD_BLOCKED)
-                event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             return 0;
         }
         /* Signal is deliverable — terminate via kill_one (process-level) */
