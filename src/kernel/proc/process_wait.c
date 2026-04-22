@@ -2,6 +2,7 @@
 
 #include "proc/proc_internal.h"
 #include "core/time_ns.h"
+#include "linux/signal.h"
 
 /* ── Process cleanup (2.3) ───────────────────────── */
 
@@ -165,10 +166,21 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
 
                 if (wstatus) {
                     int kstatus;
-                    if (child->exit_signal)
+                    if (child->exit_signal) {
                         kstatus = child->exit_signal & 0x7F; /* killed by signal */
-                    else
+                        /* Linux: sig_kernel_coredump(sig) setzt 0x80 in wait-status.
+                         * core-dump-erzeugende Signale: ABRT/QUIT/SEGV/BUS/FPE/ILL/
+                         * XFSZ/XCPU/SYS/TRAP. */
+                        switch (child->exit_signal) {
+                        case SIGABRT: case SIGQUIT: case SIGSEGV: case SIGBUS:
+                        case SIGFPE:  case SIGILL:  case SIGTRAP: case SIGXFSZ:
+                        case SIGXCPU: case SIGSYS:
+                            kstatus |= 0x80;
+                            break;
+                        }
+                    } else {
                         kstatus = (exit_status & 0xFF) << 8;  /* normal exit */
+                    }
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
 
