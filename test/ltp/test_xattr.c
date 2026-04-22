@@ -106,7 +106,29 @@ static void test_flistxattr03(void) {
     sc1(SYS_UNLINK, (long)"/tmp/xattr_list3");
 }
 
+/* ── fgetxattr02-setup: mknod(FIFO/CHR/BLK) darf nicht EPERM liefern ── */
+
+static void test_fgetxattr02_setup(void) {
+    puts("\n[ltp/fgetxattr02-setup]\n");
+
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_fifo");
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_chr");
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_blk");
+
+    long r = sc3(SYS_MKNOD, (long)"/tmp/xattr_fifo", S_IFIFO | 0777, 0);
+    check_val("mknod FIFO", r, 0);
+    r = sc3(SYS_MKNOD, (long)"/tmp/xattr_chr", S_IFCHR | 0777, 0);
+    check_val("mknod CHR (root)", r, 0);
+    r = sc3(SYS_MKNOD, (long)"/tmp/xattr_blk", S_IFBLK | 0777, 0);
+    check_val("mknod BLK (root)", r, 0);
+
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_fifo");
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_chr");
+    sc1(SYS_UNLINK, (long)"/tmp/xattr_blk");
+}
+
 TEST("ltp/fgetxattr02-regular",  test_fgetxattr02_regular);
+TEST("ltp/fgetxattr02-setup",    test_fgetxattr02_setup);
 TEST("ltp/fgetxattr03",          test_fgetxattr03);
 TEST("ltp/fsetxattr",            test_fsetxattr);
 TEST("ltp/flistxattr01",         test_flistxattr01);

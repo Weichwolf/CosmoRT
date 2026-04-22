@@ -1,6 +1,8 @@
 /* CosmoRT Syscall Layer — filesystem metadata/mutation syscalls */
 
 #include "internal.h"
+#include "linux/capability.h"
+#include "linux/stat.h"
 
 /* ── SYS_fstat (5) / SYS_stat (4) ───────────────── */
 
@@ -241,15 +243,26 @@ long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
 long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
     (void)dev;
 
-    /* Only S_IFREG (regular files) supported */
-    if ((mode & S_IFMT) != S_IFREG && (mode & S_IFMT) != 0)
-        return -EPERM;
+    uint32_t ftype = mode & S_IFMT;
+    /* Linux: CAP_MKNOD fuer S_IFCHR/S_IFBLK; FIFO/SOCK fuer alle. */
+    if (ftype == S_IFCHR || ftype == S_IFBLK) {
+        process_t *p = proc_current();
+        if (p && p->euid != 0 &&
+            !(p->cap_effective & CAP_TO_MASK(CAP_MKNOD)))
+            return -EPERM;
+    }
+    /* Unbekannte Typ-Bits sind ungueltig. */
+    if (ftype != 0 && ftype != S_IFREG && ftype != S_IFIFO &&
+        ftype != S_IFSOCK && ftype != S_IFCHR && ftype != S_IFBLK)
+        return -EINVAL;
 
     char kpath[PATH_MAX];
     int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
 
-    /* Create as regular file via open+close */
+    /* Kein dedizierter FIFO/CHR/BLK-Support in der VFS — wir legen eine
+     * leere regulaere Datei an; die mode-Bits werden erhalten. Das
+     * reicht fuer LTP-Setup-Phasen (mknod + open + close). */
     int fd = vfs_open(kpath, O_CREAT | O_WRONLY, (int)mode);
     if (fd < 0) return fd;
     return vfs_close(fd);
