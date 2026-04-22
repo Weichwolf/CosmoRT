@@ -228,7 +228,7 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != USOCK_CREATED) return -EINVAL;
-    if (s->path[0] != '\0') return -EINVAL; /* already bound — no rebind */
+    if (s->path_len > 0) return -EINVAL; /* already bound — no rebind */
 
     struct k_sockaddr_un k_addr;
     int copy_len = addrlen < (int)sizeof(k_addr) ? addrlen : (int)sizeof(k_addr);
@@ -240,29 +240,35 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     if (max_path <= 0) return -EINVAL;
     if (max_path > 108) max_path = 108;
 
-    /* Stage path into local buffer, then commit only after collision check
-     * so a failed bind() leaves s->path untouched (Linux semantics).
-     * sun_path need not be null-terminated; find NUL up to max_path. */
-    char new_path[109];
-    int path_len = 0;
-    for (int i = 0; i < max_path; i++) {
-        if (k_addr.sun_path[i] == '\0') break;
-        new_path[i] = k_addr.sun_path[i];
-        path_len++;
-    }
-    if (path_len == 0) return -EINVAL;
-    new_path[path_len] = '\0';
+    char new_path[108];
+    int new_len;
+    int is_abstract = (k_addr.sun_path[0] == '\0');
 
-    /* Pathname socket (sun_path[0] != 0): verify parent directory is a dir.
-     * Abstract sockets (sun_path[0] == 0) have no filesystem presence. */
-    if (new_path[0] != '\0') {
+    if (is_abstract) {
+        /* Abstract namespace: full addrlen-2 bytes, including leading NUL. */
+        new_len = max_path;
+        for (int i = 0; i < new_len; i++) new_path[i] = k_addr.sun_path[i];
+    } else {
+        /* Pathname: C-string up to first NUL. */
+        new_len = 0;
+        for (int i = 0; i < max_path; i++) {
+            if (k_addr.sun_path[i] == '\0') break;
+            new_path[i] = k_addr.sun_path[i];
+            new_len++;
+        }
+        if (new_len == 0) return -EINVAL;
+
+        /* Pathname socket: verify parent directory is a dir. */
+        char cpath[109];
+        for (int i = 0; i < new_len; i++) cpath[i] = new_path[i];
+        cpath[new_len] = '\0';
         int slash = -1;
-        for (int i = 0; new_path[i]; i++) if (new_path[i] == '/') slash = i;
+        for (int i = 0; cpath[i]; i++) if (cpath[i] == '/') slash = i;
         if (slash > 0) {
             char parent[USOCK_PATH_MAX_RESOLVE];
             char resolved[USOCK_PATH_MAX_RESOLVE];
             int i = 0;
-            for (; i < slash && i < USOCK_PATH_MAX_RESOLVE - 1; i++) parent[i] = new_path[i];
+            for (; i < slash && i < USOCK_PATH_MAX_RESOLVE - 1; i++) parent[i] = cpath[i];
             parent[i] = '\0';
             if (resolve_path(parent, resolved, USOCK_PATH_MAX_RESOLVE) == 0) {
                 struct k_stat st;
@@ -276,19 +282,42 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
-        if (o == s || !o->path[0]) continue;
+        if (o == s || o->path_len == 0) continue;
+        if (o->path_len != new_len) continue;
         int match = 1;
-        for (int j = 0; j < 108; j++) {
+        for (int j = 0; j < new_len; j++) {
             if (o->path[j] != new_path[j]) { match = 0; break; }
-            if (new_path[j] == '\0') break;
         }
         if (match) {
             spin_unlock_irq(&usock_lock, flags);
             return -EADDRINUSE;
         }
     }
-    kmemcpy(s->path, new_path, 108);
+    for (int i = 0; i < new_len; i++) s->path[i] = new_path[i];
+    s->path_len = new_len;
     spin_unlock_irq(&usock_lock, flags);
+
+    /* Pathname sockets create a filesystem node. Linux uses S_IFSOCK;
+     * we use a regular file so the path is visible to stat/unlink — our
+     * VFS does not distinguish socket inodes, and the socket itself is
+     * a kernel object looked up via usock_active_head. */
+    if (!is_abstract) {
+        char cpath[109];
+        for (int i = 0; i < new_len; i++) cpath[i] = new_path[i];
+        cpath[new_len] = '\0';
+        /* O_EXCL so a pre-existing file turns into EADDRINUSE (Linux). */
+        int nfd = vfs_open(cpath, O_CREAT | O_EXCL | O_WRONLY, 0666);
+        if (nfd < 0) {
+            uint64_t f2;
+            spin_lock_irq(&usock_lock, &f2);
+            for (int i = 0; i < new_len; i++) s->path[i] = 0;
+            s->path_len = 0;
+            spin_unlock_irq(&usock_lock, f2);
+            if (nfd == -EEXIST) return -EADDRINUSE;
+            return nfd;
+        }
+        vfs_close(nfd);
+    }
     return 0;
 }
 
@@ -299,7 +328,7 @@ long usock_listen(int fd, int backlog) {
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != USOCK_CREATED) return -EINVAL;
-    if (!s->path[0]) return -EINVAL; /* must be bound */
+    if (s->path_len == 0) return -EINVAL; /* must be bound */
     s->state = USOCK_LISTENING;
     return 0;
 }
@@ -380,11 +409,23 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 
     if (k_addr.sun_family != 1 /* AF_UNIX */) return -EINVAL;
 
-    int path_len = copy_len - 2;
-    if (path_len <= 0 || path_len >= 108) return -EINVAL;
+    int raw_len = copy_len - 2;
+    if (raw_len <= 0 || raw_len > 108) return -EINVAL;
+    int is_abstract = (k_addr.sun_path[0] == '\0');
     char target[108];
-    kmemcpy(target, k_addr.sun_path, (size_t)path_len);
-    target[path_len] = '\0';
+    int target_len;
+    if (is_abstract) {
+        target_len = raw_len;
+        for (int i = 0; i < target_len; i++) target[i] = k_addr.sun_path[i];
+    } else {
+        target_len = 0;
+        for (int i = 0; i < raw_len; i++) {
+            if (k_addr.sun_path[i] == '\0') break;
+            target[i] = k_addr.sun_path[i];
+            target_len++;
+        }
+        if (target_len == 0) return -EINVAL;
+    }
 
     /* Find listening socket with matching path via active list */
     uint64_t flags;
@@ -392,10 +433,10 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     unix_socket_t *listener = 0;
     for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
         if (o->state != USOCK_LISTENING) continue;
+        if (o->path_len != target_len) continue;
         int match = 1;
-        for (int j = 0; j < 108; j++) {
+        for (int j = 0; j < target_len; j++) {
             if (o->path[j] != target[j]) { match = 0; break; }
-            if (target[j] == '\0') break;
         }
         if (match) { listener = o; break; }
     }

@@ -1026,11 +1026,17 @@ long do_getsockname(int fd, void *addr, int *addrlen) {
             struct k_sockaddr_un ua;
             for (int i = 0; i < (int)sizeof(ua); i++) ((uint8_t *)&ua)[i] = 0;
             ua.sun_family = 1; /* AF_UNIX */
-            int plen = 0;
-            for (; plen < 107 && us->path[plen]; plen++)
-                ua.sun_path[plen] = us->path[plen];
-            /* addrlen returned: sun_family (2) + path + NUL */
-            int out_len = 2 + plen + (plen > 0 ? 1 : 0);
+            int plen = us->path_len;
+            if (plen > 108) plen = 108;
+            for (int i = 0; i < plen; i++) ua.sun_path[i] = us->path[i];
+            /* Linux: pathname sockets report sun_family+path+NUL; abstract
+             * sockets report sun_family+actual_bytes (no trailing NUL);
+             * unnamed sockets report just sun_family (2). */
+            int is_abstract = (plen > 0 && us->path[0] == '\0');
+            int out_len;
+            if (plen == 0)            out_len = 2;
+            else if (is_abstract)     out_len = 2 + plen;
+            else                      out_len = 2 + plen + 1;
             int user_cap = 0;
             if (copy_from_user(&user_cap, addrlen, sizeof(int))) return -EFAULT;
             int copy_len = out_len < user_cap ? out_len : user_cap;

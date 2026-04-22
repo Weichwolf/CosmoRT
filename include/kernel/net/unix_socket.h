@@ -34,8 +34,11 @@ struct unix_socket {
     uint8_t   buf[USOCK_BUF_SIZE];
     int       head, tail, count;
 
-    /* Bound path (empty = unnamed) */
+    /* Bound path. path_len=0: unbound. path_len>0: bound.
+     * Abstract namespace: path[0]==0 with path_len>0 (Linux: paths
+     * starting with NUL are abstract — not on the filesystem). */
     char      path[108];
+    int       path_len;
 
     /* Accept queue (for LISTENING sockets) */
     unix_socket_t *backlog[USOCK_BACKLOG_MAX];
