@@ -44,6 +44,12 @@ struct unix_socket {
     /* Flags from socket() */
     int       flags;
 
+    /* MSG_OOB state (AF_UNIX SOCK_STREAM): genau 1 Byte OOB-Puffer pro
+     * Empfaenger. Linux haelt das im oob_skb (SKB); wir serialisieren nur.
+     * oob_present=1: oob_byte gueltig; wird von recv(MSG_OOB) geholt. */
+    uint8_t   oob_byte;
+    int       oob_present;
+
     /* Blocked reader (waiting for data) */
     void     *blocked_reader;   /* thread_t* — blocked in read() */
     /* Blocked accept (waiting for incoming connection) */
@@ -64,6 +70,8 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags);
 long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen);
 long usock_sendmsg(int fd, const void *msghdr, int flags);
 long usock_recvmsg(int fd, void *msghdr, int flags);
+long usock_send(int fd, const void *buf, long len, int flags);
+long usock_recv(int fd, void *buf, long len, int flags);
 
 /* FD ops (called from do_read/do_write/do_close) */
 long usock_read(int fd, void *buf, long count);

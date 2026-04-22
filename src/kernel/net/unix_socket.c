@@ -748,3 +748,83 @@ recvdone:
     }
     return total;
 }
+
+/* sendto(AF_UNIX, flags): MSG_OOB => 1-Byte-OOB-Queue auf peer.
+ * Andere Flags (MSG_DONTWAIT, MSG_NOSIGNAL) wie bei usock_write. */
+#define UMSG_OOB       0x01
+#define UMSG_DONTWAIT  0x40
+#define UMSG_NOSIGNAL  0x4000
+
+long usock_send(int fd, const void *buf, long len, int flags) {
+    unix_socket_t *s = usock_from_fd(fd);
+    if (!s) return -EBADF;
+    if (s->state != USOCK_CONNECTED)
+        return (flags & UMSG_NOSIGNAL) ? -EPIPE : send_sigpipe();
+
+    if (flags & UMSG_OOB) {
+        if (len <= 0) return -EINVAL;
+        uint8_t kbyte;
+        { int r = copy_from_user(&kbyte, buf, 1); if (r) return r; }
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
+        unix_socket_t *peer = s->peer;
+        if (!peer) {
+            spin_unlock_irq(&usock_lock, irqf);
+            return (flags & UMSG_NOSIGNAL) ? -EPIPE : send_sigpipe();
+        }
+        peer->oob_byte = kbyte;
+        peer->oob_present = 1;
+        thread_t *reader = 0;
+        if (peer->blocked_reader) {
+            reader = (thread_t *)peer->blocked_reader;
+            peer->blocked_reader = 0;
+        }
+        spin_unlock_irq(&usock_lock, irqf);
+        if (reader) {
+            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
+        }
+        extern void epoll_wake_all(void);
+        epoll_wake_all();
+        return 1;
+    }
+
+    return usock_write(fd, buf, len);
+}
+
+/* recvfrom(AF_UNIX, flags): MSG_OOB => holt 1-Byte aus OOB-Queue,
+ * -EINVAL wenn keine. MSG_DONTWAIT => EAGAIN statt blocken. */
+long usock_recv(int fd, void *buf, long len, int flags) {
+    unix_socket_t *s = usock_from_fd(fd);
+    if (!s) return -EBADF;
+    if (s->state != USOCK_CONNECTED) return -ENOTCONN;
+
+    if (flags & UMSG_OOB) {
+        if (len <= 0) return 0;
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
+        if (!s->oob_present) {
+            spin_unlock_irq(&usock_lock, irqf);
+            return -EINVAL;
+        }
+        uint8_t kbyte = s->oob_byte;
+        s->oob_present = 0;
+        spin_unlock_irq(&usock_lock, irqf);
+        int r = copy_to_user(buf, &kbyte, 1);
+        if (r) return r;
+        return 1;
+    }
+
+    if (flags & UMSG_DONTWAIT) {
+        uint64_t irqf;
+        spin_lock_irq(&usock_lock, &irqf);
+        if (s->count == 0) {
+            int eof = !s->peer;
+            spin_unlock_irq(&usock_lock, irqf);
+            return eof ? 0 : -EAGAIN;
+        }
+        spin_unlock_irq(&usock_lock, irqf);
+    }
+
+    return usock_read(fd, buf, len);
+}

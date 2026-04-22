@@ -289,8 +289,22 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
 long do_sendto(int fd, const void *buf, long len, int flags,
                const void *dest_addr, int addrlen) {
-    (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
+
+    /* AF_UNIX: delegiere an usock-Path (MSG_OOB etc.) */
+    {
+        process_t *cp = proc_current();
+        if (cp) {
+            fd_entry_t *fde = fd_get(&cp->fds, fd);
+            if (fde && fde->type == FD_UNIX_SOCK) {
+                extern long usock_send(int fd, const void *buf, long len, int flags);
+                (void)dest_addr; (void)addrlen;
+                return usock_send(fd, buf, len, flags);
+            }
+        }
+    }
+
+    (void)flags;
     int err;
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;
@@ -362,8 +376,22 @@ long do_sendto(int fd, const void *buf, long len, int flags,
 
 long do_recvfrom(int fd, void *buf, long len, int flags,
                  void *src_addr, int *addrlen) {
-    (void)flags;
     if (!user_ok((uint64_t)buf, (size_t)len)) return -EFAULT;
+
+    /* AF_UNIX: delegiere an usock-Path (MSG_OOB, MSG_DONTWAIT) */
+    {
+        process_t *cp = proc_current();
+        if (cp) {
+            fd_entry_t *fde = fd_get(&cp->fds, fd);
+            if (fde && fde->type == FD_UNIX_SOCK) {
+                extern long usock_recv(int fd, void *buf, long len, int flags);
+                (void)src_addr; (void)addrlen;
+                return usock_recv(fd, buf, len, flags);
+            }
+        }
+    }
+
+    (void)flags;
     int err;
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;
