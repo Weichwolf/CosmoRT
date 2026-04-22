@@ -189,15 +189,13 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
     process_t *p = t->proc;
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
-    (void)shared;
-    /* Key-Strategie: ALWAYS physische Adresse. Private und Shared-Futex
-     * haben damit dieselbe Semantik — per-process-Pages landen fuer sich,
-     * MAP_SHARED-Pages landen fuer alle Teilnehmer auf demselben Key.
-     * pid=0 entfaellt, weil die PA bereits prozess-uebergreifend eindeutig
-     * ist. Kein Umschalten zwischen vaddr/pa-Keys noetig — robust_list
-     * und pthread kollidieren nie durch Key-Mismatch. */
-    uint64_t pa = futex_va_to_pa(addr);
-    if (pa) { addr = pa; pid = 0; }
+    /* Shared-Futex: Key = physische Adresse (prozess-uebergreifende
+     * MAP_SHARED-Pages finden sich). Private-Futex behaelt (vaddr, pid) —
+     * ist billiger und fuer pthread/musl-Mutex in single-mm ausreichend. */
+    if (shared) {
+        uint64_t pa = futex_va_to_pa(addr);
+        if (pa) { addr = pa; pid = 0; }
+    }
     if (futex_trace) {
         serial_puts("FW t"); serial_hex64(t->tid);
         serial_puts(" a"); serial_hex64(addr);
@@ -286,9 +284,10 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake, int shared) {
     process_t *p = proc_current();
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
-    (void)shared;
-    uint64_t pa = futex_va_to_pa(addr);
-    if (pa) { addr = pa; pid = 0; }
+    if (shared) {
+        uint64_t pa = futex_va_to_pa(addr);
+        if (pa) { addr = pa; pid = 0; }
+    }
     int bucket = hash_uaddr(addr, pid);
     long woken = 0;
     if (futex_trace) {
@@ -475,10 +474,9 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr1 = (uint64_t)(uintptr_t)uaddr1;
     uint64_t addr2 = (uint64_t)(uintptr_t)uaddr2;
-    uint64_t pa1 = futex_va_to_pa(addr1);
-    uint64_t pa2 = futex_va_to_pa(addr2);
-    if (pa1) { addr1 = pa1; pid = 0; }
-    if (pa2) { addr2 = pa2; }
+    /* REQUEUE ist musl-intern und privat (pthread_cond in einem mm).
+     * Shared-REQUEUE wuerden wir hier ebenfalls via PA abwickeln, aber
+     * der Pfad wird aktuell nicht getroffen. */
 
     int b1 = hash_uaddr(addr1, pid);
     int b2 = hash_uaddr(addr2, pid);
