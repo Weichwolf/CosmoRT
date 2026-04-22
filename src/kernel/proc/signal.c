@@ -228,13 +228,12 @@ long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
             if (any_blocked) {
-                target->sig_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
                 /* Wake Threads in sigtimedwait (sind BLOCKED mit event_wait). */
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                 thread_t *w = target->threads;
                 while (w) {
-                    if (w->state == THREAD_BLOCKED)
-                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     w = w->proc_next;
                 }
             }
@@ -325,12 +324,11 @@ long kill_one(process_t *target, int sig) {
             if (all_blocked) {
                 /* Signal blocked on all threads — set pending und wake
                  * etwaige sigtimedwait-Threads (die in event_wait stehen). */
-                target->sig_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 thread_t *wt = target->threads;
                 while (wt) {
-                    if (wt->state == THREAD_BLOCKED)
-                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     wt = wt->proc_next;
                 }
                 return 0;
@@ -382,15 +380,18 @@ long kill_one(process_t *target, int sig) {
 
     /* User handler registered — set pending bit.
      * Delivery happens on return to userspace via check_pending_signals. */
-    target->sig_pending |= SIG_BIT(sig);
+    __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
 
     /* Wake blocked threads that have this signal unblocked.
-     * event_post wakes via sched_wake (BLOCKED→RUNNABLE CAS). */
+     * Atomic-or pairs with mfence in thread_block_ms: either we see BLOCKED
+     * and sched_wake flips it RUNNABLE, or the sleeper's post-BLOCKED recheck
+     * observes sig_pending and aborts schedule(). No-sleep-on-pending-signal.
+     * event_post additionally feeds sigtimedwait/event_wait consumers. */
     {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
+            if (!(SIG_BIT(sig) & t->sig_blocked))
                 event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             t = t->proc_next;
         }
@@ -467,10 +468,9 @@ long do_tgkill(int tgid, int tid, int sig) {
          * wenn blockiert (sigtimedwait-Pfad). Siehe kill_one-Kommentar. */
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
             if (SIG_BIT(sig) & target->sig_blocked) {
-                target->sig_thread_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-                if (target->state == THREAD_BLOCKED)
-                    event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
             }
             return 0;
         }
@@ -481,7 +481,7 @@ long do_tgkill(int tgid, int tid, int sig) {
 
         /* Everything else (fatal): check if signal is blocked on target thread */
         if (SIG_BIT(sig) & target->sig_blocked) {
-            target->sig_thread_pending |= SIG_BIT(sig);
+            __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
             return 0;
         }
         /* Signal is deliverable — terminate via kill_one (process-level) */
@@ -491,13 +491,10 @@ long do_tgkill(int tgid, int tid, int sig) {
     /* User handler — set per-thread pending and wake target thread.
      * tgkill targets a specific thread, so use thread-level pending
      * (not process-level) to ensure the correct thread handles it. */
-    target->sig_thread_pending |= SIG_BIT(sig);
+    __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
     if (!(SIG_BIT(sig) & target->sig_blocked)) {
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-        if (target->state == THREAD_BLOCKED)
-            event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
-        extern void sched_wake(thread_t *t);
-        sched_wake(target);
+        event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
     }
     return 0;
 }
