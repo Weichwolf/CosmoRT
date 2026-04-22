@@ -1267,6 +1267,17 @@ void flock_release_pid(uint32_t pid) {
             flock_drop(e);
         e = next;
     }
+    /* Stale Waiter-Eintraege fuer diesen pid entfernen (Deadlock-Graph). */
+    struct flock_waiter **wp = &flock_waiter_head;
+    while (*wp) {
+        if ((*wp)->waiter_pid == pid) {
+            struct flock_waiter *dead = *wp;
+            *wp = dead->next;
+            slab_free(&flock_waiter_slab, dead);
+            continue;
+        }
+        wp = &(*wp)->next;
+    }
     spin_unlock(&flock_lock);
 }
 
