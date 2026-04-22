@@ -126,6 +126,13 @@ static void timeout_wake(hrtimer_t *timer) {
 
 /* ── Block: pure timeout sleep (no event queue) ── */
 
+/* Signal-aware sleep via hrtimer. Two races closed:
+ *   (a) signal vor `state = BLOCKED`: re-check after state-set closes window
+ *       because kill_one sets sig_pending before reading state and the mfence
+ *       gives us the pairing publish/observe order.
+ *   (b) signal nach `state = BLOCKED`, vor `schedule()`: kill_one sees BLOCKED
+ *       and event_post → sched_wake CAS flips state→RUNNABLE; schedule() picks
+ *       us immediately (prev == next → early return). */
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
 
@@ -143,6 +150,21 @@ void thread_block_ms(int timeout_ms) {
     hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
 
     cur->state = THREAD_BLOCKED;
+    hal_cpu_mfence();
+
+    if (cur->proc) {
+        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+        uint64_t deliverable = all_pending & ~cur->sig_blocked;
+        if (deliverable) {
+            /* CAS back to RUNNING only if sched_wake didn't already flip us
+             * to RUNNABLE+rq. Otherwise fall through to schedule() — cur is
+             * the leftmost entry and gets picked immediately. */
+            if (__sync_bool_compare_and_swap(&cur->state, THREAD_BLOCKED, THREAD_RUNNING)) {
+                hrtimer_cancel(&timer);
+                return;
+            }
+        }
+    }
 
     extern void schedule(void);
     schedule();
@@ -211,11 +233,19 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
 
         cur->state = THREAD_BLOCKED;
 
-        /* Close race: event arrived between fast-path and BLOCKED */
+        /* Close race: event arrived or signal raised between fast-path and BLOCKED */
         hal_cpu_mfence();
-        if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
-            cur->state = THREAD_RUNNING;
-            continue;
+        int abort = 0;
+        if (hal_cpu_load_acquire(&eq->head) != eq->tail) abort = 1;
+        if (!abort && cur->proc) {
+            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+            if (all_pending & ~cur->sig_blocked) abort = 1;
+        }
+        if (abort) {
+            if (__sync_bool_compare_and_swap(&cur->state, THREAD_BLOCKED, THREAD_RUNNING))
+                continue;
+            /* sched_wake raced and flipped us to RUNNABLE — fall through to
+             * schedule(); sched_pick returns cur immediately. */
         }
 
         extern void schedule(void);
