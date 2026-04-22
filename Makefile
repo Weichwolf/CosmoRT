@@ -242,7 +242,9 @@ QEMU_FLAGS = -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
              -display none \
              -no-reboot \
              -device e1000,netdev=net0 \
-             -netdev user,id=net0
+             -netdev user,id=net0 \
+             -device virtio-net-pci,netdev=net1 \
+             -netdev user,id=net1,net=10.0.3.0/24
 
 qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
@@ -253,7 +255,9 @@ ALPINE_QEMU = $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
   -drive file=$(ESP_IMG),format=raw \
   -drive file=build/alpine.img,format=raw,if=virtio \
   -device e1000,netdev=net0 \
-  -netdev user,id=net0
+  -netdev user,id=net0 \
+  -device virtio-net-pci,netdev=net1 \
+  -netdev user,id=net1,net=10.0.3.0/24
 
 # make qemu-alpine — normal boot (OpenRC + getty + login)
 qemu-alpine: alpine-image
@@ -291,7 +295,7 @@ vhdx: $(BUILD)/disk.img
 	@echo "disk.vhdx: $$(du -h $(BUILD)/disk.vhdx | cut -f1)"
 
 qemu-net: $(ESP_IMG)
-	$(QEMU) $(QEMU_FLAGS) -device e1000,netdev=net0 -netdev user,id=net0
+	$(QEMU) $(QEMU_FLAGS)
 
 # Background QEMU with serial log
 run: $(ESP_IMG)
@@ -329,7 +333,9 @@ test-boot: $(ESP_IMG)
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
-	        -netdev user,id=net0 || true
+	        -netdev user,id=net0 \
+	        -device virtio-net-pci,netdev=net1 \
+	        -netdev user,id=net1,net=10.0.3.0/24 || true
 	@echo "=== Serial output ==="
 	@cat /tmp/cosmo-serial.log 2>/dev/null || echo "(no output)"
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
@@ -343,7 +349,9 @@ test-boot-disk: $(BUILD)/disk.img
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
-	        -netdev user,id=net0 || true
+	        -netdev user,id=net0 \
+	        -device virtio-net-pci,netdev=net1 \
+	        -netdev user,id=net1,net=10.0.3.0/24 || true
 	@echo "=== Serial output ==="
 	@cat /tmp/cosmo-serial.log 2>/dev/null || echo "(no output)"
 	@grep -q "CosmoOS booted" /tmp/cosmo-serial.log 2>/dev/null && \
