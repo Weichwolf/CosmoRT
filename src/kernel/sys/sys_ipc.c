@@ -6,7 +6,7 @@
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
-#define PIPE_BUF_DEFAULT  4096
+#define PIPE_BUF_DEFAULT  65536     /* Linux PIPE_DEF_BUFFERS*PAGE_SIZE = 16*4K */
 #define PIPE_BUF_MAX      1048576   /* /proc/sys/fs/pipe-max-size cap */
 
 /* Async-signal owner per pipe-end. Linux F_SETOWN/F_SETSIG sind per
@@ -326,7 +326,8 @@ long do_pipe2(int *fds, int flags) {
     pipe_slab_ensure();
     struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
     if (!pp) return -ENOMEM;
-    pp->buf = (uint8_t *)pages_alloc(1);
+    int init_pages = pipe_page_count(PIPE_BUF_DEFAULT);
+    pp->buf = (uint8_t *)pages_alloc(init_pages);
     if (!pp->buf) { slab_free(&pipe_slab, pp); return -ENOMEM; }
     pp->buf_size = PIPE_BUF_DEFAULT;
 
