@@ -4,14 +4,8 @@
 
 /* ── Slab pools ──────────────────────────────────── */
 
-#define VFS_NODE_MAX  256
-#define VFS_FILE_MAX  512
-#define VFS_INODE_MAX 256
 #define NAME_MAX      255
 
-static struct vfs_node  node_pool[VFS_NODE_MAX];
-static struct vfs_file  file_pool[VFS_FILE_MAX];
-static struct vfs_inode inode_pool[VFS_INODE_MAX];
 slab_t node_slab;
 slab_t file_slab;
 slab_t inode_slab;
@@ -614,9 +608,9 @@ void vfs_notify_modify(struct vfs_node *node) {
 /* ── Init ────────────────────────────────────────── */
 
 void vfs_init(void) {
-    slab_init(&node_slab, node_pool, (int)sizeof(struct vfs_node), VFS_NODE_MAX);
-    slab_init(&file_slab, file_pool, (int)sizeof(struct vfs_file), VFS_FILE_MAX);
-    slab_init(&inode_slab, inode_pool, (int)sizeof(struct vfs_inode), VFS_INODE_MAX);
+    slab_init_dynamic(&node_slab,  (int)sizeof(struct vfs_node),  32);
+    slab_init_dynamic(&file_slab,  (int)sizeof(struct vfs_file),  64);
+    slab_init_dynamic(&inode_slab, (int)sizeof(struct vfs_inode), 32);
     vfs_root_node = node_alloc("/", VFS_DIR);
 
     /* Register mount points — tmpfs as initial root (ext4 overwrites in vfs_mount_ext4) */

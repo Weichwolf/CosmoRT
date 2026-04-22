@@ -95,7 +95,26 @@ static void test_fd_expand_via_rlimit(void) {
     sc4(SYS_PRLIMIT64, 0, TEST_RLIMIT_NOFILE, (long)&back, 0);
 }
 
+/* ── Test: open(2) scales past old 512-entry file_pool cap ── */
+static void test_file_slab_grows(void) {
+    puts("\n[FILE_SLAB_GROWS]\n");
+
+    sc3(SYS_OPEN,   (long)"/tmp/fslab_probe", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+
+    int fds[700];
+    int count = 0;
+    for (int i = 0; i < 700; i++) {
+        long fd = sc3(SYS_OPEN, (long)"/tmp/fslab_probe", O_RDONLY, 0);
+        if (fd < 0) break;
+        fds[count++] = (int)fd;
+    }
+    check_ge("open(2) >512 times (dynamic file_slab)", (long)count, 600);
+
+    for (int i = 0; i < count; i++) sc1(SYS_CLOSE, fds[i]);
+}
+
 TEST("fd_scale_512", test_fd_scale_512);
 TEST("fd_lowest_free", test_fd_lowest_free);
 TEST("fd_emfile", test_fd_emfile);
 TEST("fd_expand_rlimit", test_fd_expand_via_rlimit);
+TEST("file_slab_grows", test_file_slab_grows);
