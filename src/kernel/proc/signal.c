@@ -323,8 +323,16 @@ long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
             if (all_blocked) {
-                /* Signal blocked on all threads — just set pending */
+                /* Signal blocked on all threads — set pending und wake
+                 * etwaige sigtimedwait-Threads (die in event_wait stehen). */
                 target->sig_pending |= SIG_BIT(sig);
+                extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
+                thread_t *wt = target->threads;
+                while (wt) {
+                    if (wt->state == THREAD_BLOCKED)
+                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    wt = wt->proc_next;
+                }
                 return 0;
             }
         }
