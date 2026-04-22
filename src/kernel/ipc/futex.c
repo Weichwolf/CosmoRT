@@ -325,7 +325,10 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake, int shared) {
 
 /* ── FUTEX_LOCK_PI ──────────────────────────────── */
 
-static long futex_lock_pi(uint32_t *uaddr) {
+/* PI-Lock Key-Strategie identisch zu futex_wait/wake: shared → PA/pid=0,
+ * private → (vaddr, pid). Sonst kollidiert pshared-ROBUST-Mutex mit
+ * Cleanup-Wakes, die shared laufen. */
+static long futex_lock_pi(uint32_t *uaddr, int shared) {
     thread_t *self = thread_current();
     if (!self) return -EFAULT;
     uint32_t tid = (uint32_t)self->tid;
@@ -349,7 +352,12 @@ static long futex_lock_pi(uint32_t *uaddr) {
     {
         process_t *p = self->proc;
         uint32_t pid = p ? p->pid : 0;
-        int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
+        uint64_t addr = (uint64_t)(uintptr_t)uaddr;
+        if (shared) {
+            uint64_t pa = futex_va_to_pa(addr);
+            if (pa) { addr = pa; pid = 0; }
+        }
+        int bucket = hash_uaddr(addr, pid);
         uint64_t flags;
         spin_lock_irq(&futex_hash[bucket].lock, &flags);
 
@@ -377,7 +385,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
             return -ENOMEM;
         }
         w->thread = self;
-        w->uaddr = (uint64_t)(uintptr_t)uaddr;
+        w->uaddr = addr;
         w->pid = pid;
         w->next = futex_hash[bucket].head;
         futex_hash[bucket].head = w;
@@ -409,7 +417,7 @@ static long futex_lock_pi(uint32_t *uaddr) {
 
 /* ── FUTEX_UNLOCK_PI ────────────────────────────── */
 
-static long futex_unlock_pi(uint32_t *uaddr) {
+static long futex_unlock_pi(uint32_t *uaddr, int shared) {
     thread_t *self = thread_current();
     if (!self) return -EFAULT;
     uint32_t tid = (uint32_t)self->tid;
@@ -426,7 +434,7 @@ static long futex_unlock_pi(uint32_t *uaddr) {
     if (cur & FUTEX_WAITERS) {
         /* Waiters present — clear TID, keep WAITERS bit, wake one */
         __sync_val_compare_and_swap(uaddr, cur, FUTEX_WAITERS);
-        futex_wake(uaddr, 1, 0 /* PI lock ist per-mm */);
+        futex_wake(uaddr, 1, shared);
     } else {
         /* No waiters — just release */
         __sync_val_compare_and_swap(uaddr, cur, 0);
@@ -576,14 +584,9 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
                              uaddr2, 1, val3);
     case FUTEX_LOCK_PI:
-        /* PI-Locks nutzen dedizierten Fast-Path; shared-Semantik-Kommentar:
-         * das Atomic sitzt direkt am uaddr (vaddr), FUTEX_LOCK_PI selbst
-         * queued nicht. Nur unser in futex_unlock_pi explizites FUTEX_WAKE
-         * muss auf denselben Key zeigen wie das gepaarte FUTEX_WAIT. Siehe
-         * futex_unlock_pi. */
-        return futex_lock_pi(uaddr);
+        return futex_lock_pi(uaddr, shared);
     case FUTEX_UNLOCK_PI:
-        return futex_unlock_pi(uaddr);
+        return futex_unlock_pi(uaddr, shared);
     case FUTEX_WAKE_OP: {
         /* Simplified WAKE_OP: wake val waiters on uaddr, then
          * apply operation on *uaddr2 and conditionally wake val3
