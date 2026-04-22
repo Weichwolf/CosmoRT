@@ -208,6 +208,8 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count);
 long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count);
 long pipe_close(fd_entry_t *fde);
 long do_pipe2(int *fds, int flags);
+long pipe_resize(struct pipe *pp, int new_size);
+int  pipe_get_size(struct pipe *pp);
 
 /* ── Forward declarations: sys_net.c ── */
 long do_sendmsg(int fd, const void *msg, int flags);

@@ -6,10 +6,12 @@
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
-#define PIPE_BUF_SIZE 4096
+#define PIPE_BUF_DEFAULT  4096
+#define PIPE_BUF_MAX      1048576   /* /proc/sys/fs/pipe-max-size cap */
 
 struct pipe {
-    uint8_t buf[PIPE_BUF_SIZE];
+    uint8_t *buf;               /* dynamically allocated, size == buf_size (page-multiple) */
+    int buf_size;               /* current ring capacity in bytes */
     int read_pos, write_pos, count;
     int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
     int was_full;               /* Linux-Ring-Semantik: EPOLLOUT-Edge nur nach komplettem Drain */
@@ -26,6 +28,68 @@ static void pipe_slab_ensure(void) {
         slab_init_dynamic(&pipe_slab, (int)sizeof(struct pipe), 0);
 }
 
+/* Round bytes up to whole pages (4KiB) and return the page count.
+ * Linux pipe_resize_ring rounds requested size up to page-granularity. */
+static int pipe_page_count(int bytes) {
+    if (bytes <= 0) return 1;
+    return (bytes + 4095) / 4096;
+}
+
+int pipe_get_size(struct pipe *pp) {
+    return pp ? pp->buf_size : 0;
+}
+
+/* F_SETPIPE_SZ — resize ring. Caller passes requested byte size.
+ * Linux semantics (fs/pipe.c:pipe_set_size → pipe_resize_ring):
+ *   - Round up to page size
+ *   - EBUSY if new_size < current fill
+ *   - Copy existing data into new buffer
+ *   - Return new size on success
+ * Returns new size in bytes, or -errno. */
+long pipe_resize(struct pipe *pp, int new_size) {
+    if (!pp) return -EINVAL;
+    int pages = pipe_page_count(new_size);
+    int rounded = pages * 4096;
+
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    if (rounded < pp->count) {
+        spin_unlock_irq(&pp->lock, flags);
+        return -EBUSY;
+    }
+    if (rounded == pp->buf_size) {
+        spin_unlock_irq(&pp->lock, flags);
+        return rounded;
+    }
+    spin_unlock_irq(&pp->lock, flags);
+
+    /* Allocate without holding lock (may sleep in buddy) */
+    uint8_t *nbuf = (uint8_t *)pages_alloc(pages);
+    if (!nbuf) return -ENOMEM;
+
+    spin_lock_irq(&pp->lock, &flags);
+    /* Re-check EBUSY after reacquiring — another writer may have filled */
+    if (rounded < pp->count) {
+        spin_unlock_irq(&pp->lock, flags);
+        pages_free(nbuf, pages);
+        return -EBUSY;
+    }
+    uint8_t *old = pp->buf;
+    int old_pages = pipe_page_count(pp->buf_size);
+    for (int i = 0; i < pp->count; i++) {
+        nbuf[i] = pp->buf[(pp->read_pos + i) % pp->buf_size];
+    }
+    pp->buf = nbuf;
+    pp->buf_size = rounded;
+    pp->read_pos = 0;
+    pp->write_pos = pp->count;
+    if (pp->count < rounded) pp->was_full = 0;
+    spin_unlock_irq(&pp->lock, flags);
+
+    pages_free(old, old_pages);
+    return rounded;
+}
+
 long pipe_read(struct pipe *pp, void *buf, size_t count) {
     uint64_t flags;
     spin_lock_irq(&pp->lock, &flags);
@@ -38,7 +102,7 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     uint8_t *dst = (uint8_t *)buf;
     for (size_t i = 0; i < n; i++) {
         dst[i] = pp->buf[pp->read_pos];
-        pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+        pp->read_pos = (pp->read_pos + 1) % pp->buf_size;
     }
     pp->count -= (int)n;
     if (pp->count == 0) pp->was_full = 0;
@@ -63,7 +127,7 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
         spin_unlock_irq(&pp->lock, flags);
         return send_sigpipe();
     }
-    size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
+    size_t space = (size_t)(pp->buf_size - pp->count);
     size_t n = count > space ? space : count;
     if (n == 0) {
         spin_unlock_irq(&pp->lock, flags);
@@ -72,10 +136,10 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     const uint8_t *src = (const uint8_t *)buf;
     for (size_t i = 0; i < n; i++) {
         pp->buf[pp->write_pos] = src[i];
-        pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+        pp->write_pos = (pp->write_pos + 1) % pp->buf_size;
     }
     pp->count += (int)n;
-    if (pp->count >= PIPE_BUF_SIZE) pp->was_full = 1;
+    if (pp->count >= pp->buf_size) pp->was_full = 1;
     /* Wake blocked reader */
     thread_t *reader = pp->blocked_reader;
     pp->blocked_reader = 0;
@@ -106,7 +170,7 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
             uint8_t *dst = (uint8_t *)buf;
             for (size_t i = 0; i < n; i++) {
                 dst[i] = pp->buf[pp->read_pos];
-                pp->read_pos = (pp->read_pos + 1) % PIPE_BUF_SIZE;
+                pp->read_pos = (pp->read_pos + 1) % pp->buf_size;
             }
             pp->count -= (int)n;
             if (pp->count == 0) pp->was_full = 0;
@@ -148,16 +212,16 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
         uint64_t irqf;
         spin_lock_irq(&pp->lock, &irqf);
         /* Re-check under lock */
-        if (pp->count < PIPE_BUF_SIZE) {
-            size_t space = (size_t)(PIPE_BUF_SIZE - pp->count);
+        if (pp->count < pp->buf_size) {
+            size_t space = (size_t)(pp->buf_size - pp->count);
             size_t n = count > space ? space : count;
             const uint8_t *src = (const uint8_t *)buf;
             for (size_t i = 0; i < n; i++) {
                 pp->buf[pp->write_pos] = src[i];
-                pp->write_pos = (pp->write_pos + 1) % PIPE_BUF_SIZE;
+                pp->write_pos = (pp->write_pos + 1) % pp->buf_size;
             }
             pp->count += (int)n;
-            if (pp->count >= PIPE_BUF_SIZE) pp->was_full = 1;
+            if (pp->count >= pp->buf_size) pp->was_full = 1;
             /* Wake blocked reader */
             thread_t *reader = pp->blocked_reader;
             pp->blocked_reader = 0;
@@ -190,6 +254,9 @@ long do_pipe2(int *fds, int flags) {
     pipe_slab_ensure();
     struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
     if (!pp) return -ENOMEM;
+    pp->buf = (uint8_t *)pages_alloc(1);
+    if (!pp->buf) { slab_free(&pipe_slab, pp); return -ENOMEM; }
+    pp->buf_size = PIPE_BUF_DEFAULT;
 
     pp->read_pos = pp->write_pos = pp->count = 0;
     pp->read_open = pp->write_open = 1;
@@ -208,10 +275,15 @@ long do_pipe2(int *fds, int flags) {
     if (flags & O_NONBLOCK) { rflags |= O_NONBLOCK;  wflags |= O_NONBLOCK; }
 
     int rfd = fd_alloc(&p->fds, FD_PIPE, pp, rflags);
-    if (rfd < 0) { slab_free(&pipe_slab, pp); return -EMFILE; }
+    if (rfd < 0) {
+        pages_free(pp->buf, pipe_page_count(pp->buf_size));
+        slab_free(&pipe_slab, pp);
+        return -EMFILE;
+    }
     int wfd = fd_alloc(&p->fds, FD_PIPE, pp, wflags);
     if (wfd < 0) {
         fd_close(&p->fds, rfd);
+        pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
         return -EMFILE;
     }
@@ -268,8 +340,10 @@ long pipe_close(fd_entry_t *fde) {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         event_post(writer, 5 /* EQ_PIPE_CLOSED */, 0);
     }
-    if (both_closed)
+    if (both_closed) {
+        pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
+    }
     /* Wake epoll/poll sleepers — pipe state changed (HUP/ERR) */
     extern void epoll_wake_all(void);
     epoll_wake_all();
@@ -446,7 +520,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
             if (interest & EPOLLOUT) {
                 /* Linux-Ring-Semantik: Einmal voll, erst nach komplettem Drain
                  * wieder writable. Matcht pipe_release_buf (fs/pipe.c). */
-                if (pp->count < PIPE_BUF_SIZE && !pp->was_full)
+                if (pp->count < pp->buf_size && !pp->was_full)
                     ready |= EPOLLOUT;
                 if (!pp->read_open) ready |= EPOLLERR | EPOLLHUP;
             }

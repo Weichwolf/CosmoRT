@@ -1432,13 +1432,14 @@ static long fcntl_getlease(fd_entry_t *fde) {
     return r;
 }
 
-/* F_SETPIPE_SZ — pipe buffer size. Unsere pipe_t hat fest PIPE_BUF_SIZE=4096
- * (siehe sys_ipc.c). F_GETPIPE_SZ meldet diese Groesse; F_SETPIPE_SZ
- * akzeptiert Requests bis FCNTL_PIPE_SZ_MAX und gibt die gerundete Groesse
- * zurueck. Echter Resize ist nicht implementiert. Linux /proc/sys/fs/pipe-max-size
- * cap gilt fuer Unprivileged-User. */
-#define FCNTL_PIPE_SZ_DEFAULT 4096
+/* F_SETPIPE_SZ — delegiert an pipe_resize (sys_ipc.c). Linux-Semantik:
+ *   arg >= (1<<31)      → -EINVAL
+ *   arg > pipe-max-size → -EPERM (unprivileged user)
+ *   new < current fill  → -EBUSY
+ *   sonst: ring auf rounded-up-page-size kopieren, rounded-size returnen
+ * F_GETPIPE_SZ liefert die aktuelle Ringgroesse. */
 #define FCNTL_PIPE_SZ_MAX     1048576   /* /proc/sys/fs/pipe-max-size */
+#define PIPE_BUF_MIN          4096      /* Linux: mindestens eine Seite */
 
 long do_fcntl(int fd, int cmd, long arg) {
     process_t *p = proc_current();
@@ -1494,15 +1495,20 @@ long do_fcntl(int fd, int cmd, long arg) {
         return fcntl_getlease(fde);
     case F_NOTIFY:
         return 0;
-    case F_GETPIPE_SZ:
-        return (fde->type == FD_PIPE) ? FCNTL_PIPE_SZ_DEFAULT : -EINVAL;
-    case F_SETPIPE_SZ:
+    case F_GETPIPE_SZ: {
+        if (fde->type != FD_PIPE) return -EINVAL;
+        struct pipe *pp = (struct pipe *)fde->obj;
+        return (long)pipe_get_size(pp);
+    }
+    case F_SETPIPE_SZ: {
         if (fde->type != FD_PIPE) return -EINVAL;
         if ((unsigned long)arg >= (1UL << 31)) return -EINVAL;
         if ((unsigned long)arg > FCNTL_PIPE_SZ_MAX) return -EPERM;
-        /* Echter Pipe-Resize nicht implementiert — wir returnen die maximal
-         * moegliche Groesse (FCNTL_PIPE_SZ_DEFAULT). */
-        return FCNTL_PIPE_SZ_DEFAULT;
+        struct pipe *pp = (struct pipe *)fde->obj;
+        int req = (int)arg;
+        if (req < PIPE_BUF_MIN) req = PIPE_BUF_MIN;
+        return pipe_resize(pp, req);
+    }
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
         fd_entry_t src = *fde;
