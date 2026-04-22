@@ -275,6 +275,14 @@ shebang_retry:;
       if (st_rc < 0) EXECVE_FAIL(st_rc); }
     if ((exec_st.st_mode & S_IFMT) == S_IFDIR) EXECVE_FAIL(-EACCES);
     if (!(exec_st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) EXECVE_FAIL(-EACCES);
+    /* DAC: Linux bprm_execve erzwingt Execute-Permission nach euid/egid/groups.
+     * Root (euid==0) darf alles ausser total-nicht-exec (schon oben gefangen).
+     * Non-root muss die passende x-Bit (user/group/other) tragen. */
+    {
+        int rc = cred_may_access(p, exec_st.st_uid, exec_st.st_gid,
+                                 exec_st.st_mode, MAY_EXEC);
+        if (rc < 0) EXECVE_FAIL(rc);
+    }
 
     ext4_ino = vfs_ext4_lookup(kpath);
     ramfs_node = 0;
