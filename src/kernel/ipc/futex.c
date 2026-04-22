@@ -74,6 +74,7 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
  * wenn nicht gemappt. Fuer FUTEX_SHARED — dann haengt die Wait-Queue an
  * der Kernel-eindeutigen Page-Identitaet statt an (mm, va). */
 #define PTE_PRESENT_FLAG 0x1
+#define PTE_PS_FLAG      0x80
 #define PTE_ADDR_BITS    0x000FFFFFFFFFF000ULL
 static uint64_t futex_va_to_pa(uint64_t va) {
     process_t *p = proc_current();
@@ -84,9 +85,16 @@ static uint64_t futex_va_to_pa(uint64_t va) {
     uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i4] & PTE_ADDR_BITS);
     int i3 = (va >> 30) & 0x1FF;
     if (!(pdpt[i3] & PTE_PRESENT_FLAG)) return 0;
+    /* 1GB huge page (PDPT-level PS) — nicht von unserem Mapper benutzt,
+     * aber defensiv behandelt. */
+    if (pdpt[i3] & PTE_PS_FLAG)
+        return (pdpt[i3] & PTE_ADDR_BITS) | (va & 0x3FFFFFFF);
     uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[i3] & PTE_ADDR_BITS);
     int i2 = (va >> 21) & 0x1FF;
     if (!(pd[i2] & PTE_PRESENT_FLAG)) return 0;
+    /* 2MB huge page (PD-level PS) — vmm nutzt das fuer Userspace-Stack/Heap. */
+    if (pd[i2] & PTE_PS_FLAG)
+        return (pd[i2] & PTE_ADDR_BITS) | (va & 0x1FFFFF);
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[i2] & PTE_ADDR_BITS);
     int i1 = (va >> 12) & 0x1FF;
     if (!(pt[i1] & PTE_PRESENT_FLAG)) return 0;
