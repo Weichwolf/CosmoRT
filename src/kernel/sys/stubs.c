@@ -385,11 +385,23 @@ long do_chroot(const char *path) {
     return 0;
 }
 
-/* acct(2): path==NULL disables process accounting (always succeeds).
- * path!=NULL: full validation via copy_path_from_user + vfs_lookup.
- * CosmoRT does not persist accounting records — the path is validated
- * for errno-compatibility, then discarded. */
+/* acct(2): path==NULL disables process accounting (immer erfolgreich mit PACCT).
+ * path!=NULL: vollstaendige Validation via copy_path_from_user + Lookup.
+ * CosmoRT persistiert keine Accounting-Records — Pfad wird fuer Errno-
+ * Kompatibilitaet validiert, dann verworfen.
+ *
+ * Linux kernel/acct.c sys_acct:
+ *   1. CAP_SYS_PACCT? → sonst -EPERM (BEVOR Pfad-Lookup bei path==NULL)
+ *   2. copy_path_from_user → -EFAULT / -ENAMETOOLONG
+ *   3. filp_open(O_RDWR|O_APPEND) → durchlaeuft DAC-Check (MAY_WRITE)
+ *      → ENOENT/ENOTDIR/ELOOP/EACCES/EROFS
+ *   4. !S_ISREG → -EACCES (in Linux >= 4.x) bzw. -EISDIR/-EACCES
+ *      Fuer Dir: EISDIR. */
 long do_acct(const char *path) {
+    process_t *p = proc_current();
+    if (p && p->euid != 0 &&
+        !(p->cap_effective & CAP_TO_MASK(CAP_SYS_PACCT)))
+        return -EPERM;
     if (!path) return 0;
     char kpath_raw[PATH_MAX];
     int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
@@ -401,6 +413,14 @@ long do_acct(const char *path) {
     struct vfs_node *node = vfs_lookup_err(kpath, &lerr);
     if (!node) return lerr;
     if (node->inode->type == VFS_DIR) return -EISDIR;
+    if (node->inode->type != VFS_FILE) return -EACCES;
+    /* DAC: MAY_WRITE pruefen (Linux filp_open(O_WRONLY|O_APPEND)). */
+    if (p && p->euid != 0 &&
+        !(p->cap_effective & CAP_TO_MASK(CAP_DAC_OVERRIDE))) {
+        int rc = cred_may_access(p, node->inode->uid, node->inode->gid,
+                                 node->inode->mode, MAY_WRITE);
+        if (rc < 0) return rc;
+    }
     return 0;
 }
 
