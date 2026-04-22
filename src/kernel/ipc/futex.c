@@ -70,6 +70,30 @@ static int hash_uaddr(uint64_t uaddr, uint32_t pid) {
     return (int)(h % FUTEX_HASH_SIZE);
 }
 
+/* Translate user-VA to physical-page. Liefert (pa | page-offset) oder 0
+ * wenn nicht gemappt. Fuer FUTEX_SHARED — dann haengt die Wait-Queue an
+ * der Kernel-eindeutigen Page-Identitaet statt an (mm, va). */
+#define PTE_PRESENT_FLAG 0x1
+#define PTE_ADDR_BITS    0x000FFFFFFFFFF000ULL
+static uint64_t futex_va_to_pa(uint64_t va) {
+    process_t *p = proc_current();
+    if (!p || !p->pml4) return 0;
+    uint64_t *pml4 = p->pml4;
+    int i4 = (va >> 39) & 0x1FF;
+    if (!(pml4[i4] & PTE_PRESENT_FLAG)) return 0;
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i4] & PTE_ADDR_BITS);
+    int i3 = (va >> 30) & 0x1FF;
+    if (!(pdpt[i3] & PTE_PRESENT_FLAG)) return 0;
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[i3] & PTE_ADDR_BITS);
+    int i2 = (va >> 21) & 0x1FF;
+    if (!(pd[i2] & PTE_PRESENT_FLAG)) return 0;
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[i2] & PTE_ADDR_BITS);
+    int i1 = (va >> 12) & 0x1FF;
+    if (!(pt[i1] & PTE_PRESENT_FLAG)) return 0;
+    return (pt[i1] & PTE_ADDR_BITS) | (va & 0xFFF);
+}
+
+
 /* Remove a specific thread from a futex wait queue bucket.
  * Returns 1 if found and removed, 0 if not found. */
 static int futex_remove_waiter(uint64_t addr, uint32_t pid, thread_t *t) {
@@ -151,12 +175,16 @@ extern uint64_t pml4[];
 /* Futex trace: always on for debugging condvar hang */
 static volatile int futex_trace = 0;
 
-static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
+static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     process_t *p = t->proc;
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
+    if (shared) {
+        uint64_t pa = futex_va_to_pa(addr);
+        if (pa) { addr = pa; pid = 0; }
+    }
     if (futex_trace) {
         serial_puts("FW t"); serial_hex64(t->tid);
         serial_puts(" a"); serial_hex64(addr);
@@ -241,10 +269,15 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms) {
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
 
-static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
+static long futex_wake(uint32_t *uaddr, uint32_t max_wake, int shared) {
     process_t *p = proc_current();
     uint32_t pid = p ? p->pid : 0;
-    int bucket = hash_uaddr((uint64_t)(uintptr_t)uaddr, pid);
+    uint64_t addr = (uint64_t)(uintptr_t)uaddr;
+    if (shared) {
+        uint64_t pa = futex_va_to_pa(addr);
+        if (pa) { addr = pa; pid = 0; }
+    }
+    int bucket = hash_uaddr(addr, pid);
     long woken = 0;
     if (futex_trace) {
         serial_puts("FK t"); serial_hex64(thread_current()->tid);
@@ -260,7 +293,7 @@ static long futex_wake(uint32_t *uaddr, uint32_t max_wake) {
     futex_waiter_t **pp = &futex_hash[bucket].head;
     while (*pp && (uint32_t)woken < max_wake) {
         futex_waiter_t *w = *pp;
-        if (w->uaddr == (uint64_t)(uintptr_t)uaddr && w->pid == pid) {
+        if (w->uaddr == addr && w->pid == pid) {
             /* Remove from queue + wake */
             thread_t *target = w->thread;
             *pp = w->next;
@@ -382,7 +415,7 @@ static long futex_unlock_pi(uint32_t *uaddr) {
     if (cur & FUTEX_WAITERS) {
         /* Waiters present — clear TID, keep WAITERS bit, wake one */
         __sync_val_compare_and_swap(uaddr, cur, FUTEX_WAITERS);
-        futex_wake(uaddr, 1);
+        futex_wake(uaddr, 1, 0 /* PI lock ist per-mm */);
     } else {
         /* No waiters — just release */
         __sync_val_compare_and_swap(uaddr, cur, 0);
@@ -515,12 +548,13 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
 long do_futex(uint32_t *uaddr, int op, uint32_t val,
               const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
     int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100); /* strip PRIVATE + CLOCK_REALTIME */
+    int shared = !(op & FUTEX_PRIVATE_FLAG);
 
     switch (cmd) {
     case FUTEX_WAIT:
-        return futex_wait(uaddr, val, timespec_to_ms(timeout));
+        return futex_wait(uaddr, val, timespec_to_ms(timeout), shared);
     case FUTEX_WAKE:
-        return futex_wake(uaddr, val);
+        return futex_wake(uaddr, val, shared);
     case FUTEX_REQUEUE:
         return futex_requeue(uaddr, val, (uint32_t)(uintptr_t)timeout,
                              uaddr2, 0, 0);
@@ -536,17 +570,17 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
          * apply operation on *uaddr2 and conditionally wake val3
          * waiters on uaddr2.  We simplify: wake val on uaddr +
          * wake val3 on uaddr2 (skip the atomic op comparison). */
-        long r1 = futex_wake(uaddr, val);
+        long r1 = futex_wake(uaddr, val, shared);
         if (uaddr2) {
-            long r2 = futex_wake(uaddr2, val3);
+            long r2 = futex_wake(uaddr2, val3, shared);
             if (r2 > 0 && r1 >= 0) r1 += r2;
         }
         return r1;
     }
     case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
-        return futex_wait(uaddr, val, timespec_to_ms(timeout));
+        return futex_wait(uaddr, val, timespec_to_ms(timeout), shared);
     case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
-        return futex_wake(uaddr, val);
+        return futex_wake(uaddr, val, shared);
     default:
         serial_puts("futex: unknown op ");
         serial_hex64((uint64_t)(unsigned)cmd);
