@@ -233,13 +233,23 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
 
         cur->state = THREAD_BLOCKED;
 
-        /* Close race: event arrived or signal raised between fast-path and BLOCKED */
+        /* Close race: event arrived or signal raised between fast-path and
+         * BLOCKED. Apply same SIG_DFL_IGNORE filter as the top-of-loop check
+         * or we spin-loop forever on e.g. SIGCHLD that never gets cleared. */
         hal_cpu_mfence();
         int abort = 0;
         if (hal_cpu_load_acquire(&eq->head) != eq->tail) abort = 1;
         if (!abort && cur->proc) {
-            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-            if (all_pending & ~cur->sig_blocked) abort = 1;
+            uint64_t deliverable = (cur->proc->sig_pending | cur->sig_thread_pending)
+                                 & ~cur->sig_blocked;
+            uint64_t real = deliverable;
+            for (int s = 1; s < 64 && real; s++) {
+                if (!(real & (1ULL << (s-1)))) continue;
+                if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+                    ((1ULL << (s-1)) & SIG_DFL_IGNORE))
+                    real &= ~(1ULL << (s-1));
+            }
+            if (real) abort = 1;
         }
         if (abort) {
             if (__sync_bool_compare_and_swap(&cur->state, THREAD_BLOCKED, THREAD_RUNNING))
