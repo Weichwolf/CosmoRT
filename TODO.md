@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2662/0**, musl ~461/10, LTP clone-Cluster 4/6 gruen (03/05/11/302 fix; 09 TBROK ProcFS-Net, 301 tcase4 pidfd). Branch: `ltp`.
+Stand: ktest **2694/0**, musl 461/10, LTP **187/73/38** (+32 PASS nach clock-Phase). Clock-Cluster 12/4/1: adjtimex01-03, clock_adjtime01/02, clock_getres01, clock_gettime01/02, clock_nanosleep04, clock_settime01/02, leapsec01 PASS. Offen: gettime03/nanosleep03 (CLONE_NEWTIME), gettime04 (tight-loop), nanosleep01/02 (BAD_TS_ADDR, tst_timer_test). Branch: `ltp`.
 
 ## Offene Phasen
 

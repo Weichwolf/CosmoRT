@@ -1,15 +1,15 @@
 # Alpine Test — Bestandsaufnahme
 
-Run: 2026-04-21 nach fcntl-Phase (PF-Fix, OFD-Locks, F_SETLEASE,
-F_GETOWN_EX/F_SETOWN_EX, F_SETPIPE_SZ Error-Handling, /proc/sys/fs/*).
+Run: 2026-04-21 nach clock-Phase (adjtimex persistent NTP-State, CLOCK_*_CPUTIME_ID,
+clock_settime EPERM, rtc_epoch_sec signed, procfs utime aus cpu_time_ticks).
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta                  |
 |-------|-------|------|------|------|------------------------|
-| ktest | 2646  | 2646 |   0  |   -  | +65 (neue fcntl-Tests) |
+| ktest | 2694  | 2694 |   0  |   -  | +32 (adjtimex/CPUTIME/EFAULT) |
 | musl  |  478  |  461 |  10  |   7  | ±0                     |
-| LTP   |  313  |  155 |  99  |  38  | +1 PASS / -5 FAIL (fcntl +13, dup -8 flaky) |
+| LTP   |  313  |  187 |  73  |  38  | +32 PASS / -26 FAIL (clock/adjtimex +6, Clone-Fixes sekundär +26) |
 
 Baseline: ktest 2581, musl 461/10, LTP 154/104/40.
 
@@ -43,7 +43,7 @@ Verbleibende fcntl-Fails (10 fcntl* FAIL + _64-Varianten):
 |----------------|--------|-------------------------------------------------|--------------------------------|
 | fcntl          |   27   | fcntl12/14/15/17/30/31/34/35/36/37/38/39 (+_64) | SIGIO, dnotify, timeouts       |
 | eventfd/epoll  |   13   | eventfd01-05+2_03, epoll_pwait01/04, _wait02-06 | EPOLLET, EFD_SEMAPHORE         |
-| clock_*        |    9   | clock_adjtime01/02, clock_gettime01-04, nanosleep01-04, settime02 | CLOCK_TAI, ns-Präzision |
+| clock_*        |    4   | clock_gettime03/04, clock_nanosleep01/02/03 | NEWTIME NS, tight-loop, tst_timer_test |
 | clone          |    2   | clone09 (TBROK procfs/net), clone301 (pidfd tcase) | fixed: 03/05/11/302 |
 | bind/accept    |    7   | accept02/03, accept4_01, bind01-04, connect01/02 | AF_UNIX, SO_REUSEPORT         |
 | chroot         |    2   | chroot01/04                                     | chroot() + DAC                 |
@@ -75,7 +75,8 @@ rlimit-open-files +static (rlim_max persist), tls_get_new-dtv (dl).
 **Top Fix-Kandidaten:**
 
 1. **eventfd/epoll edge-cases** (~13 tests) — meist EPOLLET/EFD_SEMAPHORE
-2. **clock_* Präzision** (9 tests) — CLOCK_TAI + ns-Präzision
-3. **dup O_CLOEXEC + clone PIDFD** (7 tests)
+2. **dup O_CLOEXEC + clone PIDFD** (7 tests)
+3. **fcntl timeout-Cluster** (fcntl14/15/17/34/35/37 rc=2)
 
-**Deprioritized:** chroot/caps/bpf (7 tests), fanotify (1), SIGIO-fcntl (6).
+**Deprioritized:** chroot/caps/bpf (7 tests), fanotify (1), SIGIO-fcntl (6),
+clock_gettime03/nanosleep03 (time namespaces).
