@@ -308,6 +308,7 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->rlim_cpu_soft = parent->rlim_cpu_soft;
         child->rlim_cpu_hard = parent->rlim_cpu_hard;
         child->umask_val = parent->umask_val;
+        child->personality = parent->personality;
         child->ruid = parent->ruid;
         child->euid = parent->euid;
         child->suid = parent->suid;

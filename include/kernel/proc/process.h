@@ -136,6 +136,11 @@ typedef struct process {
     /* File creation mask (umask) — default 0022 */
     uint32_t    umask_val;
 
+    /* personality(2): Linux task->personality. Low byte = PER_*,
+     * high bytes = Bug-Emulation-Flags (READ_IMPLIES_EXEC, ADDR_NO_RANDOMIZE…).
+     * fork inherits, execve clears PER_CLEAR_ON_SETID on SUID-exec (future). */
+    uint32_t    personality;
+
     /* POSIX Credentials — Linux struct cred subset.
      * Init: ruid=euid=suid=0, rgid=egid=sgid=0 (root).
      * fork: inherited. execve: inherited (SUID-exec handling future).

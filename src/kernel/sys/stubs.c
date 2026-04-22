@@ -253,11 +253,16 @@ long do_setgroups(int size, const uint32_t *list) {
     return 0;
 }
 
-/* personality(2): PER_LINUX = 0 */
+/* personality(2): speichert Persona + Flags in process_t.
+ * 0xFFFFFFFF = Query ohne Update. Sonst: alte Persona zurueck, neue setzen.
+ * Linux akzeptiert alle Werte; gueltige Flags sind in <linux/personality.h>. */
 long do_personality(unsigned long persona) {
-    if (persona == 0xFFFFFFFF) return 0; /* query: return PER_LINUX */
-    if (persona == 0) return 0;          /* set PER_LINUX: ok */
-    return -EINVAL;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    uint32_t old = p->personality;
+    if (persona != 0xFFFFFFFFUL)
+        p->personality = (uint32_t)persona;
+    return (long)old;
 }
 
 /* priority: single-user, no priority enforcement */
