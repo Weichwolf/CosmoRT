@@ -66,6 +66,44 @@ static void test_fchdir03(void) {
     sc1(SYS_UNLINK, (long)"/tmp/fchdir03_file");
 }
 
-TEST("ltp/fchdir01", test_fchdir01);
-TEST("ltp/fchdir02", test_fchdir02);
-TEST("ltp/fchdir03", test_fchdir03);
+/* ── fchdir03-eacces: EACCES auf 0400-Verzeichnis fuer Non-Root ── */
+
+static void test_fchdir03_eacces(void) {
+    puts("\n[ltp/fchdir03-eacces]\n");
+
+    sc1(SYS_RMDIR, (long)"/tmp/fchdir03_eacces");
+    long r = sc2(SYS_MKDIR, (long)"/tmp/fchdir03_eacces", 0400);
+    check_val("mkdir 0400", r, 0);
+    if (r != 0) return;
+
+    long fd = sc3(SYS_OPEN, (long)"/tmp/fchdir03_eacces", O_RDONLY, 0);
+    check("open 0400 dir as root", fd >= 0);
+    if (fd < 0) goto cleanup;
+
+    /* Als root: fchdir laeuft (kein DAC-Enforcement). */
+    r = sc1(SYS_FCHDIR, fd);
+    check_val("fchdir as root ok", r, 0);
+
+    /* Zurueck nach /tmp, damit die Testumgebung stabil bleibt. */
+    long tmpfd = sc3(SYS_OPEN, (long)"/tmp", O_RDONLY | O_DIRECTORY, 0);
+    if (tmpfd >= 0) { sc1(SYS_FCHDIR, tmpfd); sc1(SYS_CLOSE, tmpfd); }
+
+    /* Als non-root: EACCES weil 0400 → kein exec-Bit.
+     * seteuid(euid) → setresuid(-1, euid, -1). Saved uid bleibt 0 fuer rueckwaerts. */
+    r = sc3(SYS_SETRESUID, (unsigned long)-1, 65534, (unsigned long)-1);
+    check_val("setresuid(-1,nobody,-1)", r, 0);
+    if (r == 0) {
+        r = sc1(SYS_FCHDIR, fd);
+        check_val("fchdir 0400 EACCES fuer non-root", r, -EACCES);
+        sc3(SYS_SETRESUID, (unsigned long)-1, 0, (unsigned long)-1);
+    }
+
+    sc1(SYS_CLOSE, fd);
+cleanup:
+    sc1(SYS_RMDIR, (long)"/tmp/fchdir03_eacces");
+}
+
+TEST("ltp/fchdir01",         test_fchdir01);
+TEST("ltp/fchdir02",         test_fchdir02);
+TEST("ltp/fchdir03",         test_fchdir03);
+TEST("ltp/fchdir03-eacces",  test_fchdir03_eacces);

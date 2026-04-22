@@ -4,6 +4,7 @@
 #include "core/event_queue.h"
 #include "core/time_ns.h"
 #include "event/epoll.h"
+#include "linux/capability.h"
 
 /* Resolve a relative path against CWD, handling "." and ".." components.
  * chroot root (p->root) prepended to absolute paths; ".." above root
@@ -1808,7 +1809,17 @@ long do_fchdir(int fd) {
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f || f->type != VFS_DIR) return -ENOTDIR;
     if (!f->path[0]) return -EBADF;
-    /* Copy path to process CWD */
+    /* Linux fs/open.c ksys_fchdir → inode_permission(MAY_EXEC). Non-root
+     * ohne exec-Bit auf dem Verzeichnis bekommt EACCES. */
+    if (p->euid != 0 &&
+        !(p->cap_effective & (CAP_TO_MASK(CAP_DAC_OVERRIDE) |
+                              CAP_TO_MASK(CAP_DAC_READ_SEARCH)))) {
+        struct k_stat st;
+        int rc = vfs_fstat(fd, &st);
+        if (rc < 0) return rc;
+        rc = cred_may_access(p, st.st_uid, st.st_gid, st.st_mode, MAY_EXEC);
+        if (rc < 0) return rc;
+    }
     int i = 0;
     while (f->path[i] && i < 255) { p->cwd[i] = f->path[i]; i++; }
     p->cwd[i] = '\0';
