@@ -290,7 +290,7 @@ void epoll_wake_all(void) {
         spin_unlock_irq(&core_sleepers[c].lock, irqf);
 
         for (int i = 0; i < n; i++)
-            event_post(wake[i], 7 /* EQ_EPOLL_READY */, 0);
+            event_post(wake[i], EQ_EPOLL_READY, 0);
     }
 }
 
@@ -327,7 +327,7 @@ void epoll_check_timeouts(void) {
         if (deadline && now_tsc >= deadline) {
             core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
             spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-            event_post(t, 10 /* EQ_TIMEOUT */, 0);
+            event_post(t, EQ_TIMEOUT, 0);
             spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
         } else {
             i++;
