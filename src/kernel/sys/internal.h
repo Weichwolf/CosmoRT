@@ -307,7 +307,8 @@ long do_inotify_init(void);
 long do_preadv(int fd, const struct iovec *iov, int iovcnt, int64_t offset);
 long do_pwritev(int fd, const struct iovec *iov, int iovcnt, int64_t offset);
 long do_openat2(int dirfd, const char *pathname, void *how, size_t size);
-long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout);
+long do_epoll_pwait2(int epfd, struct epoll_event *events, int maxevents,
+                     void *timeout, const uint64_t *sigmask, size_t sigsetsize);
 long do_epoll_pwait(int epfd, struct epoll_event *events, int maxevents,
                     int timeout, const uint64_t *sigmask, size_t sigsetsize);
 long do_mknod(const char *path, uint32_t mode, uint64_t dev);

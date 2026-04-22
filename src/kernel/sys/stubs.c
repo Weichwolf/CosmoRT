@@ -526,8 +526,10 @@ long do_epoll_pwait(int epfd, struct epoll_event *events, int maxevents,
     return ret;
 }
 
-/* epoll_pwait2: wie epoll_pwait, aber mit struct timespec statt int ms. */
-long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout) {
+/* epoll_pwait2: wie epoll_pwait, aber mit struct timespec statt int ms.
+ * Sigmask-Handling wie epoll_pwait (temporaerer Swap waehrend wait). */
+long do_epoll_pwait2(int epfd, struct epoll_event *events, int maxevents,
+                     void *timeout, const uint64_t *sigmask, size_t sigsetsize) {
     int timeout_ms = -1;
     if (timeout) {
         int64_t ts[2];
@@ -536,7 +538,7 @@ long do_epoll_pwait2(int epfd, void *events, int maxevents, void *timeout) {
         if (ts[0] < 0 || ts[1] < 0 || ts[1] >= NSEC_PER_SEC) return -EINVAL;
         timeout_ms = (int)(ts[0] * MSEC_PER_SEC + ts[1] / NSEC_PER_MSEC);
     }
-    return do_epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout_ms);
+    return do_epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask, sigsetsize);
 }
 
 /* mknod: delegate to mknodat */

@@ -255,7 +255,7 @@
     X(SYS_PREADV2, preadv2, do_preadv((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
     X(SYS_PWRITEV2, pwritev2, do_pwritev((int)a1, (const struct iovec *)a2, (int)a3, (int64_t)((uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32)))) \
     X(SYS_OPENAT2, openat2, do_openat2((int)a1, (const char *)a2, (void *)a3, (size_t)a4)) \
-    X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (void *)a2, (int)a3, (void *)a4)) \
+    X(SYS_EPOLL_PWAIT2, epoll_pwait2, do_epoll_pwait2((int)a1, (struct epoll_event *)a2, (int)a3, (void *)a4, (const uint64_t *)a5, (size_t)a6)) \
     X(SYS_MKNOD, mknod, do_mknod((const char *)a1, (uint32_t)a2, (uint64_t)a3)) \
     X(SYS_FCHMODAT2, fchmodat2, do_fchmodat2((int)a1, (const char *)a2, (uint32_t)a3, (int)a4)) \
     /* SysV IPC */ \
