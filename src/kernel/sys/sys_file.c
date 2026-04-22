@@ -1617,13 +1617,17 @@ long do_fcntl(int fd, int cmd, long arg) {
         if (copy_from_user(&ex, (void *)arg, sizeof(ex)) < 0) return -EFAULT;
         if (ex.type != F_OWNER_TID && ex.type != F_OWNER_PID &&
             ex.type != F_OWNER_PGRP) return -EINVAL;
-        int pid = ex.pid;
-        if (ex.type == F_OWNER_PGRP) pid = -pid;
+        int pipe_type = (ex.type == F_OWNER_TID)  ? 2 /* PIPE_OWNER_TID  */
+                     : (ex.type == F_OWNER_PGRP) ? 1 /* PIPE_OWNER_PGRP */
+                                                  : 0 /* PIPE_OWNER_PID  */;
         if (fde->type == FD_PIPE) {
             int end = (fde->flags & O_WRONLY) ? 1 : 0;
-            pipe_fcntl_setown((struct pipe *)fde->obj, end, pid);
+            extern long pipe_fcntl_setown_ex(struct pipe *pp, int end, int who, int type);
+            pipe_fcntl_setown_ex((struct pipe *)fde->obj, end, ex.pid, pipe_type);
         } else if (fde->type == FD_FILE && fde->obj) {
-            ((struct vfs_file *)fde->obj)->f_owner = pid;
+            int f_pid = ex.pid;
+            if (ex.type == F_OWNER_PGRP) f_pid = -f_pid;
+            ((struct vfs_file *)fde->obj)->f_owner = f_pid;
         }
         return 0;
     }

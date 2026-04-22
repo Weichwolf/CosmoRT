@@ -12,10 +12,14 @@
 /* Async-signal owner per pipe-end. Linux F_SETOWN/F_SETSIG sind per
  * struct file — wir haben nur einen struct pipe fuer beide Enden,
  * speichern deshalb getrennte Owner fuer Lese/Schreib-Seite. */
+#define PIPE_OWNER_PID  0
+#define PIPE_OWNER_PGRP 1
+#define PIPE_OWNER_TID  2
 struct pipe_owner {
-    int pid;        /* > 0 = pid, < 0 = pgid (Linux F_SETOWN Konvention), 0 = keiner */
+    int pid;        /* F_SETOWN: >0 pid, <0 pgid. F_SETOWN_EX: tid oder pid je nach type */
     int sig;        /* Signal-Nummer (0 = default SIGIO) */
     int o_async;    /* O_ASYNC aktiv (F_SETFL) — ohne das kein Signal */
+    int type;       /* PIPE_OWNER_{PID,PGRP,TID} (nur fuer F_SETOWN_EX relevant) */
 };
 
 struct pipe {
@@ -107,7 +111,18 @@ long pipe_resize(struct pipe *pp, int new_size) {
 static void pipe_notify_end(struct pipe_owner *o) {
     if (!o->o_async || o->pid == 0) return;
     int sig = o->sig ? o->sig : PIPE_SIGIO_DEFAULT;
-    /* do_kill handles pid > 0 (process) und pid < -1 (pgid) analog Linux. */
+    if (o->type == PIPE_OWNER_TID) {
+        /* F_OWNER_TID: target a specific thread. do_tgkill(tgid, tid, sig).
+         * We dont track tgid per pipe-owner — lookup via tid -> thread -> proc.
+         * Fallback to do_kill(0, sig) would lose the TID-precision; Linux uses
+         * __send_sig_info mit t->group_leader. */
+        extern long do_tgkill(int tgid, int tid, int sig);
+        extern thread_t *thread_find_by_tid(int tid);
+        thread_t *t = thread_find_by_tid(o->pid);
+        if (t && t->proc) do_tgkill((int)t->proc->pid, o->pid, sig);
+        return;
+    }
+    /* F_OWNER_PID / F_OWNER_PGRP / legacy F_SETOWN: pid>0 process, pid<0 pgid */
     do_kill(o->pid, sig);
 }
 
@@ -124,6 +139,16 @@ long pipe_fcntl_setown(struct pipe *pp, int end, int arg) {
     uint64_t flags;
     spin_lock_irq(&pp->lock, &flags);
     pp->owner[end].pid = arg;
+    pp->owner[end].type = (arg < 0) ? PIPE_OWNER_PGRP : PIPE_OWNER_PID;
+    spin_unlock_irq(&pp->lock, flags);
+    return 0;
+}
+
+long pipe_fcntl_setown_ex(struct pipe *pp, int end, int who, int type) {
+    uint64_t flags;
+    spin_lock_irq(&pp->lock, &flags);
+    pp->owner[end].pid = who;
+    pp->owner[end].type = type;
     spin_unlock_irq(&pp->lock, flags);
     return 0;
 }
@@ -336,8 +361,8 @@ long do_pipe2(int *fds, int flags) {
     pp->was_full = 0;
     pp->blocked_reader = 0;
     pp->blocked_writer = 0;
-    pp->owner[0].pid = pp->owner[0].sig = pp->owner[0].o_async = 0;
-    pp->owner[1].pid = pp->owner[1].sig = pp->owner[1].o_async = 0;
+    pp->owner[0].pid = pp->owner[0].sig = pp->owner[0].o_async = pp->owner[0].type = 0;
+    pp->owner[1].pid = pp->owner[1].sig = pp->owner[1].o_async = pp->owner[1].type = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
 
     process_t *p = proc_current();

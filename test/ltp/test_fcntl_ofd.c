@@ -541,4 +541,49 @@ TEST("ltp/fcntl_getlk_range",          test_fcntl_getlk_reports_range);
 TEST("ltp/fcntl_setlease_pipe",        test_fcntl_setlease_pipe);
 TEST("ltp/fcntl_notify",               test_fcntl_notify_noop);
 TEST("ltp/fcntl38_dnotify_both",       test_dnotify_parent_plus_subdir);
+
+/* F_SETOWN_EX mit F_OWNER_TID: SIGIO-Zustellung an den Thread, nicht an
+ * proc_find(tid) (tid != pid im allgemeinen Fall). */
+static void test_fcntl_owner_tid_signal(void) {
+    puts("\n[ltp/fcntl_owner_tid_signal]\n");
+
+    int fds[2];
+    sc1(SYS_PIPE, (long)fds);
+
+    /* O_ASYNC + F_SETSIG(SIGUSR1) + F_SETOWN_EX(TID, my_tid) */
+    long cur_flags = sc3(SYS_FCNTL, fds[0], F_GETFL, 0);
+    sc3(SYS_FCNTL, fds[0], F_SETFL, cur_flags | O_ASYNC);
+    sc3(SYS_FCNTL, fds[0], F_SETSIG, SIGUSR1);
+
+    long mytid = sc0(SYS_GETTID);
+    struct k_f_owner_ex oex = { F_OWNER_TID, (int)mytid };
+    long r = sc3(SYS_FCNTL, fds[0], F_SETOWN_EX, (long)&oex);
+    check_val("F_SETOWN_EX TID", r, 0);
+
+    uint64_t mask = 1ULL << (SIGUSR1 - 1);
+    sc4(SYS_RT_SIGPROCMASK, 0, (long)&mask, 0, 8);
+
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        sc1(SYS_CLOSE, fds[0]);
+        sc3(SYS_WRITE, fds[1], (long)"x", 1);
+        sc1(SYS_CLOSE, fds[1]);
+        sc1(SYS_EXIT_GROUP, 0);
+        __builtin_unreachable();
+    }
+
+    uint64_t info[16] = {0};
+    struct k_timespec ts = { 2, 0 };
+    long sig = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, (long)info, (long)&ts, 8);
+    check_val("sigtimedwait → SIGUSR1", sig, SIGUSR1);
+
+    int st = 0;
+    sc4(SYS_WAIT4, pid, (long)&st, 0, 0);
+    sc1(SYS_CLOSE, fds[0]);
+    sc1(SYS_CLOSE, fds[1]);
+
+    uint64_t zero = 0;
+    sc4(SYS_RT_SIGPROCMASK, 2 /* SIG_UNBLOCK */, (long)&mask, (long)&zero, 8);
+}
+TEST("ltp/fcntl_owner_tid_signal",     test_fcntl_owner_tid_signal);
 TEST("ltp/fcntl_bad_whence_order",     test_fcntl_bad_whence_order);
