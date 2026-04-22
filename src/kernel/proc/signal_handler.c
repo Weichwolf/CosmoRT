@@ -203,11 +203,14 @@ void alarm_init(void) {
  * Syncs percpu syscall frame <-> thread_t around delivery.
  * Called from syscall_entry.asm between sys_handler return and SYSRET.
  * Actually called from the ASM-adjacent C code. */
-/* Is this syscall restartable when interrupted by a signal with SA_RESTART? */
+/* Is this syscall restartable when interrupted by a signal with SA_RESTART?
+ *
+ * nanosleep/clock_nanosleep return -ERESTART_RESTARTBLOCK in Linux; when a
+ * handler is installed, the signal-exit path always converts to -EINTR
+ * (independent of SA_RESTART). Emulate that by excluding them here. */
 static int is_restartable_syscall(long num) {
     return num == SYS_READ || num == SYS_WRITE || num == SYS_READV ||
-           num == SYS_WRITEV || num == SYS_WAIT4 || num == SYS_NANOSLEEP ||
-           num == SYS_CLOCK_NANOSLEEP || num == SYS_POLL ||
+           num == SYS_WRITEV || num == SYS_WAIT4 || num == SYS_POLL ||
            num == SYS_RECVFROM || num == SYS_SENDTO ||
            num == SYS_RECVMSG || num == SYS_SENDMSG ||
            num == SYS_ACCEPT || num == SYS_ACCEPT4 ||
