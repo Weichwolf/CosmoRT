@@ -661,8 +661,14 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         return (long)vaddr;
     }
 
-    /* Anonymous: pre-fault if locked or MAP_POPULATE */
-    if ((vma_flags & VMA_LOCKED) || (flags & MAP_POPULATE))
+    /* Anonymous: pre-fault if locked, MAP_POPULATE, or MAP_SHARED|MAP_ANON.
+     * MAP_SHARED|MAP_ANONYMOUS must share physical pages across fork;
+     * lazy allocation in the fault handler would give each faulter its
+     * own page. Eager allocation here makes copy_one_vma's shared branch
+     * work (no pseudo-inode / shmem backing store). File-backed MAP_SHARED
+     * uses the page cache and stays lazy. */
+    int eager_shared_anon = (flags & MAP_SHARED) && (flags & MAP_ANONYMOUS);
+    if ((vma_flags & VMA_LOCKED) || (flags & MAP_POPULATE) || eager_shared_anon)
         prefault_range(p->pml4, vaddr, vaddr + length, prot);
 
     spin_unlock_irq(&p->lock, irqf);
