@@ -162,17 +162,30 @@ static void create_elf_vmas(vma_t **vma_root, const void *elf_data,
 
 extern void proc_enter_ring3(thread_t *t) __attribute__((noreturn));
 
+/* Innere Variante: kpath ist bereits ein kernel-string, vollstaendig
+ * resolved. argv/envp bleiben User-Pointer. Fuer do_execveat, das den
+ * Pfad selber zusammenbaut (dirfd + relpath -> combined). */
+static long do_execve_kpath(char kpath[PATH_MAX_PROC],
+                            char *const argv[], char *const envp[]);
+
 long do_execve(const char *path, char *const argv[], char *const envp[]) {
     thread_t *cur = thread_current();
     if (!cur || !cur->proc) return -EFAULT;
-    process_t *p = cur->proc;
 
-    /* Copy path to kernel buffer and resolve relative paths via CWD */
     char kpath_raw[PATH_MAX_PROC], kpath[PATH_MAX_PROC];
     int plen = copy_path_from_user_proc(kpath_raw, path, PATH_MAX_PROC);
     if (plen < 0) return -EFAULT;
     extern int resolve_path(const char *path, char *out, int outsize);
     resolve_path(kpath_raw, kpath, PATH_MAX_PROC);
+
+    return do_execve_kpath(kpath, argv, envp);
+}
+
+static long do_execve_kpath(char kpath[PATH_MAX_PROC],
+                            char *const argv[], char *const envp[]) {
+    thread_t *cur = thread_current();
+    if (!cur || !cur->proc) return -EFAULT;
+    process_t *p = cur->proc;
 
     /* String-Buffer + Pointer-Arrays heap-alloziert: Bei Linux-kompatiblen
      * Limits (EXECVE_MAX_ARGS=4096) waeren Stack-Arrays je 32KB und wuerden
@@ -764,6 +777,9 @@ long do_execveat(int dirfd, const char *path, char *const argv[],
     int plen = copy_path_from_user_proc(kpath, path, PATH_MAX_PROC);
     if (plen < 0) return plen;
 
+    extern int resolve_path(const char *p, char *out, int outsize);
+    char rkpath[PATH_MAX_PROC];
+
     if (plen == 0) {
         if (!(flags & AT_EMPTY_PATH)) return -ENOENT;
         thread_t *cur = thread_current();
@@ -776,45 +792,48 @@ long do_execveat(int dirfd, const char *path, char *const argv[],
         struct vfs_file *f = (struct vfs_file *)fde->obj;
         if (!f || !f->path[0]) return -EBADF;
         if (f->type == VFS_DIR) return -EACCES;
-        return do_execve(f->path, argv, envp);
+        resolve_path(f->path, rkpath, PATH_MAX_PROC);
+        return do_execve_kpath(rkpath, argv, envp);
     }
 
     if (kpath[0] != '/') {
         if (dirfd == AT_FDCWD) {
-            /* Fall through: do_execve resolves relative via CWD */
-        } else {
-            thread_t *cur = thread_current();
-            if (!cur || !cur->proc) return -EFAULT;
-            process_t *p = cur->proc;
-            fd_entry_t *fde = fd_get(&p->fds, dirfd);
-            if (!fde || fde->type == FD_NONE) return -EBADF;
-            if (fde->type != FD_FILE) return -ENOTDIR;
-            struct vfs_file *f = (struct vfs_file *)fde->obj;
-            if (!f || f->type != VFS_DIR) return -ENOTDIR;
-            if (!f->path[0]) return -EBADF;
-            char combined[PATH_MAX_PROC];
-            int di = 0;
-            const char *dp = f->path;
-            while (*dp && di < PATH_MAX_PROC - 2) combined[di++] = *dp++;
-            if (di > 0 && combined[di - 1] != '/') combined[di++] = '/';
-            const char *rp = kpath;
-            while (*rp && di < PATH_MAX_PROC - 1) combined[di++] = *rp++;
-            combined[di] = '\0';
-            if (flags & AT_SYMLINK_NOFOLLOW) {
-                extern struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
-                int err = 0;
-                struct vfs_node *n = vfs_lookup_nofollow(combined, &err);
-                if (n && n->inode && n->inode->type == VFS_SYMLINK) return -ELOOP;
-            }
-            return do_execve(combined, argv, envp);
+            resolve_path(kpath, rkpath, PATH_MAX_PROC);
+            return do_execve_kpath(rkpath, argv, envp);
         }
+        thread_t *cur = thread_current();
+        if (!cur || !cur->proc) return -EFAULT;
+        process_t *p = cur->proc;
+        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        if (!fde || fde->type == FD_NONE) return -EBADF;
+        if (fde->type != FD_FILE) return -ENOTDIR;
+        struct vfs_file *f = (struct vfs_file *)fde->obj;
+        if (!f || f->type != VFS_DIR) return -ENOTDIR;
+        if (!f->path[0]) return -EBADF;
+        char combined[PATH_MAX_PROC];
+        int di = 0;
+        const char *dp = f->path;
+        while (*dp && di < PATH_MAX_PROC - 2) combined[di++] = *dp++;
+        if (di > 0 && combined[di - 1] != '/') combined[di++] = '/';
+        const char *rp = kpath;
+        while (*rp && di < PATH_MAX_PROC - 1) combined[di++] = *rp++;
+        combined[di] = '\0';
+        if (flags & AT_SYMLINK_NOFOLLOW) {
+            extern struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
+            int err = 0;
+            struct vfs_node *n = vfs_lookup_nofollow(combined, &err);
+            if (n && n->inode && n->inode->type == VFS_SYMLINK) return -ELOOP;
+        }
+        resolve_path(combined, rkpath, PATH_MAX_PROC);
+        return do_execve_kpath(rkpath, argv, envp);
     }
 
     if (flags & AT_SYMLINK_NOFOLLOW) {
-        extern struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
+        extern struct vfs_node *vfs_lookup_nofollow(const char *p, int *err);
         int err = 0;
         struct vfs_node *n = vfs_lookup_nofollow(kpath, &err);
         if (n && n->inode && n->inode->type == VFS_SYMLINK) return -ELOOP;
     }
-    return do_execve(kpath, argv, envp);
+    resolve_path(kpath, rkpath, PATH_MAX_PROC);
+    return do_execve_kpath(rkpath, argv, envp);
 }
