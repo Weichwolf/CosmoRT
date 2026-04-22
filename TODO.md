@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-Stand: ktest **2572/0** (Varianz 0, bekannter tcp-transfer-Flake 1/5), musl 462/10, LTP Alpine-Baseline im Fluss. Branch: `ltp`.
+Stand: ktest **2662/0**, musl ~461/10, LTP clone-Cluster 4/6 gruen (03/05/11/302 fix; 09 TBROK ProcFS-Net, 301 tcase4 pidfd). Branch: `ltp`.
 
 ## Offene Phasen
 
