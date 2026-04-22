@@ -31,6 +31,8 @@
 #define FD_PTY_MASTER 11
 #define FD_PTY_SLAVE  12
 #define FD_UNIX_SOCK  13
+#define FD_NSFS       14  /* /proc/<pid>/ns/XXX namespace handle (setns source).
+                           * obj = (struct nsfs_handle *) — see core/time_ns.h */
 
 /* Linux BITS_PER_LONG on x86_64 */
 #define FD_INIT_SLOTS     64

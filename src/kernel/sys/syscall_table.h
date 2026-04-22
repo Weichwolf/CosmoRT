@@ -243,7 +243,7 @@
     X(SYS_RESTART_SYSCALL, restart_syscall, do_restart_syscall()) \
     X(SYS_CLOCK_SETTIME, clock_settime, do_clock_settime((int)a1, (const void *)a2)) \
     X(SYS_CLOCK_ADJTIME, clock_adjtime, do_clock_adjtime((int)a1, (void *)a2)) \
-    X(SYS_UNSHARE, unshare, do_unshare_stub()) \
+    X(SYS_UNSHARE, unshare, do_unshare((unsigned long)a1)) \
     X(SYS_UTIMES, utimes, do_utimes((const char *)a1, (const void *)a2)) \
     X(SYS_FUTIMESAT, futimesat, do_futimesat((int)a1, (const char *)a2, (const void *)a3)) \
     X(SYS_SIGNALFD, signalfd, do_signalfd((int)a1, (const uint64_t *)a2)) \
@@ -295,7 +295,7 @@
     X(SYS_MOVE_PAGES, move_pages, -ENOSYS) \
     X(SYS_SET_MEMPOLICY_HOME_NODE, set_mempolicy_home_node, -ENOSYS) \
     /* Return -ENOSYS: namespaces */ \
-    X(SYS_SETNS, setns, -ENOSYS) \
+    X(SYS_SETNS, setns, do_setns((int)a1, (int)a2)) \
     /* Return -ENOSYS: io_uring */ \
     X(SYS_IO_URING_SETUP, io_uring_setup, -ENOSYS) \
     X(SYS_IO_URING_ENTER, io_uring_enter, -ENOSYS) \

@@ -343,6 +343,76 @@ long do_clone3(void *uargs, size_t size) {
     return do_clone(cflags, child_stack, parent_tid, child_tid, tls);
 }
 
+/* ── SYS_unshare (272), SYS_setns (308) ──────────
+ *
+ * unshare(CLONE_NEWTIME): detach time_ns_for_children from the current NS
+ * and install a fresh one inheriting the old offsets. The task itself keeps
+ * observing the old time_ns (Linux semantics: unshare only affects future
+ * children; the task must fork to feel the effect).
+ *
+ * setns(fd, CLONE_NEWTIME) on an nsfs handle rebinds BOTH time_ns and
+ * time_ns_for_children to the target NS. */
+
+#include "core/time_ns.h"
+
+extern int cred_has_cap_sys_admin(process_t *p);
+
+long do_unshare(unsigned long flags) {
+    /* Accept CLONE_NEWTIME + legacy no-op NS-flags. Everything else is
+     * out of scope in a single-user kernel. */
+    const unsigned long allowed = CLONE_NEWTIME | CLONE_NS_FLAGS |
+                                  CLONE_FILES | CLONE_FS | CLONE_SIGHAND |
+                                  CLONE_VM | CLONE_SYSVSEM | CLONE_THREAD;
+    if (flags & ~allowed) return -EINVAL;
+
+    /* Linux: CAP_SYS_ADMIN required for any NS unshare. */
+    if (flags & (CLONE_NEWTIME | CLONE_NS_FLAGS)) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        if (!cred_has_cap_sys_admin(p)) return -EPERM;
+    }
+
+    if (flags & CLONE_NEWTIME) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        /* Inherit current offsets from the parent's time_ns_for_children so
+         * callers that write timens_offsets start from the right baseline. */
+        struct time_namespace *nu = time_ns_alloc(p->time_ns_for_children);
+        if (!nu) return -ENOMEM;
+        struct time_namespace *old = p->time_ns_for_children;
+        p->time_ns_for_children = nu;
+        if (old) time_ns_put(old);
+    }
+    /* Remaining flags: no-op in single-user kernel. */
+    return 0;
+}
+
+long do_setns(int fd, int nstype) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde) return -EBADF;
+    if (fde->type != FD_NSFS) return -EINVAL;
+    struct nsfs_handle *h = (struct nsfs_handle *)fde->obj;
+    if (!h || !h->ns) return -EINVAL;
+
+    /* Linux: if nstype != 0, it must match the namespace kind. 0 accepts
+     * any. For our purposes only CLONE_NEWTIME matters. */
+    if (nstype != 0 && nstype != CLONE_NEWTIME) return -EINVAL;
+
+    /* setns on an nsfs handle from either /proc/<pid>/ns/time or
+     * /proc/<pid>/ns/time_for_children rebinds BOTH fields. Linux:
+     * commit_nsset → install_time_ns → switch_task_namespaces. */
+    struct time_namespace *tgt = time_ns_get(h->ns);
+    struct time_namespace *old_cur   = p->time_ns;
+    struct time_namespace *old_child = p->time_ns_for_children;
+    p->time_ns              = tgt;
+    p->time_ns_for_children = time_ns_get(h->ns);
+    if (old_cur)   time_ns_put(old_cur);
+    if (old_child) time_ns_put(old_child);
+    return 0;
+}
+
 /* ── SYS_uname (63) ─────────────────────────────── */
 
 struct utsname {

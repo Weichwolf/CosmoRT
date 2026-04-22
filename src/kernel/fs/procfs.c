@@ -938,6 +938,21 @@ int procfs_pid_exists(const char *name) {
         file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0) return 1;
     if (file[0]=='f' && file[1]=='d' && file[2]==0) return 3; /* directory */
 
+    /* /proc/<pid>/ns/time{,_for_children} — report as symlink-like entries
+     * so stat() on the path succeeds. Actual open() bypasses procfs_open
+     * and creates an FD_NSFS handle directly in do_openat. */
+    if (file[0]=='n' && file[1]=='s' && file[2]=='/') {
+        const char *sub = file + 3;
+        if (sub[0]=='t' && sub[1]=='i' && sub[2]=='m' && sub[3]=='e') {
+            if (sub[4] == 0) return 2;
+            if (sub[4] == '_' && sub[5]=='f' && sub[6]=='o' && sub[7]=='r' &&
+                sub[8] == '_' && sub[9]=='c' && sub[10]=='h' && sub[11]=='i' &&
+                sub[12]=='l' && sub[13]=='d' && sub[14]=='r' && sub[15]=='e' &&
+                sub[16]=='n' && sub[17] == 0)
+                return 2;
+        }
+    }
+
     return 0;
 }
 

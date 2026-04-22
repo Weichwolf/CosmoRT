@@ -13,8 +13,10 @@
 #include "hal/hal_cpu.h"
 
 #define TIME_NS_INIT_SLAB_COUNT 4
+#define NSFS_HANDLE_INIT_SLAB_COUNT 8
 
 static slab_t time_ns_slab;
+static slab_t nsfs_handle_slab;
 static spinlock_t time_ns_lock = SPINLOCK_INIT;
 
 struct time_namespace init_time_ns = {
@@ -39,7 +41,23 @@ __attribute__((cold))
 void time_ns_init(void) {
     slab_init_dynamic(&time_ns_slab, (int)sizeof(struct time_namespace),
                       TIME_NS_INIT_SLAB_COUNT);
+    slab_init_dynamic(&nsfs_handle_slab, (int)sizeof(struct nsfs_handle),
+                      NSFS_HANDLE_INIT_SLAB_COUNT);
     serial_puts("time_ns: init\n");
+}
+
+struct nsfs_handle *nsfs_handle_alloc(int kind, struct time_namespace *ns) {
+    struct nsfs_handle *h = (struct nsfs_handle *)slab_alloc(&nsfs_handle_slab);
+    if (!h) return 0;
+    h->kind = kind;
+    h->ns   = time_ns_get(ns);
+    return h;
+}
+
+void nsfs_handle_free(struct nsfs_handle *h) {
+    if (!h) return;
+    if (h->ns) time_ns_put(h->ns);
+    slab_free(&nsfs_handle_slab, h);
 }
 
 struct time_namespace *time_ns_alloc(struct time_namespace *inherit) {

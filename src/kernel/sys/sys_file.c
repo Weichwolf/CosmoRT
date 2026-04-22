@@ -2,6 +2,7 @@
 
 #include "internal.h"
 #include "core/event_queue.h"
+#include "core/time_ns.h"
 #include "event/epoll.h"
 
 /* Resolve a relative path against CWD, handling "." and ".." components.
@@ -468,16 +469,71 @@ long do_close(int fd) {
     if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(&p->fds, fd); }
     if (fde->type == FD_PTY_MASTER || fde->type == FD_PTY_SLAVE)
         return fd_close(&p->fds, fd);
+    if (fde->type == FD_NSFS) {
+        nsfs_handle_free((struct nsfs_handle *)fde->obj);
+        return fd_close(&p->fds, fd);
+    }
     return fd_close(&p->fds, fd);
 }
 
 /* ── SYS_openat (257) — primary; SYS_open delegates with AT_FDCWD ── */
+
+/* Return 1 if rpath equals "<prefix>/ns/time" or "<prefix>/ns/time_for_children"
+ * for the current process ("/proc/self/..." or "/proc/<own-pid>/..."), else 0.
+ * Sets *kind to 0 for "time", 1 for "time_for_children".
+ * Unrecognised ns entries are left to vfs_open (-> ENOENT). */
+static int rpath_is_ns_time(const char *rpath, int *kind) {
+    /* Only match /proc/ paths; caller has already fully canonicalised. */
+    if (rpath[0] != '/' || rpath[1] != 'p' || rpath[2] != 'r' ||
+        rpath[3] != 'o' || rpath[4] != 'c' || rpath[5] != '/') return 0;
+    const char *p = rpath + 6;
+    /* Accept "self/" */
+    if (p[0]=='s' && p[1]=='e' && p[2]=='l' && p[3]=='f' && p[4]=='/') {
+        p += 5;
+    } else {
+        /* Accept "<current-pid>/" — anything else we don't serve. */
+        process_t *cur = proc_current();
+        if (!cur) return 0;
+        uint32_t pid = cur->pid, v = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (uint32_t)(*p++ - '0'); }
+        if (*p != '/' || v != pid) return 0;
+        p++;
+    }
+    if (!(p[0]=='n' && p[1]=='s' && p[2]=='/')) return 0;
+    p += 3;
+    if (p[0]=='t' && p[1]=='i' && p[2]=='m' && p[3]=='e') {
+        if (p[4] == 0)        { *kind = 0; return 1; }
+        if (p[4] == '_' && p[5]=='f' && p[6]=='o' && p[7]=='r' && p[8]=='_' &&
+            p[9]=='c' && p[10]=='h' && p[11]=='i' && p[12]=='l' &&
+            p[13]=='d' && p[14]=='r' && p[15]=='e' && p[16]=='n' && p[17]==0)
+            { *kind = 1; return 1; }
+    }
+    return 0;
+}
 
 long do_openat(int dirfd, const char *path, int flags, int mode) {
     char kpath[PATH_MAX], rpath[PATH_MAX];
     int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
     resolve_path(kpath, rpath, PATH_MAX);
+
+    /* /proc/{self|pid}/ns/time{,_for_children} — allocate a nsfs handle.
+     * Linux: kind-0 binds to task->time_ns, kind-1 to time_ns_for_children
+     * as observed at open-time (reference captured). */
+    int ns_kind = 0;
+    if (rpath_is_ns_time(rpath, &ns_kind)) {
+        if (flags & (O_WRONLY | O_RDWR)) return -EINVAL;
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        struct time_namespace *src =
+            ns_kind == 0 ? p->time_ns : p->time_ns_for_children;
+        struct nsfs_handle *h = nsfs_handle_alloc(ns_kind, src);
+        if (!h) return -ENOMEM;
+        int fd = fd_alloc(&p->fds, FD_NSFS, h, flags);
+        if (fd < 0) { nsfs_handle_free(h); return fd; }
+        return fd;
+    }
+
     return vfs_open(rpath, flags, mode);
 }
 

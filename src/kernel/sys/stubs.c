@@ -416,9 +416,6 @@ long do_readahead(void) { return 0; }
 long do_restart_syscall(void) { return -EINTR; }
 
 
-/* unshare: no-op (single process namespace) */
-long do_unshare_stub(void) { return 0; }
-
 /* utimes: delegate to utimensat */
 long do_utimes(const char *filename, const void *utimes_buf) {
     if (utimes_buf) {

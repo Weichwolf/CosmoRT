@@ -69,6 +69,26 @@ int64_t                 time_ns_adjust_abs(struct time_namespace *ns, int clk_id
 /* Clock is subject to time_ns offsetting */
 int                     time_ns_clock_affected(int clk_id);
 
+/* ── NSFS handles ────────────────────────────────────────────
+ *
+ * open("/proc/self/ns/time") or ("/proc/self/ns/time_for_children") returns a
+ * tiny heap object below. setns(fd, CLONE_NEWTIME) inspects this struct.
+ *
+ * kind == 0  → time (current task's time_ns at open-time)
+ * kind == 1  → time_for_children (current task's time_ns_for_children at open-time)
+ *
+ * The NS pointer holds a reference (incref on open, decref on close).
+ * The observable namespace may have moved on in the opening task since
+ * then — this matches Linux: nsfs fd binds to a specific ns_common. */
+
+struct nsfs_handle {
+    int                      kind;
+    struct time_namespace   *ns;
+};
+
+struct nsfs_handle *nsfs_handle_alloc(int kind, struct time_namespace *ns);
+void                nsfs_handle_free(struct nsfs_handle *h);
+
 /* Parse and apply one timens_offsets write line.
  *   Format: "<clockid> <sec> <nsec>\n" (decimal, possibly negative).
  *   Accepts CLOCK_MONOTONIC and CLOCK_BOOTTIME only (Linux restriction).
