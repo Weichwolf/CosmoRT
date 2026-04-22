@@ -630,7 +630,8 @@ int vfs_open(const char *path, int flags, int mode) {
     if (kstreq(path, "/dev/console")) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)0L, flags & 3);
+        int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)0L,
+                          (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
         return fd < 0 ? -EMFILE : fd;
     }
     /* /dev/tty → current process's PTY (controlling terminal) */
@@ -641,7 +642,8 @@ int vfs_open(const char *path, int flags, int mode) {
         for (int i = 0; i < 3; i++) {
             if (p->fds.entries[i].type == FD_PTY_SLAVE) {
                 int fd = fd_alloc(&p->fds, FD_PTY_SLAVE,
-                                  p->fds.entries[i].obj, flags & 3);
+                                  p->fds.entries[i].obj,
+                                  (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
                 return fd < 0 ? -EMFILE : fd;
             }
         }
@@ -659,7 +661,8 @@ int vfs_open(const char *path, int flags, int mode) {
             int vt_id = vt_num - 1; /* tty1 → VT0 */
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)vt_id, flags & 3);
+            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)vt_id,
+                              (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
             return fd < 0 ? -EMFILE : fd;
         }
     }
@@ -674,7 +677,8 @@ int vfs_open(const char *path, int flags, int mode) {
         if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)pts_id, flags & 3);
+            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)pts_id,
+                              (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
             return fd < 0 ? -EMFILE : fd;
         }
         return -ENOENT;
@@ -689,7 +693,8 @@ not_pts:
                                            devid = DEV_URANDOM;
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)devid, flags & 3);
+        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)devid,
+                          (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
         return fd < 0 ? -EMFILE : fd;
     }
 
