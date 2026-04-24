@@ -34,6 +34,36 @@
 #define RR_TIMESLICE 10
 
 struct process; /* forward */
+struct restart_block; /* forward */
+
+/* Restart-block: per-thread Resume-Closure for syscalls returning
+ * -ERESTART_RESTARTBLOCK (clock_nanosleep, futex_wait, poll/select).
+ * Linux x86_64 ABI: SYS_restart_syscall (219) calls fn(rb), which
+ * resumes the original op with saved deadline / state.
+ *
+ * fn == NULL means no pending restart -> SYS_restart_syscall returns -EINTR. */
+typedef long (*restart_fn_t)(struct restart_block *);
+
+struct restart_block {
+    restart_fn_t fn;
+    union {
+        /* clock_nanosleep / nanosleep restart */
+        struct {
+            int      clockid;
+            int      flags;            /* TIMER_ABSTIME bit only relevant */
+            uint64_t expires_ns;       /* CLOCK_MONOTONIC ns absolute deadline */
+            void    *user_rmtp;        /* user struct k_timespec * (or NULL) */
+        } nanosleep;
+        /* futex_wait restart */
+        struct {
+            uint32_t *uaddr;
+            uint32_t  val;
+            uint32_t  flags;           /* FUTEX_PRIVATE_FLAG etc */
+            uint32_t  bitset;
+            uint64_t  deadline_ms;     /* timer_ms() deadline, 0 = infinite */
+        } futex;
+    };
+};
 
 typedef struct thread {
     /* ── Cache-line 0 (bytes 0-63): context-switch hot path ──
@@ -134,6 +164,9 @@ typedef struct thread {
 
     /* Serializes eq producers (IRQ + syscall) and ring growth. */
     spinlock_t      eq_lock;
+
+    /* ── Restart block (Linux current->restart_block) ── */
+    struct restart_block restart_block;
 
     /* ── Waitqueue linkage (Linux prepare_to_wait pattern) ──
      * wait_entry points at the stack-allocated wait_queue_entry_t of the

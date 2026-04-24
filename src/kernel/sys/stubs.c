@@ -447,8 +447,19 @@ long do_setdomainname(void) { return 0; }
 /* readahead: no-op */
 long do_readahead(void) { return 0; }
 
-/* restart_syscall: return -EINTR */
-long do_restart_syscall(void) { return -EINTR; }
+/* restart_syscall (NR 219): re-enter via current->restart_block.fn.
+ * Linux semantics: a syscall that was interrupted by a signal returned
+ * -ERESTART_RESTARTBLOCK; the kernel rewrote RIP/RAX so the userspace
+ * syscall stub re-enters as SYS_restart_syscall (219). This handler
+ * resumes the original op via the saved closure. fn==NULL means the
+ * thread invoked SYS_restart_syscall without a pending restart -> EINTR. */
+long do_restart_syscall(void) {
+    thread_t *t = thread_current();
+    if (!t) return -EINTR;
+    restart_fn_t fn = t->restart_block.fn;
+    if (!fn) return -EINTR;
+    return fn(&t->restart_block);
+}
 
 
 /* utimes: delegate to utimensat */

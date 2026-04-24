@@ -60,4 +60,14 @@
 #define EALREADY        114
 #define EHOSTUNREACH    113
 
+/* ── Kernel-internal restart codes (never visible to userspace) ──
+ * Returned by syscalls that were interrupted by a signal. The syscall
+ * return path translates them to either -EINTR or a syscall restart
+ * (RIP-rewind to original or to SYS_RESTART_SYSCALL=219). Linux uses
+ * the same numeric values; musl/glibc never see them. */
+#define ERESTARTSYS           512  /* restart if SA_RESTART set, else EINTR */
+#define ERESTARTNOINTR        513  /* always restart (no SA_RESTART check) */
+#define ERESTARTNOHAND        514  /* restart only if no handler installed */
+#define ERESTART_RESTARTBLOCK 516  /* restart via current->restart_block.fn */
+
 #endif /* COSMO_LINUX_ERRNO_H */
