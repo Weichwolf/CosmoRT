@@ -235,7 +235,7 @@ $(BUILD):
 
 # ── QEMU ────────────────────────────────────────
 QEMU = qemu-system-x86_64
-QEMU_FLAGS = -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+QEMU_FLAGS = -cpu qemu64,+smep,+smap -smp 1 -m 4096 \
              -bios /usr/share/ovmf/OVMF.fd \
              -drive file=$(ESP_IMG),format=raw \
              -serial stdio \
@@ -250,7 +250,7 @@ qemu: $(ESP_IMG)
 	$(QEMU) $(QEMU_FLAGS)
 
 # Alpine QEMU flags (shared)
-ALPINE_QEMU = $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+ALPINE_QEMU = $(QEMU) -cpu qemu64,+smep,+smap -smp 1 -m 4096 \
   -bios /usr/share/ovmf/OVMF.fd \
   -drive file=$(ESP_IMG),format=raw \
   -drive file=build/alpine.img,format=raw,if=virtio \
@@ -300,7 +300,7 @@ qemu-net: $(ESP_IMG)
 # Background QEMU with serial log
 run: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	$(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+	$(QEMU) -cpu qemu64,+smep,+smap -smp 1 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
@@ -327,7 +327,7 @@ test-all:
 # ── Boot test ───────────────────────────────────
 test-boot: $(ESP_IMG)
 	@rm -f /tmp/cosmo-serial.log
-	timeout 10 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+	timeout 10 $(QEMU) -cpu qemu64,+smep,+smap -smp 1 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
@@ -343,7 +343,7 @@ test-boot: $(ESP_IMG)
 
 test-boot-disk: $(BUILD)/disk.img
 	@rm -f /tmp/cosmo-serial.log
-	timeout 10 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+	timeout 10 $(QEMU) -cpu qemu64,+smep,+smap -smp 1 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(BUILD)/disk.img,format=raw \
 	        -serial file:/tmp/cosmo-serial.log \
