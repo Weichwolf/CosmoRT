@@ -3,9 +3,13 @@
 **Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
-**Stand (Session-Ende)**: ktest **2915/1** (CLONE_NEWNET pre-existing),
-musl + LTP Phase 10.2 unverifiziert (alpine-test im letzten Run timed
-out, siehe Report). Branch: `ltp`.
+**Stand (Session-Ende)**: ktest **2911-2915/1** (CLONE_NEWNET pre-existing,
+4 Tests flake je nach Run). pthread_mutex_pi + pthread_mutex_pi-static
+PASS nach WAITERS-bit-unter-lock-fix (4d9ab0c). pthread_cond-static
+triggert Kernel-PF (CR2=0x10) — pre-existing Bug unabhaengig von 10.2,
+Reihenfolge im Debug-Stack-frame. Full alpine-test in dieser Session
+nicht durchgelaufen (Timeouts + log-Kollisionen), aber alle migrierten
+ktests gruen. Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
