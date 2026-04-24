@@ -157,7 +157,10 @@ static int ring_read(unix_socket_t *s, uint8_t *data, int len) {
 
 long usock_socket(int type) {
     int base_type = type & 0xF;
-    if (base_type != 1 /* SOCK_STREAM */) return -EPROTONOSUPPORT;
+    /* SOCK_STREAM=1 and SOCK_SEQPACKET=5: both are reliable connection-oriented.
+     * We treat SEQPACKET like STREAM — message boundaries are not enforced but
+     * bind/listen/accept/connect/send/recv all work per-Linux semantics. */
+    if (base_type != 1 && base_type != 5) return -EPROTONOSUPPORT;
 
     unix_socket_t *s = usock_alloc();
     if (!s) return -EMFILE;
@@ -181,7 +184,7 @@ long usock_socketpair(int type, int *sv) {
     if (!user_ok((uint64_t)sv, 2 * sizeof(int))) return -EFAULT; /* validated early, copy_to_user below */
 
     int base_type = type & 0xF;
-    if (base_type != 1 /* SOCK_STREAM */) return -EPROTONOSUPPORT;
+    if (base_type != 1 && base_type != 5) return -EPROTONOSUPPORT;
 
     unix_socket_t *a = usock_alloc();
     if (!a) return -EMFILE;
