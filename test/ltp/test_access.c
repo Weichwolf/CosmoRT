@@ -147,6 +147,104 @@ static void test_access04_rok_noread(void) {
     sc1(SYS_UNLINK, (long)"/tmp/acc_noread");
 }
 
+/* ── access01 DAC via setuid(nobody): file owned by root, nobody-access ── */
+
+#define NOBODY_UID 65534U
+
+static void make_file_mode(const char *path, int mode) {
+    /* umask-proof: open then chmod to exact mode */
+    sc1(SYS_UNLINK, (long)path);
+    long fd = sc3(SYS_OPEN, (long)path, O_CREAT | O_WRONLY, 0600);
+    if (fd >= 0) sc1(SYS_CLOSE, fd);
+    sc2(SYS_CHMOD, (long)path, mode);
+}
+
+static void child_acc01_r_only(void) {
+    long r = sc1(SYS_SETUID, NOBODY_UID);
+    check_val("setuid(nobody)", r, 0);
+    /* 0400 file: other=0, nobody gets nothing */
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_r", R_OK);
+    check_val("nobody R_OK on 0400 root file", r, -EACCES);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_r", W_OK);
+    check_val("nobody W_OK on 0400 root file", r, -EACCES);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_r", X_OK);
+    check_val("nobody X_OK on 0400 root file", r, -EACCES);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_r", F_OK);
+    check_val("nobody F_OK on 0400 root file", r, 0);
+}
+
+static void test_access01_dac_0400(void) {
+    puts("\n[ltp/access01-dac-0400]\n");
+    make_file_mode("/tmp/acc_dac_r", 0400);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) { child_acc01_r_only(); sc1(SYS_EXIT, 0); for(;;){} }
+    int st=0; sc4(SYS_WAIT4, pid, (long)&st, 0, 0);
+    sc1(SYS_UNLINK, (long)"/tmp/acc_dac_r");
+}
+
+static void child_acc01_rwx_as_other(void) {
+    sc1(SYS_SETUID, NOBODY_UID);
+    /* 0777: everybody all perms */
+    long r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_rwx", R_OK);
+    check_val("nobody R_OK on 0777", r, 0);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_rwx", W_OK);
+    check_val("nobody W_OK on 0777", r, 0);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_rwx", X_OK);
+    check_val("nobody X_OK on 0777", r, 0);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_rwx", R_OK | W_OK | X_OK);
+    check_val("nobody R|W|X on 0777", r, 0);
+}
+
+static void test_access01_dac_0777(void) {
+    puts("\n[ltp/access01-dac-0777]\n");
+    make_file_mode("/tmp/acc_dac_rwx", 0777);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) { child_acc01_rwx_as_other(); sc1(SYS_EXIT, 0); for(;;){} }
+    int st=0; sc4(SYS_WAIT4, pid, (long)&st, 0, 0);
+    sc1(SYS_UNLINK, (long)"/tmp/acc_dac_rwx");
+}
+
+/* ── access01 mode 0100 x-only as nobody — R_OK/W_OK EACCES, X_OK ok ── */
+
+static void child_acc01_x_only(void) {
+    sc1(SYS_SETUID, NOBODY_UID);
+    long r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_x", R_OK);
+    check_val("nobody R_OK on 0111", r, -EACCES);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_x", W_OK);
+    check_val("nobody W_OK on 0111", r, -EACCES);
+    r = sc2(SYS_ACCESS, (long)"/tmp/acc_dac_x", X_OK);
+    check_val("nobody X_OK on 0111", r, 0);
+}
+
+static void test_access01_dac_0111(void) {
+    puts("\n[ltp/access01-dac-0111]\n");
+    make_file_mode("/tmp/acc_dac_x", 0111);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) { child_acc01_x_only(); sc1(SYS_EXIT, 0); for(;;){} }
+    int st=0; sc4(SYS_WAIT4, pid, (long)&st, 0, 0);
+    sc1(SYS_UNLINK, (long)"/tmp/acc_dac_x");
+}
+
+/* ── access04 EINVAL: invalid mode bits ── */
+
+static void test_access04_einval(void) {
+    puts("\n[ltp/access04-einval]\n");
+    create_file("/tmp/acc_einval", 0644);
+    long r = sc2(SYS_ACCESS, (long)"/tmp/acc_einval", -1);
+    check_val("access mode=-1 EINVAL", r, -EINVAL);
+    sc1(SYS_UNLINK, (long)"/tmp/acc_einval");
+}
+
+/* ── access04 root X_OK on non-exec regular file ── */
+
+static void test_access04_root_xok(void) {
+    puts("\n[ltp/access04-root-xok]\n");
+    create_file("/tmp/acc_root_noexec", 0666);
+    long r = sc2(SYS_ACCESS, (long)"/tmp/acc_root_noexec", X_OK);
+    check_val("root X_OK on 0666 regular EACCES", r, -EACCES);
+    sc1(SYS_UNLINK, (long)"/tmp/acc_root_noexec");
+}
+
 TEST("ltp/access01-fok",          test_access01_fok);
 TEST("ltp/access01-rok",          test_access01_rok);
 TEST("ltp/access01-wok",          test_access01_wok);
@@ -160,3 +258,8 @@ TEST("ltp/access03-faccessat",    test_access03_faccessat);
 TEST("ltp/access03-faccessat-enoent", test_access03_faccessat_enoent);
 TEST("ltp/access04-xok-noperm",   test_access04_xok_noperm);
 TEST("ltp/access04-rok-noread",   test_access04_rok_noread);
+TEST("ltp/access01-dac-0400",     test_access01_dac_0400);
+TEST("ltp/access01-dac-0777",     test_access01_dac_0777);
+TEST("ltp/access01-dac-0111",     test_access01_dac_0111);
+TEST("ltp/access04-einval",       test_access04_einval);
+TEST("ltp/access04-root-xok",     test_access04_root_xok);

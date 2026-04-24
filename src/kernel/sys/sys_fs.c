@@ -270,80 +270,111 @@ long do_mknodat(int dirfd, const char *path, uint32_t mode, uint64_t dev) {
 
 /* ── SYS_faccessat (269) — primary; access delegates here via dispatch ── */
 
+/* Recognise kernel-synthesised device paths that exist without a dentry. */
+static int faccess_is_virtual_dev(const char *kpath) {
+    static const char *devpaths[] = {
+        "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
+        "/dev/console", "/dev", "/proc", 0
+    };
+    for (const char **dp = devpaths; *dp; dp++) {
+        const char *a = kpath, *b = *dp;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a == 0 && *b == 0) return 1;
+    }
+    /* /dev/ttyN (1..12) */
+    if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
+        kpath[4]=='/' && kpath[5]=='t' && kpath[6]=='t' && kpath[7]=='y' &&
+        kpath[8] >= '1' && kpath[8] <= '9') {
+        int vt_num = 0;
+        const char *d = kpath + 8;
+        while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
+        if (*d == '\0' && vt_num >= 1 && vt_num <= 12) return 1;
+    }
+    /* /dev/pts/N */
+    if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
+        kpath[4]=='/' && kpath[5]=='p' && kpath[6]=='t' && kpath[7]=='s' &&
+        kpath[8]=='/') {
+        int pts_id = 0;
+        const char *d = kpath + 9;
+        if (*d >= '0' && *d <= '9') {
+            while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
+            if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Linux fs/namei.c sys_faccessat: path-walk, DAC-check, EROFS for W_OK.
+ * access()/faccessat() always use the real uid (not effective) by default;
+ * AT_EACCESS inverts that. We only track fsuid/euid — treat both cases as
+ * "use euid" since a non-privileged process does not setuid between the
+ * access() call and the follow-up open().
+ *
+ * Error order (matches Linux fs/open.c do_faccessat):
+ *   1. mode sanity               → EINVAL
+ *   2. path copy / resolve       → EFAULT / ENOENT / ENAMETOOLONG
+ *   3. path lookup / stat        → ENOENT / ENOTDIR / ELOOP
+ *   4. sb_permission (MAY_WRITE) → EROFS
+ *   5. DAC (cred_may_access)     → EACCES */
 long do_faccessat(int dirfd, const char *path, int mode, int flags) {
-    (void)flags; /* AT_EACCESS / AT_SYMLINK_NOFOLLOW — irrelevant for single-user */
+    (void)flags; /* AT_EACCESS / AT_SYMLINK_NOFOLLOW — single-user, treat as no-op */
     if (mode & ~(F_OK | R_OK | W_OK | X_OK)) return -EINVAL;
 
     char kpath[PATH_MAX];
     int len = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (len < 0) return len;
 
-    /* Check existence across all filesystems */
-    int exists = 0;
-    int vfs_err = 0;
-
-    /* ramfs */
-    if (vfs_lookup_err(kpath, &vfs_err)) { exists = 1; goto found; }
-    /* procfs entries (/proc/NAME) */
-    {
-        const char *pname = 0;
-        if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
-            kpath[4]=='c' && kpath[5]=='/')
-            pname = kpath + 6;
-        if (pname && procfs_open(pname)) { exists = 1; goto found; }
+    /* procfs and virtual /dev entries exist but have no backing stat(2).
+     * Single-user: root-readable, no write, no execute. */
+    const char *pname = 0;
+    if (kpath[0]=='/' && kpath[1]=='p' && kpath[2]=='r' && kpath[3]=='o' &&
+        kpath[4]=='c' && kpath[5]=='/')
+        pname = kpath + 6;
+    if (pname && procfs_open(pname)) {
+        if (mode & (W_OK | X_OK)) return -EROFS; /* procfs is read-only-ish */
+        return 0;
     }
-    /* Device special files and virtual dirs */
-    {
-        static const char *devpaths[] = {
-            "/dev/null", "/dev/zero", "/dev/urandom", "/dev/tty",
-            "/dev/console", "/dev", "/proc", 0
-        };
-        for (const char **dp = devpaths; *dp; dp++) {
-            const char *a = kpath, *b = *dp;
-            while (*a && *a == *b) { a++; b++; }
-            if (*a == 0 && *b == 0) { exists = 1; goto found; }
-        }
-        /* /dev/tty1-tty4 */
-        if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
-            kpath[4]=='/' && kpath[5]=='t' && kpath[6]=='t' && kpath[7]=='y' &&
-            kpath[8] >= '1' && kpath[8] <= '9') {
-            int vt_num = 0;
-            const char *d = kpath + 8;
-            while (*d >= '0' && *d <= '9') vt_num = vt_num * 10 + (*d++ - '0');
-            if (*d == '\0' && vt_num >= 1 && vt_num <= 12)
-                { exists = 1; goto found; }
-        }
-        /* /dev/pts/0-3 */
-        if (kpath[0]=='/' && kpath[1]=='d' && kpath[2]=='e' && kpath[3]=='v' &&
-            kpath[4]=='/' && kpath[5]=='p' && kpath[6]=='t' && kpath[7]=='s' &&
-            kpath[8]=='/') {
-            int pts_id = 0;
-            const char *d = kpath + 9;
-            if (*d >= '0' && *d <= '9') {
-                while (*d >= '0' && *d <= '9') pts_id = pts_id * 10 + (*d++ - '0');
-                if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX)
-                    { exists = 1; goto found; }
-            }
-        }
-    }
-    /* ext4 on disk */
-    {
-        extern uint64_t ext4_walk_path(const char *);
-        if (ext4_walk_path(kpath)) { exists = 1; goto found; }
+    if (faccess_is_virtual_dev(kpath)) {
+        /* Virtual devs: F_OK/R_OK/W_OK ok, X_OK denied (no x-bit). */
+        if (mode & X_OK) return -EACCES;
+        return 0;
     }
 
-found:
-    if (!exists) {
-        if (vfs_err && vfs_err != -ENOENT) return vfs_err;
-        return -ENOENT;
+    /* Real stat — walks path, follows symlinks, returns canonical errnos
+     * (ENOENT/ENOTDIR/ELOOP/ENAMETOOLONG) from the underlying FS. */
+    struct k_stat st;
+    int rc = vfs_stat(kpath, &st);
+    if (rc < 0) return rc;
+
+    /* EROFS precedes DAC (Linux generic_permission: sb_permission first).
+     * Only applies if the target lives on a read-only mount and W_OK is
+     * requested on a mutable object (regular file / dir / symlink). */
+    if (mode & W_OK) {
+        const char *relpath;
+        struct mount *mnt = vfs_resolve_mount(kpath, &relpath);
+        uint32_t ftype = st.st_mode & S_IFMT;
+        if (mnt && (mnt->mnt_flags & MS_RDONLY) &&
+            (ftype == S_IFREG || ftype == S_IFDIR || ftype == S_IFLNK))
+            return -EROFS;
     }
-    if (mode & X_OK) {
-        struct k_stat st;
-        if (vfs_stat(kpath, &st) == 0) {
-            if ((st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) return -EACCES;
-        }
+
+    /* DAC. cred_may_access short-circuits to 0 for euid==0, but root still
+     * needs at least one x-bit for X_OK on regular files (Linux generic_permission
+     * MAY_EXEC & !root shortcut; for root we enforce the "any x" rule manually). */
+    process_t *p = proc_current();
+    if (p && p->euid == 0) {
+        if ((mode & X_OK) && ((st.st_mode & S_IFMT) == S_IFREG) &&
+            (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)
+            return -EACCES;
+        return 0;
     }
-    return 0;
+
+    int want = 0;
+    if (mode & R_OK) want |= MAY_READ;
+    if (mode & W_OK) want |= MAY_WRITE;
+    if (mode & X_OK) want |= MAY_EXEC;
+    if (!want) return 0;
+    return cred_may_access(p, st.st_uid, st.st_gid, st.st_mode, want);
 }
 
 /* ── SYS_statfs (137) / SYS_fstatfs (138) ───────── */

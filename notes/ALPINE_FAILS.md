@@ -147,7 +147,7 @@ Multi-NIC-Routing-Support ist separates Thema (netif-pointer in
 | clock_*        |    3   | clock_gettime04, clock_nanosleep01/02              | Clock-Jitter / Sched-Perf, KEIN NEWTIME |
 | clone/dup      |    2   | clone09 (procfs TBROK), dup05/dup201              | -                      |
 | bind/accept    |    2   | accept4_01 (TCP half-open), bind04 (SOCK_SEQPACKET+IPv6) | siehe oben     |
-| access         |    2   | access01, access04                                | DAC edge-cases         |
+| access         |    0   | (access01, access04 PASS)                          | erledigt               |
 | rest           |    9   | abort01, acct01, fchdir03, fchownat03, fdatasync02, fallocate02, fgetxattr02, copy_file_range03, stack_clash | diverse |
 
 ## clock_*-Cluster (2026-04-22)
@@ -191,5 +191,11 @@ pthread_atfork-errno-clobber). Keine systematische Regression.
 **Deprioritized:**
 - IPv6-Stack (großer Rewrite, eigenes Milestone)
 - fcntl14 (Mandatory-Locking in Linux auch entfernt)
-- access01/04 (DAC edge-cases im Single-User)
 - cve-17052 (memory-reclaim)
+
+## access01/04 (2026-04-22) — PASS
+
+`do_faccessat` reimplementiert: path-walk via vfs_stat → ELOOP/ENOTDIR/
+ENOENT/ENAMETOOLONG. W_OK prueft MS_RDONLY am Mount → EROFS. Dann
+cred_may_access mit R/W/X → EACCES. Root bekommt X_OK nur wenn ≥1 x-Bit.
+Vorher: nur oberflaechlicher X_OK-any-bit-Check, DAC komplett ignoriert.
