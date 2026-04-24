@@ -5,6 +5,11 @@ Update: 2026-04-22 nach TCP-half-open-queue.
 Update: 2026-04-22 nach procfs-write + pipe-max-size (fcntl35).
 Update: 2026-04-22 nach dnotify nested sigreturn-delivery (fcntl38).
 Update: 2026-04-24 Phase 10 Waitqueue-Infrastruktur (ba88466, e255af3).
+Update: 2026-04-24 Phase 10.2a+b futex + pipe auf waitqueue (ef2994d, 0277e99).
+  ktest 2893/1 -> 2915/1 (+22 Tests, alle gruen).
+  musl + LTP: alpine-test Run in dieser Session timed out nach 30min
+  (abgebrochen mit stale futex-image); vollstaendige Verifikation
+  verbleibt der naechsten Session.
 
 ## Ergebnis
 

@@ -3,8 +3,9 @@
 **Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
-**Stand (Session-Ende)**: ktest **2870/0**, musl **460/11**, LTP **246/8/44** (best run).
-Branch: `ltp`.
+**Stand (Session-Ende)**: ktest **2915/1** (CLONE_NEWNET pre-existing),
+musl + LTP Phase 10.2 unverifiziert (alpine-test im letzten Run timed
+out, siehe Report). Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
@@ -34,9 +35,9 @@ Reihenfolge ist **nicht** verhandelbar bis 15 — danach orthogonal parallelisie
 
 ## Phase 10 — Waitqueue-System (KRITISCHER PFAD)
 
-**Status**: Infrastruktur + thread_block_ms migriert (ba88466, e255af3).
-Rest (event_wait/futex/pipe/net/epoll/signalfd/timerfd/process_wait)
-offen als Phase 10.2.
+**Status**: Infrastruktur (10.1) + futex + pipe auf waitqueue (10.2a/b).
+Rest (event_wait/net/epoll/signalfd/timerfd/process_wait) offen als
+Phase 10.2c.
 
 **Problem**: Jede Blocking-Primitive (`thread_block_ms`, `event_wait`, `futex_wait`,
 `signalfd_read`, socket-recv, pipe-read) baut ihr eigenes
@@ -78,15 +79,43 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       SIGTERM/SIGKILL during sleep, pipe block, wait4 wake, 20 concurrent sleepers,
       30x signal-wake stress, 5 alternating sleeps
 
-**Phase 10.2 — Restliche Blocking-Pfade (OFFEN)**
+**Phase 10.2a — futex auf waitqueue (ERLEDIGT, ef2994d)**
+
+- [x] `futex_wait`/`futex_wake` → wait_queue_head_t pro bucket
+- [x] FUTEX_LOCK_PI/UNLOCK_PI auf gleiche Infrastruktur
+- [x] FUTEX_WAITER_MAX=256 slab entfernt — stack-allocated via
+      DEFINE_WAIT. Kein systemweites Pool mehr, Prozess kann nur
+      seinen eigenen Kernel-Stack erschoepfen.
+- [x] FUTEX_REQUEUE transplantiert entry zwischen buckets + re-bindet
+      thread->wait_head atomar.
+- [x] Neue ktests: `futex_bucket_key_filter` (2 keys, selber bucket),
+      `futex_wake_n` (wake genau N von 5 waiters).
+
+**Phase 10.2b — pipe auf waitqueue (ERLEDIGT, 0277e99)**
+
+- [x] `pipe_read_blocking`/`pipe_write_blocking` → DEFINE_WAIT_EXCLUSIVE
+      auf wq_readers/wq_writers pro pipe. Exclusive wake — nur einer
+      pro write. Kein thundering herd.
+- [x] Single-blocker-pointer `blocked_reader/writer` geloescht; beliebig
+      viele parallele Waiter moeglich.
+- [x] `pipe_close` ruft `wake_up_all` zum EOF/EPIPE-Broadcast.
+- [x] Neue ktests: `pipe/two_readers_exclusive_wake`,
+      `pipe/close_broadcasts_eof`.
+
+**Phase 10.2c — Restliche Blocking-Pfade (OFFEN)**
 
 - [ ] `event_wait` → waitqueue pro `event_queue_t` (Kooperation mit event_post)
-- [ ] `futex_wait`/`futex_wake` → waitqueue pro bucket, FUTEX_LOCK_PI/UNLOCK_PI
 - [ ] `signalfd_read` → waitqueue pro signalfd
-- [ ] `pipe_read`/`pipe_write` → waitqueue pro pipe (exclusive flag)
 - [ ] socket recv/accept → waitqueue pro socket
 - [ ] epoll_wait → waitqueue + ep_poll_callback pro registriertem fd
 - [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD
+
+Hinweis 10.2c: wait4-Migration wurde angefangen (child_wait_wq auf
+process_t plus wake_up_interruptible in den exit/stop/continue-Pfaden)
+und wegen PID_TABLE_GROWTH-Hang wieder verworfen. Die Signal-
+Interlocking-Logik zwischen event_post und wait_queue braucht
+separate Analyse — vermutlich Lock-Ordnung zwischen parent->lock und
+child_wait_wq.lock oder eq_lock-Rekursion. Phase 10.2c nimmt das an.
 
 ### Erfolgskriterien
 
