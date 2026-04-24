@@ -23,6 +23,8 @@
 #include "config.h"
 #include "arch/arch.h"
 #include "core/event_queue.h"
+#include "core/timer.h"
+#include "linux/errno.h"
 #include "uaccess.h"
 
 extern void sched_add(thread_t *t);
@@ -183,6 +185,17 @@ extern uint64_t pml4[];
 /* Futex trace: always on for debugging condvar hang */
 static volatile int futex_trace = 0;
 
+/* Forward decl: futex_wait_restart re-enters futex_wait with the residual
+ * time-budget after a signal interrupt. Lives below futex_wait. */
+static long futex_wait_restart(struct restart_block *rb);
+
+/* Compute timer_ms() deadline for a relative timeout_ms. INT_MIN == infinite. */
+static uint64_t futex_deadline_from_timeout_ms(int timeout_ms) {
+    if (timeout_ms < 0) return 0;            /* 0 == infinite in restart_block */
+    if (timeout_ms == 0) return timer_ms();  /* immediate */
+    return timer_ms() + (uint64_t)timeout_ms;
+}
+
 static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
@@ -256,7 +269,17 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
 
     if (wr == -4) {
         futex_remove_waiter(addr, pid, t);
-        return -EINTR;
+        /* Save restart_block so SYS_restart_syscall can resume the wait
+         * with the residual time-budget. apply_restart() converts
+         * -ERESTART_RESTARTBLOCK to -EINTR if a user handler runs;
+         * otherwise it re-dispatches NR=219 -> futex_wait_restart. */
+        t->restart_block.fn = futex_wait_restart;
+        t->restart_block.futex.uaddr   = uaddr;
+        t->restart_block.futex.val     = val;
+        t->restart_block.futex.flags   = shared ? 0 : 1; /* 1 = PRIVATE */
+        t->restart_block.futex.bitset  = 0;
+        t->restart_block.futex.deadline_ms = futex_deadline_from_timeout_ms(timeout_ms);
+        return -ERESTART_RESTARTBLOCK;
     }
     if (wr == -11) {
         /* EAGAIN = hrtimer deadline expired */
@@ -276,6 +299,22 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
         return -EAGAIN;
     }
     return 0;
+}
+
+/* Restart-block resume: re-enter futex_wait with the residual time-budget.
+ * Linux: the userspace wrapper for FUTEX_WAIT calls SYS_restart_syscall on
+ * -ERESTART_RESTARTBLOCK; the kernel resumes by calling this fn(rb) which
+ * recomputes the relative timeout against the saved deadline. */
+static long futex_wait_restart(struct restart_block *rb) {
+    int shared = !(rb->futex.flags & 1);  /* flags bit 0 = PRIVATE */
+    int timeout_ms = -1;                  /* infinite */
+    if (rb->futex.deadline_ms) {
+        uint64_t now = timer_ms();
+        if (now >= rb->futex.deadline_ms) return -ETIMEDOUT;
+        uint64_t left = rb->futex.deadline_ms - now;
+        timeout_ms = (left > 0x7FFFFFFFu) ? 0x7FFFFFFF : (int)left;
+    }
+    return futex_wait(rb->futex.uaddr, rb->futex.val, timeout_ms, shared);
 }
 
 /* ── FUTEX_WAKE ─────────────────────────────────── */
