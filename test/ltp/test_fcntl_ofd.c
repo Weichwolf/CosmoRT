@@ -248,6 +248,8 @@ static void test_fcntl_owner_ex(void) {
 
 /* ── F_SETPIPE_SZ error cases (fcntl37 style) ── */
 
+#define SYS_SETUID 105
+
 static void test_fcntl_pipe_sz(void) {
     puts("\n[ltp/fcntl_pipe_sz]\n");
 
@@ -264,9 +266,23 @@ static void test_fcntl_pipe_sz(void) {
     r = sc3(SYS_FCNTL, pipefd[1], F_SETPIPE_SZ, (1UL << 31) + 1);
     check_val("SETPIPE_SZ >=2^31 EINVAL", r, -EINVAL);
 
-    /* Beyond pipe-max-size => EPERM */
-    r = sc3(SYS_FCNTL, pipefd[1], F_SETPIPE_SZ, 1024 * 1024 * 4);
-    check_val("SETPIPE_SZ > max EPERM", r, -EPERM);
+    /* Linux: Root (CAP_SYS_RESOURCE) darf ueber pipe-max-size. Der
+     * EPERM-Fall wird im forked Child mit setuid(nobody) getestet. */
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        sc1(SYS_SETUID, 65534);
+        long r2 = sc3(SYS_FCNTL, pipefd[1], F_SETPIPE_SZ, 1024 * 1024 * 4);
+        sc1(SYS_EXIT, r2 == -EPERM ? 0 : 1);
+    }
+    int status = 0;
+    sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+    check_val("SETPIPE_SZ > max EPERM (unpriv)", WEXITSTATUS(status), 0);
+
+    /* Root self darf es: 2 MiB setzen (pipe-max-size default 1 MiB; Linux:
+     * F_SETPIPE_SZ ist nur gegen pipe-max-size gecappt fuer unprivileged.
+     * 2 MiB = Buddy-MaxOrder, 4 MiB waere zu gross fuer contiguous alloc). */
+    r = sc3(SYS_FCNTL, pipefd[1], F_SETPIPE_SZ, 1024 * 1024 * 2);
+    check("SETPIPE_SZ > max as root OK", r > 0);
 
     /* F_GETPIPE_SZ on non-pipe => EINVAL */
     long fd = sc3(SYS_OPEN, (long)"/tmp/fcntl_p", O_RDWR | O_CREAT, 0644);
