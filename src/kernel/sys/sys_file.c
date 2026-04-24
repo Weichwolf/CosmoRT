@@ -1746,10 +1746,12 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_SETPIPE_SZ: {
         if (fde->type != FD_PIPE) return -EINVAL;
         if ((unsigned long)arg >= (1UL << 31)) return -EINVAL;
-        /* Linux fs/pipe.c:pipe_set_size: unprivileged callers capped at
-         * pipe-max-size (EPERM ueber dem Limit). Root darf darueber. */
+        /* Linux fs/pipe.c:pipe_set_size: CAP_SYS_RESOURCE darf ueber
+         * pipe-max-size, ohne EPERM. Aus p->euid==0 abzuleiten waere
+         * falsch fuer LTP-Tests die per PR_CAPBSET_DROP die Cap entfernen. */
         int pmax = pipe_max_size_get();
-        if (p->euid != 0 && (long)arg > pmax) return -EPERM;
+        int has_cap = (p->cap_effective & CAP_TO_MASK(CAP_SYS_RESOURCE)) != 0;
+        if (!has_cap && (long)arg > pmax) return -EPERM;
         struct pipe *pp = (struct pipe *)fde->obj;
         int req = (int)arg;
         if (req < PIPE_BUF_MIN) req = PIPE_BUF_MIN;

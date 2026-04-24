@@ -3,6 +3,7 @@
 #include "internal.h"
 #include "vt/pty.h"
 #include "core/event_queue.h"
+#include "linux/capability.h"
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
@@ -367,10 +368,12 @@ long do_pipe2(int *fds, int flags) {
     struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
     if (!pp) return -ENOMEM;
     /* Linux commit 086e774a57fb: unprivileged pipe() capped to pipe-max-size.
-     * Root darf Default behalten, selbst wenn pipe-max-size kleiner ist. */
+     * CAP_SYS_RESOURCE darf Default behalten, selbst wenn pipe-max-size
+     * kleiner ist. (LTP fcntl35 droppt die Cap, also nicht ueber euid). */
     int init_size = PIPE_BUF_DEFAULT;
     process_t *cur = proc_current();
-    if (cur && cur->euid != 0 && g_pipe_max_size < init_size)
+    int has_cap = cur && (cur->cap_effective & CAP_TO_MASK(CAP_SYS_RESOURCE));
+    if (cur && !has_cap && g_pipe_max_size < init_size)
         init_size = g_pipe_max_size;
     int init_pages = pipe_page_count(init_size);
     pp->buf = (uint8_t *)pages_alloc(init_pages);
