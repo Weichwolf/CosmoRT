@@ -910,6 +910,11 @@ void tcp_input(const uint8_t *pkt, int len) {
 
         /* ── SYN for this listener → half-open request, send SYN-ACK ── */
         if ((in_flags & 0x3F) == 0x02) {
+            /* Retransmitted SYN for a request we already have: re-send
+             * SYN-ACK from the cached state, don't allocate a duplicate. */
+            tcp_request_t *dup = tcp_req_find(ltcp->syn_queue, src_ip, sport);
+            if (dup) { send_synack_req(dup); return; }
+
             /* Backlog gate: drop SYN when syn_queue is full (Linux sets
              * qlen_young cap at backlog/2 in normal mode; we keep it simple
              * and cap total syn_queue + accept_queue). */
