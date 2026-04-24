@@ -144,6 +144,24 @@ void thread_block_ms(int timeout_ms) {
 
     cur->state = THREAD_BLOCKED;
 
+    /* Close missed-wakeup-race: signal may have arrived between the first
+     * pending-check and state=BLOCKED. If we still own BLOCKED (no wake yet),
+     * roll back and return. Otherwise sched_wake already moved us to
+     * RUNNABLE and enqueued — fall through to schedule() which will resume
+     * us promptly. */
+    if (cur->proc) {
+        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+        uint64_t deliverable = all_pending & ~cur->sig_blocked;
+        if (deliverable) {
+            int old = __sync_val_compare_and_swap(&cur->state,
+                                                  THREAD_BLOCKED, THREAD_RUNNING);
+            if (old == THREAD_BLOCKED) {
+                hrtimer_cancel(&timer);
+                return;
+            }
+        }
+    }
+
     extern void schedule(void);
     schedule();
 
