@@ -203,7 +203,10 @@ void alarm_init(void) {
  * Syncs percpu syscall frame <-> thread_t around delivery.
  * Called from syscall_entry.asm between sys_handler return and SYSRET.
  * Actually called from the ASM-adjacent C code. */
-/* Is this syscall restartable when interrupted by a signal with SA_RESTART? */
+/* Is this syscall restartable when interrupted by a signal with SA_RESTART?
+ * Used only for the legacy -EINTR path (syscalls that don't yet return
+ * -ERESTARTSYS). Once a syscall returns -ERESTARTSYS, restart-arbitration
+ * runs in apply_restart() instead. */
 static int is_restartable_syscall(long num) {
     return num == SYS_READ || num == SYS_WRITE || num == SYS_READV ||
            num == SYS_WRITEV || num == SYS_WAIT4 || num == SYS_NANOSLEEP ||
@@ -212,6 +215,63 @@ static int is_restartable_syscall(long num) {
            num == SYS_RECVMSG || num == SYS_SENDMSG ||
            num == SYS_ACCEPT || num == SYS_ACCEPT4 ||
            num == SYS_CONNECT;
+}
+
+/* Translate ERESTART_* return codes to either -EINTR or a syscall restart
+ * (RIP rewind + RAX rewrite). Linux do_signal() arbitration:
+ *   ERESTARTSYS:           restart iff signal-handler has SA_RESTART, else EINTR
+ *   ERESTARTNOINTR:        restart unconditionally
+ *   ERESTARTNOHAND:        restart only if no signal handler runs
+ *   ERESTART_RESTARTBLOCK: restart via SYS_RESTART_SYSCALL (219)
+ *
+ * deliverable_mask: signals that will be delivered now (after sigprocmask).
+ * Returns the new RAX value to write into the frame (always written by
+ * caller). Updates *out_restart_nr to the syscall number to restart with
+ * (or 0 for "do not restart, return as-is"). */
+static long apply_restart(long ret, long orig_num, uint64_t deliverable_mask,
+                          process_t *p, long *out_restart_nr) {
+    *out_restart_nr = 0;
+    if (ret > -ERESTARTSYS || ret < -ERESTART_RESTARTBLOCK) return ret;
+    long code = -ret;
+    long restart_nr = orig_num;
+    int do_restart;
+    int saw_handler = 0;
+    int sa_restart = 0;
+
+    if (deliverable_mask) {
+        for (int sig = 1; sig < 64; sig++) {
+            if (!(deliverable_mask & SIG_BIT(sig))) continue;
+            struct k_sigaction *sa = &p->sig_actions[sig];
+            uint64_t h = (uint64_t)sa->sa_handler;
+            if (h <= 1) continue; /* SIG_DFL/SIG_IGN — no handler runs */
+            saw_handler = 1;
+            sa_restart = (sa->sa_flags & SA_RESTART) != 0;
+            break;
+        }
+    }
+
+    if (!saw_handler) {
+        /* No user handler will run. Either no signal pending, or pending
+         * signal has default action (TERM kills before return; IGN drops).
+         * In Linux semantics: restart unconditionally. */
+        do_restart = 1;
+    } else {
+        switch (code) {
+        case ERESTARTSYS:           do_restart = sa_restart; break;
+        case ERESTARTNOINTR:        do_restart = 1;          break;
+        case ERESTARTNOHAND:        do_restart = 0;          break;
+        case ERESTART_RESTARTBLOCK: do_restart = 1;          break;
+        default:                    do_restart = 0;          break;
+        }
+    }
+
+    if (do_restart) {
+        if (code == ERESTART_RESTARTBLOCK)
+            restart_nr = SYS_RESTART_SYSCALL;
+        *out_restart_nr = restart_nr;
+        return restart_nr;   /* placeholder RAX; caller does RIP-rewind */
+    }
+    return -EINTR;
 }
 
 /* Nach einem handler-ret kommt SYS_RT_SIGRETURN. Wenn dnotify_fire mehrere
@@ -265,7 +325,10 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     }
 
     uint64_t deliverable = (p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
-    if (!deliverable) return;
+    int has_restart = (*result_ptr <= -ERESTARTSYS && *result_ptr >= -ERESTART_RESTARTBLOCK);
+
+    /* Fast-path: no signal AND no restart code -> nothing to do. */
+    if (!deliverable && !has_restart) return;
 
     percpu_t *cpu = percpu_self();
     syscall_frame_t *frame = (syscall_frame_t *)cpu->syscall_frame;
@@ -282,25 +345,36 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     /* Save live FS_BASE so deliver_signal stores correct TLS in ucontext */
     t->fs_base = hal_cpu_get_tls();
 
-    /* SA_RESTART: if syscall returned -EINTR and the about-to-be-delivered
-     * signal has SA_RESTART, set up registers so rt_sigreturn restarts the
-     * syscall instead of returning -EINTR. */
-    if (*result_ptr == -EINTR && is_restartable_syscall(num)) {
-        /* Find which signal will be delivered */
+    /* ERESTART_* arbitration. apply_restart returns the new RAX value
+     * (either the restart syscall NR or -EINTR). On restart we rewind
+     * RIP by 2 so SYSRET re-enters at the `syscall` instruction. */
+    if (has_restart) {
+        long restart_nr = 0;
+        long new_rax = apply_restart(*result_ptr, num, deliverable, p, &restart_nr);
+        if (restart_nr) {
+            t->rip -= 2;
+            t->rax = (uint64_t)restart_nr;
+        } else {
+            t->rax = (uint64_t)new_rax;
+        }
+        *result_ptr = (long)t->rax;
+    }
+    /* Legacy SA_RESTART path: do_clock_nanosleep, do_read etc. that still
+     * return -EINTR directly (not -ERESTARTSYS). Once those are migrated
+     * the apply_restart path handles it; this branch becomes dead. */
+    else if (*result_ptr == -EINTR && deliverable && is_restartable_syscall(num)) {
         for (int sig = 1; sig < 64; sig++) {
             if (!(deliverable & SIG_BIT(sig))) continue;
             struct k_sigaction *sa = &p->sig_actions[sig];
             if ((uint64_t)sa->sa_handler > 1 && (sa->sa_flags & SA_RESTART)) {
-                /* Rewind RIP to re-execute syscall instruction.
-                 * Set RAX to syscall number so it re-enters correctly. */
-                t->rip -= 2;        /* back over `syscall` (0F 05) */
+                t->rip -= 2;
                 t->rax = (uint64_t)num;
             }
-            break; /* only first deliverable signal matters */
+            break;
         }
     }
 
-    check_pending_signals();
+    if (deliverable) check_pending_signals();
 
     /* SIGSTOP: thread was stopped by check_pending_signals.
      * Yield to scheduler — on SIGCONT, syscall will restart. */
