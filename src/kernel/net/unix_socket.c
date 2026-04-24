@@ -305,8 +305,14 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
         char cpath[109];
         for (int i = 0; i < new_len; i++) cpath[i] = new_path[i];
         cpath[new_len] = '\0';
+        /* vfs_open expects absolute path — resolve CWD + path for relative. */
+        char abspath[USOCK_PATH_MAX_RESOLVE];
+        const char *target = cpath;
+        if (cpath[0] != '/' &&
+            resolve_path(cpath, abspath, USOCK_PATH_MAX_RESOLVE) == 0)
+            target = abspath;
         /* O_EXCL so a pre-existing file turns into EADDRINUSE (Linux). */
-        int nfd = vfs_open(cpath, O_CREAT | O_EXCL | O_WRONLY, 0666);
+        int nfd = vfs_open(target, O_CREAT | O_EXCL | O_WRONLY, 0666);
         if (nfd < 0) {
             uint64_t f2;
             spin_lock_irq(&usock_lock, &f2);
