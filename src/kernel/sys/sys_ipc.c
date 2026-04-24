@@ -3,7 +3,6 @@
 #include "internal.h"
 #include "vt/pty.h"
 #include "core/event_queue.h"
-#include "core/waitqueue.h"
 #include "linux/capability.h"
 
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
@@ -45,8 +44,8 @@ struct pipe {
     int read_pos, write_pos, count;
     int read_open, write_open;  /* refcount: >0 = open, 0 = closed */
     int was_full;               /* Linux-Ring-Semantik: EPOLLOUT-Edge nur nach komplettem Drain */
-    wait_queue_head_t wq_readers;  /* exclusive: one reader woken per data-arrival wake */
-    wait_queue_head_t wq_writers;  /* exclusive: one writer woken per space-free wake */
+    thread_t *blocked_reader;   /* thread blocked in pipe read */
+    thread_t *blocked_writer;   /* thread blocked in pipe write */
     struct pipe_owner owner[2]; /* [0] = reader-end, [1] = writer-end */
     spinlock_t lock;
 };
@@ -210,11 +209,16 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     }
     pp->count -= (int)n;
     if (pp->count == 0) pp->was_full = 0;
+    /* Wake blocked writer if space freed */
+    thread_t *writer = pp->blocked_writer;
+    pp->blocked_writer = 0;
     /* Snapshot writer-end owner fuer SIGIO nach Lock-Release */
     struct pipe_owner notify_w = pp->owner[1];
     spin_unlock_irq(&pp->lock, flags);
-    /* Wake one blocked writer — exclusive semantics avoid thundering herd. */
-    wake_up(&pp->wq_writers);
+    if (writer) {
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+    }
     pipe_notify_end(&notify_w);
     /* Wake epoll/poll sleepers — pipe now writable */
     extern void epoll_wake_all(void);
@@ -242,11 +246,16 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     }
     pp->count += (int)n;
     if (pp->count >= pp->buf_size) pp->was_full = 1;
+    /* Wake blocked reader */
+    thread_t *reader = pp->blocked_reader;
+    pp->blocked_reader = 0;
     /* Snapshot reader-end owner fuer SIGIO nach Lock-Release */
     struct pipe_owner notify_r = pp->owner[0];
     spin_unlock_irq(&pp->lock, flags);
-    /* Wake one blocked reader — exclusive semantics. */
-    wake_up(&pp->wq_readers);
+    if (reader) {
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
+    }
     pipe_notify_end(&notify_r);
     /* Wake epoll/poll sleepers — pipe now readable */
     extern void epoll_wake_all(void);
@@ -255,14 +264,12 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
 }
 
 /* Blocking pipe read: called when pipe_read returned -EAGAIN.
- * Waitqueue-backed blocking (Phase 10.2): prepare_to_wait under pp->lock
- * serializes the in-queue + state-BLOCKED transition with pipe_write's
- * wake_up, so a writer-between-check-and-sleep can never miss us. */
+ * Re-checks under lock, blocks if still empty, restarts syscall on wake. */
 long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
-    DEFINE_WAIT_EXCLUSIVE(w);
     for (;;) {
         uint64_t irqf;
         spin_lock_irq(&pp->lock, &irqf);
@@ -276,59 +283,42 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
             }
             pp->count -= (int)n;
             if (pp->count == 0) pp->was_full = 0;
+            /* Wake blocked writer */
+            thread_t *writer = pp->blocked_writer;
+            pp->blocked_writer = 0;
             struct pipe_owner notify_w = pp->owner[1];
             spin_unlock_irq(&pp->lock, irqf);
-            finish_wait(&pp->wq_readers, &w);
-            wake_up(&pp->wq_writers);
+            if (writer)
+                event_post(writer, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
             pipe_notify_end(&notify_w);
             return (long)n;
         }
         if (!pp->write_open) {
             spin_unlock_irq(&pp->lock, irqf);
-            finish_wait(&pp->wq_readers, &w);
             return 0; /* EOF */
         }
+        pp->blocked_reader = t;
         spin_unlock_irq(&pp->lock, irqf);
-        /* Signals before we arm BLOCKED */
+        /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) {
-                finish_wait(&pp->wq_readers, &w);
-                return -EINTR;
-            }
+            if (deliverable) return -EINTR;
         }
-        /* prepare_to_wait + schedule under wq_readers.lock — a racing
-         * pipe_write's wake_up takes the same lock and cannot miss us. */
-        prepare_to_wait_exclusive(&pp->wq_readers, &w, THREAD_BLOCKED);
-        /* Re-check condition after arming — write may have landed between
-         * unlock and prepare_to_wait. */
-        spin_lock_irq(&pp->lock, &irqf);
-        int has_data = (pp->count > 0);
-        int wr_closed = !pp->write_open;
-        spin_unlock_irq(&pp->lock, irqf);
-        if (has_data || wr_closed) {
-            finish_wait(&pp->wq_readers, &w);
-            continue; /* redo copy path above */
-        }
-        if (t->proc) {
-            uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) {
-                finish_wait(&pp->wq_readers, &w);
-                return -EINTR;
-            }
-        }
-        extern void schedule(void);
-        schedule();
+        /* Block via event_wait — pipe_write/pipe_close will event_post us.
+         * If event pre-queued, returns immediately → loop retries. */
+        event_t ev;
+        int _wr = event_wait(&t->eq, &ev, -1);
+        if (_wr == -4) return -EINTR;
     }
 }
 
 /* Blocking pipe write: called when pipe_write returned -EAGAIN (full).
- * Mirror of pipe_read_blocking. */
+ * Re-checks under lock, blocks if still full, restarts syscall on wake. */
 long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
+    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
     thread_t *t = thread_current();
     if (!t) return -EAGAIN;
 
-    DEFINE_WAIT_EXCLUSIVE(w);
     for (;;) {
         uint64_t irqf;
         spin_lock_irq(&pp->lock, &irqf);
@@ -343,44 +333,31 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
             }
             pp->count += (int)n;
             if (pp->count >= pp->buf_size) pp->was_full = 1;
+            /* Wake blocked reader */
+            thread_t *reader = pp->blocked_reader;
+            pp->blocked_reader = 0;
             struct pipe_owner notify_r = pp->owner[0];
             spin_unlock_irq(&pp->lock, irqf);
-            finish_wait(&pp->wq_writers, &w);
-            wake_up(&pp->wq_readers);
+            if (reader)
+                event_post(reader, 4 /* EQ_PIPE_DATA */, (uint64_t)n);
             pipe_notify_end(&notify_r);
             return (long)n;
         }
         if (!pp->read_open) {
             spin_unlock_irq(&pp->lock, irqf);
-            finish_wait(&pp->wq_writers, &w);
             return send_sigpipe();
         }
+        pp->blocked_writer = t;
         spin_unlock_irq(&pp->lock, irqf);
+        /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) {
-                finish_wait(&pp->wq_writers, &w);
-                return -EINTR;
-            }
+            if (deliverable) return -EINTR;
         }
-        prepare_to_wait_exclusive(&pp->wq_writers, &w, THREAD_BLOCKED);
-        spin_lock_irq(&pp->lock, &irqf);
-        int has_space = (pp->count < pp->buf_size);
-        int rd_closed = !pp->read_open;
-        spin_unlock_irq(&pp->lock, irqf);
-        if (has_space || rd_closed) {
-            finish_wait(&pp->wq_writers, &w);
-            continue;
-        }
-        if (t->proc) {
-            uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) {
-                finish_wait(&pp->wq_writers, &w);
-                return -EINTR;
-            }
-        }
-        extern void schedule(void);
-        schedule();
+        /* Block via event_wait — pipe_read/pipe_close will event_post us */
+        event_t ev;
+        int _wr = event_wait(&t->eq, &ev, -1);
+        if (_wr == -4) return -EINTR;
     }
 }
 
@@ -406,8 +383,8 @@ long do_pipe2(int *fds, int flags) {
     pp->read_pos = pp->write_pos = pp->count = 0;
     pp->read_open = pp->write_open = 1;
     pp->was_full = 0;
-    init_waitqueue_head(&pp->wq_readers);
-    init_waitqueue_head(&pp->wq_writers);
+    pp->blocked_reader = 0;
+    pp->blocked_writer = 0;
     pp->owner[0].pid = pp->owner[0].sig = pp->owner[0].o_async = pp->owner[0].type = 0;
     pp->owner[1].pid = pp->owner[1].sig = pp->owner[1].o_async = pp->owner[1].type = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
@@ -465,13 +442,28 @@ long pipe_close(fd_entry_t *fde) {
         if (pp->read_open > 0) pp->read_open--;
     }
     int both_closed = (pp->read_open <= 0 && pp->write_open <= 0);
-    int wake_readers = is_write && pp->write_open <= 0;   /* EOF */
-    int wake_writers = !is_write && pp->read_open <= 0;   /* EPIPE */
+    /* Wake blocked reader if write end closed (EOF) */
+    thread_t *reader = 0;
+    if (is_write && pp->write_open <= 0 && pp->blocked_reader) {
+        reader = pp->blocked_reader;
+        pp->blocked_reader = 0;
+    }
+    /* Wake blocked writer if read end closed (EPIPE) */
+    thread_t *writer = 0;
+    if (!is_write && pp->read_open <= 0 && pp->blocked_writer) {
+        writer = pp->blocked_writer;
+        pp->blocked_writer = 0;
+    }
     spin_unlock_irq(&pp->lock, flags);
 
-    /* Wake ALL on close — EOF/EPIPE-sensing callers must all re-check. */
-    if (wake_readers) wake_up_all(&pp->wq_readers);
-    if (wake_writers) wake_up_all(&pp->wq_writers);
+    if (reader) {
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(reader, 5 /* EQ_PIPE_CLOSED */, 0);
+    }
+    if (writer) {
+        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        event_post(writer, 5 /* EQ_PIPE_CLOSED */, 0);
+    }
     if (both_closed) {
         pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
