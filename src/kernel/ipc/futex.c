@@ -340,9 +340,6 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     if ((old & FUTEX_TID_MASK) == tid)
         return -EDEADLK;
 
-    /* Set FUTEX_WAITERS bit so unlock knows to check the queue */
-    __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
-
     process_t *p = self->proc;
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
@@ -364,13 +361,20 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     uint64_t flags;
     spin_lock_irq(&b->wq.lock, &flags);
 
+    /* Set FUTEX_WAITERS UNDER the bucket lock together with the waiter
+     * insertion. Otherwise there's a window between fetch_and_or and
+     * queue insert where unlock_pi fires futex_wake on an empty queue
+     * and we miss the wake. */
+    __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
+
     /* Boost owner under lock so it can't be freed between find and boost */
     uint32_t owner_tid = old & FUTEX_TID_MASK;
     thread_t *owner = thread_find_by_tid((int)owner_tid);
     if (owner)
         pi_boost(owner, self->priority);
 
-    /* Re-check before blocking — lock may have been released */
+    /* Re-check before blocking — lock may have been released between
+     * the fast-path CAS and now. */
     old = __sync_val_compare_and_swap(uaddr, 0, tid);
     if (old == 0) {
         spin_unlock_irq(&b->wq.lock, flags);
