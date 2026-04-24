@@ -83,6 +83,13 @@ void sched_add(thread_t *t) {
 void sched_wake(thread_t *t) {
     if (!t) return;
 
+    /* Fast bail on dead/free threads: their wait_head may point at a
+     * freed/recycled stack. Callers (kill_one fatal path) sometimes
+     * stamp state=DEAD right after calling sched_wake, so this also
+     * guards re-entries on the same thread. */
+    int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+    if (st == THREAD_DEAD || st == THREAD_FREE) return;
+
     /* Waitqueue-aware wake: if the thread is parked via
      * prepare_to_wait(), route through wake_up_all on its waitqueue
      * head. The waitqueue lock serializes state transitions with the
