@@ -134,6 +134,12 @@ typedef struct thread {
 
     /* Serializes eq producers (IRQ + syscall) and ring growth. */
     spinlock_t      eq_lock;
+
+    /* ── Wakeup-Pending Flag (Linux: prepare_to_wait/finish_wait) ──
+     * Atomic: sched_wake() setzt before CAS BLOCKED→RUNNABLE. thread_block_ms
+     * setzt nach state=BLOCKED und prueft nochmal — schliesst Missed-Wakeup
+     * Race zwischen first pending-check und state=BLOCKED. */
+    int             wakeup_pending;
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */
