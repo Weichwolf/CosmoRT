@@ -225,12 +225,13 @@ long kernel_clone(unsigned long flags, void *child_stack,
 
     /* Namespaces need CAP_SYS_ADMIN. After a test drops CAP_SYS_ADMIN the
      * namespace-creation path must return -EPERM (Linux create_new_namespaces).
-     * If the cap is still held we accept the flags as a no-op: single-user
-     * kernel has no real namespaces, but returning EINVAL would break root
-     * programs that merely request isolation. */
+     * CLONE_NEWNET requires CONFIG_NET_NS which is absent — LTP tests
+     * (clone09) branch on EINVAL to TCONF. CLONE_NEWNS/NEWCGROUP/NEWUTS are
+     * accepted as no-op so programs merely requesting isolation still work. */
     if (flags & CLONE_NS_FLAGS) {
         extern int cred_has_cap_sys_admin(process_t *p);
         if (!cred_has_cap_sys_admin(parent)) return -EPERM;
+        if (flags & CLONE_NEWNET) return -EINVAL;
         flags &= ~CLONE_NS_FLAGS;
     }
 

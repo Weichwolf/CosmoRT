@@ -148,4 +148,14 @@ static void test_time_ns(void) {
               sleep_rc, 0);
 }
 
+/* CLONE_NEWNET requires CONFIG_NET_NS which we don't have — Linux LTP
+ * clone09 branches on EINVAL to TCONF, so we must reject it here. */
+#define CLONE_NEWNET  0x40000000
+static void test_clone_newnet_einval(void) {
+    puts("\n[clone: CLONE_NEWNET -> EINVAL]\n");
+    long r = sc5(SYS_CLONE, CLONE_NEWNET | 0, 0, 0, 0, 0);
+    check_val("clone(CLONE_NEWNET) -> EINVAL", r, -EINVAL);
+}
+
 TEST("time_ns", test_time_ns);
+TEST("clone-newnet-einval", test_clone_newnet_einval);
