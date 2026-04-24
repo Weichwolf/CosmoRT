@@ -6,9 +6,9 @@ Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
 |-------|-------|------|------|------|-----------------|
-| ktest | 2830  | 2830 |   0  |   -  | +69 (rest-bucket agent + tmpfs/dup ktests) |
-| musl  |  478  |  459 |  12  |   7  | stabil (einige Flakes switchen)            |
-| LTP   |  313  |  235 |  19  |  44  | +7 PASS (-8 FAIL, +1 SKIP) rest-bucket + direkt-Fixes |
+| ktest | 2832  | 2832 |   0  |   -  | +2 (dup2-ebadf, cfr-mtime, clone-newnet)   |
+| musl  |  478  |  458 |  13  |   7  | −1 PASS (Flake-Swing pthread_mutex_pi)     |
+| LTP   |  313  |  237 |  17  |  44  | +2 PASS (dup201, copy_file_range03)        |
 
 Baseline: ktest 2760 post-NEWTIME. Signal-Wake-Agent (9 commits 00bf941..c4f8f23)
 reverted in 22b3ab5 — Deadlock in clock_nanosleep01 (kompletter Hang, kein

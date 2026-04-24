@@ -144,6 +144,20 @@ void thread_block_ms(int timeout_ms) {
 
     cur->state = THREAD_BLOCKED;
 
+    /* Missed-wakeup race: signal can arrive between the first pending-check
+     * and state=BLOCKED. kill_one's sched_wake then fails the BLOCKED→RUNNABLE
+     * CAS (state was still RUNNING), leaving us permanently blocked until
+     * the timer fires. Re-check after the state transition. */
+    if (cur->proc) {
+        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+        uint64_t deliverable = all_pending & ~cur->sig_blocked;
+        if (deliverable) {
+            cur->state = THREAD_RUNNING;
+            hrtimer_cancel(&timer);
+            return;
+        }
+    }
+
     extern void schedule(void);
     schedule();
 
