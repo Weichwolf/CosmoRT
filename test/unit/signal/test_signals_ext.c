@@ -8,6 +8,9 @@
 
 #define SYS_ALARM 37
 
+/* dnotify multi-match test constants */
+#define T_SIGRTMIN_1      35
+
 #define WIFEXITED(s)    (((s) & 0x7F) == 0)
 #define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
 #define WIFSIGNALED(s)  (((s) & 0x7F) > 0 && ((s) & 0x7F) < 0x7F)
@@ -165,4 +168,79 @@ static void test_signals_ext(void) {
     }
 }
 
+/* ── dnotify multi-match Handler-Delivery (fcntl38-Regression) ──
+ * Zwei Watches auf demselben Signal. chmod triggert beide → beide
+ * siginfo_t.si_fd-Werte muessen beim SA_SIGINFO-Handler ankommen.
+ * Ohne nested Delivery nach sigreturn liefert der Kernel nur den
+ * ersten fd und haelt den zweiten bis zum naechsten Syscall. */
+
+static volatile int dn_seen_parent = 0;
+static volatile int dn_seen_subdir = 0;
+static volatile int dn_parent_fd_watch = -1;
+static volatile int dn_subdir_fd_watch = -1;
+
+__attribute__((used))
+static void dnotify_siginfo_handler(int sig, void *info, void *uctx) {
+    (void)sig; (void)uctx;
+    if (!info) return;
+    /* si_fd liegt auf Offset 24 im siginfo_t (si_band=long@16, si_fd=int@24). */
+    int fd = *(int *)((char *)info + 24);
+    if (fd == dn_parent_fd_watch) dn_seen_parent = 1;
+    else if (fd == dn_subdir_fd_watch) dn_seen_subdir = 1;
+}
+
+static void test_dnotify_handler_multi(void) {
+    puts("\n[dnotify_handler_multi]\n");
+
+    sc3(SYS_MKDIR, (long)"/tmp/dnh_parent", 0700, 0);
+    sc3(SYS_MKDIR, (long)"/tmp/dnh_parent/kid", 0700, 0);
+
+    long parent_fd = sc3(SYS_OPEN, (long)"/tmp/dnh_parent",
+                         O_RDONLY | O_DIRECTORY, 0);
+    long subdir_fd = sc3(SYS_OPEN, (long)"/tmp/dnh_parent/kid",
+                         O_RDONLY | O_DIRECTORY, 0);
+    check("dnh open parent", parent_fd >= 0);
+    check("dnh open subdir", subdir_fd >= 0);
+    if (parent_fd < 0 || subdir_fd < 0) return;
+
+    dn_parent_fd_watch = (int)parent_fd;
+    dn_subdir_fd_watch = (int)subdir_fd;
+    dn_seen_parent = 0;
+    dn_seen_subdir = 0;
+
+    struct ksigaction sa;
+    sa.handler  = (void *)dnotify_siginfo_handler;
+    sa.flags    = SA_RESTORER | SA_SIGINFO;
+    sa.restorer = (void *)sig_restorer;
+    sa.mask     = 0;
+    long r = sc4(SYS_RT_SIGACTION, T_SIGRTMIN_1, (long)&sa, 0, 8);
+    check_val("dnh rt_sigaction", r, 0);
+
+    sc3(SYS_FCNTL, parent_fd, F_SETSIG, T_SIGRTMIN_1);
+    sc3(SYS_FCNTL, subdir_fd, F_SETSIG, T_SIGRTMIN_1);
+    sc3(SYS_FCNTL, parent_fd, F_NOTIFY, DN_ATTRIB | DN_MULTISHOT);
+    sc3(SYS_FCNTL, subdir_fd, F_NOTIFY, DN_ATTRIB | DN_MULTISHOT);
+
+    sc3(SYS_CHMOD, (long)"/tmp/dnh_parent/kid", 0755, 0);
+
+    check("dnh got parent event", dn_seen_parent);
+    check("dnh got subdir event", dn_seen_subdir);
+
+    sc3(SYS_FCNTL, parent_fd, F_NOTIFY, 0);
+    sc3(SYS_FCNTL, subdir_fd, F_NOTIFY, 0);
+
+    /* Reset to SIG_DFL */
+    sa.handler  = (void *)0;
+    sa.flags    = 0;
+    sa.restorer = 0;
+    sa.mask     = 0;
+    sc4(SYS_RT_SIGACTION, T_SIGRTMIN_1, (long)&sa, 0, 8);
+
+    sc1(SYS_CLOSE, parent_fd);
+    sc1(SYS_CLOSE, subdir_fd);
+    sc1(SYS_RMDIR, (long)"/tmp/dnh_parent/kid");
+    sc1(SYS_RMDIR, (long)"/tmp/dnh_parent");
+}
+
 TEST("signals_ext", test_signals_ext);
+TEST("dnotify_handler_multi", test_dnotify_handler_multi);

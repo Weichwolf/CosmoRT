@@ -214,8 +214,38 @@ static int is_restartable_syscall(long num) {
            num == SYS_CONNECT;
 }
 
+/* Nach einem handler-ret kommt SYS_RT_SIGRETURN. Wenn dnotify_fire mehrere
+ * (fd, sig)-Tupel fuer dasselbe Signal queued hat, re-pended deliver_signal
+ * sig_pending — aber der normale Early-Return haette diesen nested Handler
+ * erst beim naechsten Syscall ausgeliefert. Linux stellt nested Signale
+ * zwischen handler-ret und return-to-user als zweiten Frame zu.
+ *
+ * Gezielte Loesung: nested Delivery nur wenn die dnotify-Queue noch
+ * Eintraege fuer ein aktuell pending Signal haelt. Andere pending Signale
+ * (SIGCHLD im futex-Pfad, pthread_cancel, ...) bleiben fuer den naechsten
+ * Syscall — der globale Check wurde 528d571/c3b602f als zu invasiv
+ * revertiert (pthread_cond/capset04). */
+static int dnotify_nested_pending(process_t *p, thread_t *t) {
+    if (p->dnotify_q_head == p->dnotify_q_tail) return 0;
+    uint64_t queue_mask = 0;
+    int h = p->dnotify_q_head;
+    while (h != p->dnotify_q_tail) {
+        int s = p->dnotify_q_sig[h];
+        if (s >= 1 && s < 64) queue_mask |= SIG_BIT(s);
+        h = (h + 1) & 15;
+    }
+    return ((p->sig_pending & queue_mask) & ~t->sig_blocked) != 0;
+}
+
 void check_signals_syscall_path(long *result_ptr, long num) {
-    if (num == SYS_RT_SIGRETURN) return;
+    if (num == SYS_RT_SIGRETURN) {
+        thread_t *tn = thread_current();
+        if (!tn || !tn->proc) return;
+        if (!dnotify_nested_pending(tn->proc, tn)) return;
+        /* Fall-Through in den gemeinsamen Delivery-Pfad unten — frame->rcx,
+         * frame->r11, cpu->user_rsp wurden von do_rt_sigreturn schon mit
+         * dem restaurierten ucontext ueberschrieben. */
+    }
     thread_t *t = thread_current();
     if (!t || !t->proc) return;
     process_t *p = t->proc;
