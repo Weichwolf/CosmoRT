@@ -541,90 +541,86 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
 
     long woken = 0, requeued = 0;
 
-    /* Phase 1: wake up to wake_max matching waiters.
-     * Iterate bucket 1. We don't remove woken entries here — the waiter
-     * thread does that in its own cleanup under the same lock. We only
-     * flip state + mark woken. Use snapshot-bounded iteration so mutations
-     * to other entries can't corrupt our walk. Stop after scanning the
-     * entire ring once (guard via start pointer + count limit). */
-    if (bk1->wq.head) {
-        wait_queue_entry_t *start = bk1->wq.head;
+    /* Iterate bucket 1's wq — cached because wake+requeue both mutate it. */
+    wait_queue_entry_t *start = bk1->wq.head;
+    if (start) {
         wait_queue_entry_t *cur = start;
-        int scanned = 0;
-        const int max_scan = 65536; /* defensive upper bound */
-        do {
-            wait_queue_entry_t *next = cur->next; /* read before mutation */
+        int revisit_start = 1;
+
+        /* Phase 1: wake up to wake_max matching waiters (removes them). */
+        while (cur && (uint32_t)woken < wake_max) {
+            wait_queue_entry_t *next = (cur->next == start) ? 0 : cur->next;
             futex_waiter_t *w = (futex_waiter_t *)cur;
-            if (w->uaddr == addr1 && w->pid == pid &&
-                !__atomic_load_n(&w->woken, __ATOMIC_ACQUIRE)) {
-                if ((uint32_t)woken >= wake_max) break;
+            if (w->uaddr == addr1 && w->pid == pid) {
                 __atomic_store_n(&w->woken, 1, __ATOMIC_RELEASE);
                 thread_t *task = cur->task;
-                if (task) {
-                    int old = __sync_val_compare_and_swap(&task->state,
-                            THREAD_BLOCKED, THREAD_RUNNABLE);
-                    if (old == THREAD_BLOCKED) sched_add(task);
-                }
+                int old = __sync_val_compare_and_swap(&task->state,
+                        THREAD_BLOCKED, THREAD_RUNNABLE);
+                if (old == THREAD_BLOCKED) sched_add(task);
                 woken++;
+                /* waiter stays queued until it finishes its wait */
             }
             cur = next;
-            if (++scanned >= max_scan) break;
-        } while (cur != start && cur);
+            revisit_start = 0;
+        }
+        (void)revisit_start;
     }
 
-    /* Phase 2: requeue up to requeue_max remaining waiters (not yet
-     * woken) from bucket 1 to bucket 2. We unlink from bucket 1 and
-     * re-link at tail of bucket 2, re-binding thread->wait_head.
-     *
-     * Iteration strategy: since unlink mutates the ring, take `next`
-     * BEFORE unlink. After unlink the original list either has a new
-     * head (if we unlinked the head) or the next pointer still leads
-     * to a valid entry. When we re-visit `start` (the original head,
-     * which may already have been moved), we stop. But `start` itself
-     * may have been requeued — track via scan count instead. */
-    if (bk1->wq.head) {
-        wait_queue_entry_t *start = bk1->wq.head;
-        wait_queue_entry_t *cur = start;
-        int scanned = 0;
-        const int max_scan = 65536;
-        while (cur && (uint32_t)requeued < requeue_max) {
-            wait_queue_entry_t *next = cur->next;
-            int last = (next == cur) || (next == start);
-            futex_waiter_t *w = (futex_waiter_t *)cur;
-            int eligible = (w->uaddr == addr1 && w->pid == pid &&
-                            !__atomic_load_n(&w->woken, __ATOMIC_ACQUIRE));
-            if (eligible) {
-                /* Unlink from bucket 1 */
-                if (cur->next == cur) {
-                    bk1->wq.head = 0;
-                } else {
-                    cur->prev->next = cur->next;
-                    cur->next->prev = cur->prev;
-                    if (bk1->wq.head == cur) bk1->wq.head = cur->next;
-                }
-                cur->next = cur->prev = 0;
-                /* Insert tail of bucket 2 (or bucket 1 if same) */
-                futex_bucket_t *dst = (b1 != b2) ? bk2 : bk1;
-                if (!dst->wq.head) {
-                    dst->wq.head = cur;
+    /* Phase 2: requeue up to requeue_max remaining matching waiters
+     * from bucket 1 to bucket 2 (rewrite their key only). Because the
+     * bucket 2 wq is different from bucket 1, we must transplant the
+     * wq entry — unlink from bucket 1's list, link into bucket 2's
+     * list, and re-point t->wait_head so sched_wake routes correctly. */
+    wait_queue_entry_t *cur = bk1->wq.head;
+    while (cur && (uint32_t)requeued < requeue_max) {
+        wait_queue_entry_t *next = cur->next;
+        if (next == bk1->wq.head) next = 0; /* loop termination */
+        futex_waiter_t *w = (futex_waiter_t *)cur;
+        /* Skip already-woken (their thread may be about to finish_wait). */
+        if (w->uaddr == addr1 && w->pid == pid &&
+            !__atomic_load_n(&w->woken, __ATOMIC_ACQUIRE)) {
+            /* Unlink from bucket 1 */
+            if (cur->next == cur) {
+                bk1->wq.head = 0;
+            } else {
+                cur->prev->next = cur->next;
+                cur->next->prev = cur->prev;
+                if (bk1->wq.head == cur) bk1->wq.head = cur->next;
+            }
+            cur->next = cur->prev = 0;
+            /* Insert tail of bucket 2 */
+            if (b1 != b2) {
+                if (!bk2->wq.head) {
+                    bk2->wq.head = cur;
                     cur->next = cur;
                     cur->prev = cur;
                 } else {
-                    wait_queue_entry_t *tail = dst->wq.head->prev;
+                    wait_queue_entry_t *tail = bk2->wq.head->prev;
                     cur->prev = tail;
-                    cur->next = dst->wq.head;
+                    cur->next = bk2->wq.head;
                     tail->next = cur;
-                    dst->wq.head->prev = cur;
+                    bk2->wq.head->prev = cur;
                 }
-                if (b1 != b2 && cur->task)
-                    cur->task->wait_head = &bk2->wq;
-                w->uaddr = addr2;
-                requeued++;
+                /* Re-bind thread to new wq so sched_wake routes through bucket 2. */
+                if (cur->task) cur->task->wait_head = &bk2->wq;
+            } else {
+                /* Same bucket: just re-insert at tail (no wq change). */
+                if (!bk1->wq.head) {
+                    bk1->wq.head = cur;
+                    cur->next = cur;
+                    cur->prev = cur;
+                } else {
+                    wait_queue_entry_t *tail = bk1->wq.head->prev;
+                    cur->prev = tail;
+                    cur->next = bk1->wq.head;
+                    tail->next = cur;
+                    bk1->wq.head->prev = cur;
+                }
             }
-            if (last) break;
-            cur = next;
-            if (++scanned >= max_scan) break;
+            w->uaddr = addr2;
+            requeued++;
         }
+        cur = next;
     }
 
     /* Unlock in reverse order */
