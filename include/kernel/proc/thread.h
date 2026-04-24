@@ -47,11 +47,19 @@ typedef long (*restart_fn_t)(struct restart_block *);
 struct restart_block {
     restart_fn_t fn;
     union {
-        /* clock_nanosleep / nanosleep restart */
+        /* clock_nanosleep / nanosleep restart.
+         *
+         * mode == 0: relative-style (do_nanosleep). expires_ms is the
+         *            kernel CLOCK_MONOTONIC timer_ms() deadline; on resume,
+         *            sleep until timer_ms() >= expires_ms. user_rmtp
+         *            is updated on EINTR resume.
+         * mode == 1: ABSTIME-style. expires_ms is the kernel deadline in
+         *            timer_ms() units (already adjusted for time_ns/epoch
+         *            at original-call time). user_rmtp == NULL. */
         struct {
-            int      clockid;
-            int      flags;            /* TIMER_ABSTIME bit only relevant */
-            uint64_t expires_ns;       /* CLOCK_MONOTONIC ns absolute deadline */
+            int      clockid;          /* original clk_id (for diagnostics) */
+            int      mode;             /* 0=relative, 1=ABSTIME */
+            uint64_t expires_ms;       /* kernel timer_ms() deadline */
             void    *user_rmtp;        /* user struct k_timespec * (or NULL) */
         } nanosleep;
         /* futex_wait restart */

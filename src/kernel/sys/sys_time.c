@@ -135,6 +135,97 @@ long do_clock_getres(int clk_id, struct k_timespec *tp) {
     return 0;
 }
 
+/* Common sleep loop: block until kernel-deadline_ms or signal.
+ * deadline_ms is in timer_ms() units (CLOCK_MONOTONIC ms since boot,
+ * already adjusted for time_namespace and CLOCK_REALTIME epoch).
+ * On interrupt returns -EINTR after writing remaining time to *out_left_ms.
+ * On full sleep returns 0. */
+static long sleep_until_ms(uint64_t deadline_ms, uint64_t *out_left_ms) {
+    while (timer_ms() < deadline_ms) {
+        thread_t *t = thread_current();
+        if (t && t->proc) {
+            uint64_t deliverable = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
+            if (deliverable) {
+                uint64_t now = timer_ms();
+                if (out_left_ms) *out_left_ms = (deadline_ms > now) ? deadline_ms - now : 0;
+                return -EINTR;
+            }
+        }
+        uint64_t remaining = deadline_ms - timer_ms();
+        if (remaining == 0) break;
+        thread_block_ms((int)(remaining > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : remaining));
+    }
+    if (out_left_ms) *out_left_ms = 0;
+    return 0;
+}
+
+/* Write remaining time (ms) to userspace rem ptr. Returns -EFAULT on bad ptr. */
+static int copy_rem_to_user(void *user_rmtp, uint64_t left_ms) {
+    if (!user_rmtp) return 0;
+    struct k_timespec krem = {
+        .tv_sec = (long)(left_ms / MSEC_PER_SEC),
+        .tv_nsec = (long)((left_ms % MSEC_PER_SEC) * NSEC_PER_MSEC)
+    };
+    if (copy_to_user(user_rmtp, &krem, sizeof(krem)) < 0) return -EFAULT;
+    return 0;
+}
+
+/* Convert TIMER_ABSTIME user deadline (in clk_id-space ns) to kernel
+ * timer_ms() deadline. Applies time_namespace offset and REALTIME epoch
+ * shift. Returns 0 if deadline already passed (caller returns 0 directly).
+ * Returns the kernel-ms deadline otherwise. Stores nonzero in *expired
+ * when the deadline is in the past. */
+static uint64_t abs_user_ns_to_kernel_ms(int clk_id, int64_t user_ns, int *expired) {
+    int64_t target_ns = user_ns;
+    if (time_ns_clock_affected(clk_id)) {
+        process_t *cur_p = proc_current();
+        if (cur_p && cur_p->time_ns)
+            target_ns = time_ns_adjust_abs(cur_p->time_ns, clk_id, target_ns);
+    }
+    int64_t target_ms = target_ns / (int64_t)NSEC_PER_MSEC;
+    if (clk_id == CLOCK_REALTIME || clk_id == CLOCK_REALTIME_COARSE) {
+        extern int64_t rtc_epoch_sec;
+        int64_t epoch_ms = rtc_epoch_sec * MSEC_PER_SEC;
+        int64_t rel_ms = target_ms - epoch_ms;
+        if (rel_ms <= 0) { *expired = 1; return 0; }
+        target_ms = rel_ms;
+    }
+    if (target_ms < 0) target_ms = 0;
+    *expired = 0;
+    return (uint64_t)target_ms;
+}
+
+/* Restart-block resume: continue the sleep until saved kernel-ms deadline.
+ * Re-runs the sleep_until_ms loop. user_rmtp is updated on signal-EINTR
+ * for relative-mode restarts; ABSTIME restarts have user_rmtp == NULL. */
+static long clock_nanosleep_restart(struct restart_block *rb) {
+    uint64_t deadline_ms = rb->nanosleep.expires_ms;
+    if (timer_ms() >= deadline_ms) return 0;
+    uint64_t left_ms = 0;
+    long r = sleep_until_ms(deadline_ms, &left_ms);
+    if (r == -EINTR) {
+        int werr = copy_rem_to_user(rb->nanosleep.user_rmtp, left_ms);
+        if (werr) return werr;
+        return -ERESTART_RESTARTBLOCK;
+    }
+    return r;
+}
+
+/* Arm thread->restart_block for clock_nanosleep_restart.
+ * deadline_ms is the kernel timer_ms() deadline (already adjusted for
+ * time_ns / REALTIME epoch by the caller). After this call, return
+ * -ERESTART_RESTARTBLOCK to enter the syscall-return restart path. */
+static void arm_nanosleep_restart_block(int clk_id, int mode,
+                                        uint64_t deadline_ms, void *user_rmtp) {
+    thread_t *t = thread_current();
+    if (!t) return;
+    t->restart_block.fn = clock_nanosleep_restart;
+    t->restart_block.nanosleep.clockid    = clk_id;
+    t->restart_block.nanosleep.mode       = mode;
+    t->restart_block.nanosleep.expires_ms = deadline_ms;
+    t->restart_block.nanosleep.user_rmtp  = user_rmtp;
+}
+
 /* In-kernel nanosleep: block via schedule(), loop until deadline or signal. */
 long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
     if (!req) return -EFAULT;
@@ -150,30 +241,17 @@ long do_nanosleep(const struct k_timespec *req, struct k_timespec *rem) {
     if (ms == 0) return 0;
 
     uint64_t deadline = timer_ms() + ms;
-
-    while (timer_ms() < deadline) {
-        thread_t *t = thread_current();
-        if (t && t->proc) {
-            uint64_t deliverable = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
-            if (deliverable) {
-                if (rem) {
-                    uint64_t now = timer_ms();
-                    uint64_t left = (deadline > now) ? deadline - now : 0;
-                    struct k_timespec krem = {
-                        .tv_sec = (long)(left / MSEC_PER_SEC),
-                        .tv_nsec = (long)((left % MSEC_PER_SEC) * NSEC_PER_MSEC)
-                    };
-                    /* EFAULT-on-rem gewinnt gegen EINTR (Linux-Verhalten,
-                     * vgl. hrtimer_nanosleep-Pfad mit restart_block). */
-                    if (copy_to_user(rem, &krem, sizeof(krem)) < 0)
-                        return -EFAULT;
-                }
-                return -EINTR;
-            }
-        }
-        uint64_t remaining = deadline - timer_ms();
-        if (remaining == 0) break;
-        thread_block_ms((int)(remaining > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : remaining));
+    uint64_t left_ms = 0;
+    long r = sleep_until_ms(deadline, &left_ms);
+    if (r == -EINTR) {
+        /* EFAULT-on-rem outranks EINTR (Linux hrtimer_nanosleep behaviour). */
+        int werr = copy_rem_to_user(rem, left_ms);
+        if (werr) return werr;
+        /* Save restart_block for SYS_restart_syscall. apply_restart()
+         * converts -ERESTART_RESTARTBLOCK to -EINTR if a user handler
+         * runs; otherwise re-dispatches NR=219 which calls our restart_fn. */
+        arm_nanosleep_restart_block(CLOCK_MONOTONIC, 0, deadline, rem);
+        return -ERESTART_RESTARTBLOCK;
     }
     return 0;
 }
@@ -200,41 +278,23 @@ long do_clock_nanosleep(int clk_id, int flags,
     if (kreq_chk.tv_nsec < 0 || kreq_chk.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
     if (kreq_chk.tv_sec < 0) return -EINVAL;
     if (rem && !user_ok((uint64_t)rem, 16)) return -EFAULT;
-    if (flags & TIMER_ABSTIME) {
-        int64_t target_ns = (int64_t)kreq_chk.tv_sec * NSEC_PER_SEC
-                          + (int64_t)kreq_chk.tv_nsec;
-        /* time_namespace offset: user-supplied absolute deadline is in
-         * the task's virtual clock space; subtract the offset to get
-         * kernel-time ns. time_ns_adjust_abs freezes the NS. */
-        if (time_ns_clock_affected(clk_id)) {
-            process_t *cur_p = proc_current();
-            if (cur_p && cur_p->time_ns)
-                target_ns = time_ns_adjust_abs(cur_p->time_ns, clk_id, target_ns);
-        }
-        int64_t target_ms = target_ns / (int64_t)NSEC_PER_MSEC;
-        if (clk_id == CLOCK_REALTIME || clk_id == CLOCK_REALTIME_COARSE) {
-            extern int64_t rtc_epoch_sec;
-            int64_t epoch_ms = rtc_epoch_sec * MSEC_PER_SEC;
-            int64_t rel_ms = target_ms - epoch_ms;
-            if (rel_ms <= 0) return 0;
-            target_ms = rel_ms;
-        }
-        if (target_ms < 0) target_ms = 0;
-        uint64_t target_ms_u = (uint64_t)target_ms;
 
-        while (timer_ms() < target_ms_u) {
-            thread_t *t = thread_current();
-            if (t && t->proc) {
-                uint64_t deliverable = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
-                if (deliverable) return -EINTR;
-            }
-            uint64_t now = timer_ms();
-            if (now >= target_ms_u) break;
-            uint64_t delta = target_ms_u - now;
-            thread_block_ms((int)(delta > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : delta));
+    if (flags & TIMER_ABSTIME) {
+        int64_t user_abs_ns = (int64_t)kreq_chk.tv_sec * NSEC_PER_SEC
+                            + (int64_t)kreq_chk.tv_nsec;
+        int expired = 0;
+        uint64_t deadline_ms = abs_user_ns_to_kernel_ms(clk_id, user_abs_ns, &expired);
+        if (expired) return 0;
+        long r = sleep_until_ms(deadline_ms, 0);
+        if (r == -EINTR) {
+            /* ABSTIME: rem buffer is unused (deadline is absolute). */
+            arm_nanosleep_restart_block(clk_id, 1, deadline_ms, 0);
+            return -ERESTART_RESTARTBLOCK;
         }
         return 0;
     }
+
+    /* Relative: do_nanosleep handles req/rem directly. */
     return do_nanosleep(req, rem);
 }
 
