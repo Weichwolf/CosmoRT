@@ -217,11 +217,14 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
 
             if (_wr == -4) {
                 /* Signal interrupted wait. Rescan once; only if still nothing
-                 * matches surface -EINTR for the non-child signal. */
+                 * matches surface ERESTARTSYS for the non-child signal so the
+                 * syscall-return path either restarts (SA_RESTART) or
+                 * converts to -EINTR. Linux: wait4 is SA_RESTART-restartable;
+                 * args are still in user registers so RIP-rewind suffices. */
                 uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending)
                                    & ~cur->sig_blocked & ~wait_block;
                 if (remaining)
-                    return -EINTR;
+                    return -ERESTARTSYS;
             }
         }
     }

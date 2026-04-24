@@ -383,17 +383,16 @@ long do_read(int fd, void *buf, size_t count) {
             vt_flush(pty_id);
 
             /* Check for pending signals before blocking (POSIX: blocking
-             * read must return -EINTR when a signal is deliverable).
-             * Without this, signals like SIGCHLD stay pending while the
-             * thread keeps re-blocking in event_wait. */
+             * read returns ERESTARTSYS so the syscall-return path either
+             * restarts under SA_RESTART or surfaces -EINTR). */
             if (t->proc) {
                 uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-                if (deliverable) return -EINTR;
+                if (deliverable) return -ERESTARTSYS;
             }
 
             event_t ev;
             int _wr = event_wait(&t->eq, &ev, -1);
-            if (_wr == -4) return -EINTR;
+            if (_wr == -4) return -ERESTARTSYS;
             /* If returned, loop re-checks. */
         }
     }
@@ -1396,7 +1395,7 @@ long do_flock(int fd, int operation) {
         thread_t *th = thread_current();
         if (th && th->proc) {
             uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
-            if (deliverable) return -EINTR;
+            if (deliverable) return -ERESTARTSYS;
         }
         thread_block_ms(10);
         spin_lock(&flock_lock);
@@ -1525,7 +1524,7 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
             uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
             if (deliverable) {
                 if (waiter_slot) { spin_lock(&flock_lock); flock_waiter_remove(waiter_slot); spin_unlock(&flock_lock); }
-                return -EINTR;
+                return -ERESTARTSYS;
             }
         }
         /* Vor dem Blocken: Deadlock-Check. Finde aktuellen Blocker, registriere

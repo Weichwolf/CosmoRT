@@ -365,7 +365,7 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
         event_t ev;
         int wr = event_wait(&ct->eq, &ev, -1);
         s->blocked_acceptor = 0;
-        if (wr == -4) return -EINTR;
+        if (wr == -4) return -ERESTARTSYS;
     }
 
     /* Dequeue first pending connection */
@@ -486,7 +486,7 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
             event_t ev;
             int wr = event_wait(&ct->eq, &ev, -1);
             s->blocked_acceptor = 0;
-            if (wr == -4) return -EINTR;
+            if (wr == -4) return -ERESTARTSYS;
         }
     }
 
@@ -550,7 +550,7 @@ long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
         /* Block via event_wait — usock_write/usock_decref will event_post */
         event_t ev;
         int _wr = event_wait(&t->eq, &ev, -1);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) return -ERESTARTSYS;
     }
 }
 
@@ -622,7 +622,7 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
         /* Use event_wait with short timeout to avoid deadlock */
         event_t ev;
         int _wr = event_wait(&t->eq, &ev, 50);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) return -ERESTARTSYS;
     }
 }
 

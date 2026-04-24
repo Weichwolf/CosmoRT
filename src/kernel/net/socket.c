@@ -275,7 +275,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
             if (remain <= 0) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
             event_t ev;
             int wr = event_wait(&ct->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -EINTR; }
+            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
             continue;
         }
         s->tcp.wait_thread = 0;
@@ -438,7 +438,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             if (remain <= 0) { us->wait_thread = 0; return -EAGAIN; }
             event_t ev;
             int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { us->wait_thread = 0; return -EINTR; }
+            if (wr == -4) { us->wait_thread = 0; return -ERESTARTSYS; }
         }
     }
 
@@ -476,7 +476,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             if (remain <= 0) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
             int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -EINTR; }
+            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
         }
     }
 }
@@ -525,7 +525,7 @@ long socket_read(int fd, void *buf, long count) {
             if (remain <= 0) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
             event_t ev;
             int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -EINTR; }
+            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
         }
     }
 }
@@ -790,7 +790,7 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
         if (wr == -4) {
             ls->tcp.wait_thread = 0;
             sock_free(ns);
-            return -EINTR;
+            return -ERESTARTSYS;
         }
     }
     ls->tcp.wait_thread = 0;

@@ -302,13 +302,13 @@ long pipe_read_blocking(struct pipe *pp, void *buf, size_t count) {
         /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) return -EINTR;
+            if (deliverable) return -ERESTARTSYS;
         }
         /* Block via event_wait — pipe_write/pipe_close will event_post us.
          * If event pre-queued, returns immediately → loop retries. */
         event_t ev;
         int _wr = event_wait(&t->eq, &ev, -1);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) return -ERESTARTSYS;
     }
 }
 
@@ -352,12 +352,12 @@ long pipe_write_blocking(struct pipe *pp, const void *buf, size_t count) {
         /* Check pending signals before blocking (POSIX -EINTR semantics) */
         if (t->proc) {
             uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-            if (deliverable) return -EINTR;
+            if (deliverable) return -ERESTARTSYS;
         }
         /* Block via event_wait — pipe_read/pipe_close will event_post us */
         event_t ev;
         int _wr = event_wait(&t->eq, &ev, -1);
-        if (_wr == -4) return -EINTR;
+        if (_wr == -4) return -ERESTARTSYS;
     }
 }
 
