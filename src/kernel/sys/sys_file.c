@@ -1622,8 +1622,8 @@ static long fcntl_getlease(fd_entry_t *fde) {
  *   arg > pipe-max-size → -EPERM (unprivileged user)
  *   new < current fill  → -EBUSY
  *   sonst: ring auf rounded-up-page-size kopieren, rounded-size returnen
- * F_GETPIPE_SZ liefert die aktuelle Ringgroesse. */
-#define FCNTL_PIPE_SZ_MAX     1048576   /* /proc/sys/fs/pipe-max-size */
+ * F_GETPIPE_SZ liefert die aktuelle Ringgroesse. pipe-max-size ist
+ * dynamisch via /proc/sys/fs/pipe-max-size. */
 #define PIPE_BUF_MIN          4096      /* Linux: mindestens eine Seite */
 
 long do_fcntl(int fd, int cmd, long arg) {
@@ -1746,7 +1746,10 @@ long do_fcntl(int fd, int cmd, long arg) {
     case F_SETPIPE_SZ: {
         if (fde->type != FD_PIPE) return -EINVAL;
         if ((unsigned long)arg >= (1UL << 31)) return -EINVAL;
-        if ((unsigned long)arg > FCNTL_PIPE_SZ_MAX) return -EPERM;
+        /* Linux fs/pipe.c:pipe_set_size: unprivileged callers capped at
+         * pipe-max-size (EPERM ueber dem Limit). Root darf darueber. */
+        int pmax = pipe_max_size_get();
+        if (p->euid != 0 && (long)arg > pmax) return -EPERM;
         struct pipe *pp = (struct pipe *)fde->obj;
         int req = (int)arg;
         if (req < PIPE_BUF_MIN) req = PIPE_BUF_MIN;

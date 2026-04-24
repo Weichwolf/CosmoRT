@@ -7,7 +7,22 @@
 /* ── SYS_pipe2 (293) ─────────────────────────────── */
 
 #define PIPE_BUF_DEFAULT  65536     /* Linux PIPE_DEF_BUFFERS*PAGE_SIZE = 16*4K */
-#define PIPE_BUF_MAX      1048576   /* /proc/sys/fs/pipe-max-size cap */
+#define PIPE_BUF_MAX      1048576   /* /proc/sys/fs/pipe-max-size default */
+#define PIPE_BUF_MIN_PAGE 4096      /* kleinste zulaessige pipe-max-size */
+
+/* Dynamische Grenze aus /proc/sys/fs/pipe-max-size. Unprivileged pipe_alloc
+ * und F_SETPIPE_SZ respektieren diesen Wert; root (euid==0) darf drueber. */
+static int g_pipe_max_size = PIPE_BUF_MAX;
+
+int pipe_max_size_get(void) { return g_pipe_max_size; }
+
+long pipe_max_size_set(int v) {
+    if (v < PIPE_BUF_MIN_PAGE) return -EINVAL;
+    if ((unsigned int)v >= (1U << 31)) return -EINVAL;
+    int pages = (v + 4095) / 4096;
+    g_pipe_max_size = pages * 4096;
+    return 0;
+}
 
 /* Async-signal owner per pipe-end. Linux F_SETOWN/F_SETSIG sind per
  * struct file — wir haben nur einen struct pipe fuer beide Enden,
@@ -351,10 +366,16 @@ long do_pipe2(int *fds, int flags) {
     pipe_slab_ensure();
     struct pipe *pp = (struct pipe *)slab_alloc(&pipe_slab);
     if (!pp) return -ENOMEM;
-    int init_pages = pipe_page_count(PIPE_BUF_DEFAULT);
+    /* Linux commit 086e774a57fb: unprivileged pipe() capped to pipe-max-size.
+     * Root darf Default behalten, selbst wenn pipe-max-size kleiner ist. */
+    int init_size = PIPE_BUF_DEFAULT;
+    process_t *cur = proc_current();
+    if (cur && cur->euid != 0 && g_pipe_max_size < init_size)
+        init_size = g_pipe_max_size;
+    int init_pages = pipe_page_count(init_size);
     pp->buf = (uint8_t *)pages_alloc(init_pages);
     if (!pp->buf) { slab_free(&pipe_slab, pp); return -ENOMEM; }
-    pp->buf_size = PIPE_BUF_DEFAULT;
+    pp->buf_size = init_pages * 4096;
 
     pp->read_pos = pp->write_pos = pp->count = 0;
     pp->read_open = pp->write_open = 1;
@@ -365,8 +386,8 @@ long do_pipe2(int *fds, int flags) {
     pp->owner[1].pid = pp->owner[1].sig = pp->owner[1].o_async = pp->owner[1].type = 0;
     pp->lock = (spinlock_t)SPINLOCK_INIT;
 
-    process_t *p = proc_current();
-    if (!p) { slab_free(&pipe_slab, pp); return -EFAULT; }
+    process_t *p = cur;
+    if (!p) { pages_free(pp->buf, init_pages); slab_free(&pipe_slab, pp); return -EFAULT; }
 
     /* Build fd flags: carry over O_CLOEXEC and O_NONBLOCK from pipe2 flags */
     int rflags = O_RDONLY;

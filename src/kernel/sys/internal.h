@@ -210,6 +210,8 @@ long pipe_close(fd_entry_t *fde);
 long do_pipe2(int *fds, int flags);
 long pipe_resize(struct pipe *pp, int new_size);
 int  pipe_get_size(struct pipe *pp);
+int  pipe_max_size_get(void);
+long pipe_max_size_set(int v);
 long pipe_fcntl_getown(struct pipe *pp, int end);
 long pipe_fcntl_setown(struct pipe *pp, int end, int arg);
 long pipe_fcntl_getsig(struct pipe *pp, int end);
