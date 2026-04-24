@@ -142,35 +142,7 @@ void thread_block_ms(int timeout_ms) {
     hrtimer_init(&timer, timeout_wake, cur);
     hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
 
-    /* Linux prepare_to_wait pattern — closes missed-wakeup race:
-     *   1. Clear wakeup_pending (fresh block start).
-     *   2. state = BLOCKED.
-     *   3. Full barrier — order state-store vs flag-load.
-     *   4. Re-check pending + wakeup_pending.
-     *      - If wakeup arrived BEFORE state=BLOCKED: sched_wake's CAS failed
-     *        (state was RUNNING) but flag persisted. Rollback via CAS.
-     *      - If wakeup arrived AFTER state=BLOCKED: sched_wake's CAS succeeded
-     *        (state=RUNNABLE), thread already on runqueue. Our CAS rollback
-     *        then fails and we fall through to schedule() which finds us. */
-    __atomic_store_n(&cur->wakeup_pending, 0, __ATOMIC_RELAXED);
     cur->state = THREAD_BLOCKED;
-    hal_cpu_mfence();
-
-    int racy = __atomic_load_n(&cur->wakeup_pending, __ATOMIC_ACQUIRE);
-    if (!racy && cur->proc) {
-        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        if (all_pending & ~cur->sig_blocked) racy = 1;
-    }
-    if (racy) {
-        int old = __sync_val_compare_and_swap(&cur->state,
-                                              THREAD_BLOCKED, THREAD_RUNNING);
-        if (old == THREAD_BLOCKED) {
-            hrtimer_cancel(&timer);
-            return;
-        }
-        /* CAS lost — sched_wake already moved us to RUNNABLE + enqueued.
-         * Fall through to schedule() which resumes us. */
-    }
 
     extern void schedule(void);
     schedule();

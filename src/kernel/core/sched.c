@@ -81,12 +81,6 @@ void sched_add(thread_t *t) {
 
 void sched_wake(thread_t *t) {
     if (!t) return;
-    /* Missed-wakeup-fence: set wakeup_pending BEFORE attempting the BLOCKED
-     * CAS. If the waitee is between its first pending-check and state=BLOCKED
-     * (i.e. state is still RUNNING), the CAS fails — but the flag persists
-     * and the waitee sees it during its re-check after state=BLOCKED.
-     * Mirrors Linux prepare_to_wait / try_to_wake_up ordering. */
-    __atomic_store_n(&t->wakeup_pending, 1, __ATOMIC_RELEASE);
     int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
     if (old == THREAD_BLOCKED) { sched_add(t); return; }
     /* Also wake STOPPED threads (SIGCONT) */
