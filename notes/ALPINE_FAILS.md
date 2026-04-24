@@ -4,6 +4,7 @@ Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 Update: 2026-04-22 nach TCP-half-open-queue.
 Update: 2026-04-22 nach procfs-write + pipe-max-size (fcntl35).
 Update: 2026-04-22 nach dnotify nested sigreturn-delivery (fcntl38).
+Update: 2026-04-24 Phase 10 Waitqueue-Infrastruktur (ba88466, e255af3).
 
 ## Ergebnis
 

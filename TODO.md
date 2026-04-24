@@ -34,6 +34,10 @@ Reihenfolge ist **nicht** verhandelbar bis 15 — danach orthogonal parallelisie
 
 ## Phase 10 — Waitqueue-System (KRITISCHER PFAD)
 
+**Status**: Infrastruktur + thread_block_ms migriert (ba88466, e255af3).
+Rest (event_wait/futex/pipe/net/epoll/signalfd/timerfd/process_wait)
+offen als Phase 10.2.
+
 **Problem**: Jede Blocking-Primitive (`thread_block_ms`, `event_wait`, `futex_wait`,
 `signalfd_read`, socket-recv, pipe-read) baut ihr eigenes
 `state=BLOCKED → schedule()`. Atomarität zwischen State-Transition und
@@ -53,28 +57,36 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
 
 ### Scope
 
-- [ ] `include/kernel/core/waitqueue.h` — `wait_queue_head_t` + `wait_queue_entry_t`,
+**Phase 10.1 — Infrastruktur (ERLEDIGT)**
+
+- [x] `include/kernel/core/waitqueue.h` — `wait_queue_head_t` + `wait_queue_entry_t`,
       `DEFINE_WAIT`, `init_waitqueue_head`, `add_wait_queue`, `remove_wait_queue`
-- [ ] `src/kernel/core/waitqueue.c` — `prepare_to_wait(wq, wait, state)`,
+- [x] `src/kernel/core/waitqueue.c` — `prepare_to_wait(wq, wait, state)`,
       `finish_wait(wq, wait)`, `wake_up(wq)`, `wake_up_one(wq)`,
-      `wake_up_interruptible(wq)`, `__wait_event(wq, condition)`
-- [ ] Lock-Semantik: waitqueue hat eigenen Spinlock, state-Transition +
+      `wake_up_interruptible(wq)`
+- [x] Lock-Semantik: waitqueue hat eigenen Spinlock, state-Transition +
       queue-Insertion unter diesem Lock. Waker sperrt denselben → keine Missed-Wakeups.
-- [ ] Exclusive-Wakeups (ein Waiter pro Signal) via `WQ_FLAG_EXCLUSIVE`
-- [ ] Signal-interruptible: `wake_up_interruptible` checkt `sig_pending`
-      nach jeder `__wait_event`-Iteration
-- [ ] **Big-Bang-Umstellung in einem Merge**:
-  - [ ] `thread_block_ms` → `msleep_interruptible` via `schedule_timeout`
-  - [ ] `event_wait` → waitqueue pro `event_queue_t`
-  - [ ] `futex_wait`/`futex_wake` → waitqueue pro bucket
-  - [ ] `signalfd_read` → waitqueue pro signalfd
-  - [ ] `pipe_read`/`pipe_write` → waitqueue pro pipe
-  - [ ] socket recv/accept → waitqueue pro socket
-  - [ ] epoll_wait → waitqueue + ep_poll_callback
-- [ ] `schedule_timeout(ticks)` als Primitiv — ersetzt hrtimer + manueller
-      cancel in allen Blocking-Pfaden
-- [ ] 20+ ktests: prepare/finish-Pairs, missed-wakeup-race, exclusive,
-      signal-interrupt, timeout-expire, multi-waiter
+- [x] Exclusive-Wakeups (ein Waiter pro Signal) via `WQ_FLAG_EXCLUSIVE`
+- [x] Signal-interruptible: schedule_timeout_interruptible checkt `sig_pending`
+- [x] `schedule_timeout`/`schedule_timeout_interruptible` als Primitiv, ns-Praezision
+- [x] `sleep_interruptible_ns` ersetzt nackten state=BLOCKED+schedule()-Loop
+- [x] `thread->wait_head/wait_entry` Pointer, `sched_wake` routet ueber wait_head
+- [x] sched_wake DEAD-guard verhindert UAF auf recycelten kstack
+- [x] kill_one nutzt sched_wake-direct fuer waitqueue-parked threads (keine
+      stale EQ-Events mehr)
+- [x] 16 neue ktests: short/zero/repeated/abstime sleep, signal-interrupts-sleep,
+      SIGTERM/SIGKILL during sleep, pipe block, wait4 wake, 20 concurrent sleepers,
+      30x signal-wake stress, 5 alternating sleeps
+
+**Phase 10.2 — Restliche Blocking-Pfade (OFFEN)**
+
+- [ ] `event_wait` → waitqueue pro `event_queue_t` (Kooperation mit event_post)
+- [ ] `futex_wait`/`futex_wake` → waitqueue pro bucket, FUTEX_LOCK_PI/UNLOCK_PI
+- [ ] `signalfd_read` → waitqueue pro signalfd
+- [ ] `pipe_read`/`pipe_write` → waitqueue pro pipe (exclusive flag)
+- [ ] socket recv/accept → waitqueue pro socket
+- [ ] epoll_wait → waitqueue + ep_poll_callback pro registriertem fd
+- [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD
 
 ### Erfolgskriterien
 
