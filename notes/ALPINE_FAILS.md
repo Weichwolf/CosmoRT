@@ -2,14 +2,15 @@
 
 Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 Update: 2026-04-22 nach TCP-half-open-queue.
+Update: 2026-04-22 nach procfs-write + pipe-max-size (fcntl35).
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
 |-------|-------|------|------|------|-----------------|
-| ktest | 2849  | 2849 |   0  |   -  | +17 (listen-backlog x3, plus accept-loopback+connect02 jetzt grün) |
-| musl  |  478  |  458 |  13  |   7  | unverändert |
-| LTP   |  313  |  240 |  14  |  44  | **+2 PASS** (accept4_01, bind04) |
+| ktest | 2863  | 2863 |   0  |   -  | +14 (procfs-write x13, F_SETPIPE_SZ-cap) |
+| musl  |  478  |  460 |  11  |   7  | **+2 PASS** (wechselhafte Flakes) |
+| LTP   |  313  |  242 |  12  |  44  | **+2 PASS** (fcntl35, fcntl35_64) |
 
 Baseline: ktest 2760 post-NEWTIME. Signal-Wake-Agent (9 commits 00bf941..c4f8f23)
 reverted in 22b3ab5 — Deadlock in clock_nanosleep01 (kompletter Hang, kein
@@ -88,6 +89,21 @@ auch. Beide blockieren SAFE_SOCKET → TBROK. Separate Tasks:
 ## fcntl-Cluster (2026-04-22)
 
 12/14 behoben, unverändert.
+
+## procfs-write + pipe-max-size (2026-04-22)
+
+Generische procfs_register_rw-Infra war bereits da (time_ns_offsets
+Schreibhandler). Neu: /proc/sys/fs/pipe-max-size bekommt Read + Write.
+
+- `pipe_max_size_get/set` in sys_ipc.c als Single-Source-of-Truth
+- pipe_alloc (do_pipe2): unprivilegierter Prozess wird auf aktuellen
+  pipe_max_size gecappt. CAP_SYS_RESOURCE (cap_effective-Bit) umgeht
+  das, nicht euid==0 — LTP fcntl37 droppt die Cap via TST_CAP_DROP
+  waehrend euid=0 bleibt.
+- F_SETPIPE_SZ: gleicher CAP-Check, dynamischer Cap statt hart-kodierter
+  1 MiB.
+
+Gewonnen: fcntl35, fcntl35_64 (2 PASS).
 
 ## QEMU: Zweit-NIC (virtio-net-pci)
 
