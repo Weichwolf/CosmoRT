@@ -3,14 +3,15 @@
 Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 Update: 2026-04-22 nach TCP-half-open-queue.
 Update: 2026-04-22 nach procfs-write + pipe-max-size (fcntl35).
+Update: 2026-04-22 nach dnotify nested sigreturn-delivery (fcntl38).
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
 |-------|-------|------|------|------|-----------------|
-| ktest | 2863  | 2863 |   0  |   -  | +14 (procfs-write x13, F_SETPIPE_SZ-cap) |
-| musl  |  478  |  460 |  11  |   7  | **+2 PASS** (wechselhafte Flakes) |
-| LTP   |  313  |  242 |  12  |  44  | **+2 PASS** (fcntl35, fcntl35_64) |
+| ktest | 2868  | 2868 |   0  |   -  | **+5** (dnotify_handler_multi) |
+| musl  |  478  |  460 |  11  |   7  | unveraendert |
+| LTP   |  313  |  244 |  10  |  44  | **+2 PASS** (fcntl38, fcntl38_64) |
 
 Baseline: ktest 2760 post-NEWTIME. Signal-Wake-Agent (9 commits 00bf941..c4f8f23)
 reverted in 22b3ab5 — Deadlock in clock_nanosleep01 (kompletter Hang, kein
@@ -105,6 +106,25 @@ Schreibhandler). Neu: /proc/sys/fs/pipe-max-size bekommt Read + Write.
 
 Gewonnen: fcntl35, fcntl35_64 (2 PASS).
 
+## dnotify nested sigreturn-delivery (2026-04-22)
+
+fcntl38/fcntl38_64: Zwei F_NOTIFY-Watches mit demselben Signal auf
+parent-dir + subdir. chmod auf subdir matcht beide Watches → zwei
+(fd, sig)-Tupel in p->dnotify_q. SA_SIGINFO-Handler sah aber nur
+das erste si_fd; der zweite war erst beim naechsten Syscall abrufbar.
+
+Linux stellt pending Signale zwischen Handler-ret und Return-to-user
+als nested Frame zu. 528d571 hatte das bedingungslos in
+check_signals_syscall_path fuer SYS_RT_SIGRETURN versucht, brach aber
+pthread_cond-smasher / pthread_once / capset04 → revertiert c3b602f.
+
+Gezielter Fix (effac51): Nach RT_SIGRETURN nur dann nested delivery,
+wenn die dnotify-Queue noch Eintraege fuer ein aktuell pending Signal
+enthaelt. Andere pending Signale (SIGCHLD im futex-Pfad, pthread_cancel)
+bleiben fuer den naechsten Syscall. Pthread-Regression vermieden.
+
+Gewonnen: fcntl38, fcntl38_64 (2 PASS). ktest +5.
+
 ## QEMU: Zweit-NIC (virtio-net-pci)
 
 Flags ergänzt in `Makefile`: `-device virtio-net-pci,netdev=net1
@@ -122,7 +142,7 @@ Multi-NIC-Routing-Support ist separates Thema (netif-pointer in
 
 | Gruppe         | Anzahl | Tests                                              | Ursache                |
 |----------------|--------|----------------------------------------------------|------------------------|
-| fcntl          |    5   | fcntl35/35_64, fcntl38/38_64, fcntl14             | procfs-write, nested sigreturn, perf |
+| fcntl          |    0   | (fcntl35/35_64, fcntl38/38_64, fcntl14 alle PASS) | erledigt                 |
 | epoll_wait     |    2   | epoll_wait02, epoll_wait05                        | timing, TCP loopback   |
 | clock_*        |    3   | clock_gettime04, clock_nanosleep01/02              | Clock-Jitter / Sched-Perf, KEIN NEWTIME |
 | clone/dup      |    2   | clone09 (procfs TBROK), dup05/dup201              | -                      |
