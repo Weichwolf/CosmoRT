@@ -9,6 +9,7 @@
 
 #include "core/event_queue.h"
 #include "core/hrtimer.h"
+#include "core/waitqueue.h"
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "core/percpu.h"
@@ -124,30 +125,16 @@ static void timeout_wake(hrtimer_t *timer) {
     sched_wake(t);
 }
 
-/* ── Block: pure timeout sleep (no event queue) ── */
+/* ── Block: pure timeout sleep, waitqueue-backed ──
+ * Replaces the old naked state=BLOCKED+schedule() pattern that had a
+ * missed-wakeup race between the pending-check and state=BLOCKED. The
+ * waitqueue primitive serializes both under its lock. sleep_interruptible_ns
+ * handles signals, timeout and race-free wakeups. */
 
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
-
-    thread_t *cur = thread_current();
-    if (!cur) return;
-
-    if (cur->proc) {
-        uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-        uint64_t deliverable = all_pending & ~cur->sig_blocked;
-        if (deliverable) return;
-    }
-
-    hrtimer_t timer;
-    hrtimer_init(&timer, timeout_wake, cur);
-    hrtimer_start(&timer, hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms));
-
-    cur->state = THREAD_BLOCKED;
-
-    extern void schedule(void);
-    schedule();
-
-    hrtimer_cancel(&timer);
+    (void)timeout_wake;
+    (void)sleep_interruptible_ns((uint64_t)timeout_ms * NSEC_PER_MSEC);
 }
 
 /* ── Wait: consume next event, block if empty ── */

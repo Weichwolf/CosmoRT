@@ -134,6 +134,14 @@ typedef struct thread {
 
     /* Serializes eq producers (IRQ + syscall) and ring growth. */
     spinlock_t      eq_lock;
+
+    /* ── Waitqueue linkage (Linux prepare_to_wait pattern) ──
+     * wait_entry points at the stack-allocated wait_queue_entry_t of the
+     * waitqueue the thread is currently parked on. sched_wake uses this
+     * to route wakeups back through the waitqueue so state-transition
+     * and queue-membership stay atomic. NULL if not parked. */
+    void           *wait_entry;
+    void           *wait_head;
 } thread_t;
 
 /* Thread pool — dynamically allocated via slab */

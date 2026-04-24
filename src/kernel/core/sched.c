@@ -15,6 +15,7 @@
 #include "core/percpu.h"
 #include "core/frame.h"
 #include "core/rcu.h"
+#include "core/waitqueue.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "config.h"
@@ -81,6 +82,19 @@ void sched_add(thread_t *t) {
 
 void sched_wake(thread_t *t) {
     if (!t) return;
+
+    /* Waitqueue-aware wake: if the thread is parked via
+     * prepare_to_wait(), route through wake_up_all on its waitqueue
+     * head. The waitqueue lock serializes state transitions with the
+     * waitee's prepare_to_wait, closing the missed-wakeup race that
+     * caused 3x reverted thread_block_ms patches. */
+    wait_queue_head_t *wh = (wait_queue_head_t *)__atomic_load_n(&t->wait_head, __ATOMIC_ACQUIRE);
+    if (wh) {
+        wake_up_all(wh);
+        return;
+    }
+
+    /* Not on a waitqueue — legacy event_queue / direct wake path. */
     int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
     if (old == THREAD_BLOCKED) { sched_add(t); return; }
     /* Also wake STOPPED threads (SIGCONT) */
