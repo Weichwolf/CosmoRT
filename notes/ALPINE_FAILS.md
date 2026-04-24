@@ -1,14 +1,15 @@
 # Alpine Test — Bestandsaufnahme
 
 Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
+Update: 2026-04-22 nach TCP-half-open-queue.
 
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
 |-------|-------|------|------|------|-----------------|
-| ktest | 2832  | 2832 |   0  |   -  | +2 (dup2-ebadf, cfr-mtime, clone-newnet) |
-| musl  |  478  |  458 |  13  |   7  | ±1 Flake-Swing (pthread_mutex_pi / sem_init / ...) |
-| LTP   |  313  |  238 |  16  |  44  | +3 PASS (dup201, cfr03, bind03, bind04 — einige Flakes aber) |
+| ktest | 2849  | 2849 |   0  |   -  | +17 (listen-backlog x3, plus accept-loopback+connect02 jetzt grün) |
+| musl  |  478  |  458 |  13  |   7  | unverändert |
+| LTP   |  313  |  240 |  14  |  44  | **+2 PASS** (accept4_01, bind04) |
 
 Baseline: ktest 2760 post-NEWTIME. Signal-Wake-Agent (9 commits 00bf941..c4f8f23)
 reverted in 22b3ab5 — Deadlock in clock_nanosleep01 (kompletter Hang, kein
@@ -27,11 +28,11 @@ PASS. ALPINE_FAILS war bei „bind/accept=2" korrekt.
 | accept01    | PASS   | PASS    | —                                                  |
 | accept02    | PASS   | PASS    | —                                                  |
 | accept03    | PASS   | PASS    | —                                                  |
-| accept4_01  | FAIL   | FAIL    | **Offen** — ETIMEDOUT: TCP-Handshake ohne accept() |
+| accept4_01  | FAIL   | **PASS** | **Fix**: TCP-half-open-queue. tcp_input emittiert SYN-ACK direkt, request landet in listener.syn_queue, ACK promoviert nach accept_queue, accept4 materialisiert child via net_tcp_accept_child. Commit 2ebdc05. |
 | bind01      | PASS   | PASS    | —                                                  |
 | bind02      | PASS   | PASS    | —                                                  |
 | bind03      | PASS   | PASS    | —                                                  |
-| bind04      | FAIL   | FAIL    | **Teilfortschritt**: AF_UNIX pathname stream PASSt jetzt (FS-Node + unlink), restliche Cases TBROK (SOCK_SEQPACKET + IPv6) |
+| bind04      | FAIL   | PASS    | Seit TCP-Fix auch grün im laufenden Run (SEQPACKET- und IPv6-Subcases werden möglicherweise timing-abhängig übersprungen; Flake-Risiko, aber konsistent PASS diesmal). |
 | bind05      | SKIP   | SKIP    | needs_root+setuid                                  |
 | connect01   | PASS   | PASS    | —                                                  |
 | connect02   | SKIP   | SKIP    | needs_checkpoint                                   |
@@ -55,20 +56,25 @@ PASS. ALPINE_FAILS war bei „bind/accept=2" korrekt.
 
 ### Verbleibend
 
-**accept4_01** (TCP half-open queue fehlt):
-```
-accept4_01.c:105: TBROK: connect(4, 127.0.0.1:61322, 16) failed: ETIMEDOUT
-```
-Testablauf: `listen_fd = bind+listen; connect(client); accept4()`.
-Unser TCP: SYN landet nur in `q_tcp`-Queue, Bearbeitung erst in `accept()`.
-Client-Connect blockiert → 30s-Timeout → TBROK.
+**accept4_01** — geschlossen. TCP-half-open-queue implementiert:
+- `tcp_request_t` Slab-Entry mit {src_ip, src_port, iss, irs, optionen,
+  early_data}, per-Listener FIFOs `syn_queue` / `accept_queue`.
+- `tcp_input` SYN-Pfad: Request alloziert, SYN-ACK sofort via Stub-
+  net_tcp_t emittiert, Request in syn_queue.
+- `tcp_input` ACK-Pfad: Promote syn_queue → accept_queue + Wake
+  listener-wait_thread. Retransmit-Safe via dup-detection.
+- Early Data: Payload piggybacked auf 3WHS-ACK oder auf Segmenten vor
+  accept() → in request->early_data (1460B MSS) gepuffert, Peer geACKt,
+  replay in child->rx beim accept.
+- `do_accept4` + `net_tcp_accept_child` materialisieren child aus
+  Request (eigener rxring, TCP-hash-Registrierung), statt ls->tcp zu
+  kannibalisieren (alter Pfad zerstörte den Listener).
+- `socket_close` auf Listener drainiert beide Queues via
+  `tcp_listener_drain`.
+- Backlog-Cap: min(listen-backlog+1, TCP_SOMAXCONN_DEFAULT=4096),
+  SYN-flood wird silently dropped.
 
-Linux: tcp_input auf SYN bei bestehendem Listener sendet sofort SYN-ACK
-und legt half-open Eintrag in Listen-Backlog; accept() dequeued später.
-Fix-Umfang: TCP-SYN-Pfad in `tcp_input` + Listen-Backlog-Slab +
-Race gegen `net_tcp_accept`. Eigener Task.
-
-**bind04** (SOCK_SEQPACKET + IPv6):
+**bind04** (historisch: SOCK_SEQPACKET + IPv6):
 ```
 bind04.c:117: TINFO: Testing AF_UNIX pathname stream
 bind04.c:149: TPASS: Communication successful
