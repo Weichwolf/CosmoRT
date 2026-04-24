@@ -826,16 +826,53 @@ static int procfs_sys_pid_max(char *buf, int size, int offset, void *ctx) {
 
 /* ── /proc/sys/fs/pipe-max-size ───────────────────── */
 
+extern int  pipe_max_size_get(void);
+extern long pipe_max_size_set(int v);
+
 static int procfs_sys_pipe_max_size(char *buf, int size, int offset, void *ctx) {
     (void)ctx;
     char tmp[16];
-    int pos = itoa_buf(tmp, 16, 1048576L);
+    int pos = itoa_buf(tmp, 16, (long)pipe_max_size_get());
     tmp[pos++] = '\n';
 
     int out = 0;
     for (int i = offset; i < pos && out < size; i++)
         buf[out++] = tmp[i];
     return out;
+}
+
+/* Parst fuehrenden Integer aus buf (ignoriert Whitespace + Newline danach).
+ * Linux proc_dointvec: eine Zahl je write(), Trailing-Garbage erlaubt solange
+ * Parser einen vollstaendigen Integer gelesen hat. */
+static int procfs_parse_int(const char *buf, int size, long long *out) {
+    int i = 0;
+    while (i < size && (buf[i] == ' ' || buf[i] == '\t')) i++;
+    int neg = 0;
+    if (i < size && buf[i] == '-') { neg = 1; i++; }
+    else if (i < size && buf[i] == '+') { i++; }
+    int start = i;
+    long long v = 0;
+    while (i < size && buf[i] >= '0' && buf[i] <= '9') {
+        long long d = buf[i] - '0';
+        if (v > (0x7FFFFFFFFFFFFFFFLL - d) / 10) return -ERANGE;
+        v = v * 10 + d;
+        i++;
+    }
+    if (i == start) return -EINVAL;
+    *out = neg ? -v : v;
+    return i;
+}
+
+static long procfs_sys_pipe_max_size_write(const char *buf, int size,
+                                           int offset, void *ctx) {
+    (void)offset; (void)ctx;
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    if (v < 0 || v > 0x7FFFFFFFLL) return -EINVAL;
+    long r = pipe_max_size_set((int)v);
+    if (r < 0) return r;
+    return size;
 }
 
 /* ── /proc/sys/fs/lease-break-time ────────────────── */
@@ -1089,7 +1126,9 @@ void procfs_init(void) {
     procfs_register("sys/kernel/pid_max", procfs_sys_pid_max, 0);
     procfs_register("sys/kernel/tainted", procfs_sys_tainted, 0);
     procfs_register("sys/kernel/hostname", procfs_sys_hostname, 0);
-    procfs_register("sys/fs/pipe-max-size", procfs_sys_pipe_max_size, 0);
+    procfs_register_rw("sys/fs/pipe-max-size",
+                       procfs_sys_pipe_max_size,
+                       procfs_sys_pipe_max_size_write, 0);
     procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
