@@ -75,7 +75,7 @@ while read t; do
     else
         echo "[$ltp_total/313] $t FAIL rc=$rc"
         case "$t" in
-            bind0*|accept0*|accept4_*|connect0*|cve-*|execve*|eventfd0*|epoll_wait0*|epoll_pwait0*|abort0*|acct0*|fchdir0*|fchownat0*|fdatasync0*|fgetxattr0*|fallocate0*|stack_clash)
+            bind0*|accept0*|accept4_*|connect0*|cve-*|execve*|eventfd0*|epoll_wait0*|epoll_pwait0*)
                 echo "--- OUTPUT ($t) ---"
                 cat /tmp/ltp_out.txt
                 echo "--- END ($t) ---"
