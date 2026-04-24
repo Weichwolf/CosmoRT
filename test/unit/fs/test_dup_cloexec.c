@@ -48,5 +48,31 @@ static void test_dup2_clears_cloexec(void) {
     sc1(SYS_CLOSE, fd);
 }
 
+/* dup2/dup3 returns EBADF for out-of-range newfd/oldfd (Linux ABI) */
+static void test_dup2_ebadf_ranges(void) {
+    puts("\n[dup2: EBADF for out-of-range fds]\n");
+
+    long fd = sc3(SYS_OPEN, (long)"/dev/null", O_RDONLY, 0);
+    check("open", fd >= 0);
+    if (fd < 0) return;
+
+    long maxfd = 1024; /* FD_DEFAULT_NOFILE */
+
+    long r = sc2(SYS_DUP2, -1, 5);
+    check_val("dup2(-1, 5)", r, -EBADF);
+
+    r = sc2(SYS_DUP2, maxfd, 5);
+    check_val("dup2(maxfd, 5)", r, -EBADF);
+
+    r = sc2(SYS_DUP2, fd, -1);
+    check_val("dup2(fd, -1)", r, -EBADF);
+
+    r = sc2(SYS_DUP2, fd, maxfd);
+    check_val("dup2(fd, maxfd)", r, -EBADF);
+
+    sc1(SYS_CLOSE, fd);
+}
+
 TEST("dup-clears-cloexec", test_dup_clears_cloexec);
 TEST("dup2-clears-cloexec", test_dup2_clears_cloexec);
+TEST("dup2-ebadf-ranges", test_dup2_ebadf_ranges);

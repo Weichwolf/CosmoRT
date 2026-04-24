@@ -575,6 +575,8 @@ long do_dup3(int oldfd, int newfd, int flags) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
     if (oldfd < 0 || newfd < 0) return -EBADF;
+    unsigned long nofile = p->rlim_nofile ? p->rlim_nofile : FD_DEFAULT_NOFILE;
+    if ((unsigned long)oldfd >= nofile || (unsigned long)newfd >= nofile) return -EBADF;
     fd_entry_t *old = fd_get(&p->fds, oldfd);
     if (!old) return -EBADF;
     /* Copy the entry to stack — subsequent table expansion may reallocate. */
