@@ -462,6 +462,142 @@ static void sack_advance(net_tcp_t *c, uint32_t ack) {
     c->sack_count = w;
 }
 
+/* ── Listen-backlog (half-open & accept queues, Linux-style) ──────
+ *
+ * Linux splits the listen-backlog into two queues per listening socket:
+ *   syn_queue    — SYN received, SYN-ACK sent, awaiting peer's ACK
+ *   accept_queue — handshake complete, ready for accept() to consume
+ *
+ * The listener's own net_tcp_t stays in its SOCK_LISTENING state and is
+ * never hashed; tcp_input matches incoming packets against listeners via
+ * sock_listener_tcp(dport). SYN → allocate tcp_request_t, append to
+ * syn_queue, send SYN-ACK. ACK for a pending request → move request from
+ * syn_queue to accept_queue, wake accept()-er. accept() → pop request,
+ * clone into a fresh net_tcp_t, register it in tcp_hash. */
+
+static slab_t tcp_req_slab;
+static int    tcp_req_slab_inited;
+
+static void tcp_req_slab_ensure(void) {
+    if (__builtin_expect(tcp_req_slab_inited, 1)) return;
+    if (__sync_bool_compare_and_swap(&tcp_req_slab_inited, 0, 1))
+        slab_init_dynamic(&tcp_req_slab, (int)sizeof(tcp_request_t), 0);
+}
+
+static tcp_request_t *tcp_req_alloc(void) {
+    tcp_req_slab_ensure();
+    tcp_request_t *r = (tcp_request_t *)slab_alloc(&tcp_req_slab);
+    if (r) mzero(r, sizeof(*r));
+    return r;
+}
+
+static void tcp_req_free(tcp_request_t *r) {
+    slab_free(&tcp_req_slab, r);
+}
+
+/* FIFO append (tail insert). Caller holds no lock; SMP safety relies on
+ * tcp_input being serialised per-packet via irq-disabled net_poll path.
+ * If that ever changes, wrap with spinlock_irq on listener->rx.lock. */
+static void tcp_req_enqueue(tcp_request_t **head, tcp_request_t *r) {
+    r->next = 0;
+    tcp_request_t **pp = head;
+    while (*pp) pp = &(*pp)->next;
+    *pp = r;
+}
+
+static tcp_request_t *tcp_req_dequeue(tcp_request_t **head) {
+    tcp_request_t *r = *head;
+    if (r) { *head = r->next; r->next = 0; }
+    return r;
+}
+
+/* Peek-search: returns a pointer to a request matching {src_ip, src_port}
+ * without removing it. Used to append early data to an already-promoted
+ * request still sitting on accept_queue. */
+static tcp_request_t *tcp_req_find(tcp_request_t *head,
+                                   const uint8_t *src_ip, uint16_t src_port) {
+    for (tcp_request_t *r = head; r; r = r->next) {
+        if (r->src_port == src_port &&
+            r->src_ip[0] == src_ip[0] && r->src_ip[1] == src_ip[1] &&
+            r->src_ip[2] == src_ip[2] && r->src_ip[3] == src_ip[3])
+            return r;
+    }
+    return 0;
+}
+
+/* Remove first entry that matches {src_ip, src_port}. Returns NULL if
+ * no match (e.g. stray ACK). */
+static tcp_request_t *tcp_req_remove(tcp_request_t **head,
+                                     const uint8_t *src_ip, uint16_t src_port) {
+    tcp_request_t **pp = head;
+    while (*pp) {
+        tcp_request_t *r = *pp;
+        if (r->src_port == src_port &&
+            r->src_ip[0] == src_ip[0] && r->src_ip[1] == src_ip[1] &&
+            r->src_ip[2] == src_ip[2] && r->src_ip[3] == src_ip[3]) {
+            *pp = r->next;
+            r->next = 0;
+            return r;
+        }
+        pp = &r->next;
+    }
+    return 0;
+}
+
+/* Build a transient net_tcp_t mirror of a half-open request so the
+ * existing send_syn() / send_tcp() machinery can emit SYN-ACK (and later
+ * RST) without duplicating option-building logic. Caller keeps the real
+ * listener untouched. */
+static void tcp_req_prime_stub(net_tcp_t *stub, const tcp_request_t *r) {
+    mzero(stub, sizeof(*stub));
+    mcpy(stub->dst_mac, r->src_mac, 6);
+    mcpy(stub->dst_ip,  r->src_ip,  4);
+    stub->local_port  = r->local_port;
+    stub->remote_port = r->src_port;
+    stub->snd_nxt     = r->iss;
+    stub->snd_una     = r->iss;
+    stub->rcv_nxt     = r->irs + 1;
+    /* Match what send_tcp_opts expects for ECN negotiation + TS echo. */
+    stub->ts_enabled  = r->ts_enabled;
+    stub->ts_recent   = r->ts_recent;
+    stub->ecn_enabled = r->ecn_enabled;
+    stub->wscale_ok   = r->wscale_ok;
+    stub->snd_wscale  = r->snd_wscale;
+    stub->rcv_wscale  = RCV_WSCALE;
+    /* rx.buf NULL is fine: rxring_free() returns NET_TCP_RXBUF-1 even on
+     * a zero-initialised struct, so the advertised window is sane. */
+}
+
+/* Send SYN-ACK in response to a SYN that landed on a listening socket.
+ * Does not allocate any net_tcp_t — the full socket is only created
+ * once accept() pops the request. */
+static void send_synack_req(const tcp_request_t *r) {
+    net_tcp_t stub;
+    tcp_req_prime_stub(&stub, r);
+    send_syn(&stub, 0x12); /* SYN+ACK */
+}
+
+/* Drain every pending request on a listener (close path). */
+void tcp_listener_drain(net_tcp_t *c) {
+    tcp_request_t *r;
+    while ((r = tcp_req_dequeue(&c->syn_queue))    != 0) tcp_req_free(r);
+    while ((r = tcp_req_dequeue(&c->accept_queue)) != 0) tcp_req_free(r);
+    c->syn_qlen = 0;
+    c->accept_qlen = 0;
+}
+
+int tcp_listener_pop_accept(net_tcp_t *c, tcp_request_t **out_req) {
+    tcp_request_t *r = tcp_req_dequeue(&c->accept_queue);
+    if (!r) return 0;
+    if (c->accept_qlen > 0) c->accept_qlen--;
+    *out_req = r;
+    return 1;
+}
+
+void tcp_req_release(tcp_request_t *r) {
+    if (r) tcp_req_free(r);
+}
+
 /* ── OOO Queue (sorted singly-linked list, slab-allocated) ── */
 
 typedef struct tcp_ooo_seg {
@@ -763,19 +899,134 @@ void tcp_input(const uint8_t *pkt, int len) {
             send_rst_to(pkt);
             return;
         }
+        if (!ltcp) return; /* stray ACK/FIN with no listener — ignore */
 
-        q_push(&q_tcp, pkt, len);
-        /* Wake the accepting thread. Per-listener wait_thread has
-         * socket-scoped lifetime (cleared in do_accept4 on return);
-         * avoids the dangling-pointer hazard of a global slot. */
-        if (ltcp) {
-            struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
-            if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
-            /* Wake select/poll on listening socket (Linux: listen fd becomes
-             * readable when SYN arrives, before accept() runs). */
+        /* Pull packet geometry and options once for both SYN and ACK paths */
+        int in_doff = (pkt[46] >> 4) * 4;
+        if (in_doff < 20) in_doff = 20;
+        int in_ip_total = get16(pkt + 16);
+        if (in_ip_total < 20 + in_doff) return;
+        uint32_t in_seq = get32(pkt + 38);
+
+        /* ── SYN for this listener → half-open request, send SYN-ACK ── */
+        if ((in_flags & 0x3F) == 0x02) {
+            /* Backlog gate: drop SYN when syn_queue is full (Linux sets
+             * qlen_young cap at backlog/2 in normal mode; we keep it simple
+             * and cap total syn_queue + accept_queue). */
+            uint32_t cap = ltcp->backlog ? ltcp->backlog : TCP_SOMAXCONN_DEFAULT;
+            if (ltcp->syn_qlen + ltcp->accept_qlen >= cap) return;
+
+            tcp_request_t *r = tcp_req_alloc();
+            if (!r) return; /* OOM under SYN-flood: drop silently */
+
+            mcpy(r->src_ip,  pkt + 26, 4);
+            mcpy(r->src_mac, pkt + 6,  6);
+            r->src_port   = sport;
+            r->local_port = dport;
+            r->irs        = in_seq;
+            uint32_t our_iss;
+            net_random(&our_iss, (int)sizeof(our_iss));
+            r->iss = our_iss;
+
+            /* Parse client options that must be mirrored in SYN-ACK + child */
+            if (in_doff > 20) {
+                const uint8_t *opts = pkt + 34 + 20;
+                int optlen = in_doff - 20;
+                int i = 0;
+                while (i < optlen) {
+                    uint8_t kind = opts[i];
+                    if (kind == 0) break;
+                    if (kind == 1) { i++; continue; }
+                    if (i + 1 >= optlen) break;
+                    uint8_t olen = opts[i + 1];
+                    if (olen < 2 || i + olen > optlen) break;
+                    if (kind == 3 && olen == 3) {
+                        r->snd_wscale = opts[i + 2];
+                        if (r->snd_wscale > 14) r->snd_wscale = 14;
+                        r->wscale_ok  = 1;
+                    } else if (kind == 8 && olen == 10) {
+                        r->ts_enabled = 1;
+                        r->ts_recent  = get32(opts + i + 2);
+                    }
+                    i += olen;
+                }
+            }
+            /* ECN: client signals with CWR+ECE on SYN (RFC 3168) */
+            if ((in_flags & 0xC0) == 0xC0) r->ecn_enabled = 1;
+
+            tcp_req_enqueue(&ltcp->syn_queue, r);
+            ltcp->syn_qlen++;
+
+            send_synack_req(r);
+
+            /* Notify poll/epoll so edge-triggered listeners see the event
+             * (they may only care at ESTABLISHED, but notifying early is
+             * harmless — accept() will correctly EAGAIN on empty queue). */
             extern void epoll_wake_all(void);
             epoll_wake_all();
+            return;
         }
+
+        /* ── ACK path: either completes 3WHS, or carries early data on an
+         * already-promoted request that accept() hasn't consumed yet. ── */
+        if (in_flags & 0x10) {
+            int in_plen = in_ip_total - 20 - in_doff;
+            if (in_plen < 0) in_plen = 0;
+            if (14 + 20 + in_doff + in_plen > len) in_plen = len - 14 - 20 - in_doff;
+            if (in_plen < 0) in_plen = 0;
+            const uint8_t *payload = pkt + 14 + 20 + in_doff;
+            uint32_t ack_num = get32(pkt + 42);
+
+            /* First try the syn_queue (3WHS completion). */
+            tcp_request_t *r = tcp_req_remove(&ltcp->syn_queue, src_ip, sport);
+            if (r) {
+                /* Expected ACK = iss + 1 (our SYN-ACK occupied one seq) */
+                if (ack_num != r->iss + 1) { tcp_req_free(r); return; }
+
+                if (ltcp->syn_qlen > 0) ltcp->syn_qlen--;
+                r->iss = ack_num;
+                /* Payload piggybacked on the 3WHS-completing ACK? Buffer. */
+                if (in_plen > 0 && in_seq == r->irs + 1) {
+                    int n = in_plen > TCP_REQ_EARLY_DATA ? TCP_REQ_EARLY_DATA : in_plen;
+                    mcpy(r->early_data, payload, n);
+                    r->early_len = (uint16_t)n;
+                    r->irs = r->irs + (uint32_t)n; /* rcv_nxt advances */
+                }
+                tcp_req_enqueue(&ltcp->accept_queue, r);
+                ltcp->accept_qlen++;
+
+                struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
+                if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
+                extern void epoll_wake_all(void);
+                epoll_wake_all();
+                return;
+            }
+
+            /* Not in syn_queue — try accept_queue (child not materialised yet). */
+            r = tcp_req_find(ltcp->accept_queue, src_ip, sport);
+            if (r && in_plen > 0) {
+                /* In-order contiguous append only; reorder handling belongs
+                 * to the full child socket after accept(). */
+                uint32_t expected = r->irs + 1; /* next byte peer should send */
+                if (in_seq == expected) {
+                    int free_space = TCP_REQ_EARLY_DATA - r->early_len;
+                    int n = in_plen > free_space ? free_space : in_plen;
+                    if (n > 0) {
+                        mcpy(r->early_data + r->early_len, payload, n);
+                        r->early_len = (uint16_t)(r->early_len + n);
+                        r->irs = r->irs + (uint32_t)n;
+                    }
+                }
+                /* Ack the received data from the request's stub so peer
+                 * doesn't retransmit before accept() runs. */
+                net_tcp_t stub;
+                tcp_req_prime_stub(&stub, r);
+                send_tcp(&stub, 0x10, 0, 0);
+            }
+            return;
+        }
+
+        /* FIN/other on unknown connection: ignore */
         return;
     }
 
@@ -971,94 +1222,54 @@ void tcp_input(const uint8_t *pkt, int len) {
 
 /* ── TCP Accept ────────────────────────────────────── */
 
+/* Materialise a completed half-open request into `child`. Caller owns
+ * `child` (typically embedded in the new socket_t). Returns 0 on
+ * success, -11 (-EAGAIN) if no request is pending. On success the
+ * child is registered in the TCP hash; tcp_input sees incoming data
+ * immediately. */
+int net_tcp_accept_child(net_tcp_t *listener, net_tcp_t *child) {
+    tcp_request_t *r = 0;
+    if (!tcp_listener_pop_accept(listener, &r)) return -11;
+
+    mzero(child, sizeof(*child));
+    if (rxring_init(&child->rx) != 0) {
+        tcp_req_release(r);
+        return -12; /* -ENOMEM */
+    }
+
+    mcpy(child->dst_mac, r->src_mac, 6);
+    mcpy(child->dst_ip,  r->src_ip,  4);
+    child->local_port  = r->local_port;
+    child->remote_port = r->src_port;
+    child->snd_nxt     = r->iss;
+    child->snd_una     = r->iss;
+    child->rcv_nxt     = r->irs + 1;
+    child->rcv_wnd     = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
+
+    child->wscale_ok   = r->wscale_ok;
+    child->snd_wscale  = r->snd_wscale;
+    child->rcv_wscale  = RCV_WSCALE;
+    child->ts_enabled  = r->ts_enabled;
+    child->ts_recent   = r->ts_recent;
+    child->ecn_enabled = r->ecn_enabled;
+
+    child->state = TCP_ESTABLISHED;
+    cc_init(child);
+    tcp_register(child);
+
+    /* Replay any data buffered while the request sat on accept_queue. */
+    if (r->early_len > 0)
+        rxring_push(&child->rx, r->early_data, r->early_len);
+
+    tcp_req_release(r);
+    return 0;
+}
+
+/* Legacy entry (ABI kept for existing callers). Probes readiness
+ * without consuming; socket.c uses net_tcp_accept_child directly. */
 int net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms) {
-    (void)timeout_ms;
-    if (c->state == TCP_SYN_RCVD) {
-        /* Scan q_tcp for ACK matching our connection */
-        uint8_t pkt[Q_PKT];
-        int len = 0, found = 0, qn = q_count(&q_tcp);
-        for (int qi = 0; qi < qn; qi++) {
-            len = q_pop(&q_tcp, pkt, sizeof(pkt));
-            if (len >= 54 &&
-                get16(pkt + 36) == c->local_port &&
-                get16(pkt + 34) == c->remote_port) {
-                found = 1;
-                break;
-            }
-            q_push(&q_tcp, pkt, len);
-        }
-        if (!found) return -11;
-        if (0) { /* dead code — replaced by scan above */
-        }
-        uint8_t fl = pkt[47];
-        if (fl & 0x04) { c->state = TCP_CLOSED; return -1; }
-        if (fl & 0x10) {
-            uint32_t ack_num = get32(pkt + 42);
-            if (ack_num == c->snd_nxt + 1) {
-                c->snd_nxt++;
-                c->snd_una = c->snd_nxt;
-                c->state = TCP_ESTABLISHED;
-                tcp_register(c);
-                return 0;
-            }
-        }
-        return -11;
-    }
-
-    /* Scan q_tcp for a SYN matching our port (skip others) */
-    uint8_t pkt[Q_PKT];
-    int len = 0;
-    int qn = q_count(&q_tcp);
-    int found = 0;
-    for (int qi = 0; qi < qn; qi++) {
-        len = q_pop(&q_tcp, pkt, sizeof(pkt));
-        if (len < 54) { q_push(&q_tcp, pkt, len); continue; }
-        uint16_t dport = get16(pkt + 36);
-        uint8_t fl = pkt[47];
-        if (dport == local_port && (fl & 0x02) && !(fl & 0x10)) {
-            found = 1;
-            break;
-        }
-        q_push(&q_tcp, pkt, len); /* not ours, put back */
-    }
-    if (!found) return -11;
-    uint8_t fl = pkt[47];
-
-    /* mzero clobbers wait_thread; preserve so recursive tcp_input paths
-     * (send_syn -> loopback -> q_push -> event_post) can still wake us.
-     * OOO list is freed by net_tcp_close before reuse; mzero on a freshly
-     * allocated socket is safe (head was never written). */
-    struct thread *saved_wt = c->wait_thread;
-    mzero(c, sizeof(*c));
-    c->wait_thread = saved_wt;
-    rxring_init(&c->rx);
-    mcpy(c->dst_mac, pkt + 6, 6);
-    mcpy(c->dst_ip, pkt + 26, 4);
-    c->remote_port = get16(pkt + 34);
-    c->local_port = get16(pkt + 36);
-    uint32_t client_isn = get32(pkt + 38);
-    c->rcv_nxt = client_isn + 1;
-    uint32_t rseq;
-    net_random(&rseq, (int)sizeof(rseq));
-    c->snd_nxt = rseq;
-    c->snd_una = rseq;
-    c->rcv_wnd = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
-
-    /* Parse SYN options from client (Timestamps, Window Scale, SACK, TFO) */
-    int doff = (pkt[46] >> 4) * 4;
-    if (doff > 20) {
-        parse_tcp_options(c, pkt + 34 + 20, doff - 20);
-        if (c->wscale_ok) c->rcv_wscale = RCV_WSCALE;
-    }
-
-    /* ECN negotiation: if client SYN has CWR+ECE, enable ECN */
-    if ((fl & 0xC0) == 0xC0)
-        c->ecn_enabled = 1;
-
-    /* Send SYN-ACK with options */
-    send_syn(c, 0x12);
-    c->state = TCP_SYN_RCVD;
-    return -11;
+    (void)timeout_ms; (void)local_port;
+    return c->accept_queue ? 0 : -11;
 }
 
 /* ── TCP Connect ───────────────────────────────────── */

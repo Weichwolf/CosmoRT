@@ -33,6 +33,41 @@ enum tcp_state {
     TCP_TIME_WAIT
 };
 
+/* ── Listen-backlog entry (half-open request_sock, RFC 793 §3.4) ─────
+ * One per incoming SYN matched to a listening socket. Retains just
+ * enough state to complete the 3-way handshake and graduate into a
+ * full net_tcp_t when accept() runs. Fields mirror the minimum Linux
+ * struct inet_request_sock / tcp_request_sock needs. */
+/* Early data buffered on the half-open / accept_queue between the 3WHS
+ * ACK and accept() consuming the request. Sized to hold one MSS so a
+ * piggybacked "hi" or similar single-segment payload survives. Larger
+ * bursts are dropped (peer will retransmit). */
+#define TCP_REQ_EARLY_DATA 1460
+
+typedef struct tcp_request {
+    struct tcp_request *next;     /* singly-linked FIFO per queue */
+    uint8_t  src_ip[4];
+    uint8_t  src_mac[6];
+    uint16_t src_port;            /* peer port (big-endian on wire, host here) */
+    uint16_t local_port;          /* listener port (host order) */
+    uint32_t iss;                 /* initial send seq (our SYN-ACK) */
+    uint32_t irs;                 /* initial recv seq (peer's SYN) */
+    /* Negotiated options from peer SYN — replayed into child net_tcp_t */
+    uint8_t  wscale_ok;
+    uint8_t  snd_wscale;
+    uint8_t  ts_enabled;
+    uint8_t  ecn_enabled;
+    uint32_t ts_recent;
+    /* Early-data buffer: payload on the handshake-completing ACK and
+     * any segment arriving before accept() materialises the child. */
+    uint16_t early_len;
+    uint8_t  early_data[TCP_REQ_EARLY_DATA];
+} tcp_request_t;
+
+/* Per-listener backlog cap applied when user backlog exceeds Linux's
+ * somaxconn. Matches Linux default /proc/sys/net/core/somaxconn. */
+#define TCP_SOMAXCONN_DEFAULT 4096
+
 /* ── Per-Socket RX Ringbuffer ─────────────────────── */
 
 typedef struct {
@@ -128,6 +163,16 @@ typedef struct net_tcp {
 
     /* Hash-table chaining (tcp_hash bucket linked list) */
     struct net_tcp *hash_next;
+
+    /* Listen-backlog (RFC 793 "passive open" queues).
+     * Populated only on listening sockets. See tcp_req_* helpers in tcp.c.
+     * syn_queue:    half-open state after SYN → SYN-ACK sent, awaiting ACK.
+     * accept_queue: handshake complete, ready for accept() to consume.
+     * backlog:      applied cap (Linux: min(somaxconn, listen()'s backlog+1)). */
+    struct tcp_request *syn_queue;
+    struct tcp_request *accept_queue;
+    uint32_t syn_qlen, accept_qlen;
+    uint32_t backlog;
 } net_tcp_t;
 
 /* ── TFO Cookie Cache (RFC 7413) ─────────────────── */
@@ -152,9 +197,21 @@ net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *sr
 
 int  net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port);
 int  net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms);
+int  net_tcp_accept_child(net_tcp_t *listener, net_tcp_t *child);
 int  net_tcp_send(net_tcp_t *c, const void *data, int len);
 int  net_tcp_recv(net_tcp_t *c, void *buf, int bufsize, int timeout_ms);
 void net_tcp_close(net_tcp_t *c);
+
+/* Listen-backlog management — called by socket.c close/shutdown paths.
+ * Frees every pending tcp_request_t on both syn_queue and accept_queue. */
+void tcp_listener_drain(net_tcp_t *c);
+
+/* Pop one completed half-open into *out_req (caller owns it and must
+ * tcp_req_release() it once the state has been cloned into the new
+ * net_tcp_t). Returns 1 on success, 0 on empty. Non-blocking. */
+struct tcp_request;
+int  tcp_listener_pop_accept(net_tcp_t *c, struct tcp_request **out_req);
+void tcp_req_release(struct tcp_request *r);
 
 /* ── TCP Input (called by net.c dispatcher) ───────── */
 

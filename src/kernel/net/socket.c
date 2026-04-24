@@ -569,6 +569,13 @@ long socket_close(int fd) {
         udp_sock_t *us = udp_find(s->udp_local_port);
         if (us) udp_unbind(us);
     }
+    if (s->state == SOCK_LISTENING && !s->is_dgram) {
+        /* RFC 793 §3.5: half-open and completed-but-unaccepted connections
+         * are reset. We drop the request records silently (sending RST for
+         * each would require MAC/IP state beyond what the request carries
+         * for WAN peers; loopback is safe to drop). */
+        tcp_listener_drain(&s->tcp);
+    }
     if (s->state == SOCK_CONNECTED && !s->is_dgram)
         net_tcp_close(&s->tcp);
     sock_free(s);
@@ -694,7 +701,16 @@ long do_listen(int fd, int backlog) {
     if (s->state != SOCK_CREATED) return -EINVAL;
     if (s->local_port == 0) return -EDESTADDRREQ;
 
-    (void)backlog; /* backlog honored in tcp_input (SYN queue); no per-socket queue here */
+    /* Linux: kernel-side cap = min(backlog+1, somaxconn). We use
+     * TCP_SOMAXCONN_DEFAULT (4096) as our somaxconn, matching the
+     * upstream /proc/sys/net/core/somaxconn default. */
+    int bl = backlog < 0 ? 0 : backlog;
+    if ((uint32_t)bl > TCP_SOMAXCONN_DEFAULT) bl = TCP_SOMAXCONN_DEFAULT;
+    s->tcp.backlog    = (uint32_t)bl + 1;
+    s->tcp.syn_qlen   = 0;
+    s->tcp.accept_qlen = 0;
+    s->tcp.syn_queue   = 0;
+    s->tcp.accept_queue = 0;
     s->state = SOCK_LISTENING;
     return 0;
 }
@@ -733,26 +749,36 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
             return -EAGAIN;
     }
 
-    uint16_t host_port = bswap16(ls->local_port);
-    /* Linux accept() blocks until connection. Honor SO_RCVTIMEO
-     * (ls->tcp.rcv_timeo_ms) or block indefinitely. Per-listener
-     * wait_thread avoids the dangling-pointer hazard of a global slot. */
+    /* Linux accept() blocks until a completed handshake lands in the
+     * listener's accept_queue. Honor SO_RCVTIMEO or block indefinitely.
+     * Per-listener wait_thread avoids the dangling-pointer hazard of a
+     * global slot. The new half-open queue is managed by tcp_input; we
+     * only probe accept_queue here and materialise a child on pop. */
     uint64_t timeo_ms = ls->tcp.rcv_timeo_ms;
     uint64_t accept_deadline = timeo_ms ? (timer_ms() + timeo_ms) : 0;
     thread_t *at = thread_current();
+
+    /* Allocate child up-front so pop→populate is a single atomic step
+     * from the hash's perspective: tcp_register happens inside
+     * net_tcp_accept_child, before any packet for the new 4-tuple can
+     * slip past. On OOM the pending request stays on accept_queue for
+     * the next caller. */
+    socket_t *ns = sock_alloc();
+    if (!ns) return -EMFILE;
+    ns->refcount = 1;
+
+    int rc;
     for (;;) {
         __atomic_store_n(&ls->tcp.wait_thread, at, __ATOMIC_RELEASE);
-        int r = net_tcp_accept(&ls->tcp, host_port, 0);
-        if (r != -11) {
-            if (r < 0) { ls->tcp.state = TCP_CLOSED;
-                         ls->tcp.wait_thread = 0;
-                         return -EAGAIN; }
-            break;
-        }
+        rc = net_tcp_accept_child(&ls->tcp, &ns->tcp);
+        if (rc == 0) break;
+        if (rc == -12) { ls->tcp.wait_thread = 0; sock_free(ns); return -ENOMEM; }
+        /* rc == -11: empty queue */
         int remain;
         if (accept_deadline) {
             if (timer_ms() >= accept_deadline) {
                 ls->tcp.wait_thread = 0;
+                sock_free(ns);
                 return -EAGAIN;
             }
             remain = (int)(accept_deadline - timer_ms());
@@ -763,30 +789,13 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
         int wr = event_wait(&at->eq, &ev, remain);
         if (wr == -4) {
             ls->tcp.wait_thread = 0;
+            sock_free(ns);
             return -EINTR;
         }
     }
     ls->tcp.wait_thread = 0;
 
-    /* Handshake complete — allocate new socket */
-    socket_t *ns = sock_alloc();
-    if (!ns) return -EMFILE;
-
-    /* Transfer TCP state + hash entry: ls->tcp was registered in the TCP hash
-     * during handshake (net_tcp_accept on ESTABLISHED). Unregister, clone,
-     * re-register under ns->tcp. IRQ-disabled so tcp_input sees consistent state. */
-    extern void tcp_unregister(net_tcp_t *c);
-    extern void tcp_register(net_tcp_t *c);
-    uint64_t aflags = irq_save();
-    tcp_unregister(&ls->tcp);
-    kmemcpy(&ns->tcp, &ls->tcp, sizeof(net_tcp_t));
-    ns->tcp.wait_thread = 0;
-    tcp_register(&ns->tcp);
-    kmemset(&ls->tcp, 0, sizeof(net_tcp_t));
-    irq_restore(aflags);
-
     ns->state = SOCK_CONNECTED;
-    ns->refcount = 1;
     ns->local_ip = ls->local_ip;
     ns->local_port = ls->local_port;
     ns->remote_ip = (uint32_t)ns->tcp.dst_ip[0] |
