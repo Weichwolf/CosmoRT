@@ -340,6 +340,11 @@ static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
     f->offset = end;
     if (end > inode->size) inode->size = end;
 
+    extern uint32_t timer_epoch_sec(void);
+    uint32_t now = timer_epoch_sec();
+    inode->mtime = now;
+    inode->ctime = now;
+
     if (f->path[0])
         inotify_event(f->path, IN_MODIFY);
     extern void page_cache_invalidate_ino(uint64_t ino);
@@ -385,6 +390,10 @@ static long tmpfs_op_pwrite(struct vfs_file *f, const void *buf,
     if (inode->data)
         kmemcpy(inode->data + offset, buf, count);
     if (end > inode->size) inode->size = end;
+    extern uint32_t timer_epoch_sec(void);
+    uint32_t now = timer_epoch_sec();
+    inode->mtime = now;
+    inode->ctime = now;
     if (f->path[0])
         inotify_event(f->path, IN_MODIFY);
     return (long)count;

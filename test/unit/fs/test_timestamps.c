@@ -96,7 +96,44 @@ static void test_ramfs_write_mtime(void) {
     sc3(SYS_UNLINKAT, AT_FDCWD, (long)"/tmp/_ts_ram2", 0);
 }
 
+/* copy_file_range updates dest mtime (LTP copy_file_range03) */
+static void test_copy_file_range_updates_mtime(void) {
+    puts("\n[timestamps: copy_file_range dest mtime advances]\n");
+
+    long fd_src = sc3(SYS_OPEN, (long)"/tmp/_cfr_src",
+                     O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd_src < 0) return;
+    sc3(SYS_WRITE, fd_src, (long)"1234567890", 10);
+    sc1(SYS_CLOSE, fd_src);
+
+    long fd_dst = sc3(SYS_OPEN, (long)"/tmp/_cfr_dst",
+                     O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (fd_dst < 0) return;
+
+    struct k_stat st1;
+    sc2(SYS_FSTAT, fd_dst, (long)&st1);
+
+    /* busy loop to advance wall time ≥1s */
+    for (volatile long i = 0; i < 200000000L; i++) { }
+
+    fd_src = sc3(SYS_OPEN, (long)"/tmp/_cfr_src", O_RDONLY, 0);
+    long r = sc6(SYS_COPY_FILE_RANGE, fd_src, 0, fd_dst, 0, 10, 0);
+    check("copy_file_range ok", r > 0);
+
+    struct k_stat st2;
+    sc2(SYS_FSTAT, fd_dst, (long)&st2);
+    puts("  mtime1_s="); put_int(st1.st_mtime_sec);
+    puts(" mtime2_s="); put_int(st2.st_mtime_sec); puts("\n");
+    check("dest mtime advanced", st2.st_mtime_sec >= st1.st_mtime_sec);
+
+    sc1(SYS_CLOSE, fd_src);
+    sc1(SYS_CLOSE, fd_dst);
+    sc3(SYS_UNLINKAT, AT_FDCWD, (long)"/tmp/_cfr_src", 0);
+    sc3(SYS_UNLINKAT, AT_FDCWD, (long)"/tmp/_cfr_dst", 0);
+}
+
 TEST("ts/ext4-create", test_ext4_timestamp);
 TEST("ts/ext4-write-mtime", test_ext4_write_updates_mtime);
 TEST("ts/ramfs-create", test_ramfs_timestamp);
 TEST("ts/ramfs-write-mtime", test_ramfs_write_mtime);
+TEST("ts/copy_file_range-mtime", test_copy_file_range_updates_mtime);
