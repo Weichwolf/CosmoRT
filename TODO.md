@@ -115,6 +115,11 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       Schliesst den Race der Phase-12-tickless sem_init/tls_init-Hangs
       ausgeloest hat. +9 ktest Sub-Asserts (event_wait_race/01..05).
 - [x] `timerfd_read` → waitqueue pro timerfd. Migration sauber, +1 LTP PASS.
+- [x] `eventfd_read` → waitqueue pro eventfd. eventfd_write weckt
+      via wake_up_interruptible, eventfd_destroy via wake_up_all.
+      Schliesst Race zwischen counter-check und block; ersetzt den
+      Single-blocked_reader-Pointer. Writer-Pfad bleibt vorerst
+      auf event_wait (separate Sub-Step). +3 ktests, +8 sub-asserts.
 - [-] `signalfd_read` — gestrichen. `signalfd` ist heute ENOSYS-Stub
       (`src/kernel/event/signalfd.c`). Migration eines nicht-existenten
       Pfads sinnlos. Volle signalfd-Implementierung waere eigene Phase
