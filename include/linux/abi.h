@@ -9,6 +9,7 @@
 #include "fcntl.h"
 #include "signal.h"
 #include "socket.h"
+#include "in6.h"
 #include "sched.h"
 #include "time.h"
 #include "prctl.h"
