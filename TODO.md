@@ -23,7 +23,7 @@ SMP-Stabilität brüchig.
 | **10.2** | **Waitqueue-Migration restliche Wait-Pfade** | event_wait/futex/pipe/socket/epoll/signalfd/timerfd/wait4 | ~1500 LOC, 1 Pfad/Agent | **NEXT** |
 | **11** | restart_block + signal-restartable syscalls | EINTR ohne rem-Recovery | ~500 LOC | ✓ |
 | **12** | hrtimer ns-Präzision + Tick-less | timer_ms() in Hot-Path | ~800 LOC | partial (TSC mult/shift einzeln) |
-| **13.1** | **Skalierungs-Audit (Linus-today Limits)** | FD_CEILING, NGROUPS_MAX, USOCK_BACKLOG | ~400 LOC | nach 16 + 10.2 |
+| **13.1** | Skalierungs-Audit (Linus-today Limits) | FD_CEILING, NGROUPS_MAX, USOCK_BACKLOG | ~400 LOC | ✓ |
 | **13** | SMP-saubere Scheduler-Finalisierung | globales rq_lock | ~1200 LOC | nach 10.2 |
 | **14** | vDSO clock_gettime | syscall pro clock_gettime | ~600 LOC | ✓ |
 | **15** | Network-Namespaces | netif+route-table global | ~2000 LOC | ✓ |
@@ -404,6 +404,37 @@ pid 21 score 986" → Test PASS (vorher Flake je nach Memory-Druck).
   "oom_score_adj does not exist, skipping" geloggt haben finden
   jetzt den Knoten.
 - musl/LTP-Baseline keine Regression.
+
+---
+
+## Phase 13.1 — Skalierungs-Audit (ERLEDIGT)
+
+**Status**: ktest 3022 -> 3034 (+12 sub-asserts via 9 neue Tests).
+Drei Limit-Items gefixt, jeweils 1 Commit:
+
+### Implementiert
+
+- [x] `proc/cred: NGROUPS_MAX 32 -> 65536`. `groups[NGROUPS_MAX]` als
+      Pointer + count + groups_pages, lazy via pages_alloc.
+      `cred_groups_set/free` als einzige Mutatoren; fork erbt deep-copy
+      in fresh pages. proc_cleanup/free_child_proc geben frei.
+- [x] `event/fd: FD_CEILING 65536 -> 1M (Linux sysctl_nr_open)`. Zwei-
+      Level page-list (FD_LEAF_PER_PAGE=170 pro Leaf-Page) statt flat
+      Buddy-Array. Lookup O(1) ueber `fd_entry_at()`. Leaves lazy-
+      alloc. Bitmap-Capacity round_up(64), slack-Bits pre-USED.
+      `fd_ensure_capacity` clamped want auf nofile (dup-doubling).
+- [x] `net/unix: backlog dynamisch slab-list statt fix[8]`. backlog_head/
+      tail/count/cap pro Listener, USOCK_SOMAXCONN=4096 Hard-Cap. listen()
+      respektiert jetzt das User-Argument. backlog_owner-Backpointer fuer
+      close-vor-accept Cleanup. Listener-Teardown drained und weckt
+      blockierte connect().
+
+### Bilanz
+
+- ktest +12 (9 neue Tests fuer alle drei Items)
+- musl/LTP-Baseline keine Regression
+- Drei Verstoesse gegen "keine fixen Pools" eliminiert; Linus-today
+  Workload-Tauglichkeit (63k Prozesse * Mehrfach-FD) jetzt erreicht
 
 ---
 

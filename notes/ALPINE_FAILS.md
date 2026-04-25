@@ -1,5 +1,19 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-22 Phase 13.1 Skalierungs-Audit (Linus-today Limits).
+  ktest 3022 -> 3034 (+12 sub-asserts via 9 neue Tests).
+  - proc/cred: NGROUPS_MAX 32 -> 65536 (Linux ngroups_max).
+    groups als Pointer + count + groups_pages, lazy via pages_alloc.
+    Prozess ohne setgroups zahlt 0 Bytes; vorher 32*4=128 Bytes pro
+    process_t.
+  - event/fd: FD_CEILING 65536 -> 1<<20 (Linux sysctl_nr_open).
+    Zwei-Level page-list (170 entries pro Leaf-Page) statt flat
+    pages_alloc-Array. Kein Buddy-MAX-Cap mehr; Lookup O(1).
+  - net/unix: USOCK_BACKLOG_MAX=8 -> dynamische slab-list.
+    listen() respektiert User-Argument, USOCK_SOMAXCONN=4096 Hard-
+    Cap. Pro-Listener Cap statt systemweitem Pool.
+  Vorher waren alle drei Limits Verstoesse gegen "keine fixen Pools".
+
 Run: 2026-04-22 nach Socket-Cluster (bind/accept/connect).
 Update: 2026-04-22 nach TCP-half-open-queue.
 Update: 2026-04-22 nach procfs-write + pipe-max-size (fcntl35).
