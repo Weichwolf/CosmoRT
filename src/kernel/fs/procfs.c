@@ -942,6 +942,117 @@ static int procfs_pid_cmdline(char *buf, int size, int offset, void *ctx) {
     return size;
 }
 
+/* ── /proc/pid/oom_score_adj ─ rw, range -1000..+1000 ────────────────────
+ *
+ * Linux fs/proc/base.c proc_oom_score_adj_{read,write}. Lowering past
+ * oom_score_adj_min braucht CAP_SYS_RESOURCE (capabilities/setuid drop in
+ * derselben Session koennten sonst die OOM-Immunitaet exfiltrieren).
+ * Senken setzt das neue Minimum monoton. */
+
+#include "linux/capability.h"
+
+static int procfs_pid_oom_score_adj_read(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return 0;
+    char tmp[16];
+    int n = itoa_buf(tmp, 16, (long)p->oom_score_adj);
+    tmp[n++] = '\n';
+    int out = 0;
+    for (int i = offset; i < n && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+static long procfs_pid_oom_score_adj_write(const char *buf, int size,
+                                           int offset, void *ctx) {
+    (void)offset;
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return -EFAULT;
+
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    if (v < OOM_SCORE_ADJ_MIN || v > OOM_SCORE_ADJ_MAX) return -EINVAL;
+
+    /* Lowering past min braucht CAP_SYS_RESOURCE (Linux: __set_oom_adj). */
+    process_t *caller = proc_current();
+    int has_cap = caller && (caller->cap_effective & CAP_TO_MASK(CAP_SYS_RESOURCE));
+    if (v < (long long)p->oom_score_adj_min && !has_cap) return -EPERM;
+
+    p->oom_score_adj = (int16_t)v;
+    if (v < (long long)p->oom_score_adj_min)
+        p->oom_score_adj_min = (int16_t)v;
+    return size;
+}
+
+/* ── /proc/pid/oom_score ─ ro, berechnet ─────────────────────────────── */
+
+static int procfs_pid_oom_score_read(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return 0;
+    unsigned int total = (unsigned int)page_alloc_total();
+    unsigned int score = oom_badness(p, total);
+    char tmp[16];
+    int n = itoa_buf(tmp, 16, (long)score);
+    tmp[n++] = '\n';
+    int out = 0;
+    for (int i = offset; i < n && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+/* ── /proc/pid/oom_adj ─ legacy -17..+15, scaled ─────────────────────────
+ *
+ * Linux fs/proc/base.c (deprecated 2.6.36, removed 6.18+):
+ *   oom_score_adj = oom_adj * OOM_SCORE_ADJ_MAX / -OOM_DISABLE
+ *               = oom_adj * 1000 / 17 (oom_adj=-17 -> -1000, +15 -> +882)
+ * Read: invers, gerundet zur naechsten ganzen Zahl.
+ * Write: -17 → OOM_SCORE_ADJ_MIN special-case (sonst -1000 nicht
+ *   erreichbar wegen Rundung). Sonst skalieren + clamp. */
+
+static int procfs_pid_oom_adj_read(char *buf, int size, int offset, void *ctx) {
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return 0;
+    long adj_score = (long)p->oom_score_adj;
+    long oom_adj;
+    if (adj_score == OOM_SCORE_ADJ_MIN) oom_adj = OOM_DISABLE;
+    else {
+        /* Round half-to-zero (truncate). */
+        oom_adj = (adj_score * (-OOM_DISABLE)) / OOM_SCORE_ADJ_MAX;
+        if (oom_adj < OOM_ADJUST_MIN) oom_adj = OOM_ADJUST_MIN;
+        if (oom_adj > OOM_ADJUST_MAX) oom_adj = OOM_ADJUST_MAX;
+    }
+    char tmp[16];
+    int n = itoa_buf(tmp, 16, oom_adj);
+    tmp[n++] = '\n';
+    int out = 0;
+    for (int i = offset; i < n && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+static long procfs_pid_oom_adj_write(const char *buf, int size,
+                                     int offset, void *ctx) {
+    (void)offset;
+    process_t *p = ctx ? (process_t *)ctx : proc_current();
+    if (!p) return -EFAULT;
+
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    if (v < OOM_ADJUST_MIN || v > OOM_ADJUST_MAX) return -EINVAL;
+
+    long new_score;
+    if (v == OOM_DISABLE) new_score = OOM_SCORE_ADJ_MIN;
+    else                  new_score = (long)v * OOM_SCORE_ADJ_MAX / (-OOM_DISABLE);
+
+    process_t *caller = proc_current();
+    int has_cap = caller && (caller->cap_effective & CAP_TO_MASK(CAP_SYS_RESOURCE));
+    if (new_score < (long)p->oom_score_adj_min && !has_cap) return -EPERM;
+
+    p->oom_score_adj = (int16_t)new_score;
+    if (new_score < (long)p->oom_score_adj_min)
+        p->oom_score_adj_min = (int16_t)new_score;
+    return size;
+}
+
 /* ── /proc/pid/maps (with process context) ────────── */
 
 static int procfs_pid_maps(char *buf, int size, int offset, void *ctx) {
@@ -1012,8 +1123,51 @@ int procfs_pid_read(const char *name, char *buf, int size, int offset) {
     if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
         file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0)
         return procfs_pid_environ(buf, size, offset, p);
+    if (file[0]=='o' && file[1]=='o' && file[2]=='m' && file[3]=='_') {
+        if (file[4]=='s' && file[5]=='c' && file[6]=='o' && file[7]=='r' &&
+            file[8]=='e') {
+            if (file[9]==0)
+                return procfs_pid_oom_score_read(buf, size, offset, p);
+            if (file[9]=='_' && file[10]=='a' && file[11]=='d' &&
+                file[12]=='j' && file[13]==0)
+                return procfs_pid_oom_score_adj_read(buf, size, offset, p);
+        }
+        if (file[4]=='a' && file[5]=='d' && file[6]=='j' && file[7]==0)
+            return procfs_pid_oom_adj_read(buf, size, offset, p);
+    }
 
     return -1; /* not a per-pid file we handle */
+}
+
+/* Per-PID Write: derzeit nur OOM-Tuning-Pfade. Returns -EACCES fuer
+ * read-only Pfade die zwar im Read-Dispatcher existieren, aber kein
+ * Write-Pendant haben. */
+long procfs_pid_write(const char *name, const char *buf, int size, int offset) {
+    process_t *p = 0;
+    const char *file = 0;
+
+    if (name[0]=='s' && name[1]=='e' && name[2]=='l' && name[3]=='f' && name[4]=='/') {
+        p = proc_current();
+        file = name + 5;
+    } else {
+        int pid = parse_pid(name, &file);
+        if (pid < 0) return -EBADF;
+        p = proc_find((uint32_t)pid);
+    }
+    if (!p || !file) return -EBADF;
+
+    if (file[0]=='o' && file[1]=='o' && file[2]=='m' && file[3]=='_') {
+        if (file[4]=='s' && file[5]=='c' && file[6]=='o' && file[7]=='r' &&
+            file[8]=='e' && file[9]=='_' && file[10]=='a' && file[11]=='d' &&
+            file[12]=='j' && file[13]==0)
+            return procfs_pid_oom_score_adj_write(buf, size, offset, p);
+        if (file[4]=='a' && file[5]=='d' && file[6]=='j' && file[7]==0)
+            return procfs_pid_oom_adj_write(buf, size, offset, p);
+        if (file[4]=='s' && file[5]=='c' && file[6]=='o' && file[7]=='r' &&
+            file[8]=='e' && file[9]==0)
+            return -EACCES; /* oom_score is RO */
+    }
+    return -EACCES;
 }
 
 /* Check if a per-pid procfs path exists (for stat/open) */
@@ -1042,6 +1196,18 @@ int procfs_pid_exists(const char *name) {
     if (file[0]=='e' && file[1]=='n' && file[2]=='v' && file[3]=='i' &&
         file[4]=='r' && file[5]=='o' && file[6]=='n' && file[7]==0) return 1;
     if (file[0]=='f' && file[1]=='d' && file[2]==0) return 3; /* directory */
+    /* OOM-Tuning: 4 = writable file (oom_score_adj, oom_adj),
+     *             1 = read-only file (oom_score). */
+    if (file[0]=='o' && file[1]=='o' && file[2]=='m' && file[3]=='_') {
+        if (file[4]=='s' && file[5]=='c' && file[6]=='o' && file[7]=='r' &&
+            file[8]=='e') {
+            if (file[9]==0) return 1;
+            if (file[9]=='_' && file[10]=='a' && file[11]=='d' &&
+                file[12]=='j' && file[13]==0) return 4;
+        }
+        if (file[4]=='a' && file[5]=='d' && file[6]=='j' && file[7]==0)
+            return 4;
+    }
 
     /* /proc/<pid>/ns/time{,_for_children} — report as symlink-like entries
      * so stat() on the path succeeds. Actual open() bypasses procfs_open
@@ -1162,8 +1328,9 @@ static int procfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat 
     int pid_type = procfs_pid_exists(pn);
     if (procfs_stat(pn, &dummy) < 0 && !pid_type) return -ENOENT;
     kmemset(buf, 0, sizeof(struct k_stat));
-    /* Writable entries advertise S_IWUSR for fopen("w"), O_WRONLY opens. */
-    int writable = procfs_writable(pn);
+    /* Writable entries advertise S_IWUSR for fopen("w"), O_WRONLY opens.
+     * pid_type 4 = writable per-pid (oom_score_adj, oom_adj). */
+    int writable = procfs_writable(pn) || pid_type == 4;
     uint32_t reg_mode = S_IFREG | S_IRUSR | (writable ? S_IWUSR : 0);
     buf->st_mode = (pid_type == 2) ? (S_IFLNK | 0777) :
                    (pid_type == 3) ? (S_IFDIR | 0555) :

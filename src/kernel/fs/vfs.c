@@ -723,9 +723,14 @@ not_pts:
             if (ptype == 0) return -ENOENT;
             if (ptype == 2) return -ELOOP; /* symlink — must readlink, not open */
 
+            int want_write = (flags & O_ACCMODE) != O_RDONLY;
+            /* Read-only per-pid files reject O_WRONLY/O_RDWR.
+             * ptype 4 = writable per-pid (oom_score_adj, oom_adj). */
+            if (want_write && ptype != 4) return -EACCES;
+
             procfs_fd_t *pf = procfs_fd_alloc();
             if (!pf) return -ENOMEM;
-            pf->handle = (ptype == 3) ? -3 : -2; /* -3 = fd directory, -2 = per-pid file */
+            pf->handle = (ptype == 3) ? -3 : -2; /* -3 = fd directory, -2/-4 = per-pid file */
             pf->offset = 0;
             int ni = 0;
             while (ni < 63 && pname[ni]) { pf->name[ni] = pname[ni]; ni++; }
@@ -733,7 +738,8 @@ not_pts:
 
             process_t *p = proc_current();
             if (!p) { procfs_fd_free(pf); return -EFAULT; }
-            int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+            int fd = fd_alloc(&p->fds, FD_PROCFS, pf,
+                              flags & (O_ACCMODE | O_CLOEXEC));
             if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
             return fd;
         }

@@ -64,7 +64,12 @@ void procfs_fd_free(procfs_fd_t *pf);
  * Returns bytes read, or -1 if not a per-pid path. */
 int procfs_pid_read(const char *name, char *buf, int size, int offset);
 
-/* Check if a per-pid procfs path exists. Returns 0=no, 1=file, 2=symlink. */
+/* Per-PID write: /proc/<pid>/oom_score_adj, /proc/<pid>/oom_adj, /proc/<pid>/comm.
+ * Returns bytes consumed, or -errno. -EACCES for read-only entries. */
+long procfs_pid_write(const char *name, const char *buf, int size, int offset);
+
+/* Check if a per-pid procfs path exists. Returns 0=no, 1=file, 2=symlink,
+ * 3=directory, 4=writable file. */
 int procfs_pid_exists(const char *name);
 
 #endif

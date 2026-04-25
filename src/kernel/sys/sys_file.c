@@ -151,8 +151,11 @@ long do_write(int fd, const void *buf, size_t count) {
         return vfs_write(fd, buf, count);
     if (fde->type == FD_PROCFS) {
         procfs_fd_t *pf = (procfs_fd_t *)fde->obj;
-        if (!pf || pf->handle < 1) return -EACCES;
-        /* Bounded chunk copy into kernel stack before writing. */
+        if (!pf) return -EACCES;
+        /* handle == -2: per-PID dynamic file (e.g. /proc/123/oom_score_adj).
+         * handle  >= 1: registered procfs entry. handle == -1/-3 (root,
+         *   fd dir) sind nicht beschreibbar. */
+        if (pf->handle != -2 && pf->handle < 1) return -EACCES;
         size_t actual = count > 0x10000 ? 0x10000 : count;
         char kbuf[512];
         size_t total = 0;
@@ -160,7 +163,9 @@ long do_write(int fd, const void *buf, size_t count) {
             size_t chunk = actual - total > sizeof(kbuf) ? sizeof(kbuf) : actual - total;
             int cr = copy_from_user(kbuf, (const char *)buf + total, chunk);
             if (cr) return cr;
-            long w = procfs_write(pf->handle, kbuf, (int)chunk, pf->offset);
+            long w = (pf->handle == -2)
+                ? procfs_pid_write(pf->name, kbuf, (int)chunk, pf->offset)
+                : procfs_write(pf->handle, kbuf, (int)chunk, pf->offset);
             if (w < 0) return total ? (long)total : w;
             pf->offset += (int)w;
             total += (size_t)w;
