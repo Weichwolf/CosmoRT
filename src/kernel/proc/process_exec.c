@@ -1,6 +1,7 @@
 /* CosmoRT Process - execve */
 
 #include "proc/proc_internal.h"
+#include "linux/capability.h"
 
 /* ── execve helpers ──────────────────────────────── */
 
@@ -693,6 +694,25 @@ shebang_retry:;
             sched_wake(pt);
         }
         p->vfork_parent_tid = 0;
+    }
+
+    /* OOM-Tuning bei credential change (SUID/SGID exec) zuruecksetzen.
+     * Linux begin_new_exec(): bprm->secureexec → security_bprm_committed_creds
+     *   → set_dumpable + Reset von oom_score_adj{,_min} auf 0 wenn aktuelle
+     *   euid != originale ruid (SUID-Wechsel) und kein CAP_SYS_RESOURCE.
+     * Wir haben (noch) keinen SUID-Pfad; defensiv: wenn euid waehrend des
+     * exec-Pfads geaendert wurde (zukuenftige Erweiterung), reset hier. */
+    {
+        uint32_t st_uid = exec_st.st_uid;
+        uint32_t st_gid = exec_st.st_gid;
+        int suid_set = (exec_st.st_mode & S_ISUID) && st_uid != p->ruid;
+        int sgid_set = (exec_st.st_mode & S_ISGID) && st_gid != p->rgid &&
+                       (exec_st.st_mode & S_IXGRP);
+        if ((suid_set || sgid_set) &&
+            !(p->cap_effective & CAP_TO_MASK(CAP_SYS_RESOURCE))) {
+            p->oom_score_adj     = 0;
+            p->oom_score_adj_min = 0;
+        }
     }
 
     /* Reset signal dispositions: POSIX requires that after exec, all signals

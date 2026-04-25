@@ -342,6 +342,10 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->cap_permitted = parent->cap_permitted;
         child->cap_inheritable = parent->cap_inheritable;
         child->cap_bounding = parent->cap_bounding;
+        /* OOM-Tuning vererbt (Linux copy_signal: tsk->signal->oom_score_adj
+         * = current->signal->oom_score_adj; same for oom_score_adj_min). */
+        child->oom_score_adj     = parent->oom_score_adj;
+        child->oom_score_adj_min = parent->oom_score_adj_min;
         child->stack_top = parent->stack_top;
         child->is_driver = 0;
         for (int i = 0; i < 256; i++) {

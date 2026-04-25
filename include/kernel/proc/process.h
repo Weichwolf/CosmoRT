@@ -130,6 +130,14 @@ typedef struct process {
     /* Signal to parent on exit (clone exit_signal, 0 = none → fallback SIGCHLD) */
     int         notify_signal;
 
+    /* OOM-Killer-Tuning (Linux task->signal->oom_score_adj{,_min}).
+     * oom_score_adj: -1000..+1000. -1000 = OOM-immun. +1000 = bevorzugtes Opfer.
+     * oom_score_adj_min: monotone Untergrenze. Lowering past min braucht
+     *   CAP_SYS_RESOURCE; einmal gesenkt bleibt es als neues Minimum stehen
+     *   (Linux proc_oom_score_adj_write). Default 0/0; SUID-exec resetet 0/0. */
+    int16_t     oom_score_adj;
+    int16_t     oom_score_adj_min;
+
     /* Stack growth tracking */
     uint64_t    stack_top;       /* original stack top (set at exec) */
 
@@ -197,6 +205,30 @@ int cred_can_chown_gid(process_t *p, uint32_t owner_uid,
 #define MAY_READ   4
 int cred_may_access(process_t *p, uint32_t owner_uid, uint32_t owner_gid,
                     uint32_t mode, int want);
+
+/* OOM-Killer ABI (Linux include/uapi/linux/oom.h, mm/oom_kill.c). */
+#define OOM_SCORE_ADJ_MIN  (-1000)
+#define OOM_SCORE_ADJ_MAX  ( 1000)
+/* Legacy /proc/$pid/oom_adj (deprecated, removed in Linux >=6.18 — wir
+ * unterstuetzen den Lese-/Schreib-Pfad noch fuer Tools wie oom_adj von oomd
+ * und alter LTP-Suite). Range -17..+15 (OOM_DISABLE = -17). */
+#define OOM_ADJUST_MIN     (-17)
+#define OOM_ADJUST_MAX     ( 15)
+#define OOM_DISABLE        (-17)
+
+/* OOM-Killer-Entry (mm/oom.c). Versucht durch Killing eines Opfers Speicher
+ * zurueckzugewinnen, weckt Aufrufer nach kurzem Delay zur Retry-Allokation.
+ * Returns 1 wenn ein Opfer gewaehlt wurde (Retry sinnvoll), 0 wenn kein
+ * Opfer existiert (echtes ENOMEM). Niemals init (PID 1) — panic stattdessen. */
+int out_of_memory(void);
+
+/* OOM-Score eines Tasks (Linux mm/oom_kill.c oom_badness):
+ *   pages = rss + swap + pgtables
+ *   points = pages * 1000 / total_pages + adj * pages_per_adjpoint
+ *   immune wenn oom_score_adj == OOM_SCORE_ADJ_MIN.
+ * Wir reportieren 0..2000 (Linux clamp), entspricht /proc/$pid/oom_score.
+ * total_pages == 0 -> 0 zurueck. */
+unsigned int oom_badness(struct process *p, unsigned int total_pages);
 
 /* PID/TID ceiling — Linux kernel.pid_max default for 64-bit (2^22).
  * RLIMIT_NPROC caps per-user; this is only the absolute slot-index ceiling. */
