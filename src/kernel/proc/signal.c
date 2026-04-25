@@ -659,6 +659,13 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         event_t ev;
         int r = event_wait(&t->eq, &ev, timeout_ms);
         if (r == -ETIMEDOUT) { t->nanosleep_deadline = 0; return -EAGAIN; }
+        if (r == -4 /* EINTR */) {
+            /* Wake by unrelated unblocked signal — Linux returns EINTR
+             * (POSIX: signal not in waitset must interrupt sigtimedwait). */
+            uint64_t match2 = (p->sig_pending | t->sig_thread_pending) & wait_mask;
+            if (!match2) { t->nanosleep_deadline = 0; return -EINTR; }
+            /* Fall through to match-handling — sig in waitset wins. */
+        }
     }
 
     /* Re-check after wake (dead code — event_wait uses syscall restart,
