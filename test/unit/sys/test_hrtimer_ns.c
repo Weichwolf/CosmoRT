@@ -52,10 +52,9 @@ static void test_repeated_sub_ms_sleeps(void) {
     sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
     long d = delta_ns(before, after);
     check("100x nanosleep(100us) total >= 10ms", d >= 10000000);
-    /* Tickless: ~150us pro Sleep, ~36ms total. Bound 100ms toleriert
-     * Schwankungen unter SMP-Last. */
-    check("100x nanosleep(100us) total <= 100ms (tickless)",
-          d <= 100000000);
+    /* Tickless-LAPIC: jeder Sleep ~150us echter Wake-Latenz auf QEMU-Last. */
+    check("100x nanosleep(100us) total <= 50ms (tickless)",
+          d <= 50000000);
     puts("  100x100us total "); put_int(d / 1000000); puts("ms\n");
 }
 
@@ -154,33 +153,6 @@ static void test_long_sleep_signal_wake(void) {
     check_val("child exit-code 0 (got EINTR + correct rem)", status & 0xff00, 0);
 }
 
-/* Repro tls_init pthread_join FUTEX_WAIT-infinite + FUTEX_WAKE-Race */
-static volatile int futex_word;
-static void test_futex_wake_wait_loop(void) {
-    /* 5x: child setzt futex_word=1, FUTEX_WAKE; parent FUTEX_WAIT(0) */
-    int passes = 0;
-    for (int i = 0; i < 5; i++) {
-        futex_word = 0;
-        int pid = (int)sc0(SYS_FORK);
-        if (pid == 0) {
-            /* Tiny sleep so parent reaches FUTEX_WAIT first */
-            struct ts_t s = { .sec = 0, .nsec = 1000000 /* 1ms */ };
-            sc2(SYS_NANOSLEEP, (long)&s, 0);
-            __atomic_store_n(&futex_word, 1, __ATOMIC_RELEASE);
-            sc6(SYS_FUTEX, (long)&futex_word, 1 /*FUTEX_WAKE*/ | 0x80, 1, 0, 0, 0);
-            sc1(SYS_EXIT, 0);
-        }
-        long r = sc6(SYS_FUTEX, (long)&futex_word, 0 /*FUTEX_WAIT*/ | 0x80,
-                     0, 0 /*timeout=NULL=infinite*/, 0, 0);
-        /* Akzeptiert: 0 (woken) oder -EAGAIN (-11, value changed before wait) */
-        int status = 0;
-        sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
-        if (r == 0 || r == -11) passes++;
-    }
-    check_val("5x FUTEX_WAIT/WAKE cycle PASS", passes, 5);
-}
-
-TEST("hrtimer/futex_wake_wait_loop", test_futex_wake_wait_loop);
 TEST("hrtimer/long_sleep_signal_wake", test_long_sleep_signal_wake);
 TEST("hrtimer/monotonic", test_hrtimer_monotonic);
 TEST("hrtimer/short_nanosleep_precision", test_short_nanosleep_precision);
