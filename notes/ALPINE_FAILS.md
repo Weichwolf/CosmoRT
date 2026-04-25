@@ -34,6 +34,32 @@ Update: 2026-04-22 Phase 17 OOM-Killer + oom_score_adj
   "oom_score_adj does not exist" geloggt haben finden den
   Knoten jetzt — kein Skipping mehr.
 
+Update: 2026-04-22 Phase 16 IPv6-Stack.
+  ktest 2978 -> 3005 (+27 sub-asserts via 10 neue ipv6 Tests).
+  AF_INET6/SOCK_STREAM+SOCK_DGRAM voll funktionsfaehig ueber Loopback ::1.
+  - struct in6_addr (RFC 4291 union 8/16/32) + sockaddr_in6 (28 byte).
+  - 40-byte IPv6-Header + extension chain (HOPOPTS/ROUTING/DSTOPTS/FRAGMENT;
+    Fragmente werden aktuell verworfen, kein Reassembly).
+  - ICMPv6 Echo Request/Reply (ping6 ::1), Destination Unreachable Code 4
+    fuer UDP-Port-Unreach.
+  - NDP per-NS Neighbor-Cache (slab, 64 buckets), NS/NA Reply, NUD-Subset
+    INCOMPLETE/REACHABLE/FAILED. NDP-Hop-Limit==255 Check.
+  - DAD (Duplicate Address Detection) via ndp_send_dad_ns. SLAAC link-local
+    fe80::<EUI64> aus NIC-MAC bei netif bringup; RA Prefix-Information
+    (A=1, /64) -> globale Adresse mit gleichem EUI-64.
+  - Per-NS IPv6 Route-Table (linear LPM, sortiert by prefix-len), ::1/128
+    automatisch an Loopback gebunden.
+  - TCP6 + UDP6: socket_t.is_v6 + tcp/udp Hash-Tables erweitert
+    (XOR-fold der 16-byte addr in 4 byte fuer Hash-Key).
+  - send_tcp_opts/send_syn dispatchen IPv6 vs IPv4 ueber is_v6 Flag.
+  - tcp_request_t mit is_v6 + src_ip6/local_ip6 fuer v6-Listener-Backlog.
+  - bind/connect/accept/getsockname/getpeername v6-Pfade in socket.c.
+  - SCTP (proto=132) liefert EPROTONOSUPPORT damit LTP bind04 SCTP-Subcases
+    sauber SKIPpen statt TBROK zu werfen.
+  - IPV6_V6ONLY socket-option (default 1, Linux-konform).
+  Erwartung: LTP bind04 jetzt komplett gruen (SOCK_STREAM v4+v6, SCTP-SKIP).
+  Verifikation per make alpine-test ausstehend in dieser Session.
+
 Update: 2026-04-22 Phase 15 Network-Namespaces (4d00182..dfe5b2a).
   ktest 2951 -> 2978 (+27 sub-asserts via 8 neue net_ns Tests).
   CLONE_NEWNET + unshare/setns + /proc/<pid>/ns/net symlink +
