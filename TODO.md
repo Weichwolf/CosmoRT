@@ -3,10 +3,11 @@
 **Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
-**Stand (Session-Ende)**: ktest **2921/1** (CLONE_NEWNET pre-existing
-fail), musl 460/11, **LTP** (Phase-12-Run im Gange). Phase 12
-erledigt: tickless LAPIC + ns-praezise Sleep/Poll/Select/Futex.
-nanosleep(500us) jetzt 1085us statt 1.5ms. Branch: `ltp`.
+**Stand (Session-Ende)**: ktest **2906/1** (CLONE_NEWNET pre-existing
+fail), musl 460/11, **LTP 247/7/44** (+3 PASS / -3 FAIL vs Phase-10-Stand).
+Phase 11 erledigt: clock_nanosleep01 PASS via apply_restart() im
+syscall-return-Pfad + ERESTART_RESTARTBLOCK in do_clock_nanosleep +
+restart_block in thread_t. Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.

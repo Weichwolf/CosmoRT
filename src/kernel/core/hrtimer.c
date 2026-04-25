@@ -69,17 +69,16 @@ uint64_t hrtimer_now_ns(void) {
 /* ── LAPIC one-shot programming ────────────────────── */
 
 static void lapic_arm_ns(uint64_t delta_ns) {
-    /* Konvertiere ns -> LAPIC-Ticks. Maximaler INIT-Wert ist 32-bit.
-     * Cap delta_ns sodass (delta_ns * ticks_per_ms) nicht ueberlaeuft
-     * UND das Ergebnis in 32-bit passt:
-     *   max_ns = (0xFFFFFFFF * NSEC_PER_MSEC) / ticks_per_ms
-     * Bei 60000 ticks/ms: max_ns ~= 71_582_788_233 ns = 71sec.
-     * Wenn der Caller laenger schlafen will, zerlegen wir in mehrere
-     * Steps ueber den periodischen Tick — aber praktisch reichen 71sec
-     * fuer alle realen Sleep-deadlines (laengere -> hrtimer Re-Reprogram). */
-    uint64_t max_ns = (0xFFFFFFFFULL * NSEC_PER_MSEC) / lapic_ticks_per_ms;
-    if (delta_ns > max_ns) delta_ns = max_ns;
-    uint64_t ticks = (delta_ns * lapic_ticks_per_ms) / NSEC_PER_MSEC;
+    /* Convert ns to LAPIC ticks. Overflow-safe: cap delta_ns auf
+     * Werte die ohne overflow konvertierbar sind. Max LAPIC-Init-Wert
+     * ist 32-bit (0xFFFFFFFF Ticks). */
+    uint64_t ticks;
+    /* delta_ns * lapic_ticks_per_ms wird in 64-bit zu gross wenn delta_ns
+     * etwa > 2^64 / lapic_ticks_per_ms. Bei 60000 ticks/ms (~3GHz CPU/8):
+     * delta_ns < 3e14 ns = 300_000 sec = ~3 Tage. Cap defensiv bei 1h. */
+    const uint64_t MAX_DELTA_NS = 3600ULL * NSEC_PER_SEC;
+    if (delta_ns > MAX_DELTA_NS) delta_ns = MAX_DELTA_NS;
+    ticks = (delta_ns * lapic_ticks_per_ms) / NSEC_PER_MSEC;
     if (ticks < LAPIC_MIN_TICKS) ticks = LAPIC_MIN_TICKS;
     if (ticks > 0xFFFFFFFFULL) ticks = 0xFFFFFFFFULL;
 
