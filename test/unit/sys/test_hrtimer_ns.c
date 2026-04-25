@@ -153,6 +153,29 @@ static void test_long_sleep_signal_wake(void) {
     check_val("child exit-code 0 (got EINTR + correct rem)", status & 0xff00, 0);
 }
 
+/* pthread-robust-detach Hang Repro: pthread_mutex_timedlock mit
+ * ABSTIME CLOCK_REALTIME deadline. Vorher: futex_wait nahm den
+ * absoluten Unix-epoch-Wert als RELATIVEN Sleep -> Hang. */
+static void test_futex_wait_bitset_abstime(void) {
+    /* FUTEX_WAIT_BITSET = 9 mit FUTEX_CLOCK_REALTIME (0x100) +
+     * FUTEX_PRIVATE_FLAG (0x80). val=0 muss != *uaddr sein um direkt
+     * EAGAIN zurueckzugeben. Wir setzen val=42 und uaddr=0 -> EAGAIN
+     * wenn der Pfad funktioniert. Der Test: kein Hang. */
+    uint32_t uaddr_val = 0;
+    struct ts_t now;
+    sc2(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (long)&now);
+    /* 100ms in der Zukunft, REALTIME-Epoch */
+    struct ts_t deadline = { .sec = now.sec, .nsec = now.nsec + 100000000 };
+    if (deadline.nsec >= 1000000000) { deadline.sec++; deadline.nsec -= 1000000000; }
+
+    /* op = FUTEX_WAIT_BITSET (9) | FUTEX_PRIVATE_FLAG (0x80) | FUTEX_CLOCK_REALTIME (0x100) */
+    int op = 9 | 0x80 | 0x100;
+    long r = sc6(SYS_FUTEX, (long)&uaddr_val, op, 42, (long)&deadline, 0, 0xFFFFFFFFu);
+    /* Erwartet: -EAGAIN (-11) weil *uaddr==0 != val=42 */
+    check("FUTEX_WAIT_BITSET ABSTIME REALTIME returns EAGAIN", r == -11);
+}
+
+TEST("hrtimer/futex_wait_bitset_abstime", test_futex_wait_bitset_abstime);
 TEST("hrtimer/long_sleep_signal_wake", test_long_sleep_signal_wake);
 TEST("hrtimer/monotonic", test_hrtimer_monotonic);
 TEST("hrtimer/short_nanosleep_precision", test_short_nanosleep_precision);

@@ -447,8 +447,12 @@ static long futex_unlock_pi(uint32_t *uaddr, int shared) {
 
 /* Convert userspace struct timespec to nanoseconds.
  * Returns timeout_ns for event_wait_ns: -1 if ts is NULL (infinite),
- * 0 if timespec is zero, >0 otherwise. */
-static int64_t timespec_to_ns(const void *ts) {
+ * 0 if timespec is zero, >0 otherwise.
+ *
+ * abs_clock: 0 = relative timeout, return ts unchanged.
+ *           1 = ABSTIME CLOCK_MONOTONIC, subtract hrtimer_now_ns.
+ *           2 = ABSTIME CLOCK_REALTIME, subtract (hrtimer_now_ns + epoch_ns). */
+static int64_t timespec_to_ns_mode(const void *ts, int abs_clock) {
     if (!ts) return -1;
 
     struct { long tv_sec; long tv_nsec; } kts;
@@ -457,7 +461,28 @@ static int64_t timespec_to_ns(const void *ts) {
 
     if (kts.tv_sec < 0 || kts.tv_nsec < 0) return 0;
 
-    return (int64_t)kts.tv_sec * (int64_t)NSEC_PER_SEC + (int64_t)kts.tv_nsec;
+    int64_t target_ns = (int64_t)kts.tv_sec * (int64_t)NSEC_PER_SEC
+                      + (int64_t)kts.tv_nsec;
+
+    if (abs_clock == 0) return target_ns; /* relative */
+
+    /* ABSTIME: konvertiere zu relativem Sleep ab now. */
+    extern uint64_t hrtimer_now_ns(void);
+    int64_t now_kernel_ns = (int64_t)hrtimer_now_ns();
+    int64_t origin_ns = now_kernel_ns;
+    if (abs_clock == 2) {
+        /* CLOCK_REALTIME: target_ns ist Unix-Epoch-relative. Subtract epoch. */
+        extern int64_t rtc_epoch_sec;
+        int64_t epoch_ns = rtc_epoch_sec * (int64_t)NSEC_PER_SEC;
+        origin_ns += epoch_ns;
+    }
+    int64_t rel = target_ns - origin_ns;
+    if (rel <= 0) return 0; /* already expired */
+    return rel;
+}
+
+static int64_t timespec_to_ns(const void *ts) {
+    return timespec_to_ns_mode(ts, 0);
 }
 
 /* ── FUTEX_REQUEUE / FUTEX_CMP_REQUEUE ─────────── */
@@ -565,11 +590,13 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
 
 long do_futex(uint32_t *uaddr, int op, uint32_t val,
               const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
-    int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100); /* strip PRIVATE + CLOCK_REALTIME */
+    int clock_realtime = (op & 0x100) != 0;          /* FUTEX_CLOCK_REALTIME */
+    int cmd = op & ~(FUTEX_PRIVATE_FLAG | 0x100);    /* strip PRIVATE + CLOCK_REALTIME */
     int shared = !(op & FUTEX_PRIVATE_FLAG);
 
     switch (cmd) {
     case FUTEX_WAIT:
+        /* FUTEX_WAIT: timeout immer relativ (Linux-API-fix). */
         return futex_wait(uaddr, val, timespec_to_ns(timeout), shared);
     case FUTEX_WAKE:
         return futex_wake(uaddr, val, shared);
@@ -595,8 +622,14 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         }
         return r1;
     }
-    case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
-        return futex_wait(uaddr, val, timespec_to_ns(timeout), shared);
+    case 9: /* FUTEX_WAIT_BITSET — Linux: timeout ist ABSOLUTE.
+             * Mit FUTEX_CLOCK_REALTIME: gegen CLOCK_REALTIME, sonst CLOCK_MONOTONIC.
+             * Ohne korrekte Konversion bleibt der hrtimer auf Unix-Epoch-Offset
+             * sitzen und die LAPIC-Deadline schlaegt nie an (pthread-robust-detach
+             * Hang). */
+        return futex_wait(uaddr, val,
+                          timespec_to_ns_mode(timeout, clock_realtime ? 2 : 1),
+                          shared);
     case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
         return futex_wake(uaddr, val, shared);
     default:
