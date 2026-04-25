@@ -6,6 +6,7 @@
 #include "net/net_ns.h"
 #include "net/in6.h"
 #include "net/ipv6.h"
+#include "net/udp6.h"
 #include "linux/in6.h"
 #include "proc/process.h"
 #include "event/fd.h"
@@ -411,6 +412,38 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     if (!s) return err;
     if (s->shut_wr) return send_sigpipe();
 
+    /* ── UDP6 (SOCK_DGRAM, AF_INET6) ── */
+    if (s->is_dgram && s->is_v6) {
+        struct in6_addr dst6;
+        uint16_t dst_port_be;
+        if (dest_addr && addrlen >= (int)sizeof(struct sockaddr_in6)) {
+            struct sockaddr_in6 sa6;
+            { int r = copy_from_user(&sa6, dest_addr, sizeof(sa6)); if (r) return r; }
+            in6_copy(&dst6, &sa6.sin6_addr);
+            dst_port_be = sa6.sin6_port;
+        } else if (!in6_is_any(&s->remote_ip6) || s->remote_port) {
+            in6_copy(&dst6, &s->remote_ip6);
+            dst_port_be = s->remote_port;
+        } else {
+            return -EDESTADDRREQ;
+        }
+        if (in6_is_any(&dst6)) in6_copy(&dst6, &in6addr_loopback);
+        if (len > 1400) return -EMSGSIZE;
+        uint8_t kbuf[1400];
+        { int r = copy_from_user(kbuf, buf, (size_t)len); if (r) return r; }
+        if (!s->udp_local_port) {
+            extern int random_get(void *, unsigned long);
+            uint16_t rnd;
+            if (random_get(&rnd, sizeof(rnd)) < 0)
+                rnd = (uint16_t)(timer_ms() & 0xFFFF);
+            s->udp_local_port = (uint16_t)(49152 + (rnd & 0x3FFF));
+            udp6_bind_ns(s->ns_id, s->udp_local_port);
+        }
+        int r = udp6_send(s->ns_id, &dst6, bswap16(dst_port_be),
+                          s->udp_local_port, kbuf, (int)len);
+        return r < 0 ? -EIO : (long)len;
+    }
+
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
         /* Determine destination: from dest_addr or stored connect addr */
@@ -497,6 +530,50 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;
     if (s->shut_rd) return 0; /* EOF */
+
+    /* ── UDP6 (SOCK_DGRAM, AF_INET6) ── */
+    if (s->is_dgram && s->is_v6) {
+        if (!s->udp_local_port) return -EAGAIN;
+        int nonblock_udp = (flags & 0x40);
+        { process_t *rp = proc_current();
+          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                     if (rf && (rf->flags & O_NONBLOCK)) nonblock_udp = 1; } }
+        uint64_t udp_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
+        uint8_t kbuf[1400];
+        struct in6_addr sip6;
+        uint16_t sport;
+        thread_t *t = thread_current();
+        udp_sock_t *us = udp6_find_ns(s->ns_id, s->udp_local_port);
+        if (us) __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE);
+        for (;;) {
+            int r = udp6_recv(s->ns_id, s->udp_local_port, kbuf,
+                              (int)len > 1400 ? 1400 : (int)len, &sip6, &sport, 0);
+            if (r >= 0) {
+                if (us) us->wait_thread = 0;
+                { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
+                if (src_addr && addrlen) {
+                    struct sockaddr_in6 sa6 = {0};
+                    sa6.sin6_family = AF_INET6;
+                    sa6.sin6_port = bswap16(sport);
+                    in6_copy(&sa6.sin6_addr, &sip6);
+                    copy_to_user(src_addr, &sa6, sizeof(sa6));
+                    int slen = (int)sizeof(sa6);
+                    copy_to_user(addrlen, &slen, sizeof(int));
+                }
+                return r;
+            }
+            if (nonblock_udp) { if (us) us->wait_thread = 0; return -EAGAIN; }
+            if (timer_ms() >= udp_deadline) { if (us) us->wait_thread = 0; return -EAGAIN; }
+            if (!us) { us = udp6_find_ns(s->ns_id, s->udp_local_port);
+                       if (!us) return -EAGAIN;
+                       __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE); }
+            int remain = (int)(udp_deadline - timer_ms());
+            if (remain <= 0) { us->wait_thread = 0; return -EAGAIN; }
+            event_t ev;
+            int wr = event_wait(&t->eq, &ev, remain);
+            if (wr == -4) { us->wait_thread = 0; return -ERESTARTSYS; }
+        }
+    }
 
     /* ── UDP (SOCK_DGRAM) ── */
     if (s->is_dgram) {
@@ -667,8 +744,13 @@ long socket_close(int fd) {
     if (old > 1) return 0; /* other processes still reference this socket */
 
     if (s->is_dgram && s->udp_local_port) {
-        udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
-        if (us) udp_unbind(us);
+        if (s->is_v6) {
+            udp_sock_t *us = udp6_find_ns(s->ns_id, s->udp_local_port);
+            if (us) udp6_unbind(us);
+        } else {
+            udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
+            if (us) udp_unbind(us);
+        }
     }
     if (s->state == SOCK_LISTENING && !s->is_dgram) {
         /* RFC 793 §3.5: half-open and completed-but-unaccepted connections
@@ -743,7 +825,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
                     if (s->is_dgram) {
                         s->udp_local_port = port_host;
                         spin_unlock_irq(&sock_lock, lflags);
-                        udp_bind_ns(s->ns_id, port_host);
+                        udp6_bind_ns(s->ns_id, port_host);
                         return 0;
                     }
                     spin_unlock_irq(&sock_lock, lflags);
@@ -775,7 +857,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
         s->local_port = sa6.sin6_port;
         if (s->is_dgram) {
             s->udp_local_port = bswap16(sa6.sin6_port);
-            udp_bind_ns(s->ns_id, s->udp_local_port);
+            udp6_bind_ns(s->ns_id, s->udp_local_port);
         }
         return 0;
     }

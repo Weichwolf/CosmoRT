@@ -100,6 +100,7 @@ static struct tick_callback net_rx_cb;
 static struct tick_callback net_tx_cb;
 
 extern void ipv6_init(void);
+extern void udp6_init(void);
 extern void ndp_init(void);
 extern void route6_init(void);
 extern void ipv6_iface_bringup(struct netif *nif);
@@ -107,6 +108,7 @@ extern void ipv6_iface_bringup(struct netif *nif);
 int net_init(void) {
     lo_init();
     udp_init();
+    udp6_init();
     ipv6_init();
     ndp_init();
     route6_init();
