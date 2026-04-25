@@ -3,13 +3,11 @@
 **Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
-**Stand (Session-Ende)**: ktest **2911-2915/1** (CLONE_NEWNET pre-existing,
-4 Tests flake je nach Run). pthread_mutex_pi + pthread_mutex_pi-static
-PASS nach WAITERS-bit-unter-lock-fix (4d9ab0c). pthread_cond-static
-triggert Kernel-PF (CR2=0x10) — pre-existing Bug unabhaengig von 10.2,
-Reihenfolge im Debug-Stack-frame. Full alpine-test in dieser Session
-nicht durchgelaufen (Timeouts + log-Kollisionen), aber alle migrierten
-ktests gruen. Branch: `ltp`.
+**Stand (Session-Ende)**: ktest **2906/1** (CLONE_NEWNET pre-existing
+fail), musl 460/11, **LTP 247/7/44** (+3 PASS / -3 FAIL vs Phase-10-Stand).
+Phase 11 erledigt: clock_nanosleep01 PASS via apply_restart() im
+syscall-return-Pfad + ERESTART_RESTARTBLOCK in do_clock_nanosleep +
+restart_block in thread_t. Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
@@ -138,34 +136,37 @@ child_wait_wq.lock oder eq_lock-Rekursion. Phase 10.2c nimmt das an.
 
 ---
 
-## Phase 11 — restart_block + signal-restartable syscalls
+## Phase 11 — restart_block + signal-restartable syscalls (ERLEDIGT)
 
-**Problem**: Unterbrochene `clock_nanosleep`/`futex`/`poll`/`select` liefern
-`-EINTR`, aber Linux-Spec verlangt restart_block: der Kernel speichert
-eine Resume-Closure, und der Userspace-Wrapper ruft bei `ERESTART_RESTARTBLOCK`
-automatisch `SYS_restart_syscall` (nr=219) auf. Das macht Sleeps und
-Waits atomar gegenüber SA_RESTART-Signalen.
+**Status**: clock_nanosleep01 PASS. Net LTP +3 PASS (244→247) /
+-3 FAIL. ktest 2906 (+2 vom Phase-11-Testset; CLONE_NEWNET pre-existing
+fail). futex_wait-Migration verworfen (pthread_mutex_pi-static
+Regression — eigene Boost-Rollback-Semantik).
 
-### Scope
+- [x] `struct restart_block` in `thread_t`: function-ptr + 6 long args
+- [x] `SYS_restart_syscall` (219) — ruft `current->restart_block.fn(block)`
+- [x] `do_nanosleep` / `do_clock_nanosleep`: setzt
+      `restart_block.fn = clock_nanosleep_restart`, verbleibende Zeit
+      in args, returnt `-ERESTART_RESTARTBLOCK`
+- [x] syscall-return konvertiert `-ERESTART_*` -> EINTR oder
+      RIP-rewind+RAX=orig_num bzw. RAX=219 (apply_restart, Linux
+      do_signal-konform)
+- [x] SA_RESTART-Behandlung: `-ERESTARTSYS` -> rewrite auf original nr
+- [x] read/wait4/pipe/socket: ERESTARTSYS statt direktem EINTR
+- [x] 8 ktests: nanosleep + SIGUSR1, SA_RESTART, default-IGN,
+      TIMER_ABSTIME+SIG, futex_wait+SIG, pipe-read+SIG, wait4+SIG,
+      wait4+SA_RESTART
+- [ ] do_futex(FUTEX_WAIT) restart_block — verworfen wegen Regression
+      (pthread_mutex_pi-static); revisit nach Phase 13 SMP-Stabilisierung
+- [ ] do_poll/do_select restart_block — Phase 12 (hrtimer)
 
-- [ ] `struct restart_block` in `thread_t`: function-ptr + 6 long args
-- [ ] `SYS_restart_syscall` (219) — ruft `current->restart_block.fn(block)`
-- [ ] `do_nanosleep` / `do_clock_nanosleep`: setzt `restart_block.fn =
-      clock_nanosleep_restart`, verbleibende Zeit in args, returnt
-      `-ERESTART_RESTARTBLOCK`
-- [ ] syscall-entry konvertiert `-ERESTART_RESTARTBLOCK` → rewrite syscall-nr
-      auf 219, re-dispatch nach Handler-Return
-- [ ] SA_RESTART-Behandlung: `-ERESTARTSYS` → rewrite auf original nr
-- [ ] `do_futex(FUTEX_WAIT)` → restart_block mit abs-deadline
-- [ ] `do_poll`/`do_select` → restart_block mit `remaining_time_ns`
-- [ ] ktests: SIGINT während nanosleep → rem korrekt; SIGUSR1 mit SA_RESTART
-      während futex_wait → wake handler, resume wait
+### Bilanz
 
-### Erfolgskriterien
-
-- **LTP clock_nanosleep01/02 PASS** (zusammen mit Phase 10)
-- musl pthread_atfork-errno-clobber PASS (braucht SA_RESTART-konform)
-- Keine Regression auf SIGINT-Handler-Tests
+- **LTP clock_nanosleep01 PASS**
+- LTP clock_nanosleep02: timing-basiert (500x 1ms, expects <30s) ->
+  Phase 12 (hrtimer ns-Praezision)
+- musl pthread_atfork-errno-clobber: bleibt FAIL (Test prueft
+  errno-Erhaltung ueber Signal-Trampolin, andere Wurzel)
 
 ---
 

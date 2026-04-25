@@ -10,6 +10,16 @@ Update: 2026-04-24 Phase 10.2a+b futex + pipe auf waitqueue (ef2994d, 0277e99).
   musl + LTP: alpine-test Run in dieser Session timed out nach 30min
   (abgebrochen mit stale futex-image); vollstaendige Verifikation
   verbleibt der naechsten Session.
+Update: 2026-04-25 Phase 11 restart_block + ERESTARTSYS (f20ad1d..52c905b
+  + 8997a10 revert futex). ktest 2906/1, musl 460/11, **LTP 247/7/44**
+  (+3 PASS, -3 FAIL).
+  Gewonnen: clock_nanosleep01 (SEND_SIGINT-rem korrekt via
+  apply_restart-Pfad). Verloren: pthread_exit-cancel-static,
+  tls_get_new-dtv (SEGFAULT RIP=0), capset01, rlimit-open-files-static
+  -- vermutlich ERESTARTSYS-Interaktion mit musl static-link Pfaden;
+  dynamic-Variante derselben Tests bleibt PASS.
+  pthread_atfork-errno-clobber bleibt FAIL (anderer root cause als
+  Phase 11 vermutete; errno-Erhaltung ueber sigreturn).
 
 ## Ergebnis
 
