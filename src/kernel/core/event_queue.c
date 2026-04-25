@@ -139,15 +139,15 @@ void thread_block_ms(int timeout_ms) {
 
 /* ── Wait: consume next event, block if empty ── */
 
-int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
+int event_wait_ns(event_queue_t *eq, event_t *out, int64_t timeout_ns) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
 
     hrtimer_t timer;
     int has_timer = 0;
     uint64_t deadline_ns = 0;
-    if (timeout_ms > 0) {
-        deadline_ns = hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms);
+    if (timeout_ns > 0) {
+        deadline_ns = hrtimer_now_ns() + (uint64_t)timeout_ns;
         hrtimer_init(&timer, timeout_wake, cur);
         has_timer = 1;
     }
@@ -185,7 +185,7 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
             return 0;
         }
 
-        if (timeout_ms == 0)
+        if (timeout_ns == 0)
             return -11; /* EAGAIN */
 
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
@@ -219,4 +219,9 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
             return -11; /* EAGAIN (timeout) */
         }
     }
+}
+
+int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
+    if (timeout_ms < 0) return event_wait_ns(eq, out, -1);
+    return event_wait_ns(eq, out, (int64_t)timeout_ms * (int64_t)NSEC_PER_MSEC);
 }

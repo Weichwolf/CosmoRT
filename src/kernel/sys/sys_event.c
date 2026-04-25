@@ -2,6 +2,7 @@
 
 #include "internal.h"
 #include "core/event_queue.h"
+#include "core/hrtimer.h"
 #include "event/fd.h"
 
 struct k_pollfd { int fd; short events; short revents; };
@@ -11,8 +12,8 @@ struct k_pollfd { int fd; short events; short revents; };
 extern void epoll_sleeper_add_ext(thread_t *t);
 extern void epoll_sleeper_remove_ext(thread_t *t);
 
-static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
-                      int timeout, thread_t *t);
+static long poll_loop_ns(struct k_pollfd *kfds, int nfds, void *fds_ptr,
+                         int64_t timeout_ns, thread_t *t);
 
 /* ── pselect6 / select → convert to poll ── */
 
@@ -54,22 +55,22 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
         }
     }
 
-    int timeout_ms = -1;
+    int64_t timeout_ns = -1;
     if (num == 270 && a5) {
         struct { long sec; long nsec; } ts;
         if (!user_ok(a5, 16) || copy_from_user(&ts, (void *)a5, 16)) return -EFAULT;
-        timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
+        timeout_ns = (int64_t)ts.sec * NSEC_PER_SEC + (int64_t)ts.nsec;
     } else if (num == 23 && a5) {
         struct { long sec; long usec; } tv;
         if (!user_ok(a5, 16) || copy_from_user(&tv, (void *)a5, 16)) return -EFAULT;
-        timeout_ms = (int)(tv.sec * 1000 + tv.usec / 1000);
+        timeout_ns = (int64_t)tv.sec * NSEC_PER_SEC + (int64_t)tv.usec * (int64_t)NSEC_PER_USEC;
     }
 
     long ret = 0;
     if (npfd > 0) {
         thread_t *t = thread_current();
         if (!t) return -EFAULT;
-        ret = poll_loop(pfd, npfd, 0, timeout_ms, t);
+        ret = poll_loop_ns(pfd, npfd, 0, timeout_ns, t);
         epoll_sleeper_remove_ext(t);
         t->wake_at = 0;
         if (ret < 0 && ret != -EINTR) return ret;
@@ -106,13 +107,13 @@ long do_pselect6(int nfds, uint64_t *readfds, long a3, long a4, long a5, long nu
 
 /* ── SYS_POLL (7) — generic FD polling ── */
 
-static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
-                      int timeout, thread_t *t) {
-    int infinite = (timeout < 0);
-    uint64_t deadline = infinite ? 0 : timer_ms() + (uint64_t)timeout;
+static long poll_loop_ns(struct k_pollfd *kfds, int nfds, void *fds_ptr,
+                         int64_t timeout_ns, thread_t *t) {
+    int infinite = (timeout_ns < 0);
+    uint64_t deadline_ns = infinite ? 0 : hrtimer_now_ns() + (uint64_t)timeout_ns;
 
     for (;;) {
-        t->wake_at = infinite ? 0 : deadline;
+        t->wake_at = infinite ? 0 : (deadline_ns / NSEC_PER_MSEC);
         epoll_sleeper_add_ext(t);
 
         int ready = 0;
@@ -133,13 +134,15 @@ static long poll_loop(struct k_pollfd *kfds, int nfds, void *fds_ptr,
                 copy_to_user(fds_ptr, kfds, (size_t)nfds * sizeof(struct k_pollfd));
             return ready;
         }
-        if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) return 0;
+        if (timeout_ns == 0) return 0;
+        if (!infinite && hrtimer_now_ns() >= deadline_ns) return 0;
 
-        int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-        if (timeout_ms <= 0 && !infinite) return 0;
+        uint64_t now_ns = hrtimer_now_ns();
+        int64_t remaining_ns = infinite ? -1
+            : (int64_t)(deadline_ns > now_ns ? deadline_ns - now_ns : 0);
+        if (remaining_ns == 0) return 0;
         event_t ev;
-        int wr = event_wait(&t->eq, &ev, timeout_ms);
+        int wr = event_wait_ns(&t->eq, &ev, remaining_ns);
         if (wr == -4) return -EINTR;
     }
 }
@@ -152,7 +155,8 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
 
-    long ret = poll_loop(kfds, nfds, fds_ptr, timeout, t);
+    int64_t timeout_ns = (timeout < 0) ? -1 : (int64_t)timeout * (int64_t)NSEC_PER_MSEC;
+    long ret = poll_loop_ns(kfds, nfds, fds_ptr, timeout_ns, t);
     epoll_sleeper_remove_ext(t);
     t->wake_at = 0;
     return ret;
@@ -161,11 +165,25 @@ long do_poll(void *fds_ptr, int nfds, int timeout) {
 /* ── ppoll (271) ── */
 
 long do_ppoll(long a1, long a2, long a3) {
-    int timeout_ms = -1;
+    int64_t timeout_ns = -1;
     if (a3) { /* timespec *tmo */
         struct { long sec; long nsec; } ts;
         if (user_ok(a3, 16) && !copy_from_user(&ts, (void *)a3, 16))
-            timeout_ms = (int)(ts.sec * 1000 + ts.nsec / 1000000);
+            timeout_ns = (int64_t)ts.sec * NSEC_PER_SEC + (int64_t)ts.nsec;
     }
-    return do_poll((void *)a1, (int)a2, timeout_ms);
+
+    int nfds = (int)a2;
+    if (nfds <= 0 || nfds > 256) return -EINVAL;
+    struct k_pollfd kfds[256];
+    void *fds_ptr = (void *)a1;
+    { int r = copy_from_user(kfds, fds_ptr, (size_t)nfds * sizeof(struct k_pollfd));
+      if (r) return r; }
+
+    thread_t *t = thread_current();
+    if (!t) return -EFAULT;
+
+    long ret = poll_loop_ns(kfds, nfds, fds_ptr, timeout_ns, t);
+    epoll_sleeper_remove_ext(t);
+    t->wake_at = 0;
+    return ret;
 }

@@ -4,7 +4,7 @@
  * The fast path (uncontended) never enters the kernel. Only contended
  * locks hit this code, and they're rare.
  *
- * Timeout: converted from struct timespec to milliseconds for event_wait.
+ * Timeout: converted from struct timespec to nanoseconds for event_wait_ns.
  * On timeout, the thread is removed from the wait queue and -ETIMEDOUT returned.
  *
  * PI (Priority Inheritance): when a high-priority thread blocks on a PI futex
@@ -183,7 +183,7 @@ extern uint64_t pml4[];
 /* Futex trace: always on for debugging condvar hang */
 static volatile int futex_trace = 0;
 
-static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared) {
+static long futex_wait(uint32_t *uaddr, uint32_t val, int64_t timeout_ns, int shared) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
     process_t *p = t->proc;
@@ -252,7 +252,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
     /* Block via event_wait — hrtimer wakes us on timeout,
      * futex_wake posts EQ_FUTEX_WAKE on wakeup. */
     event_t ev;
-    int wr = event_wait(&t->eq, &ev, timeout_ms);
+    int wr = event_wait_ns(&t->eq, &ev, timeout_ns);
 
     if (wr == -4) {
         futex_remove_waiter(addr, pid, t);
@@ -443,25 +443,21 @@ static long futex_unlock_pi(uint32_t *uaddr, int shared) {
     return 0;
 }
 
-/* ── Timespec → milliseconds ────────────────────── */
+/* ── Timespec → nanoseconds ────────────────────── */
 
-/* Convert userspace struct timespec to milliseconds.
- * Returns timeout_ms for event_wait: -1 if ts is NULL (infinite),
- * 0 if timespec is zero, >0 otherwise. Capped at INT32_MAX. */
-static int timespec_to_ms(const void *ts) {
+/* Convert userspace struct timespec to nanoseconds.
+ * Returns timeout_ns for event_wait_ns: -1 if ts is NULL (infinite),
+ * 0 if timespec is zero, >0 otherwise. */
+static int64_t timespec_to_ns(const void *ts) {
     if (!ts) return -1;
 
     struct { long tv_sec; long tv_nsec; } kts;
     if (copy_from_user(&kts, ts, sizeof(kts)) != 0)
-        return -1; /* bad pointer → treat as infinite (caller will fail on uaddr access) */
+        return -1; /* bad pointer → treat as infinite */
 
     if (kts.tv_sec < 0 || kts.tv_nsec < 0) return 0;
 
-    long ms = kts.tv_sec * 1000 + kts.tv_nsec / 1000000;
-    if (ms <= 0 && (kts.tv_sec > 0 || kts.tv_nsec > 0))
-        ms = 1; /* sub-millisecond → round up to 1ms */
-    if (ms > 0x7FFFFFFFL) ms = 0x7FFFFFFFL; /* cap */
-    return (int)ms;
+    return (int64_t)kts.tv_sec * (int64_t)NSEC_PER_SEC + (int64_t)kts.tv_nsec;
 }
 
 /* ── FUTEX_REQUEUE / FUTEX_CMP_REQUEUE ─────────── */
@@ -574,7 +570,7 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
 
     switch (cmd) {
     case FUTEX_WAIT:
-        return futex_wait(uaddr, val, timespec_to_ms(timeout), shared);
+        return futex_wait(uaddr, val, timespec_to_ns(timeout), shared);
     case FUTEX_WAKE:
         return futex_wake(uaddr, val, shared);
     case FUTEX_REQUEUE:
@@ -600,7 +596,7 @@ long do_futex(uint32_t *uaddr, int op, uint32_t val,
         return r1;
     }
     case 9: /* FUTEX_WAIT_BITSET — treat as FUTEX_WAIT (ignore bitmask) */
-        return futex_wait(uaddr, val, timespec_to_ms(timeout), shared);
+        return futex_wait(uaddr, val, timespec_to_ns(timeout), shared);
     case 10: /* FUTEX_WAKE_BITSET — treat as FUTEX_WAKE */
         return futex_wake(uaddr, val, shared);
     default:

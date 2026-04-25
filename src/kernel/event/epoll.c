@@ -11,6 +11,7 @@
 #include "mm/slab.h"
 #include "spinlock.h"
 #include "core/timer.h"
+#include "core/hrtimer.h"
 #include "event/fd.h"
 #include "config.h"
 #include "memops.h"
@@ -374,7 +375,11 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
     thread_t *ct = thread_current();
     if (ct) ct->wake_at = 0;
-    uint64_t deadline = (timeout <= 0) ? 0 : (timer_ms() + (uint64_t)timeout);
+    /* timeout in ms aus syscall-API. Intern ns. epoll_check_timeouts
+     * weckt uns ueber den event_post-Pfad; Sub-ms-Sleeps werden vom
+     * tickless LAPIC gefeuert. */
+    uint64_t deadline_ns = (timeout <= 0) ? 0
+        : (hrtimer_now_ns() + (uint64_t)timeout * NSEC_PER_MSEC);
     int infinite = (timeout < 0);
 
     for (;;) {
@@ -419,7 +424,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
 
         if (nready > 0) return nready;
         if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) return 0;
+        if (!infinite && hrtimer_now_ns() >= deadline_ns) return 0;
 
         /* No events ready — block via event_wait. epoll_wake_all / timeouts
          * event_post us. Add to sleeper list BEFORE final scan to avoid lost
@@ -428,10 +433,12 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
             thread_t *t = thread_current();
             if (!t) return -EFAULT;
             epoll_sleeper_add(t);
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) return 0;
+            uint64_t now_ns = hrtimer_now_ns();
+            int64_t remaining_ns = infinite ? -1
+                : (int64_t)(deadline_ns > now_ns ? deadline_ns - now_ns : 0);
+            if (remaining_ns == 0) return 0;
             event_t ev;
-            int _wr = event_wait(&t->eq, &ev, timeout_ms);
+            int _wr = event_wait_ns(&t->eq, &ev, remaining_ns);
             if (_wr == -4) return -EINTR;
         }
     }
