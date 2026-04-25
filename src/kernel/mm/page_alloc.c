@@ -4,13 +4,20 @@
  * Free blocks stored in-place (first 8 bytes of free page = next pointer).
  * Bitmap tracks allocated pages for buddy merging.
  * Bitmap itself lives in first usable UEFI region — no static limits.
- */
+ *
+ * OOM-Killer: bei alloc-fail (LAZYFREE-Reclaim half nicht) wird
+ * out_of_memory() aufgerufen, das das hoechst-bewertete Opfer SIGKILLt.
+ * Anschliessend wird einmal nachallokiert. Ein per-CPU Re-Entry-Guard und
+ * der Check auf preempt/IRQ-Kontext verhindern, dass wir aus einem
+ * Interrupt oder waehrend OOM selbst rekursieren. */
 
 #include "mm/page_alloc.h"
 #include "hw/serial.h"
 #include "spinlock.h"
 #include "memops.h"
 #include "config.h"
+#include "core/percpu.h"
+#include "proc/process.h"
 
 #define PAGE_SHIFT  12
 #define PAGE_SIZE   (1ULL << PAGE_SHIFT)
@@ -41,6 +48,64 @@ static uint16_t *page_refcounts;
 /* Stats */
 static uint64_t total_pages;
 static uint64_t alloc_count;
+
+/* OOM re-entry guard: per-CPU. Wenn schon in out_of_memory aktiv, kein
+ * weiterer Trigger — wir wuerden uns sonst rekursiv selbst killen. Ohne
+ * SMP_MAX_CORES-Buffer waere das Plain-Bool Race-anfaellig. */
+static volatile int oom_in_progress[SMP_MAX_CORES];
+
+/* Heuristik: ist der Caller-Kontext sicher fuer out_of_memory()?
+ *
+ * Sicher heisst:
+ *   - aktiver Thread vorhanden (kein Boot-Pfad)
+ *   - nicht in preempt-Kontext (Signal-Delivery wuerde rekursiv schedulen)
+ *   - nicht bereits in OOM auf diesem Core
+ *
+ * Linux: __alloc_pages_slowpath checkt PF_MEMALLOC und in_atomic. Wir haben
+ * weder, also approximieren wir defensiv. */
+static int oom_safe_context(void) {
+    percpu_t *cpu = percpu_self();
+    if (!cpu) return 0;
+    if (!cpu->current_thread) return 0;
+    if (cpu->in_preempt) return 0;
+    if (cpu->core_id >= 0 && cpu->core_id < SMP_MAX_CORES &&
+        oom_in_progress[cpu->core_id]) return 0;
+    return 1;
+}
+
+static void oom_enter(void) {
+    percpu_t *cpu = percpu_self();
+    if (cpu && cpu->core_id >= 0 && cpu->core_id < SMP_MAX_CORES)
+        oom_in_progress[cpu->core_id] = 1;
+}
+
+static void oom_leave(void) {
+    percpu_t *cpu = percpu_self();
+    if (cpu && cpu->core_id >= 0 && cpu->core_id < SMP_MAX_CORES)
+        oom_in_progress[cpu->core_id] = 0;
+}
+
+/* Linux GFP-Mapping fuer unseren Kontext:
+ * GFP_ATOMIC equivalent (IRQ/preempt) -> kein OOM, return NULL.
+ * GFP_KERNEL equivalent -> OOM-Pfad triggern, retry-once.
+ *
+ * Implementiert als Inline-Helper das nach LAZYFREE-Reclaim laeuft, wenn
+ * der buddy_alloc_order weiterhin NULL liefert. Dueft schedule() callen
+ * (das tut do_kill via signal-frame, fast). Der Caller muss den buddy_lock
+ * vor dem Aufruf abgegeben haben — wir schreiben hier keinen Lock-Kontext. */
+static int try_oom_reclaim(void) {
+    if (!oom_safe_context()) return 0;
+    oom_enter();
+    int killed = out_of_memory();
+    oom_leave();
+    if (!killed) return 0;
+    /* Yield kurz: Opfer-Thread laeuft auf naechstem schedule-Tick und gibt
+     * Pages via proc_cleanup zurueck. Eine extra schedule()-Runde reicht in
+     * der Regel. Wenn nicht: zweiter schedule, dann harte ENOMEM. */
+    extern void schedule(void);
+    schedule();
+    return 1;
+}
 
 /* --- Bitmap ops --- */
 
@@ -325,6 +390,11 @@ void *page_alloc(void) {
             spin_unlock_irq(&buddy_lock, flags);
         }
     }
+    if (!p && try_oom_reclaim()) {
+        spin_lock_irq(&buddy_lock, &flags);
+        p = buddy_alloc_order(0);
+        spin_unlock_irq(&buddy_lock, flags);
+    }
     if (p) {
         page_zero(p);
         uint64_t pfn = virt_to_phys(p) >> PAGE_SHIFT;
@@ -370,6 +440,20 @@ void *pages_alloc(int n) {
     spin_lock_irq(&buddy_lock, &flags);
     void *p = buddy_alloc_order(order);
     spin_unlock_irq(&buddy_lock, flags);
+    if (!p) {
+        extern int lazyfree_reclaim(int count);
+        int reclaimed = lazyfree_reclaim(1U << order);
+        if (reclaimed > 0) {
+            spin_lock_irq(&buddy_lock, &flags);
+            p = buddy_alloc_order(order);
+            spin_unlock_irq(&buddy_lock, flags);
+        }
+    }
+    if (!p && try_oom_reclaim()) {
+        spin_lock_irq(&buddy_lock, &flags);
+        p = buddy_alloc_order(order);
+        spin_unlock_irq(&buddy_lock, flags);
+    }
     if (p) {
         pages_zero(p, 1U << order);
         /* Set refcount=1 for each page in the allocation */
@@ -410,6 +494,11 @@ void *huge_page_alloc(void) {
             p = buddy_alloc_order(9);
             spin_unlock_irq(&buddy_lock, flags);
         }
+    }
+    if (!p && try_oom_reclaim()) {
+        spin_lock_irq(&buddy_lock, &flags);
+        p = buddy_alloc_order(9);
+        spin_unlock_irq(&buddy_lock, flags);
     }
     if (p) {
         pages_zero(p, 512);
