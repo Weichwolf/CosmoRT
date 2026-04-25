@@ -1,9 +1,13 @@
 /* CosmoRT IPv6 Routing — per-NS prefix table.
  *
- * Linux uses an FIB-Tree (rt_tree). We keep this simple: linear list of
- * (prefix, prefix_len, gateway, oif), longest-prefix-match on lookup.
- * Sufficient for the dual-NIC + loopback scenarios we support; the
- * datapath is anyway dominated by neighbour resolution, not route walk. */
+ * Linux uses an FIB-trie (radix). We keep this simple: slab-allocated
+ * linked list of (prefix, prefix_len, gateway, oif), sorted by descending
+ * prefix_len so first match wins LPM. No fixed cap — list and slab grow
+ * with route count, so 1000+ NICs/routes work correctly.
+ *
+ * Performance: O(N) lookup. Acceptable up to ~100 routes; beyond that the
+ * lookup dominates the datapath. Migration to fib_trie or a hash on
+ * prefix_len buckets is a future optimization, not a correctness fix. */
 #ifndef COSMO_NET_ROUTE6_H
 #define COSMO_NET_ROUTE6_H
 

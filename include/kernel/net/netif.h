@@ -9,7 +9,6 @@
 
 #include <stdint.h>
 
-#define NETIF_MAX 4
 #define NETIF_NAME_MAX 16
 
 #define NETIF_F_LOOPBACK (1 << 0)
