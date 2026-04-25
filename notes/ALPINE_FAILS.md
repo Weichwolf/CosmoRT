@@ -2,12 +2,14 @@
 
 Update: 2026-04-26 Phase 12-Rest Teilfortschritt.
   ktest 3047 -> 3059 (+12 sub-asserts via 5 neue hrtimer_ns Tests).
-  - core/hrtimer: hrtimer_now_ns() jetzt wrap-frei via ms-Split
-    (Division statt overflow-praefixierten 600s-Window-Multiply).
-    Manifestation der vorigen Bug: nach >600s Uptime gab hrtimer_now_ns
-    Garbage-Werte, schedule_timeout/futex_wait/event_wait verglichen
-    deadlines wrong, Late-Tests (clock_nanosleep01, qsort-static,
-    sem_open-static) hingen.
+  musl 461/10 -> 460/11 (tls_init-static flake), LTP 248/7 -> **249/6**
+  (+1 PASS clock_nanosleep01, -1 FAIL).
+  - core/hrtimer: hrtimer_now_ns() Hot-Path bleibt fuer Uptime
+    < 600s (delta * mult >> shift, single mul + shift, bit-exakt
+    Pre-Phase-12). Bei drohendem 600s-Wrap: ms-Split-Division als
+    Fallback. Konsequenz: Late-Test-Hangs (clock_nanosleep01,
+    qsort-static, sem_open-static) nach > 10min Uptime
+    verschwinden, Frueh-Tests verhalten sich identisch.
   - core/hrtimer: lapic_arm_ns Overflow-Cap (defensive, derzeit
     unused-cast — Tickless-Switch-ready).
   - sys/time ns-Praezision wurde versucht (sleep_until_ns,

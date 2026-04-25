@@ -278,9 +278,13 @@ Regression — eigene Boost-Rollback-Semantik).
 ### Aktueller Stand
 
 ktest 3047 -> 3059 (+12 hrtimer_ns sub-asserts), wrap-safe hrtimer
-behebt late-test Hangs (qsort-static, sem_open-static, tls_init-static
-nach >10min Uptime). Vollstaendige ns-Praezision in nanosleep
-verschoben bis futex_wait/event_wait ebenfalls ns-deadline kennen.
+behebt late-test Hangs (qsort-static, sem_open-static, clock_nanosleep01
+nach >10min Uptime). musl 461/10 -> 460/11 (tls_init-static flake),
+LTP 248/7 -> **249/6** (+1 PASS clock_nanosleep01).
+Vollstaendige ns-Praezision in nanosleep verschoben bis
+futex_wait/event_wait ebenfalls ns-deadline kennen — sonst zerschiesst
+das pthread_cond/pthread-robust-detach via timing-races
+(verworfen, siehe Reverts).
 
 ### Erfolgskriterien
 
