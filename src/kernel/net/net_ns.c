@@ -56,6 +56,7 @@ extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern void ipv6_input(uint32_t ns_id, const uint8_t *frame, int len);
 extern void ipv6_attach_loopback_for_ns(struct net_ns *ns);
+extern void route6_attach_lo(struct net_ns *ns);
 extern void epoll_wake_all(void);
 
 #include "net/net.h"
@@ -150,6 +151,7 @@ struct net_ns *net_ns_alloc(struct net_ns *parent) {
         return 0;
     }
     ipv6_attach_loopback_for_ns(ns);
+    route6_attach_lo(ns);
     return ns;
 }
 

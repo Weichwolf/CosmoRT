@@ -101,6 +101,7 @@ static struct tick_callback net_tx_cb;
 
 extern void ipv6_init(void);
 extern void ndp_init(void);
+extern void route6_init(void);
 extern void ipv6_iface_bringup(struct netif *nif);
 
 int net_init(void) {
@@ -108,6 +109,7 @@ int net_init(void) {
     udp_init();
     ipv6_init();
     ndp_init();
+    route6_init();
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
     /* Bring up IPv6 link-local (SLAAC) on the hardware NIC. */
