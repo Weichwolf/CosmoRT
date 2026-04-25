@@ -49,17 +49,17 @@ struct restart_block {
     union {
         /* clock_nanosleep / nanosleep restart.
          *
-         * mode == 0: relative-style (do_nanosleep). expires_ns is the
-         *            kernel CLOCK_MONOTONIC hrtimer_now_ns() deadline; on
-         *            resume, sleep until hrtimer_now_ns() >= expires_ns.
-         *            user_rmtp is updated on EINTR resume.
-         * mode == 1: ABSTIME-style. expires_ns is the kernel deadline in
-         *            hrtimer_now_ns() units (already adjusted for
-         *            time_ns/epoch at original-call time). user_rmtp == NULL. */
+         * mode == 0: relative-style (do_nanosleep). expires_ms is the
+         *            kernel CLOCK_MONOTONIC timer_ms() deadline; on resume,
+         *            sleep until timer_ms() >= expires_ms. user_rmtp
+         *            is updated on EINTR resume.
+         * mode == 1: ABSTIME-style. expires_ms is the kernel deadline in
+         *            timer_ms() units (already adjusted for time_ns/epoch
+         *            at original-call time). user_rmtp == NULL. */
         struct {
             int      clockid;          /* original clk_id (for diagnostics) */
             int      mode;             /* 0=relative, 1=ABSTIME */
-            uint64_t expires_ns;       /* kernel hrtimer_now_ns() deadline */
+            uint64_t expires_ms;       /* kernel timer_ms() deadline */
             void    *user_rmtp;        /* user struct k_timespec * (or NULL) */
         } nanosleep;
         /* futex_wait restart */
