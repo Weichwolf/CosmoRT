@@ -2,6 +2,7 @@
 
 #include "internal.h"
 #include "core/time_ns.h"
+#include "core/waitqueue.h"
 
 /* struct k_timespec defined in epoll.h, k_timeval in internal.h */
 
@@ -142,14 +143,14 @@ long do_clock_getres(int clk_id, struct k_timespec *tp) {
  * On full sleep returns 0. */
 static long sleep_until_ms(uint64_t deadline_ms, uint64_t *out_left_ms) {
     while (timer_ms() < deadline_ms) {
-        thread_t *t = thread_current();
-        if (t && t->proc) {
-            uint64_t deliverable = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
-            if (deliverable) {
-                uint64_t now = timer_ms();
-                if (out_left_ms) *out_left_ms = (deadline_ms > now) ? deadline_ms - now : 0;
-                return -EINTR;
-            }
+        /* signal_deliverable filters SIG_DFL_IGNORE signals (SIGCHLD/
+         * SIGURG/SIGWINCH/SIGIO with default handler) — these must not
+         * wake nanosleep, otherwise the syscall livelocks via
+         * ERESTART_RESTARTBLOCK on a pending bit nobody clears. */
+        if (signal_deliverable()) {
+            uint64_t now = timer_ms();
+            if (out_left_ms) *out_left_ms = (deadline_ms > now) ? deadline_ms - now : 0;
+            return -EINTR;
         }
         uint64_t remaining = deadline_ms - timer_ms();
         if (remaining == 0) break;

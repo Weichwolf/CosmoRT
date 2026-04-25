@@ -582,7 +582,95 @@ static void test_wq_27_kill_then_event_drain(void) {
     check("sigtimedwait + unrelated SIGUSR1: woke <500ms", (code & 2) != 0);
 }
 
+/* ── 28-29: LTP clock_nanosleep01 SEND_SIGINT reproducer ───────────
+ *
+ * Exact LTP pattern: parent installs SIGINT handler (no SA_RESTART),
+ * forks a child via create_sig_proc(SIGINT, 40, 500). Child loops
+ * 40x { usleep(500us); kill(parent, SIGINT) } and exits. Parent
+ * calls clock_nanosleep(CLOCK_REALTIME, 0, {10s,0}, &rem). After
+ * the sleep parent SIGTERMs the child and waits.
+ *
+ * Hang scenario: clock_nanosleep returns -EINTR + restart_block;
+ * apply_restart with SA_RESTART=0 user handler should convert to
+ * EINTR. If the conversion or the restart-block path keeps re-arming
+ * a fresh 10s sleep without seeing the signal, parent hangs the
+ * full 10s. */
+static void test_wq_28_ltp_sigint_burst(void) {
+    install_handler(SIGINT, wq_sig_handler);
+    long parent_pid = sc0(SYS_GETPID);
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        /* Child: 40x { usleep(500us); kill(parent, SIGINT) } */
+        for (int i = 0; i < 40; i++) {
+            struct k_timespec u = { .tv_sec = 0, .tv_nsec = 500000 /* 500us */ };
+            sc2(SYS_NANOSLEEP, (long)&u, 0);
+            if (sc2(SYS_KILL, parent_pid, SIGINT) < 0) break;
+        }
+        sc1(SYS_EXIT, 0);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+
+    struct k_timespec rq = { .tv_sec = 10, .tv_nsec = 0 };
+    struct k_timespec rm = { .tv_sec = 0, .tv_nsec = 0 };
+    struct k_timespec t0, t1;
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+    long r = sc4(SYS_CLOCK_NANOSLEEP, CLOCK_REALTIME, 0, (long)&rq, (long)&rm);
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+    long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                      (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+
+    /* Reap child */
+    sc2(SYS_KILL, cpid, SIGTERM);
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+
+    check_val("ltp01 SEND_SIGINT: returns -EINTR", r, -EINTR);
+    check("ltp01 SEND_SIGINT: woke <2s", elapsed_ms < 2000);
+    /* rem must be valid + roughly equal to (10s − elapsed). */
+    long rem_ms = rm.tv_sec * 1000L + rm.tv_nsec / 1000000L;
+    check("ltp01 SEND_SIGINT: rem set non-zero", rem_ms > 0);
+    check("ltp01 SEND_SIGINT: rem <= 10000", rem_ms <= 10000);
+}
+
+/* Variant: relative monotonic — same fork+signal pattern but uses
+ * NR_NANOSLEEP/CLOCK_MONOTONIC paths directly. Catches restart-block
+ * differences between do_clock_nanosleep ABSTIME and do_nanosleep. */
+static void test_wq_29_ltp_sigint_burst_nanosleep(void) {
+    install_handler(SIGINT, wq_sig_handler);
+    long parent_pid = sc0(SYS_GETPID);
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        for (int i = 0; i < 40; i++) {
+            struct k_timespec u = { .tv_sec = 0, .tv_nsec = 500000 };
+            sc2(SYS_NANOSLEEP, (long)&u, 0);
+            if (sc2(SYS_KILL, parent_pid, SIGINT) < 0) break;
+        }
+        sc1(SYS_EXIT, 0);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+
+    struct k_timespec rq = { .tv_sec = 10, .tv_nsec = 0 };
+    struct k_timespec rm = { .tv_sec = 0, .tv_nsec = 0 };
+    struct k_timespec t0, t1;
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+    long r = sc2(SYS_NANOSLEEP, (long)&rq, (long)&rm);
+    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+    long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                      (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+
+    sc2(SYS_KILL, cpid, SIGTERM);
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+
+    check_val("ltp01 SEND_SIGINT (nanosleep): -EINTR", r, -EINTR);
+    check("ltp01 SEND_SIGINT (nanosleep): woke <2s", elapsed_ms < 2000);
+}
+
 TEST("waitqueue/24_long_sleep_signal",   test_wq_24_long_sleep_signal_burst);
 TEST("waitqueue/25_signal_burst_sleep",  test_wq_25_signal_burst_during_sleep);
 TEST("waitqueue/26_sigtimedwait_chld",   test_wq_26_sigtimedwait_blocked_sigchld);
 TEST("waitqueue/27_sigtimedwait_eintr",  test_wq_27_kill_then_event_drain);
+TEST("waitqueue/28_ltp01_sigint_burst",  test_wq_28_ltp_sigint_burst);
+TEST("waitqueue/29_ltp01_nanosleep",     test_wq_29_ltp_sigint_burst_nanosleep);

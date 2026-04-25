@@ -229,11 +229,33 @@ int wake_up_interruptible(wait_queue_head_t *wq) { return wake_up(wq); }
 
 /* ── Signal-deliverable helper (used by __wait_event_interruptible) ── */
 
+/* SIG_DFL signals whose default action is "ignore" — these must NOT
+ * interrupt blocking syscalls, even if pending+unblocked. Linux's
+ * recalc_sigpending() drops them from the pending set when the action
+ * is SIG_DFL; we filter at the deliverable-check instead.
+ *
+ * Without this filter, a process whose child exits during a nanosleep
+ * (SIGCHLD pending, SIG_DFL handler) is woken with -EINTR + an
+ * ERESTART_RESTARTBLOCK that cannot be cleared (the bit stays set, the
+ * restart immediately re-EINTRs). That is the alarm07 → clock_nanosleep01
+ * livelock: alarm07 leaves a SIGCHLD pending in the LTP-runner-parent's
+ * sig_pending; the next syscall that calls signal_deliverable() loops. */
+#define SIG_DFL_IGNORE_MASK ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
+
 int signal_deliverable(void) {
     thread_t *t = thread_current();
     if (!t || !t->proc) return 0;
-    uint64_t pend = t->proc->sig_pending | t->sig_thread_pending;
-    return (pend & ~t->sig_blocked) != 0;
+    uint64_t pend = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
+    if (!pend) return 0;
+    /* Filter out SIG_DFL_IGNORE signals whose handler is still SIG_DFL. */
+    uint64_t mask_to_check = pend & SIG_DFL_IGNORE_MASK;
+    while (mask_to_check) {
+        int s = __builtin_ctzll(mask_to_check) + 1;
+        mask_to_check &= mask_to_check - 1;
+        if ((uint64_t)t->proc->sig_actions[s].sa_handler == 0)
+            pend &= ~SIG_BIT(s);
+    }
+    return pend != 0;
 }
 
 /* ── schedule_timeout family ─────────────────── */

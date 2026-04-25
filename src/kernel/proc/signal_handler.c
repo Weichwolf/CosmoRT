@@ -99,7 +99,7 @@ long send_sigpipe(void) {
     if (p) {
         void *handler = p->sig_actions[SIGPIPE].sa_handler;
         if (handler != SIG_IGN)
-            p->sig_pending |= SIG_BIT(SIGPIPE);
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGPIPE));
     }
     return -EPIPE;
 }
@@ -142,7 +142,7 @@ void check_alarm_timers(void) {
         /* Set SIGALRM pending and wake blocked threads.
          * Actual delivery happens in event_wait signal check or
          * check_signals_syscall_path on next syscall return. */
-        p->sig_pending |= SIG_BIT(SIGALRM);
+        __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGALRM));
         extern void sched_wake(thread_t *t);
         thread_t *t = p->threads;
         while (t) {
@@ -185,12 +185,12 @@ static void check_cpu_limits(void) {
 
     if (hard && secs >= hard) {
         /* SIGKILL cannot be blocked/ignored — delivery happens on return. */
-        p->sig_pending |= SIG_BIT(SIGKILL);
+        __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGKILL));
         return;
     }
     if (soft && secs >= soft && secs > p->xcpu_last_sec) {
         p->xcpu_last_sec = secs;
-        p->sig_pending |= SIG_BIT(SIGXCPU);
+        __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGXCPU));
     }
 }
 
@@ -323,7 +323,7 @@ void check_signals_syscall_path(long *result_ptr, long num) {
             do_exit(128 + SIGALRM);
             return;
         } else {
-            p->sig_pending |= SIG_BIT(SIGALRM);
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGALRM));
         }
     }
 

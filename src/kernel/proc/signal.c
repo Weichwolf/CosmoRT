@@ -23,7 +23,7 @@ void check_pending_signals(void) {
             do_exit(128 + SIGALRM);
             return;
         } else {
-            p->sig_pending |= SIG_BIT(SIGALRM);
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGALRM));
         }
     }
 
@@ -39,11 +39,13 @@ void check_pending_signals(void) {
 
     for (int sig = 1; sig < 64; sig++) {
         if (!(deliverable & SIG_BIT(sig))) continue;
-        /* Clear from whichever pending set has it (thread-level takes priority) */
+        /* Clear from whichever pending set has it (thread-level takes priority).
+         * Atomic RMW: kill_one and check_alarm_timers can fire from IRQ ctx and
+         * race with this clear; non-atomic |= would lose a freshly-set bit. */
         if (t->sig_thread_pending & SIG_BIT(sig))
-            t->sig_thread_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
         else
-            p->sig_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -228,7 +230,7 @@ long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
             if (any_blocked) {
-                target->sig_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
                 /* sigtimedwait wartet im event_wait BLOCKED auf eq->wq.
                  * Signal ist im wait_mask (geblockt), also greift der
                  * signal_pending-Filter im event_wait nicht — wir muessen
@@ -278,9 +280,10 @@ long kill_one(process_t *target, int sig) {
         }
         /* Continue: SIGCONT — resume stopped threads */
         if (sig == SIGCONT) {
-            /* Clear any pending stop signals */
-            target->sig_pending &= ~(SIG_BIT(SIGSTOP) | SIG_BIT(SIGTSTP) |
-                                      SIG_BIT(SIGTTIN) | SIG_BIT(SIGTTOU));
+            /* Clear any pending stop signals (atomic — IRQ-safe RMW) */
+            __sync_fetch_and_and(&target->sig_pending,
+                ~(SIG_BIT(SIGSTOP) | SIG_BIT(SIGTSTP) |
+                  SIG_BIT(SIGTTIN) | SIG_BIT(SIGTTOU)));
             /* Resume stopped threads. Set was_continued BEFORE sched_add so a
              * concurrent wait4(WCONTINUED) on a fast-scheduled child sees the
              * flag even if the child reaches PROC_ZOMBIE between sched_add
@@ -333,7 +336,7 @@ long kill_one(process_t *target, int sig) {
                  * sched_wake-only-Pfad spinnt weil der Sleeper aufwacht,
                  * nichts findet (head==tail, sig blocked → nicht
                  * deliverable), wieder schlaeft. */
-                target->sig_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 thread_t *wt = target->threads;
                 while (wt) {
@@ -389,8 +392,11 @@ long kill_one(process_t *target, int sig) {
     }
 
     /* User handler registered — set pending bit.
-     * Delivery happens on return to userspace via check_pending_signals. */
-    target->sig_pending |= SIG_BIT(sig);
+     * Delivery happens on return to userspace via check_pending_signals.
+     * Atomic RMW: kill_one races with check_pending_signals' &= ~bit
+     * clear and check_alarm_timers' SIGALRM |= bit set; non-atomic |=
+     * loses one of those bits when both fire close together. */
+    __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
 
     /* Wake blocked threads that have this signal unblocked.
      * Always do both: event_post writes EQ_CHILD_EXITED + wakes eq->wq
@@ -482,7 +488,7 @@ long do_tgkill(int tgid, int tid, int sig) {
          * wenn blockiert (sigtimedwait-Pfad). Siehe kill_one-Kommentar. */
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
             if (SIG_BIT(sig) & target->sig_blocked) {
-                target->sig_thread_pending |= SIG_BIT(sig);
+                __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 if (target->state == THREAD_BLOCKED)
                     event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
@@ -496,7 +502,7 @@ long do_tgkill(int tgid, int tid, int sig) {
 
         /* Everything else (fatal): check if signal is blocked on target thread */
         if (SIG_BIT(sig) & target->sig_blocked) {
-            target->sig_thread_pending |= SIG_BIT(sig);
+            __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
             return 0;
         }
         /* Signal is deliverable — terminate via kill_one (process-level) */
@@ -506,7 +512,7 @@ long do_tgkill(int tgid, int tid, int sig) {
     /* User handler — set per-thread pending and wake target thread.
      * tgkill targets a specific thread, so use thread-level pending
      * (not process-level) to ensure the correct thread handles it. */
-    target->sig_thread_pending |= SIG_BIT(sig);
+    __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
     if (!(SIG_BIT(sig) & target->sig_blocked)) {
         extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
         if (target->state == THREAD_BLOCKED)
@@ -570,9 +576,9 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
                     for (sig = 1; sig < 64; sig++)
                         if (match2 & SIG_BIT(sig)) break;
                     if (t->sig_thread_pending & SIG_BIT(sig))
-                        t->sig_thread_pending &= ~SIG_BIT(sig);
+                        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
                     else
-                        p->sig_pending &= ~SIG_BIT(sig);
+                        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
                     if (uinfo) {
                         int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
                         ksi[0] = sig;
@@ -598,9 +604,9 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
                     for (sig = 1; sig < 64; sig++)
                         if (match & SIG_BIT(sig)) break;
                     if (t->sig_thread_pending & SIG_BIT(sig))
-                        t->sig_thread_pending &= ~SIG_BIT(sig);
+                        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
                     else
-                        p->sig_pending &= ~SIG_BIT(sig);
+                        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
                     if (uinfo) {
                         int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
                         ksi[0] = sig;
@@ -622,9 +628,9 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         for (sig = 1; sig < 64; sig++)
             if (match & SIG_BIT(sig)) break;
         if (t->sig_thread_pending & SIG_BIT(sig))
-            t->sig_thread_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
         else
-            p->sig_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
         /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
          * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
         extern int dnotify_queue_pop_fd(process_t *p, int sig);
@@ -676,9 +682,9 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
         for (sig = 1; sig < 64; sig++)
             if (match & SIG_BIT(sig)) break;
         if (t->sig_thread_pending & SIG_BIT(sig))
-            t->sig_thread_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
         else
-            p->sig_pending &= ~SIG_BIT(sig);
+            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
         /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
          * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
         extern int dnotify_queue_pop_fd(process_t *p, int sig);
