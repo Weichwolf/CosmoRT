@@ -117,6 +117,17 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
 
     spin_unlock_irq(&target->eq_lock, irqf);
 
+    /* Wake the eq's owner if parked in event_wait_ns. wake_up_interruptible
+     * acquires eq->wq.lock — same lock event_wait_ns holds during
+     * prepare_to_wait. That serialization closes the missed-wakeup race
+     * the old "sched_wake(target)" path had between event_wait_ns's
+     * cur->state=BLOCKED and the schedule() call.
+     *
+     * Wir behalten den sched_wake(target)-Pfad solange event_wait_ns
+     * noch nicht via prepare_to_wait an eq->wq gebunden ist — wird im
+     * naechsten Commit entfernt sobald event_wait_ns ein wq-Waiter ist. */
+    wake_up_interruptible(&eq->wq);
+
     extern void sched_wake(struct thread *t);
     sched_wake(target);
 }
