@@ -70,6 +70,11 @@ static void copy_one_vma(vma_t *v, void *arg) {
     struct copy_ctx *ctx = (struct copy_ctx *)arg;
     if (ctx->err) return;
 
+    /* vDSO is kernel-owned shared mapping — copy_address_space re-installs
+     * the VMA + raw PTE separately via vdso_map. Skip here so we don't
+     * COW the vDSO page or duplicate the VMA. */
+    if (v->flags & MAP_VDSO) return;
+
     /* Insert VMA into child's tree */
     vma_t *cv = vma_insert(ctx->dst_root, v->start, v->end, v->prot, v->flags);
     if (!cv) { ctx->err = 1; return; }
@@ -138,6 +143,13 @@ static void copy_one_vma(vma_t *v, void *arg) {
 int copy_address_space(process_t *child, process_t *parent) {
     child->pml4 = create_user_pml4();
     if (!child->pml4) return -1;
+
+    /* vDSO mapping is owned by the kernel — re-install the canonical PTEs
+     * + VMAs into the child. The fork-walk skips MAP_VDSO entries so we
+     * don't COW the kernel-owned pages. free_address_space() calls
+     * vdso_unmap() so the leaf PTEs aren't freed when the child exits. */
+    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root);
+    vdso_map(child->pml4, &child->vma_root);
 
     struct copy_ctx ctx = {
         .src_pml4 = parent->pml4,

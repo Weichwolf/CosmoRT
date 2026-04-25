@@ -15,6 +15,9 @@
 #define VMA_HUGEPAGE   0x400  /* eligible for transparent 2MB huge pages */
 #define VMA_NOHUGEPAGE 0x1000 /* explicitly disable THP for this VMA */
 #define VMA_GROWSDOWN  0x800  /* stack: auto-expand downward on page fault */
+/* MAP_VDSO is internal — uses a high bit that doesn't collide with any
+ * Linux MAP_* (currently up to 0x100000=MAP_FIXED_NOREPLACE) or VMA_*. */
+#define MAP_VDSO       0x10000000 /* kernel-owned vDSO mapping; fork re-installs from vdso_map */
 
 typedef struct vma {
     uint64_t start;      /* page-aligned start address */

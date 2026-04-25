@@ -484,6 +484,10 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     if (!p->pml4) goto fail_slab;
     p->vma_root = 0;
 
+    /* vDSO: must be mapped before build_user_stack writes AT_SYSINFO_EHDR. */
+    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root);
+    vdso_map(p->pml4, &p->vma_root);
+
     /* ASLR: randomize stack and mmap base */
     uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */
     uint64_t mmap_rand  = aslr_rand() & 0xFFFFFFF000ULL;

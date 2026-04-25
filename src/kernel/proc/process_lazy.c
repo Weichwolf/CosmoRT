@@ -86,6 +86,13 @@ int lazyfree_reclaim(int count) {
 void free_address_space(uint64_t *user_pml4) {
     if (!user_pml4) return;
 
+    /* vDSO pages are kernel-owned and shared across all processes — clear
+     * their PTEs so the walk below doesn't free the underlying physical
+     * pages. Without this, every process exit decrefs the vDSO data/code
+     * pages and they get reclaimed mid-flight. */
+    extern void vdso_unmap(uint64_t *user_pml4);
+    vdso_unmap(user_pml4);
+
     /* Flush TLB on other cores that may have this PML4 cached */
     tlb_shootdown(virt_to_phys(user_pml4));
 
