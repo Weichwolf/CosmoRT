@@ -34,6 +34,21 @@ Update: 2026-04-22 Phase 17 OOM-Killer + oom_score_adj
   "oom_score_adj does not exist" geloggt haben finden den
   Knoten jetzt — kein Skipping mehr.
 
+Update: 2026-04-22 Phase 14 vDSO clock_gettime
+  (f429103..b1bd226). ktest 2939 -> 2951 (+12), musl 460/11 -> 461/10
+  (+1 PASS).
+  ELF-vDSO 4KB DSO embedded in kernel image, mapped at fixed VAs
+  (code=0x7FFFEFFFF000 RX, data=0x7FFFEFFFE000 RO) into jede process-mm
+  mit init_time_ns. AT_SYSINFO_EHDR im AUXV → musl resolviert
+  __vdso_clock_gettime via versioned LINUX_2.6 dynsym. seqlock-protected
+  vdso_data Page mit TSC mult/shift + wall_time_offset.
+  Per-call latency 150ns (syscall) -> 88ns (vDSO).
+  LTP clock_gettime04 bleibt FAIL — 300k iterations bei 5ms-Budget
+  trotz vDSO im qemu-Setup nicht erreichbar (TSC granularity).
+  Non-init time_namespace processes bekommen kein vDSO-Mapping
+  (vdso_map refuses) → musl faellt sauber zurueck auf syscall mit
+  Kernel-side time_ns offset.
+
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
