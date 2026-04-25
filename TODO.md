@@ -105,12 +105,18 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
 - [x] Neue ktests: `pipe/two_readers_exclusive_wake`,
       `pipe/close_broadcasts_eof`.
 
-**Phase 10.2c — Restliche Blocking-Pfade (OFFEN)**
+**Phase 10.2c — Restliche Blocking-Pfade**
 
-- [ ] `event_wait` → waitqueue pro `event_queue_t` (Kooperation mit event_post)
+- [x] `event_wait_ns` → waitqueue auf `event_queue_t` (58c3b93, 1a3d33a,
+      828b55e, da79de0). prepare_to_wait/finish_wait haengen Consumer
+      atomic an `eq->wq`; event_post weckt via wake_up_interruptible.
+      Schliesst den Race der Phase-12-tickless sem_init/tls_init-Hangs
+      ausgeloest hat. +9 ktest Sub-Asserts (event_wait_race/01..05).
 - [ ] `signalfd_read` → waitqueue pro signalfd
-- [ ] socket recv/accept → waitqueue pro socket
-- [ ] epoll_wait → waitqueue + ep_poll_callback pro registriertem fd
+- [ ] socket recv/accept → waitqueue pro socket (TCP/Unix nutzen
+      event_wait — profitiert indirekt schon von 10.2c)
+- [ ] epoll_wait → eigene waitqueue + ep_poll_callback pro registriertem
+      fd (heute event_wait-getragen, indirekter Fix via 10.2c)
 - [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD
 
 Hinweis 10.2c: wait4-Migration wurde angefangen (child_wait_wq auf
