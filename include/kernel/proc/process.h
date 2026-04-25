@@ -10,7 +10,10 @@
 #include "event/fd.h"
 #include "mm/vma.h"
 
-#define NGROUPS_MAX 32
+/* Linux /proc/sys/kernel/ngroups_max default. The actual array is allocated
+ * lazily via pages_alloc — process_t holds only a pointer + count, so a
+ * process that never calls setgroups pays zero bytes for it. */
+#define NGROUPS_MAX 65536
 
 /* k_sigaction, SA_* flags — from linux.h (via syscall.h) */
 
@@ -156,8 +159,13 @@ typedef struct process {
      * ngroups = number of valid supplementary GIDs in groups[]. */
     uint32_t    ruid, euid, suid, fsuid;
     uint32_t    rgid, egid, sgid, fsgid;
+    /* Supplementary GIDs — Linux kernel.ngroups_max=65536. Lazy-allocated
+     * via pages_alloc on the first setgroups(>0). NULL with ngroups==0 means
+     * "never set". groups_pages tracks the pages_alloc order so cleanup can
+     * call pages_free with the right count. */
     int         ngroups;
-    uint32_t    groups[NGROUPS_MAX];
+    int         groups_pages;
+    uint32_t   *groups;
 
     /* POSIX Capabilities — Linux capget/capset ABI (V3: 64 bits in u32[2]).
      * Single-user kernel: proc_alloc() initialises everything granted.
@@ -189,6 +197,13 @@ typedef struct process {
      * refcount. */
     struct net_ns        *net_ns;
 } process_t;
+
+/* Supplementary group storage helpers. cred_groups_set is the single
+ * mutator (replaces the array, frees pages on count==0). cred_groups_free
+ * is called from proc_cleanup. Both are slab-free: they hand pages_alloc
+ * pages back to the buddy allocator. */
+int  cred_groups_set(struct process *p, const uint32_t *list, int count);
+void cred_groups_free(struct process *p);
 
 /* Credential helpers: in-group test (egid + supplementary) and
  * DAC access decision for a given inode-owner/mode.

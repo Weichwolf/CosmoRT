@@ -179,6 +179,7 @@ static void free_child_proc(process_t *child) {
         child->vma_root = 0;
     }
     fd_table_free(&child->fds);
+    cred_groups_free(child);
     if ((int)child->pid < pid_table_capacity()) pid_table[child->pid] = 0;
     slab_free(&proc_slab, child);
 }
@@ -370,9 +371,12 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->egid = parent->egid;
         child->sgid = parent->sgid;
         child->fsgid = parent->fsgid;
-        child->ngroups = parent->ngroups;
-        for (int i = 0; i < parent->ngroups && i < NGROUPS_MAX; i++)
-            child->groups[i] = parent->groups[i];
+        /* Inherit supplementary groups. cred_groups_set allocates fresh
+         * backing pages for the child — parent and child must not share. */
+        if (parent->ngroups > 0 && parent->groups) {
+            int gr = cred_groups_set(child, parent->groups, parent->ngroups);
+            if (gr < 0) { free_child_proc(child); return -ENOMEM; }
+        }
         child->cap_effective = parent->cap_effective;
         child->cap_permitted = parent->cap_permitted;
         child->cap_inheritable = parent->cap_inheritable;

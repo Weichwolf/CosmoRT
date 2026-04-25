@@ -114,6 +114,81 @@ static void test_setgroups(void) {
     credtest_fork(child_setgroups);
 }
 
+/* ── setgroups scaling: pre-Phase-13.1 cap was 32; Linux ngroups_max=65536.
+ * Three orthogonal asserts: clamp at limit+1, large-array round-trip,
+ * fork inherits a non-trivial array. NGROUPS_LIMIT mirrors the kernel
+ * NGROUPS_MAX (Linux /proc/sys/kernel/ngroups_max default). ── */
+
+#define NGROUPS_LIMIT 65536
+#define LARGE_GROUPS  1024
+
+static uint32_t big_groups[NGROUPS_LIMIT + 1];
+
+static void child_setgroups_cap(void) {
+    /* Filling NGROUPS_LIMIT+1 must EINVAL. */
+    for (int i = 0; i < NGROUPS_LIMIT + 1; i++) big_groups[i] = (uint32_t)(1000 + i);
+    long r = sc2(SYS_SETGROUPS, NGROUPS_LIMIT + 1, (long)big_groups);
+    check_val("setgroups(65537) EINVAL", r, -EINVAL);
+}
+
+static void test_setgroups_cap(void) {
+    puts("\n[cred/setgroups_cap]\n");
+    credtest_fork(child_setgroups_cap);
+}
+
+static void child_setgroups_large(void) {
+    /* Round-trip a 1024-entry array — would have died in the old fixed
+     * 32-slot layout. Validate first/last/length. */
+    static uint32_t set[LARGE_GROUPS];
+    for (int i = 0; i < LARGE_GROUPS; i++) set[i] = (uint32_t)(2000 + i);
+    long r = sc2(SYS_SETGROUPS, LARGE_GROUPS, (long)set);
+    check_val("setgroups(1024) ok", r, 0);
+    long n = sc2(SYS_GETGROUPS, 0, 0);
+    check_val("getgroups returns 1024", n, LARGE_GROUPS);
+    static uint32_t got[LARGE_GROUPS];
+    n = sc2(SYS_GETGROUPS, LARGE_GROUPS, (long)got);
+    check_val("getgroups read 1024", n, LARGE_GROUPS);
+    check_val("groups[0]=2000",            (long)got[0],            2000);
+    check_val("groups[1023]=3023",         (long)got[1023],         3023);
+
+    /* Setting back to 0 must release the page-allocation. */
+    r = sc2(SYS_SETGROUPS, 0, 0);
+    check_val("setgroups(0) ok", r, 0);
+    n = sc2(SYS_GETGROUPS, 0, 0);
+    check_val("getgroups now 0", n, 0);
+}
+
+static void test_setgroups_large(void) {
+    puts("\n[cred/setgroups_large]\n");
+    credtest_fork(child_setgroups_large);
+}
+
+static void child_setgroups_fork(void) {
+    static uint32_t set[LARGE_GROUPS];
+    for (int i = 0; i < LARGE_GROUPS; i++) set[i] = (uint32_t)(4000 + i);
+    long r = sc2(SYS_SETGROUPS, LARGE_GROUPS, (long)set);
+    check_val("parent setgroups(1024) ok", r, 0);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        long n = sc2(SYS_GETGROUPS, 0, 0);
+        check_val("child inherits 1024 groups", n, LARGE_GROUPS);
+        static uint32_t got[LARGE_GROUPS];
+        sc2(SYS_GETGROUPS, LARGE_GROUPS, (long)got);
+        check_val("child groups[0]=4000",    (long)got[0],    4000);
+        check_val("child groups[500]=4500",  (long)got[500],  4500);
+        check_val("child groups[1023]=5023", (long)got[1023], 5023);
+        sc1(SYS_EXIT, 0);
+        for (;;) {}
+    }
+    int status = 0;
+    sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+}
+
+static void test_setgroups_fork(void) {
+    puts("\n[cred/setgroups_fork]\n");
+    credtest_fork(child_setgroups_fork);
+}
+
 /* ── chmod EPERM when euid != owner ── */
 
 static void child_chmod_eperm(void) {
@@ -305,6 +380,9 @@ TEST("cred/seteuid_nobody",      test_seteuid_nobody);
 TEST("cred/setuid_eperm",        test_setuid_eperm);
 TEST("cred/setresuid",           test_setresuid);
 TEST("cred/setgroups",           test_setgroups);
+TEST("cred/setgroups_cap",       test_setgroups_cap);
+TEST("cred/setgroups_large",     test_setgroups_large);
+TEST("cred/setgroups_fork",      test_setgroups_fork);
 TEST("cred/chmod_eperm",         test_chmod_eperm);
 TEST("cred/chmod_sgid_strip",    test_chmod_sgid_strip);
 TEST("cred/creat_owner",         test_creat_owner);

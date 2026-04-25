@@ -82,6 +82,9 @@ void proc_cleanup(process_t *p) {
     /* Drop network-namespace reference (init_net_ns is pinned). */
     if (p->net_ns) { net_ns_put(p->net_ns); p->net_ns = 0; }
 
+    /* Release supplementary group pages (NULL-safe, no-op if never set). */
+    cred_groups_free(p);
+
     /* Clear lookup table entry */
     if ((int)p->pid < pid_table_capacity())
         pid_table[p->pid] = 0;

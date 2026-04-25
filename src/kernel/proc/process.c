@@ -741,6 +741,44 @@ thread_t *thread_find_by_tid(int tid) {
 
 /* ── Credential helpers ─────────────────────────── */
 
+/* Round bytes up to whole 4KB pages, then up to the next power-of-two so
+ * pages_alloc/pages_free see matching counts (buddy allocator requirement). */
+static int cred_groups_pages_for(int count) {
+    if (count <= 0) return 0;
+    size_t bytes = (size_t)count * sizeof(uint32_t);
+    int pages = (int)((bytes + 4095) / 4096);
+    int p2 = 1;
+    while (p2 < pages) p2 *= 2;
+    return p2;
+}
+
+void cred_groups_free(process_t *p) {
+    if (!p || !p->groups) return;
+    pages_free(p->groups, p->groups_pages);
+    p->groups = 0;
+    p->groups_pages = 0;
+    p->ngroups = 0;
+}
+
+/* Replace the supplementary GID array. count==0 frees the backing storage.
+ * Caller has validated the input GIDs (already kernel-resident copy). */
+int cred_groups_set(process_t *p, const uint32_t *list, int count) {
+    if (!p) return -EFAULT;
+    if (count < 0 || count > NGROUPS_MAX) return -EINVAL;
+    if (count == 0) { cred_groups_free(p); return 0; }
+    int need_pages = cred_groups_pages_for(count);
+    if (need_pages != p->groups_pages) {
+        uint32_t *fresh = (uint32_t *)pages_alloc(need_pages);
+        if (!fresh) return -ENOMEM;
+        if (p->groups) pages_free(p->groups, p->groups_pages);
+        p->groups = fresh;
+        p->groups_pages = need_pages;
+    }
+    for (int i = 0; i < count; i++) p->groups[i] = list[i];
+    p->ngroups = count;
+    return 0;
+}
+
 int cred_in_group(process_t *p, uint32_t gid) {
     if (!p) return 0;
     if (p->egid == gid) return 1;

@@ -242,15 +242,20 @@ long do_setgroups(int size, const uint32_t *list) {
     if (!p) return -EFAULT;
     if (p->euid != 0) return -EPERM;
     if (size < 0 || size > NGROUPS_MAX) return -EINVAL;
-    if (size == 0) { p->ngroups = 0; return 0; }
-    if (!user_ok((uint64_t)list, (size_t)size * sizeof(uint32_t)))
-        return -EFAULT;
-    uint32_t tmp[NGROUPS_MAX];
-    if (copy_from_user(tmp, list, (size_t)size * sizeof(uint32_t)))
-        return -EFAULT;
-    for (int i = 0; i < size; i++) p->groups[i] = tmp[i];
-    p->ngroups = size;
-    return 0;
+    if (size == 0) { cred_groups_free(p); return 0; }
+    size_t bytes = (size_t)size * sizeof(uint32_t);
+    if (!user_ok((uint64_t)list, bytes)) return -EFAULT;
+    /* User buffer can be up to 256KB (NGROUPS_MAX*4) — too big for kstack.
+     * Stage into a fresh pages_alloc buffer, validate, then commit via
+     * cred_groups_set so the in-process array is never half-written. */
+    int pages = (int)((bytes + 4095) / 4096);
+    int p2 = 1; while (p2 < pages) p2 *= 2;
+    uint32_t *tmp = (uint32_t *)pages_alloc(p2);
+    if (!tmp) return -ENOMEM;
+    if (copy_from_user(tmp, list, bytes)) { pages_free(tmp, p2); return -EFAULT; }
+    int r = cred_groups_set(p, tmp, size);
+    pages_free(tmp, p2);
+    return r;
 }
 
 /* personality(2): speichert Persona + Flags in process_t.
