@@ -114,7 +114,11 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       atomic an `eq->wq`; event_post weckt via wake_up_interruptible.
       Schliesst den Race der Phase-12-tickless sem_init/tls_init-Hangs
       ausgeloest hat. +9 ktest Sub-Asserts (event_wait_race/01..05).
-- [ ] `signalfd_read` → waitqueue pro signalfd
+- [x] `timerfd_read` → waitqueue pro timerfd. Migration sauber, +1 LTP PASS.
+- [-] `signalfd_read` — gestrichen. `signalfd` ist heute ENOSYS-Stub
+      (`src/kernel/event/signalfd.c`). Migration eines nicht-existenten
+      Pfads sinnlos. Volle signalfd-Implementierung waere eigene Phase
+      (~500 LOC). LTP installiert keine signalfd-Tests, kein Blocker.
 - [ ] socket recv/accept → waitqueue pro socket (TCP/Unix nutzen
       event_wait — profitiert indirekt schon von 10.2c)
 - [ ] epoll_wait → eigene waitqueue + ep_poll_callback pro registriertem
