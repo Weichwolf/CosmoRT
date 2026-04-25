@@ -119,6 +119,41 @@ static void test_ppoll_ns_timeout(void) {
     put_int(r); puts("\n");
 }
 
+/* Reproduziert clock_nanosleep01-Hang: 10s nanosleep, SIGINT kommt
+ * nach kurzer Zeit, Sleep muss wake-up mit -EINTR und korrektem rem. */
+static long sigint_caught;
+static void sigint_handler(int sig) { (void)sig; sigint_caught = 1; }
+
+static void test_long_sleep_signal_wake(void) {
+    /* Setup SIGINT handler */
+    struct k_sigaction { void (*sa_handler)(int); unsigned long sa_flags;
+                        void *sa_restorer; long sa_mask; } sa = {
+        .sa_handler = sigint_handler, .sa_flags = 0x4000000 /* SA_RESTORER stub*/,
+    };
+    long sa_r = sc4(SYS_RT_SIGACTION, 2 /*SIGINT*/, (long)&sa, 0, 8);
+    if (sa_r) { puts("  skipped (no SA)\n"); return; }
+
+    sigint_caught = 0;
+    /* Fork child that sleeps 5s */
+    int pid = (int)sc0(SYS_FORK);
+    if (pid == 0) {
+        struct ts_t req = { .sec = 5, .nsec = 0 };
+        struct ts_t rem;
+        long r = sc2(SYS_NANOSLEEP, (long)&req, (long)&rem);
+        /* expect -EINTR (-4); rem should reflect remaining time */
+        sc1(SYS_EXIT, (r == -4 && rem.sec >= 4) ? 0 : 99);
+    }
+    /* Parent: short sleep, SIGINT child, wait */
+    struct ts_t pre_sleep = { .sec = 0, .nsec = 100000 };
+    sc2(SYS_NANOSLEEP, (long)&pre_sleep, 0);
+    sc2(SYS_KILL, pid, 2 /*SIGINT*/);
+    int status = 0;
+    long w = sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+    check_val("child reaped", w, pid);
+    check_val("child exit-code 0 (got EINTR + correct rem)", status & 0xff00, 0);
+}
+
+TEST("hrtimer/long_sleep_signal_wake", test_long_sleep_signal_wake);
 TEST("hrtimer/monotonic", test_hrtimer_monotonic);
 TEST("hrtimer/short_nanosleep_precision", test_short_nanosleep_precision);
 TEST("hrtimer/repeated_sub_ms_sleeps", test_repeated_sub_ms_sleeps);

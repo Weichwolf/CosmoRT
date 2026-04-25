@@ -69,10 +69,18 @@ uint64_t hrtimer_now_ns(void) {
 /* ── LAPIC one-shot programming ────────────────────── */
 
 static void lapic_arm_ns(uint64_t delta_ns) {
-    /* Convert ns to LAPIC ticks */
-    uint64_t ticks = (delta_ns * lapic_ticks_per_ms) / NSEC_PER_MSEC;
+    /* Convert ns to LAPIC ticks. Overflow-safe: cap delta_ns auf
+     * Werte die ohne overflow konvertierbar sind. Max LAPIC-Init-Wert
+     * ist 32-bit (0xFFFFFFFF Ticks). */
+    uint64_t ticks;
+    /* delta_ns * lapic_ticks_per_ms wird in 64-bit zu gross wenn delta_ns
+     * etwa > 2^64 / lapic_ticks_per_ms. Bei 60000 ticks/ms (~3GHz CPU/8):
+     * delta_ns < 3e14 ns = 300_000 sec = ~3 Tage. Cap defensiv bei 1h. */
+    const uint64_t MAX_DELTA_NS = 3600ULL * NSEC_PER_SEC;
+    if (delta_ns > MAX_DELTA_NS) delta_ns = MAX_DELTA_NS;
+    ticks = (delta_ns * lapic_ticks_per_ms) / NSEC_PER_MSEC;
     if (ticks < LAPIC_MIN_TICKS) ticks = LAPIC_MIN_TICKS;
-    if (ticks > 0xFFFFFFFF) ticks = 0xFFFFFFFF;
+    if (ticks > 0xFFFFFFFFULL) ticks = 0xFFFFFFFFULL;
 
     lapic_write(LAPIC_TIMER_LVT, LVT_ONESHOT);
     lapic_write(LAPIC_TIMER_INIT, (uint32_t)ticks);

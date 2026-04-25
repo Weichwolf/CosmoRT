@@ -21,6 +21,17 @@ Update: 2026-04-25 Phase 11 restart_block + ERESTARTSYS (f20ad1d..52c905b
   pthread_atfork-errno-clobber bleibt FAIL (anderer root cause als
   Phase 11 vermutete; errno-Erhaltung ueber sigreturn).
 
+Update: 2026-04-25 Phase 12 hrtimer ns + tickless LAPIC
+  (5b8ef42..76dd4a0, 4 commits). ktest 2916/1 (+10), musl 460/11
+  unveraendert. LTP-Run im Gange.
+
+  Migration: timer_ms()-basierte Sleep/Poll/Select/Futex-Pfade alle
+  auf hrtimer_now_ns + event_wait_ns. LAPIC im tickless one-shot,
+  Deadline = min(next-hrtimer, next-1ms-tick).
+
+  Messung: nanosleep(500us) Pre 1.5ms -> Post 1085us. 100x nanosleep(100us)
+  Pre 193ms -> Post 36ms. clock_gettime-max-diff ueber 1000 reads: 62us.
+
 ## Ergebnis
 
 | Suite | Total | PASS | FAIL | SKIP | Delta vs vorher |
