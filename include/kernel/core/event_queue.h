@@ -14,6 +14,7 @@
 #define EVENT_QUEUE_H
 
 #include <stdint.h>
+#include "core/waitqueue.h"
 
 /* ── Event Types ─────────────────────────────── */
 
@@ -47,6 +48,12 @@ typedef struct {
     uint32_t          mask;       /* capacity - 1 */
     volatile uint32_t head;       /* producer index (monotonic) */
     volatile uint32_t tail;       /* consumer index (monotonic) */
+    /* Waitqueue for the eq's owner thread. event_post calls wake_up on
+     * this; event_wait_ns parks via prepare_to_wait. Lock-serializes the
+     * "ring empty? -> sleep" transition so missed-wakeups are impossible.
+     * Single consumer (owner thread); multi-producer (eq_lock-serialized
+     * + wq.lock for the wake). */
+    wait_queue_head_t wq;
 } event_queue_t;
 
 /* ── Lifecycle (implemented in event_queue.c) ── */

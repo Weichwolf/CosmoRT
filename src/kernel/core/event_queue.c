@@ -39,6 +39,7 @@ void event_queue_init(event_queue_t *eq) {
     eq->head = 0;
     eq->tail = 0;
     eq->events = (event_t *)pages_alloc(eq_pages_for(EQ_INIT_CAPACITY));
+    init_waitqueue_head(&eq->wq);
 }
 
 void event_queue_destroy(event_queue_t *eq) {
@@ -49,6 +50,9 @@ void event_queue_destroy(event_queue_t *eq) {
     eq->mask = 0;
     eq->head = 0;
     eq->tail = 0;
+    /* wq is embedded; no separate cleanup. The owner thread (single
+     * consumer) cannot be parked here at destroy time, so no waiter
+     * teardown is needed. */
 }
 
 /* Grow the ring to new_capacity (power of 2, > old capacity).
