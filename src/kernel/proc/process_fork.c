@@ -237,14 +237,14 @@ long kernel_clone(unsigned long flags, void *child_stack,
 
     /* Namespaces need CAP_SYS_ADMIN. After a test drops CAP_SYS_ADMIN the
      * namespace-creation path must return -EPERM (Linux create_new_namespaces).
-     * CLONE_NEWNET requires CONFIG_NET_NS which is absent — LTP tests
-     * (clone09) branch on EINVAL to TCONF. CLONE_NEWNS/NEWCGROUP/NEWUTS are
-     * accepted as no-op so programs merely requesting isolation still work. */
+     * CLONE_NEWNET allocates a fresh net_ns for the child; the remaining
+     * CLONE_NEWNS/NEWCGROUP/NEWUTS/NEWPID/NEWIPC/NEWUSER stay accepted as
+     * no-ops so programs merely requesting isolation still work. */
     if (flags & CLONE_NS_FLAGS) {
         extern int cred_has_cap_sys_admin(process_t *p);
         if (!cred_has_cap_sys_admin(parent)) return -EPERM;
-        if (flags & CLONE_NEWNET) return -EINVAL;
-        flags &= ~CLONE_NS_FLAGS;
+        /* CLONE_NEWNET handled below after child alloc; strip the rest. */
+        flags &= ~(CLONE_NS_FLAGS & ~CLONE_NEWNET);
     }
 
     /* Linux forbids CLONE_NEWTIME on clone(): a task can't atomically
@@ -288,6 +288,29 @@ long kernel_clone(unsigned long flags, void *child_stack,
             time_ns_put(child->time_ns_for_children);
             child->time_ns              = time_ns_get(parent->time_ns_for_children);
             child->time_ns_for_children = time_ns_get(parent->time_ns_for_children);
+        }
+
+        /* network-namespace inheritance: by default share parent's net_ns
+         * (incref). With CLONE_NEWNET, allocate a fresh NS instead.
+         * proc_alloc set child->net_ns = init_net_ns; replace it here. */
+        {
+            extern struct net_ns *net_ns_alloc(struct net_ns *parent);
+            extern struct net_ns *net_ns_get(struct net_ns *ns);
+            extern void           net_ns_put(struct net_ns *ns);
+            net_ns_put(child->net_ns);
+            if (flags & CLONE_NEWNET) {
+                child->net_ns = net_ns_alloc(parent->net_ns);
+                if (!child->net_ns) {
+                    /* Restore an init reference so cleanup path stays sane. */
+                    child->net_ns = net_ns_get(&init_net_ns);
+                    free_child_proc(child);
+                    return -ENOMEM;
+                }
+            } else {
+                child->net_ns = net_ns_get(parent->net_ns);
+            }
+            /* CLONE_NEWNET consumed; mask before any later flag check. */
+            flags &= ~CLONE_NEWNET;
         }
 
         if (mm_share) {

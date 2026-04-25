@@ -7,6 +7,14 @@
 #include "proc/proc_internal.h"
 #include "linux/capability.h"
 #include "core/time_ns.h"
+#include "net/net_ns.h"
+
+/* Net-NS shim: net layer pulls task->net_ns through this typed accessor
+ * so it stays free of proc internals. Strong override of the weak
+ * placeholder declared in src/kernel/net/net_ns.c. */
+struct net_ns *proc_net_ns(struct process *p) {
+    return p ? p->net_ns : 0;
+}
 
 /* ── Slab pools ─────────────────────────────────── */
 
@@ -182,6 +190,10 @@ process_t *proc_alloc(void) {
          * clone()/do_fork overrides via time_ns_for_children inheritance. */
         p->time_ns              = time_ns_get(&init_time_ns);
         p->time_ns_for_children = time_ns_get(&init_time_ns);
+
+        /* Default network namespace — init_net_ns (pinned). clone() with
+         * CLONE_NEWNET swaps to a fresh NS in process_fork. */
+        p->net_ns = net_ns_get(&init_net_ns);
     }
     return p;
 }

@@ -2,6 +2,7 @@
 
 #include "proc/proc_internal.h"
 #include "core/time_ns.h"
+#include "net/net_ns.h"
 #include "linux/signal.h"
 
 /* ── Process cleanup (2.3) ───────────────────────── */
@@ -77,6 +78,9 @@ void proc_cleanup(process_t *p) {
     /* Drop time_namespace references (init_time_ns is pinned). */
     if (p->time_ns)              { time_ns_put(p->time_ns);              p->time_ns = 0; }
     if (p->time_ns_for_children) { time_ns_put(p->time_ns_for_children); p->time_ns_for_children = 0; }
+
+    /* Drop network-namespace reference (init_net_ns is pinned). */
+    if (p->net_ns) { net_ns_put(p->net_ns); p->net_ns = 0; }
 
     /* Clear lookup table entry */
     if ((int)p->pid < pid_table_capacity())

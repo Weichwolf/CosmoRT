@@ -180,6 +180,14 @@ typedef struct process {
      * keeps its old time_ns). */
     struct time_namespace *time_ns;
     struct time_namespace *time_ns_for_children;
+
+    /* Network namespace (CLONE_NEWNET). Linux task_struct::nsproxy::net_ns.
+     * Inherited by fork without CLONE_NEWNET; CLONE_NEWNET allocates a
+     * fresh NS for the child. unshare(CLONE_NEWNET) replaces this in-place;
+     * setns(fd, CLONE_NEWNET) re-binds via /proc/<pid>/ns/net handle.
+     * proc_alloc() initialises to &init_net_ns; proc_cleanup() drops the
+     * refcount. */
+    struct net_ns        *net_ns;
 } process_t;
 
 /* Credential helpers: in-group test (egid + supplementary) and

@@ -20,6 +20,7 @@
 #include "core/irq.h"
 #include "core/event_queue.h"
 #include "net/socket.h"
+#include "net/net_ns.h"
 #include "arch/arch.h"
 #include "hal/hal.h"
 
