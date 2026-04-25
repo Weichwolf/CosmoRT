@@ -71,14 +71,15 @@ typedef struct {
 #define PF_R 4
 
 /* Auxiliary vector types */
-#define AT_NULL    0
-#define AT_PHDR    3
-#define AT_PHENT   4
-#define AT_PHNUM   5
-#define AT_PAGESZ  6
-#define AT_BASE    7
-#define AT_ENTRY   9
-#define AT_RANDOM  25
+#define AT_NULL          0
+#define AT_PHDR          3
+#define AT_PHENT         4
+#define AT_PHNUM         5
+#define AT_PAGESZ        6
+#define AT_BASE          7
+#define AT_ENTRY         9
+#define AT_RANDOM       25
+#define AT_SYSINFO_EHDR 33   /* Linux: vDSO ELF base — required for musl __vdso_* lookup */
 
 /* Extended ELF load result — carries info needed for PT_INTERP / auxv */
 typedef struct {

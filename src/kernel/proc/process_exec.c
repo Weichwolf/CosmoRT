@@ -2,6 +2,7 @@
 
 #include "proc/proc_internal.h"
 #include "linux/capability.h"
+#include "sys/vdso.h"
 
 /* ── execve helpers ──────────────────────────────── */
 
@@ -95,8 +96,11 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
 
     str_off &= ~7ULL;
 
-    /* argc(1) + argv(argc+1) + envp(envc+1) + auxv(8*2+2) */
-    int naux = 8;
+    /* argc(1) + argv(argc+1) + envp(envc+1) + auxv(naux*2+2 incl. AT_NULL).
+     * AT_SYSINFO_EHDR only emitted if the new pml4 actually has the vDSO
+     * mapped (vdso_map skips non-init time_namespaces). */
+    uint64_t vdso_base = vdso_user_base_for(user_pml4);
+    int naux = vdso_base ? 9 : 8;
     int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
     str_off -= (uint64_t)nqwords * 8;
     str_off &= ~0xFULL; /* 16-byte align RSP am Entry */
@@ -113,14 +117,17 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     STK_QWORD(wp, 0); wp += 8;
     for (int i = 0; i < envc; i++) { STK_QWORD(wp, envp_addrs[i]); wp += 8; }
     STK_QWORD(wp, 0); wp += 8;
-    STK_QWORD(wp, AT_PHDR);   wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
-    STK_QWORD(wp, AT_PHENT);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
-    STK_QWORD(wp, AT_PHNUM);  wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
-    STK_QWORD(wp, AT_BASE);   wp += 8; STK_QWORD(wp, elf_info->interp_base);         wp += 8;
-    STK_QWORD(wp, AT_ENTRY);  wp += 8; STK_QWORD(wp, elf_info->prog_entry);          wp += 8;
-    STK_QWORD(wp, AT_PAGESZ); wp += 8; STK_QWORD(wp, 4096);                          wp += 8;
-    STK_QWORD(wp, AT_RANDOM); wp += 8; STK_QWORD(wp, at_random_addr);                wp += 8;
-    STK_QWORD(wp, AT_NULL);   wp += 8; STK_QWORD(wp, 0);                             wp += 8;
+    STK_QWORD(wp, AT_PHDR);          wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
+    STK_QWORD(wp, AT_PHENT);         wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
+    STK_QWORD(wp, AT_PHNUM);         wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
+    STK_QWORD(wp, AT_BASE);          wp += 8; STK_QWORD(wp, elf_info->interp_base);         wp += 8;
+    STK_QWORD(wp, AT_ENTRY);         wp += 8; STK_QWORD(wp, elf_info->prog_entry);          wp += 8;
+    STK_QWORD(wp, AT_PAGESZ);        wp += 8; STK_QWORD(wp, 4096);                          wp += 8;
+    STK_QWORD(wp, AT_RANDOM);        wp += 8; STK_QWORD(wp, at_random_addr);                wp += 8;
+    if (vdso_base) {
+        STK_QWORD(wp, AT_SYSINFO_EHDR); wp += 8; STK_QWORD(wp, vdso_base);                  wp += 8;
+    }
+    STK_QWORD(wp, AT_NULL);          wp += 8; STK_QWORD(wp, 0);                             wp += 8;
 
     #undef STK_QWORD
 
@@ -559,6 +566,12 @@ shebang_retry:;
         schedule();
         __builtin_unreachable();
     }
+
+    /* vDSO: shared kernel-owned pages. Mapped read-only into every user-mm
+     * so __vdso_clock_gettime can run without a syscall. The AT_SYSINFO_EHDR
+     * auxv entry below tells musl where to find them. VMA registration
+     * keeps mm_mmap from allocating over the canonical address. */
+    vdso_map(p->pml4, &p->vma_root);
 
     /* ASLR */
     uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */
