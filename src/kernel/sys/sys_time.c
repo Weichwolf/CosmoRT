@@ -334,6 +334,9 @@ long do_clock_settime(int clk_id, const void *tp) {
     extern int64_t rtc_epoch_sec;
     int64_t uptime_sec = (int64_t)(timer_ms() / MSEC_PER_SEC);
     rtc_epoch_sec = (int64_t)kts.tv_sec - uptime_sec;
+    /* Refresh user-visible wall-time offset so vDSO CLOCK_REALTIME tracks. */
+    extern void vdso_data_update(void);
+    vdso_data_update();
     return 0;
 }
 

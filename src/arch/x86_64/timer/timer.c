@@ -179,6 +179,11 @@ void tsc_recalibrate_for_test(void) {
     clocksource_unregister(&tsc_clocksource);
     tsc_calibrate_and_register();
     clocksource_register(&tsc_clocksource);
+
+    /* Push refreshed scale to user-visible vDSO data page. Optional —
+     * weak link so timer/ doesn't depend on sys/. */
+    extern void vdso_data_update(void) __attribute__((weak));
+    if (vdso_data_update) vdso_data_update();
 }
 
 __attribute__((cold))
