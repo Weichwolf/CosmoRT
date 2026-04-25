@@ -50,18 +50,26 @@ uint64_t hrtimer_now_ns(void) {
     if (__builtin_expect(timer_tsc_to_ns_mult == 0, 0)) return 0;
     uint64_t tsc = timer_tsc_now();
     uint64_t delta = tsc - timer_boot_tsc;
-    /* Split delta in ms-Chunks plus Residue, identisch zu do_clock_gettime.
-     * delta*mult >> shift wuerde nach TSC_MULT_MAX_SEC_WINDOW=600s wrappen
-     * (delta*mult > 2^64) — vorher korrekt fuer kurze Sleeps, danach
-     * Garbage-Vergleich in deadline_ns >= now. Wrap-frei: ms-Anteil via
-     * Division (verlustfrei), Residue (< timer_tsc_per_ms ~2.4e6 cycles)
-     * mit dem Hot-Path-mult/shift fuer ns-Genauigkeit. */
+    /* Hot-Path: delta*mult>>shift fuer kurze Uptimes (das war die
+     * urspruengliche schnelle Variante, single mul + single shift).
+     * delta*mult ueberlaeuft nach TSC_MULT_MAX_SEC_WINDOW=600s — dann
+     * fallback auf den ms-Split-Pfad. Schwellwert: max_safe_delta =
+     * UINT64_MAX / mult. Darueber wuerde das Multiply wrappen.
+     *
+     * Konsequenz: erste 600s Uptime identische Werte zur Pre-Phase-12
+     * Implementierung; danach division-basiert wrap-frei. Beobachtetes
+     * Verhalten unter 600s bleibt bit-exakt; Late-Test-Hangs nach
+     * Wrap (qsort-static, sem_open-static) verschwinden. */
+    uint64_t mult = (uint64_t)timer_tsc_to_ns_mult;
+    if (__builtin_expect(mult != 0 && delta < (UINT64_MAX / mult), 1))
+        return (delta * mult) >> timer_tsc_to_ns_shift;
+
+    /* Fallback: ms-Split, identisch zu do_clock_gettime. */
     uint64_t tpms = timer_tsc_per_ms;
     if (__builtin_expect(tpms == 0, 0)) return 0;
     uint64_t ms = delta / tpms;
     uint64_t residue = delta - ms * tpms;
-    return ms * (uint64_t)NSEC_PER_MSEC
-         + (((residue * (uint64_t)timer_tsc_to_ns_mult) >> timer_tsc_to_ns_shift));
+    return ms * (uint64_t)NSEC_PER_MSEC + ((residue * mult) >> timer_tsc_to_ns_shift);
 }
 
 /* ── LAPIC one-shot programming ────────────────────── */
