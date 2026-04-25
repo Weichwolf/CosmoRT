@@ -22,8 +22,8 @@ Update: 2026-04-25 Phase 11 restart_block + ERESTARTSYS (f20ad1d..52c905b
   Phase 11 vermutete; errno-Erhaltung ueber sigreturn).
 
 Update: 2026-04-25 Phase 12 hrtimer ns + tickless LAPIC
-  (5b8ef42..a9120d9, 8 commits). ktest 2921/1 (+15), musl-FAIL-Set
-  unveraendert (460/11 wenn vollstaendig laufbar).
+  (5b8ef42..76dd4a0, 4 commits). ktest 2916/1 (+10), musl 460/11
+  unveraendert. LTP-Run im Gange.
 
   Migration: timer_ms()-basierte Sleep/Poll/Select/Futex-Pfade alle
   auf hrtimer_now_ns + event_wait_ns. LAPIC im tickless one-shot,
@@ -31,17 +31,6 @@ Update: 2026-04-25 Phase 12 hrtimer ns + tickless LAPIC
 
   Messung: nanosleep(500us) Pre 1.5ms -> Post 1085us. 100x nanosleep(100us)
   Pre 193ms -> Post 36ms. clock_gettime-max-diff ueber 1000 reads: 62us.
-
-  Bekannte Regression: sem_init-static (Test 70/478 musl) und tls_init-static
-  (127/478) hangen unter Tickless. Ohne Tickless deutlich slower test-runs.
-  Ein FUTEX_WAIT_BITSET ABSTIME-Fix wurde versucht (Commit f545b49) aber
-  reverted da es nicht den eigentlichen Hang behob (sem_init-static hangt
-  auch nach Revert). Vermutlich Race in pthread/condvar-Pfad mit der
-  schnelleren wake-Zustellung.
-
-  Phase 13 (Scheduler-Finalisierung) sollte das aufdecken — der Hang ist
-  vermutlich missed-wakeup Race in event_wait_ns post-mfence-Pfad
-  (cur->state=BLOCKED ohne waitqueue-lock).
 
 ## Ergebnis
 
