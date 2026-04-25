@@ -14,8 +14,8 @@
 /* From socket.c — listener lookup (host-order port). Returns the
  * listening socket's embedded tcp state, or NULL. Used by tcp_input to
  * deliver wakeups to the listening socket without a global slot. */
-extern int sock_has_listener(uint16_t local_port_host);
-extern net_tcp_t *sock_listener_tcp(uint16_t local_port_host);
+extern int sock_has_listener(uint32_t ns_id, uint16_t local_port_host);
+extern net_tcp_t *sock_listener_tcp(uint32_t ns_id, uint16_t local_port_host);
 
 /* ── Constants ────────────────────────────────────── */
 
@@ -97,8 +97,10 @@ int rxring_pop(tcp_rxring_t *r, void *buf, int len) {
 static net_tcp_t *tcp_hash[TCP_HASH_SIZE];
 static spinlock_t tcp_hash_lock = SPINLOCK_INIT;
 
-static uint32_t tcp_hash_fn(uint16_t lport, uint16_t rport, const uint8_t *sip) {
-    uint32_t h = (uint32_t)lport ^ ((uint32_t)rport << 7);
+static uint32_t tcp_hash_fn(uint32_t ns_id, uint16_t lport, uint16_t rport,
+                            const uint8_t *sip) {
+    uint32_t h = ns_id;
+    h ^= (uint32_t)lport ^ ((uint32_t)rport << 7);
     h ^= (uint32_t)sip[0] ^ ((uint32_t)sip[1] << 8) ^
          ((uint32_t)sip[2] << 16) ^ ((uint32_t)sip[3] << 24);
     h ^= h >> 16;
@@ -106,7 +108,7 @@ static uint32_t tcp_hash_fn(uint16_t lport, uint16_t rport, const uint8_t *sip) 
 }
 
 void tcp_register(net_tcp_t *c) {
-    uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
+    uint32_t idx = tcp_hash_fn(c->ns_id, c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
     c->hash_next = tcp_hash[idx];
@@ -115,7 +117,7 @@ void tcp_register(net_tcp_t *c) {
 }
 
 void tcp_unregister(net_tcp_t *c) {
-    uint32_t idx = tcp_hash_fn(c->local_port, c->remote_port, c->dst_ip);
+    uint32_t idx = tcp_hash_fn(c->ns_id, c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
     net_tcp_t **pp = &tcp_hash[idx];
@@ -130,11 +132,13 @@ void tcp_unregister(net_tcp_t *c) {
     spin_unlock_irq(&tcp_hash_lock, flags);
 }
 
-net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *src_ip) {
-    uint32_t idx = tcp_hash_fn(local_port, remote_port, src_ip);
+net_tcp_t *tcp_find(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
+                    const uint8_t *src_ip) {
+    uint32_t idx = tcp_hash_fn(ns_id, local_port, remote_port, src_ip);
     net_tcp_t *c = __atomic_load_n(&tcp_hash[idx], __ATOMIC_ACQUIRE);
     while (c) {
-        if (c->local_port == local_port && c->remote_port == remote_port &&
+        if (c->ns_id == ns_id &&
+            c->local_port == local_port && c->remote_port == remote_port &&
             c->dst_ip[0] == src_ip[0] && c->dst_ip[1] == src_ip[1] &&
             c->dst_ip[2] == src_ip[2] && c->dst_ip[3] == src_ip[3])
             return c;
@@ -879,20 +883,20 @@ static void send_rst_to(const uint8_t *in_pkt) {
 
 /* ── TCP Input (from dispatcher) ───────────────────── */
 
-void tcp_input(const uint8_t *pkt, int len) {
+void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
     if (len < 54) return;
 
     uint16_t dport = get16(pkt + 36);
     uint16_t sport = get16(pkt + 34);
     const uint8_t *src_ip = pkt + 26;
 
-    net_tcp_t *c = tcp_find(dport, sport, src_ip);
+    net_tcp_t *c = tcp_find(ns_id, dport, sport, src_ip);
     if (!c) {
         uint8_t in_flags = pkt[47];
         /* RST to nowhere: silently drop, never bounce */
         if (in_flags & 0x04) return;
 
-        net_tcp_t *ltcp = sock_listener_tcp(dport);
+        net_tcp_t *ltcp = sock_listener_tcp(ns_id, dport);
         /* SYN to closed port -> RST+ACK (ECONNREFUSED on connect side).
          * Only for a pure SYN; RST never mirrored (loop). */
         if ((in_flags & 0x3F) == 0x02 && !ltcp) {
@@ -1242,6 +1246,10 @@ int net_tcp_accept_child(net_tcp_t *listener, net_tcp_t *child) {
         return -12; /* -ENOMEM */
     }
 
+    /* Inherit listener's NS so the accepted child lives where its parent
+     * does (matters for the per-NS tcp_hash key). */
+    child->ns_id = listener->ns_id;
+
     mcpy(child->dst_mac, r->src_mac, 6);
     mcpy(child->dst_ip,  r->src_ip,  4);
     child->local_port  = r->local_port;
@@ -1298,13 +1306,17 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     }
     if (c->got_rst) return -1;
 
-    /* Preserve wait_thread across mzero: caller (do_connect) set it for
-     * recursive loopback wakeup via send_syn -> tcp_input.
+    /* Preserve wait_thread + ns_id across mzero: caller (do_connect) set
+     * wait_thread for recursive loopback wakeup via send_syn -> tcp_input;
+     * ns_id was assigned at socket() time and must survive into
+     * tcp_register so the hash key targets the right namespace.
      * OOO list is freed by net_tcp_close before reuse; mzero on a freshly
      * allocated socket is safe (head was never written). */
     struct thread *saved_wt = c->wait_thread;
+    uint32_t saved_ns = c->ns_id;
     mzero(c, sizeof(*c));
     c->wait_thread = saved_wt;
+    c->ns_id = saved_ns;
     rxring_init(&c->rx);
     mcpy(c->dst_ip, dst_ip, 4);
     c->remote_port = port;

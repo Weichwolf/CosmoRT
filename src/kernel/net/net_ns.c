@@ -52,29 +52,29 @@ static void net_ns_fail(const char *msg) {
 
 /* ── Loopback per-NS ──────────────────────────────── */
 
-extern void tcp_input(const uint8_t *pkt, int len);
-extern int  udp_input(const uint8_t *pkt, int len);
+extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
+extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern void epoll_wake_all(void);
 
 #include "net/net.h"
 #include "net/net_util.h"
 
 static void per_ns_lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
-    (void)nif;
+    uint32_t ns_id = nif->ns ? nif->ns->ns_id : init_net_ns.ns_id;
     uint8_t buf[1600];
     if (len > 1600) return;
     for (int i = 0; i < len; i++) buf[i] = data[i];
 
     uint8_t proto = buf[23];
     if (proto == 6) {
-        tcp_input(buf, len);
+        tcp_input(ns_id, buf, len);
     } else if (proto == 1) {
         q_push(&q_icmp, buf, len);
     } else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(buf + 36);
         if (dport == 68)
             q_push(&q_udp_dhcp, buf, len);
-        else if (!udp_input(buf, len))
+        else if (!udp_input(ns_id, buf, len))
             q_push(&q_udp_dns, buf, len);
     }
     epoll_wake_all();

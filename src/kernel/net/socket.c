@@ -3,6 +3,7 @@
  */
 
 #include "net/socket.h"
+#include "net/net_ns.h"
 #include "proc/process.h"
 #include "event/fd.h"
 #include "hw/serial.h"
@@ -89,13 +90,14 @@ void sock_free(socket_t *s) {
     spin_unlock_irq(&sock_lock, flags);
 }
 
-socket_t *sock_find_listener(uint16_t local_port_host) {
+socket_t *sock_find_listener(uint32_t ns_id, uint16_t local_port_host) {
     uint16_t be = bswap16(local_port_host);
     uint64_t flags;
     socket_t *found = 0;
     spin_lock_irq(&sock_lock, &flags);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
-        if (o->state == SOCK_LISTENING && o->local_port == be) {
+        if (o->state == SOCK_LISTENING && o->local_port == be &&
+            o->ns_id == ns_id) {
             found = o;
             break;
         }
@@ -104,12 +106,12 @@ socket_t *sock_find_listener(uint16_t local_port_host) {
     return found;
 }
 
-int sock_has_listener(uint16_t local_port_host) {
-    return sock_find_listener(local_port_host) != 0;
+int sock_has_listener(uint32_t ns_id, uint16_t local_port_host) {
+    return sock_find_listener(ns_id, local_port_host) != 0;
 }
 
-net_tcp_t *sock_listener_tcp(uint16_t local_port_host) {
-    socket_t *s = sock_find_listener(local_port_host);
+net_tcp_t *sock_listener_tcp(uint32_t ns_id, uint16_t local_port_host) {
+    socket_t *s = sock_find_listener(ns_id, local_port_host);
     return s ? &s->tcp : 0;
 }
 
@@ -165,6 +167,8 @@ long do_socket(int domain, int type, int protocol) {
 
     process_t *p = proc_current();
     if (!p) { sock_free(s); return -EFAULT; }
+    s->ns_id = p->net_ns ? p->net_ns->ns_id : init_net_ns.ns_id;
+    s->tcp.ns_id = s->ns_id;
 
     int flags = 0x02; /* O_RDWR */
     if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC -> O_CLOEXEC */
@@ -235,10 +239,15 @@ long do_connect(int fd, const void *addr, int addrlen) {
         return 0;
     }
 
-    /* Zero the tcp struct — but only on first call, not syscall restart */
-    if (s->tcp.state == TCP_CLOSED && !s->tcp.got_rst)
+    /* Zero the tcp struct — but only on first call, not syscall restart.
+     * Preserve ns_id (assigned at socket() time) so the connection hashes
+     * into the right namespace bucket. */
+    if (s->tcp.state == TCP_CLOSED && !s->tcp.got_rst) {
+        uint32_t saved_ns = s->ns_id;
         for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
             ((uint8_t *)&s->tcp)[i] = 0;
+        s->tcp.ns_id = saved_ns;
+    }
 
     /* No gateway configured and not loopback → network unreachable */
     if (net_gw_ip[0] == 0 && net_gw_ip[1] == 0 &&
@@ -340,7 +349,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
             if (random_get(&rnd, sizeof(rnd)) < 0)
                 rnd = (uint16_t)(timer_ms() & 0xFFFF);
             s->udp_local_port = (uint16_t)(49152 + (rnd & 0x3FFF));
-            udp_bind(s->udp_local_port);
+            udp_bind_ns(s->ns_id, s->udp_local_port);
         }
 
         /* MTU guard: IP(20) + UDP(8) + payload ≤ 1500 */
@@ -409,7 +418,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         uint8_t sip[4];
         uint16_t sport;
         thread_t *t = thread_current();
-        udp_sock_t *us = udp_find(s->udp_local_port);
+        udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
         if (us) __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE);
         for (;;) {
             int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
@@ -432,7 +441,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             }
             if (nonblock_udp) { if (us) us->wait_thread = 0; return -EAGAIN; }
             if (timer_ms() >= udp_deadline) { if (us) us->wait_thread = 0; return -EAGAIN; }
-            if (!us) { us = udp_find(s->udp_local_port); if (!us) return -EAGAIN;
+            if (!us) { us = udp_find_ns(s->ns_id, s->udp_local_port); if (!us) return -EAGAIN;
                        __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE); }
             int remain = (int)(udp_deadline - timer_ms());
             if (remain <= 0) { us->wait_thread = 0; return -EAGAIN; }
@@ -566,7 +575,7 @@ long socket_close(int fd) {
     if (old > 1) return 0; /* other processes still reference this socket */
 
     if (s->is_dgram && s->udp_local_port) {
-        udp_sock_t *us = udp_find(s->udp_local_port);
+        udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
         if (us) udp_unbind(us);
     }
     if (s->state == SOCK_LISTENING && !s->is_dgram) {
@@ -642,6 +651,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
             int conflict = 0;
             for (socket_t *o = sock_active_head; o; o = o->next_active) {
                 if (o == s) continue;
+                if (o->ns_id != s->ns_id) continue;
                 if (o->local_port == port_be) { conflict = 1; break; }
             }
             if (!conflict) {
@@ -650,7 +660,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
                 if (s->is_dgram) {
                     s->udp_local_port = port_host;
                     spin_unlock_irq(&sock_lock, lflags);
-                    udp_bind(port_host);
+                    udp_bind_ns(s->ns_id, port_host);
                     return 0;
                 }
                 spin_unlock_irq(&sock_lock, lflags);
@@ -661,11 +671,13 @@ long do_bind(int fd, const void *addr, int addrlen) {
         return -EADDRINUSE;
     }
 
-    /* Check for port conflict (unless SO_REUSEADDR) */
+    /* Check for port conflict in same NS only (unless SO_REUSEADDR).
+     * Per-NS isolation: port 8080 may exist independently in NS-A and NS-B. */
     uint64_t lflags;
     spin_lock_irq(&sock_lock, &lflags);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
         if (o == s) continue;
+        if (o->ns_id != s->ns_id) continue;
         if (o->local_port == k_addr.sin_port &&
             (o->local_ip == k_addr.sin_addr || k_addr.sin_addr == 0 || o->local_ip == 0)) {
             if (!(s->sockflags & SOCKF_REUSEADDR)) {
@@ -681,7 +693,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
     /* For UDP: also set udp_local_port (host byte order) for sendto/recvfrom */
     if (s->is_dgram) {
         s->udp_local_port = bswap16(k_addr.sin_port);
-        udp_bind(s->udp_local_port);
+        udp_bind_ns(s->ns_id, s->udp_local_port);
     }
     return 0;
 }
@@ -766,6 +778,8 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     socket_t *ns = sock_alloc();
     if (!ns) return -EMFILE;
     ns->refcount = 1;
+    /* Inherit listener's NS — accepted child must hash in same NS as listener. */
+    ns->ns_id = ls->ns_id;
 
     int rc;
     for (;;) {

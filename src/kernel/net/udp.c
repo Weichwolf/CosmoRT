@@ -5,6 +5,7 @@
  */
 
 #include "net/net.h"
+#include "net/net_ns.h"
 #include "net/net_util.h"
 #include "hw/serial.h"
 #include "core/timer.h"
@@ -33,19 +34,23 @@ static spinlock_t  udp_table_lock = SPINLOCK_INIT;
 
 /* ── Lookup (lock-free, called from RT-Core hot path) ── */
 
-udp_sock_t *udp_find(uint16_t port) {
-    uint32_t idx = port & (UDP_HASH_SIZE - 1);
+udp_sock_t *udp_find_ns(uint32_t ns_id, uint16_t port) {
+    uint32_t idx = (port ^ ns_id) & (UDP_HASH_SIZE - 1);
     udp_sock_t *s = __atomic_load_n(&udp_hash[idx], __ATOMIC_ACQUIRE);
     while (s) {
-        if (s->port == port) return s;
+        if (s->port == port && s->ns_id == ns_id) return s;
         s = s->hash_next;
     }
     return 0;
 }
 
+udp_sock_t *udp_find(uint16_t port) {
+    return udp_find_ns(net_ns_current()->ns_id, port);
+}
+
 /* ── Bind / Unbind ───────────────────────────────────── */
 
-udp_sock_t *udp_bind(uint16_t port) {
+udp_sock_t *udp_bind_ns(uint32_t ns_id, uint16_t port) {
     uint64_t flags;
 
     udp_slab_ensure_init();
@@ -56,9 +61,9 @@ udp_sock_t *udp_bind(uint16_t port) {
     spin_lock_irq(&udp_table_lock, &flags);
 
     /* Duplicate check in hash chain */
-    uint32_t idx = port & (UDP_HASH_SIZE - 1);
+    uint32_t idx = (port ^ ns_id) & (UDP_HASH_SIZE - 1);
     for (udp_sock_t *s = udp_hash[idx]; s; s = s->hash_next) {
-        if (s->port == port) {
+        if (s->port == port && s->ns_id == ns_id) {
             spin_unlock_irq(&udp_table_lock, flags);
             if (fresh) slab_free(&udp_slab, fresh);
             return s; /* already bound — reuse */
@@ -71,6 +76,7 @@ udp_sock_t *udp_bind(uint16_t port) {
     }
 
     fresh->port = port;
+    fresh->ns_id = ns_id;
     fresh->q = (pkt_queue_t)PKT_QUEUE_INIT;
     fresh->wait_thread = 0;
 
@@ -82,12 +88,16 @@ udp_sock_t *udp_bind(uint16_t port) {
     return fresh;
 }
 
+udp_sock_t *udp_bind(uint16_t port) {
+    return udp_bind_ns(net_ns_current()->ns_id, port);
+}
+
 void udp_unbind(udp_sock_t *s) {
     if (!s) return;
     uint64_t flags;
     spin_lock_irq(&udp_table_lock, &flags);
 
-    uint32_t idx = s->port & (UDP_HASH_SIZE - 1);
+    uint32_t idx = (s->port ^ s->ns_id) & (UDP_HASH_SIZE - 1);
     udp_sock_t **pp = &udp_hash[idx];
     while (*pp) {
         if (*pp == s) {
@@ -110,10 +120,10 @@ void udp_unbind(udp_sock_t *s) {
 
 /* ── UDP Input (from dispatcher) ───────────────────── */
 
-int udp_input(const uint8_t *pkt, int len) {
+int udp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
     if (len < 42) return 0;
     uint16_t dport = get16(pkt + 36);
-    udp_sock_t *s = udp_find(dport);
+    udp_sock_t *s = udp_find_ns(ns_id, dport);
     if (!s) return 0;
     q_push(&s->q, pkt, len);
     /* Wake thread blocked on recv */

@@ -161,6 +161,10 @@ typedef struct net_tcp {
     /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
     struct thread *wait_thread;
 
+    /* Owning network-namespace ID (init_net_ns.ns_id == 1). Hash key
+     * includes this so two NS can hold the same 4-tuple independently. */
+    uint32_t ns_id;
+
     /* Hash-table chaining (tcp_hash bucket linked list) */
     struct net_tcp *hash_next;
 
@@ -188,10 +192,13 @@ void tfo_cache_store(const uint8_t *ip, const uint8_t *cookie, uint8_t len);
 
 /* ── TCP Hash Table ───────────────────────────────── */
 
-/* Register/unregister connection in hash table for O(1) lookup */
+/* Register/unregister connection in hash table for O(1) lookup. The
+ * connection's ns_id field is part of the lookup key. */
 void     tcp_register(net_tcp_t *c);
 void     tcp_unregister(net_tcp_t *c);
-net_tcp_t *tcp_find(uint16_t local_port, uint16_t remote_port, const uint8_t *src_ip);
+/* Lookup keyed by ns_id (caller's NS). */
+net_tcp_t *tcp_find(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
+                    const uint8_t *src_ip);
 
 /* ── TCP API (called by socket.c) ─────────────────── */
 
@@ -213,9 +220,12 @@ struct tcp_request;
 int  tcp_listener_pop_accept(net_tcp_t *c, struct tcp_request **out_req);
 void tcp_req_release(struct tcp_request *r);
 
-/* ── TCP Input (called by net.c dispatcher) ───────── */
+/* ── TCP Input (called by net.c dispatcher / loopback) ─────────────
+ * ns_id selects which NS hosts the listening socket / connection.
+ * Wire packets from physical NICs always belong to init_net_ns; loopback
+ * carries the sender's NS so per-NS lo isolation is enforced. */
 
-void tcp_input(const uint8_t *pkt, int len);
+void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 
 /* ── Internals shared with net.c ──────────────────── */
 

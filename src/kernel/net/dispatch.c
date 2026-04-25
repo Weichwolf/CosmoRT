@@ -5,8 +5,9 @@
 #include "net/arp.h"
 
 /* Forward declarations */
-extern void tcp_input(const uint8_t *pkt, int len);
-extern int  udp_input(const uint8_t *pkt, int len);
+#include "net/net_ns.h"
+extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
+extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 
 /* NIC driver access (defined in net.c) */
 extern const nic_driver_t *net_nic_get(void);
@@ -34,7 +35,10 @@ static int net_rx_one(const nic_driver_t *n) {
 
     uint8_t proto = pkt[23];
     int queued = 0;
-    if (proto == 6)       { tcp_input(pkt, len); queued = 1; }
+    /* Wire packets always belong to init_net_ns — physical NICs are not
+     * migrated into per-NS slots in Phase 15. */
+    uint32_t wire_ns = init_net_ns.ns_id;
+    if (proto == 6)       { tcp_input(wire_ns, pkt, len); queued = 1; }
     else if (proto == 1)  { q_push(&q_icmp, pkt, len); queued = 1; }
     else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(pkt + 36);
@@ -43,7 +47,7 @@ static int net_rx_one(const nic_driver_t *n) {
         else if (dns_local_port && dport == dns_local_port)
             q_push(&q_udp_dns, pkt, len);
         else {
-            udp_input(pkt, len);
+            udp_input(wire_ns, pkt, len);
         }
         queued = 1;
     }

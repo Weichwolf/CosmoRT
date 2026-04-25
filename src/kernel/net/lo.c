@@ -9,27 +9,32 @@
 #include "net/net_util.h"
 
 /* Forward declarations for protocol input */
-extern void tcp_input(const uint8_t *pkt, int len);
-extern int  udp_input(const uint8_t *pkt, int len);
+#include "net/net_ns.h"
+extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
+extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern void sched_wake(struct thread *t);
 extern void epoll_wake_all(void);
 
+/* The init_net_ns loopback. Per-NS loopback uses the parallel send
+ * function defined in net_ns.c, which keys input dispatch on the
+ * sender's NS rather than always init. */
 static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
     (void)nif;
     uint8_t buf[1600];
     if (len > 1600) return;
     for (int i = 0; i < len; i++) buf[i] = data[i];
 
+    uint32_t ns = init_net_ns.ns_id;
     uint8_t proto = buf[23];
     if (proto == 6) {
-        tcp_input(buf, len);
+        tcp_input(ns, buf, len);
     } else if (proto == 1) {
         q_push(&q_icmp, buf, len);
     } else if (proto == 17 && len >= 42) {
         uint16_t dport = get16(buf + 36);
         if (dport == 68)
             q_push(&q_udp_dhcp, buf, len);
-        else if (!udp_input(buf, len))
+        else if (!udp_input(ns, buf, len))
             q_push(&q_udp_dns, buf, len);
     }
     epoll_wake_all();

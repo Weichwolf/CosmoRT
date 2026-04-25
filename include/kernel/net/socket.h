@@ -44,6 +44,11 @@ struct socket {
     /* socket options */
     uint32_t  sockflags;
 
+    /* Owning network-namespace ID. Captured at socket() time, freed when
+     * the socket is released. Listener lookup keys on (port, ns_id) so
+     * two NS can hold the same port concurrently. */
+    uint32_t  ns_id;
+
     /* Actual accept path runs through net_tcp_accept (tcp.c); no in-socket
      * queue needed. listen()-backlog is tracked there. */
 
@@ -80,12 +85,12 @@ extern socket_t *sock_active_head;
 socket_t *sock_alloc(void);
 void sock_free(socket_t *s);
 
-/* Returns 1 if any socket is in SOCK_LISTENING state on local_port (host order),
- * else 0. Used by tcp_input to decide RST-on-closed-port (Linux semantics). */
-int sock_has_listener(uint16_t local_port_host);
+/* Returns 1 if any socket is in SOCK_LISTENING state on local_port in the
+ * given NS, else 0. Used by tcp_input to decide RST-on-closed-port. */
+int sock_has_listener(uint32_t ns_id, uint16_t local_port_host);
 
-/* Returns the listening socket for local_port (host order), or NULL. */
-socket_t *sock_find_listener(uint16_t local_port_host);
+/* Returns the listening socket for (ns_id, local_port_host), or NULL. */
+socket_t *sock_find_listener(uint32_t ns_id, uint16_t local_port_host);
 
 /* Called from do_read/do_write/do_close for FD_SOCKET */
 long socket_read(int fd, void *buf, long count);

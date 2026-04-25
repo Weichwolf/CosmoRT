@@ -482,7 +482,7 @@ void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags) {
         socket_t *s = (socket_t *)fde_obj;
         if (__sync_sub_and_fetch(&s->refcount, 1) <= 0) {
             if (s->is_dgram && s->udp_local_port) {
-                udp_sock_t *us = udp_find(s->udp_local_port);
+                udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
                 if (us) udp_unbind(us);
             }
             if (!s->is_dgram) {

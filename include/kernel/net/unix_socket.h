@@ -58,6 +58,11 @@ struct unix_socket {
     /* Blocked accept (waiting for incoming connection) */
     void     *blocked_acceptor; /* thread_t* — blocked in accept() */
 
+    /* Owning network namespace. Abstract sockets (path[0]==0) are isolated
+     * per-NS; pathname sockets remain global because they live on the VFS,
+     * which is not namespaced in Phase 15. */
+    uint32_t  ns_id;
+
     /* Global active list (intrusive) — replaces static pool scan for
      * bind-name-collision/connect-path-lookup. */
     unix_socket_t *next_active;

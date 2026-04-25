@@ -5,6 +5,7 @@
  * Named sockets: bind to path, listen, accept, connect. */
 
 #include "net/unix_socket.h"
+#include "net/net_ns.h"
 #include "proc/process.h"
 #include "event/fd.h"
 #include "hw/serial.h"
@@ -61,6 +62,7 @@ static unix_socket_t *usock_alloc(void) {
     /* slab_alloc zeroes */
     s->state = USOCK_CREATED;
     s->refcount = 1;
+    s->ns_id = net_ns_current()->ns_id;
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     usock_list_add(s);
@@ -287,6 +289,9 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
         if (o == s || o->path_len == 0) continue;
         if (o->path_len != new_len) continue;
+        /* Abstract sockets only collide inside the same NS; pathname
+         * sockets are global because the underlying VFS path is shared. */
+        if (is_abstract && o->ns_id != s->ns_id) continue;
         int match = 1;
         for (int j = 0; j < new_len; j++) {
             if (o->path[j] != new_path[j]) { match = 0; break; }
@@ -436,13 +441,15 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
         if (target_len == 0) return -EINVAL;
     }
 
-    /* Find listening socket with matching path via active list */
+    /* Find listening socket with matching path via active list. Abstract
+     * sockets are NS-scoped; pathname sockets are global (filesystem). */
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     unix_socket_t *listener = 0;
     for (unix_socket_t *o = usock_active_head; o; o = o->next_active) {
         if (o->state != USOCK_LISTENING) continue;
         if (o->path_len != target_len) continue;
+        if (is_abstract && o->ns_id != s->ns_id) continue;
         int match = 1;
         for (int j = 0; j < target_len; j++) {
             if (o->path[j] != target[j]) { match = 0; break; }
