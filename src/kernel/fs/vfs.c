@@ -640,9 +640,9 @@ int vfs_open(const char *path, int flags, int mode) {
         if (!p) return -EFAULT;
         /* Find the PTY from existing fds (stdin is typically PTY_SLAVE) */
         for (int i = 0; i < 3; i++) {
-            if (p->fds.entries[i].type == FD_PTY_SLAVE) {
-                int fd = fd_alloc(&p->fds, FD_PTY_SLAVE,
-                                  p->fds.entries[i].obj,
+            fd_entry_t *e = fd_entry_at(&p->fds, i);
+            if (e && e->type == FD_PTY_SLAVE) {
+                int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, e->obj,
                                   (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
                 return fd < 0 ? -EMFILE : fd;
             }

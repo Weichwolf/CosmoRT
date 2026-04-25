@@ -27,15 +27,16 @@ void proc_cleanup(process_t *p) {
     /* Close all FDs — decrement refcount, free when last ref.
      * exit_kill_process already does this, so entries may be FD_NONE. */
     for (int i = 0; i < p->fds.max_slots; i++) {
-        int type = p->fds.entries[i].type;
+        fd_entry_t *e = fd_entry_at(&p->fds, i);
+        if (!e) continue;
+        int type = e->type;
         if (type == FD_FILE) {
-            vfs_file_free_obj(p->fds.entries[i].obj);
+            vfs_file_free_obj(e->obj);
         } else if (type != FD_NONE && type != FD_SERIAL) {
-            fd_cleanup_entry(type, p->fds.entries[i].obj,
-                             p->fds.entries[i].flags);
+            fd_cleanup_entry(type, e->obj, e->flags);
         }
-        p->fds.entries[i].type = FD_NONE;
-        p->fds.entries[i].obj = 0;
+        e->type = FD_NONE;
+        e->obj = 0;
     }
     fd_table_free(&p->fds);
 

@@ -302,14 +302,98 @@ int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int p
 /* Default PTY for init's stdio. Set by vt_init(). */
 int fd_default_pty = -1;
 
-static int fd_entries_pages(int slots) {
-    size_t bytes = (size_t)slots * sizeof(fd_entry_t);
+static int fd_bitmap_pages(int slots) {
+    size_t words = slots / 64;
+    if (words == 0) words = 1;
+    size_t bytes = words * sizeof(uint64_t);
     return (int)((bytes + 4095) / 4096);
 }
-static int fd_bitmap_pages(int slots) {
-    size_t bytes = (size_t)(slots / 64) * sizeof(uint64_t);
-    if (bytes == 0) bytes = sizeof(uint64_t);
-    return (int)((bytes + 4095) / 4096);
+
+/* Power-of-two pages that hold leaf-pointer slots. */
+static int fd_dir_pages(int leaf_slots) {
+    size_t bytes = (size_t)leaf_slots * sizeof(fd_entry_t *);
+    int n = (int)((bytes + 4095) / 4096);
+    if (n < 1) n = 1;
+    int p2 = 1;
+    while (p2 < n) p2 *= 2;
+    return p2;
+}
+
+/* Round up to a multiple of FD_LEAF_PER_PAGE so leaf math stays integer. */
+static int fd_round_slots(int s) {
+    int leaves = (s + FD_LEAF_PER_PAGE - 1) / FD_LEAF_PER_PAGE;
+    return leaves * FD_LEAF_PER_PAGE;
+}
+
+/* Grow entries_dir to hold at least need_leaves slot-pointers. */
+static int fd_dir_grow(fd_table_t *fdt, int need_leaves) {
+    if (need_leaves <= fdt->dir_capacity) return 0;
+    int new_cap = fdt->dir_capacity ? fdt->dir_capacity : 1;
+    while (new_cap < need_leaves) new_cap *= 2;
+    int new_pages = fd_dir_pages(new_cap);
+    fd_entry_t **nd = (fd_entry_t **)pages_alloc(new_pages);
+    if (!nd) return -ENOMEM;
+    if (fdt->entries_dir) {
+        for (int i = 0; i < fdt->dir_capacity; i++) nd[i] = fdt->entries_dir[i];
+        pages_free(fdt->entries_dir, fd_dir_pages(fdt->dir_capacity));
+    }
+    fdt->entries_dir = nd;
+    fdt->dir_capacity = new_cap;
+    return 0;
+}
+
+/* The bitmap is sized to cover round_up(max_slots, 64) bits — see the
+ * round-up dance below. Bits past max_slots are pre-marked as USED so
+ * fd_find_free never hands out an out-of-bounds index. */
+static int fd_bitmap_alloc_slots(int slots) { return (slots + 63) & ~63; }
+
+/* Grow the flat free-bitmap to cover new_slots entries. The bitmap's
+ * physical capacity is rounded to multiples of 64 so the word loop in
+ * fd_find_free is well-defined; max_slots itself stays at the leaf-aligned
+ * value the caller asked for. */
+static int fd_bitmap_grow(fd_table_t *fdt, int new_slots) {
+    if (new_slots <= fdt->max_slots) return 0;
+    int alloc_slots = fd_bitmap_alloc_slots(new_slots);
+    int old_alloc   = fd_bitmap_alloc_slots(fdt->max_slots);
+    int new_words = alloc_slots / 64;
+    uint64_t *nb = (uint64_t *)pages_alloc(fd_bitmap_pages(alloc_slots));
+    if (!nb) return -ENOMEM;
+    for (int w = 0; w < new_words; w++) nb[w] = ~0ULL;  /* all free */
+    if (fdt->free_bitmap) {
+        /* Carry over previously-set bits, but only inside the previously-
+         * valid range [0, max_slots). The old slack [max_slots, old_alloc)
+         * had been masked USED — re-init clean and let the new slack
+         * masking below place USED bits correctly for the new size. */
+        for (int b = 0; b < fdt->max_slots; b++) {
+            uint64_t bit = 1ULL << (b % 64);
+            if (!(fdt->free_bitmap[b / 64] & bit))
+                nb[b / 64] &= ~bit;
+        }
+        pages_free(fdt->free_bitmap, fd_bitmap_pages(old_alloc));
+    }
+    fdt->free_bitmap = nb;
+    fdt->max_slots   = new_slots;
+    /* Mark the slack bits (max_slots..alloc_slots-1) as USED so we never
+     * hand out an fd > max_slots-1 even though the bitmap word covers it. */
+    for (int b = new_slots; b < alloc_slots; b++)
+        fdt->free_bitmap[b / 64] &= ~(1ULL << (b % 64));
+    return 0;
+}
+
+/* Lazy leaf allocation. fd must be < fdt->max_slots when called. */
+static int fd_leaf_alloc(fd_table_t *fdt, int fd) {
+    int li = fd / FD_LEAF_PER_PAGE;
+    if (fdt->entries_dir[li]) return 0;
+    fd_entry_t *page = (fd_entry_t *)pages_alloc(1);
+    if (!page) return -ENOMEM;
+    fdt->entries_dir[li] = page;
+    fdt->leaf_count++;
+    return 0;
+}
+
+/* Public wrapper for callers in other TUs (currently fork's dup_fd_table). */
+int fd_table_leaf_ensure(fd_table_t *fdt, int fd) {
+    return fd_leaf_alloc(fdt, fd);
 }
 
 /* fd_alloc/expand/dup may be entered concurrently via signal-path syscalls;
@@ -321,33 +405,19 @@ static int fd_table_grow(fd_table_t *fdt, int min_slots) {
     while (new_slots < min_slots) new_slots *= 2;
     if (new_slots > FD_CEILING) new_slots = FD_CEILING;
     if (new_slots < min_slots) return -EMFILE;
+    new_slots = fd_round_slots(new_slots);
+    if (new_slots > FD_CEILING) new_slots = FD_CEILING;
 
-    fd_entry_t *ne = (fd_entry_t *)pages_alloc(fd_entries_pages(new_slots));
-    uint64_t   *nb = ne ? (uint64_t *)pages_alloc(fd_bitmap_pages(new_slots)) : 0;
-    if (!ne || !nb) {
-        if (ne) pages_free(ne, fd_entries_pages(new_slots));
-        if (nb) pages_free(nb, fd_bitmap_pages(new_slots));
-        return -ENOMEM;
-    }
-
-    int nwords = new_slots / 64;
-    for (int w = 0; w < nwords; w++) nb[w] = ~0ULL;
-
-    if (fdt->entries) {
-        for (int i = 0; i < fdt->max_slots; i++) ne[i] = fdt->entries[i];
-        int ow = fdt->max_slots / 64;
-        for (int w = 0; w < ow; w++) nb[w] = fdt->free_bitmap[w];
-        pages_free(fdt->entries,     fd_entries_pages(fdt->max_slots));
-        pages_free(fdt->free_bitmap, fd_bitmap_pages(fdt->max_slots));
-    }
-    fdt->entries     = ne;
-    fdt->free_bitmap = nb;
-    fdt->max_slots   = new_slots;
-    return 0;
+    int need_leaves = (new_slots + FD_LEAF_PER_PAGE - 1) / FD_LEAF_PER_PAGE;
+    int r = fd_dir_grow(fdt, need_leaves);
+    if (r) return r;
+    return fd_bitmap_grow(fdt, new_slots);
 }
 
 int fd_table_alloc_empty(fd_table_t *fdt, int slots) {
-    fdt->entries = 0;
+    fdt->entries_dir = 0;
+    fdt->dir_capacity = 0;
+    fdt->leaf_count = 0;
     fdt->free_bitmap = 0;
     fdt->max_slots = 0;
     fdt->max_fd = 0;
@@ -356,21 +426,27 @@ int fd_table_alloc_empty(fd_table_t *fdt, int slots) {
 }
 
 int fd_table_init(fd_table_t *fdt) {
-    fdt->entries = 0;
+    fdt->entries_dir = 0;
+    fdt->dir_capacity = 0;
+    fdt->leaf_count = 0;
     fdt->free_bitmap = 0;
     fdt->max_slots = 0;
     fdt->max_fd = 0;
     if (fd_table_grow(fdt, FD_INIT_SLOTS) < 0) return -ENOMEM;
+    if (fd_leaf_alloc(fdt, 0) < 0) return -ENOMEM;
 
+    fd_entry_t *p0 = fd_entry_at(fdt, 0);
+    fd_entry_t *p1 = fd_entry_at(fdt, 1);
+    fd_entry_t *p2 = fd_entry_at(fdt, 2);
     if (fd_default_pty >= 0) {
         void *pty = (void *)(uintptr_t)fd_default_pty;
-        fdt->entries[0] = (fd_entry_t){FD_PTY_SLAVE, pty, O_RDONLY};
-        fdt->entries[1] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
-        fdt->entries[2] = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
+        *p0 = (fd_entry_t){FD_PTY_SLAVE, pty, O_RDONLY};
+        *p1 = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
+        *p2 = (fd_entry_t){FD_PTY_SLAVE, pty, O_WRONLY};
     } else {
-        fdt->entries[0] = (fd_entry_t){FD_SERIAL, 0, O_RDONLY};
-        fdt->entries[1] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
-        fdt->entries[2] = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
+        *p0 = (fd_entry_t){FD_SERIAL, 0, O_RDONLY};
+        *p1 = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
+        *p2 = (fd_entry_t){FD_SERIAL, 0, O_WRONLY};
     }
     fd_mark_used(fdt, 0);
     fd_mark_used(fdt, 1);
@@ -380,11 +456,18 @@ int fd_table_init(fd_table_t *fdt) {
 }
 
 void fd_table_free(fd_table_t *fdt) {
-    if (fdt->entries) {
-        pages_free(fdt->entries,     fd_entries_pages(fdt->max_slots));
-        pages_free(fdt->free_bitmap, fd_bitmap_pages(fdt->max_slots));
+    if (fdt->entries_dir) {
+        for (int i = 0; i < fdt->dir_capacity; i++) {
+            if (fdt->entries_dir[i]) pages_free(fdt->entries_dir[i], 1);
+        }
+        pages_free(fdt->entries_dir, fd_dir_pages(fdt->dir_capacity));
     }
-    fdt->entries = 0;
+    if (fdt->free_bitmap)
+        pages_free(fdt->free_bitmap,
+                   fd_bitmap_pages(fd_bitmap_alloc_slots(fdt->max_slots)));
+    fdt->entries_dir = 0;
+    fdt->dir_capacity = 0;
+    fdt->leaf_count = 0;
     fdt->free_bitmap = 0;
     fdt->max_slots = 0;
     fdt->max_fd = 0;
@@ -398,11 +481,15 @@ static unsigned long fd_effective_nofile(process_t *p) {
 }
 
 /* Ensure capacity for at least `min_slots` entries, bounded by nofile.
- * Returns 0 on success, -EMFILE if nofile cap reached, -ENOMEM on OOM. */
+ * Returns 0 on success, -EMFILE if nofile cap reached, -ENOMEM on OOM.
+ * Callers may pass an aggressive want (e.g. max_slots*2) — we clamp to
+ * the effective cap so doubling past the rlimit doesn't reject the
+ * still-legal smaller request. */
 static int fd_ensure_capacity(fd_table_t *fdt, int min_slots, unsigned long nofile) {
     if (min_slots <= fdt->max_slots) return 0;
     unsigned long cap = nofile < (unsigned long)FD_CEILING ? nofile : (unsigned long)FD_CEILING;
-    if ((unsigned long)min_slots > cap) return -EMFILE;
+    if ((unsigned long)min_slots > cap) min_slots = (int)cap;
+    if (min_slots <= fdt->max_slots) return -EMFILE;
     return fd_table_grow(fdt, min_slots);
 }
 
@@ -418,7 +505,8 @@ int fd_alloc(fd_table_t *fdt, int type, void *obj, int flags) {
         fd = fd_find_free(fdt, 0);
         if (fd < 0 || (unsigned long)fd >= nofile) return -EMFILE;
     }
-    fdt->entries[fd] = (fd_entry_t){type, obj, flags};
+    if (fd_leaf_alloc(fdt, fd) < 0) return -ENOMEM;
+    *fd_entry_at(fdt, fd) = (fd_entry_t){type, obj, flags};
     fd_mark_used(fdt, fd);
     if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;
     return fd;
@@ -439,8 +527,9 @@ int fd_dup_at(fd_table_t *fdt, int minfd, fd_entry_t src, int new_flags) {
         fd = fd_find_free(fdt, minfd);
         if (fd < 0 || (unsigned long)fd >= nofile) return -EMFILE;
     }
+    if (fd_leaf_alloc(fdt, fd) < 0) return -ENOMEM;
     src.flags = new_flags;
-    fdt->entries[fd] = src;
+    *fd_entry_at(fdt, fd) = src;
     fd_mark_used(fdt, fd);
     if (fd >= fdt->max_fd) fdt->max_fd = fd + 1;
     return fd;
@@ -455,7 +544,8 @@ int fd_install_at(fd_table_t *fdt, int newfd, fd_entry_t src) {
         int r = fd_ensure_capacity(fdt, newfd + 1, nofile);
         if (r < 0) return r;
     }
-    fdt->entries[newfd] = src;
+    if (fd_leaf_alloc(fdt, newfd) < 0) return -ENOMEM;
+    *fd_entry_at(fdt, newfd) = src;
     fd_mark_used(fdt, newfd);
     if (newfd >= fdt->max_fd) fdt->max_fd = newfd + 1;
     return 0;
@@ -463,17 +553,19 @@ int fd_install_at(fd_table_t *fdt, int newfd, fd_entry_t src) {
 
 int fd_close(fd_table_t *fdt, int fd) {
     if (fd < 0 || fd >= fdt->max_slots) return -1;
-    if (fdt->entries[fd].type == FD_NONE) return -1;
-    fdt->entries[fd].type = FD_NONE;
-    fdt->entries[fd].obj = 0;
+    fd_entry_t *e = fd_entry_at(fdt, fd);
+    if (!e || e->type == FD_NONE) return -1;
+    e->type = FD_NONE;
+    e->obj = 0;
     fd_mark_free(fdt, fd);
     return 0;
 }
 
 fd_entry_t *fd_get(fd_table_t *fdt, int fd) {
     if (fd < 0 || fd >= fdt->max_slots) return 0;
-    if (fdt->entries[fd].type == FD_NONE) return 0;
-    return &fdt->entries[fd];
+    fd_entry_t *e = fd_entry_at(fdt, fd);
+    if (!e || e->type == FD_NONE) return 0;
+    return e;
 }
 
 /* ── ASLR ───────────────────────────────────────── */

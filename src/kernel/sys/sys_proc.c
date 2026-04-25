@@ -62,16 +62,17 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
      * proc_cleanup() will fd_table_free() — here we only decrement refs
      * and clear entries so blocked I/O wakes up. */
     for (int i = 0; i < p->fds.max_slots; i++) {
-        int ftype = p->fds.entries[i].type;
+        fd_entry_t *e = fd_entry_at(&p->fds, i);
+        if (!e) continue;
+        int ftype = e->type;
         if (ftype == FD_FILE) {
             extern void vfs_file_free_obj(void *obj);
-            vfs_file_free_obj(p->fds.entries[i].obj);
+            vfs_file_free_obj(e->obj);
         } else if (ftype != FD_NONE && ftype != FD_SERIAL) {
-            fd_cleanup_entry(ftype, p->fds.entries[i].obj,
-                             p->fds.entries[i].flags);
+            fd_cleanup_entry(ftype, e->obj, e->flags);
         }
-        p->fds.entries[i].type = FD_NONE;
-        p->fds.entries[i].obj = 0;
+        e->type = FD_NONE;
+        e->obj = 0;
         if (p->fds.free_bitmap) fd_mark_free(&p->fds, i);
     }
 

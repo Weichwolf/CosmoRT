@@ -605,8 +605,8 @@ long do_dup3(int oldfd, int newfd, int flags) {
             fd_close(&p->fds, newfd);
         }
         /* cur pointer still valid here; fd_install_at below may reallocate */
-        p->fds.entries[newfd].type = FD_NONE;
-        p->fds.entries[newfd].obj = 0;
+        fd_entry_t *slot = fd_entry_at(&p->fds, newfd);
+        if (slot) { slot->type = FD_NONE; slot->obj = 0; }
     }
 
     fd_entry_t installed = old_copy;

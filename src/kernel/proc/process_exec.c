@@ -747,17 +747,16 @@ shebang_retry:;
         extern void vfs_file_free_obj(void *obj);
         extern void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags);
         for (int i = 0; i < p->fds.max_slots; i++) {
-            if (p->fds.entries[i].type != FD_NONE &&
-                (p->fds.entries[i].flags & 0x80000)) { /* O_CLOEXEC */
-                int ftype = p->fds.entries[i].type;
-                if (ftype == FD_FILE) {
-                    vfs_file_free_obj(p->fds.entries[i].obj);
-                } else if (ftype != FD_SERIAL) {
-                    fd_cleanup_entry(ftype, p->fds.entries[i].obj,
-                                     p->fds.entries[i].flags);
-                }
-                fd_close(&p->fds, i);
+            fd_entry_t *e = fd_entry_at(&p->fds, i);
+            if (!e || e->type == FD_NONE) continue;
+            if (!(e->flags & 0x80000)) continue;  /* O_CLOEXEC */
+            int ftype = e->type;
+            if (ftype == FD_FILE) {
+                vfs_file_free_obj(e->obj);
+            } else if (ftype != FD_SERIAL) {
+                fd_cleanup_entry(ftype, e->obj, e->flags);
             }
+            fd_close(&p->fds, i);
         }
     }
 

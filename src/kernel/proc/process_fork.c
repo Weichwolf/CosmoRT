@@ -200,20 +200,24 @@ static int dup_fd_table(process_t *child, process_t *parent) {
 
     if (fd_table_alloc_empty(&child->fds, want) < 0) return -ENOMEM;
 
+    /* Two-level layout: leaves are lazy. Walk parent's dir page-by-page so
+     * we only allocate child leaves that have at least one live entry.
+     * fd_install_at would also work but does an extra leaf-touch per fd. */
     for (int i = 0; i < copy_end; i++) {
-        fd_entry_t e = parent->fds.entries[i];
-        child->fds.entries[i] = e;
-        if (e.type != FD_NONE) {
-            fd_mark_used(&child->fds, i);
-            if (e.obj) {
-                if (e.type == FD_FILE)
-                    vfs_file_incref((struct vfs_file *)e.obj);
-                else if (e.type == FD_PIPE || e.type == FD_SOCKET ||
-                         e.type == FD_EPOLL || e.type == FD_EVENTFD ||
-                         e.type == FD_TIMERFD || e.type == FD_INOTIFY ||
-                         e.type == FD_UNIX_SOCK)
-                    fd_obj_incref(e.type, e.obj, e.flags);
-            }
+        fd_entry_t *src = fd_entry_at(&parent->fds, i);
+        if (!src || src->type == FD_NONE) continue;
+        if (fd_table_leaf_ensure(&child->fds, i) < 0) return -ENOMEM;
+        fd_entry_t *dst = fd_entry_at(&child->fds, i);
+        *dst = *src;
+        fd_mark_used(&child->fds, i);
+        if (src->obj) {
+            if (src->type == FD_FILE)
+                vfs_file_incref((struct vfs_file *)src->obj);
+            else if (src->type == FD_PIPE || src->type == FD_SOCKET ||
+                     src->type == FD_EPOLL || src->type == FD_EVENTFD ||
+                     src->type == FD_TIMERFD || src->type == FD_INOTIFY ||
+                     src->type == FD_UNIX_SOCK)
+                fd_obj_incref(src->type, src->obj, src->flags);
         }
     }
     child->fds.max_fd = copy_end;
