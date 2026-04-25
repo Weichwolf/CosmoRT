@@ -52,7 +52,8 @@ static void test_repeated_sub_ms_sleeps(void) {
     sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
     long d = delta_ns(before, after);
     check("100x nanosleep(100us) total >= 10ms", d >= 10000000);
-    /* Tickless: ~150us/sleep, ~36ms total. Bound 100ms toleriert SMP-Last. */
+    /* Tickless: ~150us pro Sleep, ~36ms total. Bound 100ms toleriert
+     * Schwankungen unter SMP-Last. */
     check("100x nanosleep(100us) total <= 100ms (tickless)",
           d <= 100000000);
     puts("  100x100us total "); put_int(d / 1000000); puts("ms\n");
