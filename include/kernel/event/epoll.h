@@ -21,13 +21,9 @@ typedef struct {
     int        flags;
     int        refcount;
     spinlock_t lock;
-    /* Reader-side waitqueue: writer wakes via wake_up_interruptible after the
-     * counter goes non-zero. prepare_to_wait/finish_wait closes the
-     * check-then-block missed-wakeup race that the legacy single
-     * blocked_reader pointer + event_post() left open. */
-    wait_queue_head_t wq;
-    /* Writer-side legacy slot: writer block-on-overflow path still uses
-     * event_wait. Migration deferred to next sub-step. */
+    /* Blocked waiters: one reader + one writer at a time (Linux: wait_queue,
+     * but eventfd is so simple that two slots suffice for all callers we have). */
+    struct thread *blocked_reader;
     struct thread *blocked_writer;
 } eventfd_t;
 
