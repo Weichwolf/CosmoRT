@@ -229,16 +229,15 @@ long kill_one(process_t *target, int sig) {
             }
             if (any_blocked) {
                 target->sig_pending |= SIG_BIT(sig);
-                /* Single wake path: event_post writes the EQ_CHILD_EXITED
-                 * payload (consumed by event_wait callers like wait4) AND
-                 * does state-CAS via sched_wake. waitqueue-parked sleepers
-                 * (sigtimedwait, nanosleep) wake on the state-CAS and
-                 * re-check signal_pending in their loop. */
+                /* Wake Threads in sigtimedwait (sind BLOCKED mit event_wait). */
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                extern void sched_wake(thread_t *t);
                 thread_t *w = target->threads;
                 while (w) {
-                    if (w->state == THREAD_BLOCKED)
-                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    if (w->state == THREAD_BLOCKED) {
+                        if (w->wait_head) sched_wake(w);
+                        else event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    }
                     w = w->proc_next;
                 }
             }
@@ -328,14 +327,16 @@ long kill_one(process_t *target, int sig) {
             }
             if (all_blocked) {
                 /* Signal blocked on all threads — set pending und wake
-                 * etwaige sigtimedwait-Threads (die in event_wait stehen).
-                 * event_post deckt event-queue + waitqueue-parked Sleeper. */
+                 * etwaige sigtimedwait-Threads (die in event_wait stehen). */
                 target->sig_pending |= SIG_BIT(sig);
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
+                extern void sched_wake(thread_t *t);
                 thread_t *wt = target->threads;
                 while (wt) {
-                    if (wt->state == THREAD_BLOCKED)
-                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    if (wt->state == THREAD_BLOCKED) {
+                        if (wt->wait_head) sched_wake(wt);
+                        else event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    }
                     wt = wt->proc_next;
                 }
                 return 0;
@@ -390,16 +391,21 @@ long kill_one(process_t *target, int sig) {
     target->sig_pending |= SIG_BIT(sig);
 
     /* Wake blocked threads that have this signal unblocked.
-     * event_post writes EQ_CHILD_EXITED for event_wait callers AND does
-     * a state-CAS via sched_wake → try_to_wake_up. Waitqueue-parked
-     * sleepers (nanosleep, sigtimedwait, futex_wait, …) wake on the
-     * state-CAS and re-check signal_pending in their loop. */
+     * sched_wake routes waitqueue-parked sleepers through their waitqueue
+     * lock (atomic with prepare_to_wait), and event_queue-parked waiters
+     * get a stale-free wake too. Legacy event_post path kept for callers
+     * that consume EQ_CHILD_EXITED as a wakeup reason (sigtimedwait). */
     {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+        extern void sched_wake(thread_t *t);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
-                event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked)) {
+                if (t->wait_head)
+                    sched_wake(t);
+                else
+                    event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+            }
             t = t->proc_next;
         }
     }
