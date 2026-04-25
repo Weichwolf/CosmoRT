@@ -14,6 +14,7 @@
 #define EVENT_QUEUE_H
 
 #include <stdint.h>
+#include "core/waitqueue.h"
 
 /* ── Event Types ─────────────────────────────── */
 
@@ -47,6 +48,11 @@ typedef struct {
     uint32_t          mask;       /* capacity - 1 */
     volatile uint32_t head;       /* producer index (monotonic) */
     volatile uint32_t tail;       /* consumer index (monotonic) */
+    /* Per-queue waitqueue: event_post wakes via wake_up_interruptible,
+     * event_wait blocks via prepare_to_wait/finish_wait on this wq. No more
+     * routing through thread->wait_head — every sleeper parks on the same
+     * wq as its event source. signal/timeout wakers also target this wq. */
+    wait_queue_head_t wq;
 } event_queue_t;
 
 /* ── Lifecycle (implemented in event_queue.c) ── */

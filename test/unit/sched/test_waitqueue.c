@@ -401,6 +401,91 @@ static void test_wq_23_alternating_sleep_and_signal(void) {
     check_ge("alternating sleeps: >= 3 interruptions", intr, 3);
 }
 
+/* ── 24-25: event_queue + waitqueue migration regression ─────────
+ *
+ * Phase 10.2-FINAL: event_queue's blocking primitive moved off
+ * sched_wake-via-thread->wait_head and onto eq->wq + prepare_to_wait.
+ * These tests reproduce the exact LTP clock_nanosleep01 hang scenario
+ * that reverted the prior 10.2a refactor: a long sleep, periodic
+ * SIGINT bursts. The child must wake under 1s. Pre-migration: hang
+ * for the full sleep duration. */
+
+static void test_wq_24_long_sleep_signal_burst(void) {
+    /* Replicates LTP clock_nanosleep01 test 4: child sleeps 10s, parent
+     * sends SIGINT every 200ms. We use SIGUSR1 + handler so default
+     * action doesn't terminate. Single SIGINT must wake the sleeper
+     * within 200ms. */
+    install_handler(SIGUSR1, wq_sig_handler);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        install_handler(SIGUSR1, wq_sig_handler);
+        struct k_timespec rq = { .tv_sec = 10, .tv_nsec = 0 };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc2(SYS_NANOSLEEP, (long)&rq, 0);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        /* Encode: bit 0 = EINTR, upper bits = elapsed/100ms (cap 9). */
+        int code = 0;
+        if (r == -EINTR) code |= 1;
+        long u = elapsed_ms / 100;
+        if (u > 9) u = 9;
+        code |= (int)(u << 1);
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (pid < 0) { fail("fork", 0); return; }
+    /* Wait 50ms, then signal. Sleeper must wake well before 10s. */
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 50000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGUSR1);
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0xFF;
+    int interrupted = code & 1;
+    int units = (code >> 1) & 0xF;
+    check("long-sleep signal: EINTR", interrupted == 1);
+    /* Must wake under 1s (units < 10). */
+    check("long-sleep signal: woke <1s", units < 10);
+}
+
+static void test_wq_25_signal_burst_during_sleep(void) {
+    /* Stress: 10 SIGUSR1 signals in 500ms while child holds a 5s sleep.
+     * Each signal must produce wake → re-sleep → wake → re-sleep loop
+     * without losing the wake. Child counts EINTR returns. */
+    install_handler(SIGUSR1, wq_sig_handler);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        install_handler(SIGUSR1, wq_sig_handler);
+        int eintrs = 0;
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        for (;;) {
+            struct k_timespec rq = { .tv_sec = 5, .tv_nsec = 0 };
+            long r = sc2(SYS_NANOSLEEP, (long)&rq, 0);
+            if (r == -EINTR) eintrs++;
+            sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+            long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                              (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+            if (elapsed_ms > 800) break;
+            if (eintrs >= 10) break;
+        }
+        sc1(SYS_EXIT, eintrs > 31 ? 31 : eintrs);
+        __builtin_unreachable();
+    }
+    if (pid < 0) { fail("fork", 0); return; }
+    for (int i = 0; i < 10; i++) {
+        struct k_timespec d = { .tv_sec = 0, .tv_nsec = 50000000 };
+        sc2(SYS_NANOSLEEP, (long)&d, 0);
+        sc2(SYS_KILL, pid, SIGUSR1);
+    }
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    int eintrs = (ws >> 8) & 0x1F;
+    check_ge("burst sleep: >=5 EINTR returns", eintrs, 5);
+}
+
 TEST("waitqueue/01_short_sleep",         test_wq_01_short_sleep);
 TEST("waitqueue/02_zero_sleep",          test_wq_02_zero_sleep);
 TEST("waitqueue/03_repeated_sleeps",     test_wq_03_repeated_sleeps);
@@ -418,3 +503,5 @@ TEST("waitqueue/17_wait4_multi",         test_wq_17_wait4_multiple_children);
 TEST("waitqueue/21_many_sleepers",       test_wq_21_many_sleepers);
 TEST("waitqueue/22_fork_sleep_kill_30x", test_wq_22_repeated_fork_sleep_kill);
 TEST("waitqueue/23_alternating",         test_wq_23_alternating_sleep_and_signal);
+TEST("waitqueue/24_long_sleep_signal",   test_wq_24_long_sleep_signal_burst);
+TEST("waitqueue/25_signal_burst_sleep",  test_wq_25_signal_burst_during_sleep);

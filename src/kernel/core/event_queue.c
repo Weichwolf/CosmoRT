@@ -39,6 +39,7 @@ void event_queue_init(event_queue_t *eq) {
     eq->head = 0;
     eq->tail = 0;
     eq->events = (event_t *)pages_alloc(eq_pages_for(EQ_INIT_CAPACITY));
+    init_waitqueue_head(&eq->wq);
 }
 
 void event_queue_destroy(event_queue_t *eq) {
@@ -113,110 +114,105 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
 
     spin_unlock_irq(&target->eq_lock, irqf);
 
-    extern void sched_wake(struct thread *t);
-    sched_wake(target);
+    /* Wake the consumer via the queue's own waitqueue. The sleeper
+     * parked on eq->wq via prepare_to_wait — wake_up_interruptible
+     * flips its state RUNNABLE under the wq lock, ending the
+     * missed-wakeup race that earlier sched_wake-routing variants
+     * never fully closed. */
+    wake_up_interruptible(&eq->wq);
 }
 
-/* ── hrtimer timeout callback: wake blocked thread ── */
+/* SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23, SIGWINCH=28, SIGIO=29):
+ * blocked sleepers must not return EINTR for these. A pending bit can be
+ * set without a registered handler — Linux's quiet wakeup behaviour. */
+#define EQ_SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
 
-static void timeout_wake(hrtimer_t *timer) {
-    thread_t *t = (thread_t *)timer->data;
-    extern void sched_wake(thread_t *t);
-    sched_wake(t);
+static int eq_signal_pending(thread_t *cur) {
+    if (!cur || !cur->proc) return 0;
+    uint64_t all = cur->proc->sig_pending | cur->sig_thread_pending;
+    uint64_t deliverable = all & ~cur->sig_blocked;
+    if (!deliverable) return 0;
+    uint64_t real = deliverable;
+    for (int s = 1; s < 64 && real; s++) {
+        if (!(real & (1ULL << (s - 1)))) continue;
+        if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+            ((1ULL << (s - 1)) & EQ_SIG_DFL_IGNORE))
+            real &= ~(1ULL << (s - 1));
+    }
+    return real != 0;
 }
 
-/* ── Block: pure timeout sleep, waitqueue-backed ──
- * Replaces the old naked state=BLOCKED+schedule() pattern that had a
- * missed-wakeup race between the pending-check and state=BLOCKED. The
- * waitqueue primitive serializes both under its lock. sleep_interruptible_ns
- * handles signals, timeout and race-free wakeups. */
+/* ── Block: pure timeout sleep, waitqueue-backed ── */
 
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
-    (void)timeout_wake;
     (void)sleep_interruptible_ns((uint64_t)timeout_ms * NSEC_PER_MSEC);
 }
 
-/* ── Wait: consume next event, block if empty ── */
+/* hrtimer wake callback: re-target the queue's wq so the parked sleeper
+ * wakes up uniformly via the wait-queue path (no thread->wait_head
+ * pointer dance). data points at the eq itself. */
+static void eq_timeout_wake(hrtimer_t *timer) {
+    event_queue_t *eq = (event_queue_t *)timer->data;
+    if (eq) wake_up_interruptible(&eq->wq);
+}
 
+/* ── Wait: consume next event, block if empty ──
+ *
+ * Linux wait_event_interruptible_timeout pattern: prepare_to_wait
+ * publishes BLOCKED + queues the entry under wq->lock. event_post takes
+ * the same lock, sees the queued entry, and flips state RUNNABLE. There
+ * is no sched_wake-via-thread->wait_head routing — every event source
+ * (futex_wake, kill_one, pipe_write, …) uses event_post which targets
+ * eq->wq directly. */
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
+
+    /* Fast path: event already queued. */
+    if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
+        uint32_t t = eq->tail;
+        *out = eq->events[t & eq->mask];
+        hal_cpu_store_release(&eq->tail, t + 1);
+        return 0;
+    }
+    if (timeout_ms == 0) return -11; /* EAGAIN */
+    if (eq_signal_pending(cur)) return -4; /* EINTR */
 
     hrtimer_t timer;
     int has_timer = 0;
     uint64_t deadline_ns = 0;
     if (timeout_ms > 0) {
         deadline_ns = hrtimer_now_ns() + ms_to_ns((uint64_t)timeout_ms);
-        hrtimer_init(&timer, timeout_wake, cur);
+        hrtimer_init(&timer, eq_timeout_wake, eq);
+        hrtimer_start(&timer, deadline_ns);
         has_timer = 1;
     }
 
+    DEFINE_WAIT(ent);
+    int rc;
     for (;;) {
-        /* Signal check — fatal signals (SIGALRM, SIGKILL) must interrupt.
-         * Ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
-         * SIGWINCH=28, SIGIO=29) to avoid spurious EINTR. */
-        if (cur->proc) {
-            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-            uint64_t deliverable = all_pending & ~cur->sig_blocked;
-            if (deliverable) {
-                #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
-                uint64_t real = deliverable;
-                for (int s = 1; s < 64 && real; s++) {
-                    if (!(real & (1ULL << (s-1)))) continue;
-                    if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
-                        ((1ULL << (s-1)) & SIG_DFL_IGNORE))
-                        real &= ~(1ULL << (s-1));
-                }
-                if (real) {
-                    if (has_timer) hrtimer_cancel(&timer);
-                    return -4; /* EINTR */
-                }
-            }
-        }
+        prepare_to_wait(&eq->wq, &ent, THREAD_BLOCKED);
 
-        uint32_t h = hal_cpu_load_acquire(&eq->head);
-        uint32_t t = eq->tail;
-
-        if (h != t) {
+        if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
+            uint32_t t = eq->tail;
             *out = eq->events[t & eq->mask];
             hal_cpu_store_release(&eq->tail, t + 1);
-            if (has_timer) hrtimer_cancel(&timer);
-            return 0;
+            rc = 0;
+            break;
         }
-
-        if (timeout_ms == 0)
-            return -11; /* EAGAIN */
-
+        if (eq_signal_pending(cur)) { rc = -4 /* EINTR */; break; }
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
-            hrtimer_cancel(&timer);
-            return -11; /* EAGAIN (timeout) */
+            rc = -11 /* EAGAIN (timeout) */;
+            break;
         }
 
-        if (has_timer)
-            hrtimer_start(&timer, deadline_ns);
-
-        cur->state = THREAD_BLOCKED;
-
-        /* Close race: event arrived between fast-path and BLOCKED */
-        hal_cpu_mfence();
-        if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
-            cur->state = THREAD_RUNNING;
-            continue;
-        }
-
-        extern void schedule(void);
         schedule();
-
-        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
-            hrtimer_cancel(&timer);
-            h = hal_cpu_load_acquire(&eq->head);
-            if (h != eq->tail) {
-                *out = eq->events[eq->tail & eq->mask];
-                hal_cpu_store_release(&eq->tail, eq->tail + 1);
-                return 0;
-            }
-            return -11; /* EAGAIN (timeout) */
-        }
+        /* Loop and re-evaluate. prepare_to_wait sets state again; if a
+         * spurious wake happened (signal that filtered out, ipi), we
+         * just sleep again until the deadline or a real event. */
     }
+    finish_wait(&eq->wq, &ent);
+    if (has_timer) hrtimer_cancel(&timer);
+    return rc;
 }
