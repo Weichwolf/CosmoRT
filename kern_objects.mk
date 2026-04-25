@@ -93,7 +93,8 @@ KERN_NET  = $(BUILD)/kernel/net/net.o \
             $(BUILD)/kernel/net/socket.o \
             $(BUILD)/kernel/net/unix_socket.o \
             $(BUILD)/kernel/net/in6.o \
-            $(BUILD)/kernel/net/ipv6.o
+            $(BUILD)/kernel/net/ipv6.o \
+            $(BUILD)/kernel/net/icmpv6.o
 
 KERN_EVENT = $(BUILD)/kernel/event/epoll.o \
              $(BUILD)/kernel/event/eventfd.o \
