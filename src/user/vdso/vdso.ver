@@ -1,0 +1,8 @@
+/* musl resolves vDSO symbols matching version tag LINUX_2.6.
+ * Without this verdef the symbols are unversioned and musl ignores them. */
+LINUX_2.6 {
+global:
+    __vdso_clock_gettime;
+    __vdso_getcpu;
+local: *;
+};

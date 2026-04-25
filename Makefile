@@ -120,6 +120,39 @@ $(BUILD)/gen/init_bin.h: $(BUILD)/user/init | $(BUILD)/gen
 
 init-bin: $(BUILD)/gen/init_bin.h
 
+# ── vDSO (embedded user-space DSO with __vdso_clock_gettime) ─────
+# Built as a shared object linked at fixed VA VDSO_CODE_VA. Compiled
+# with -fpic but loaded at a static address, so PC-relative addressing
+# of the data page (one page below) needs no runtime relocation.
+VDSO_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
+              -fno-plt -mno-red-zone -mno-sse -mno-mmx -mno-sse2 \
+              -mgeneral-regs-only -nostdlib -O2 -fpic -fvisibility=hidden \
+              -Wall -Wextra -Werror -std=c11 -c -MMD -MP
+
+$(BUILD)/user/vdso.o: $(SRC)/user/vdso/vdso.c | $(BUILD)/user
+	$(CC) $(VDSO_CFLAGS) -o $@ $<
+
+$(BUILD)/user/vdso.so: $(BUILD)/user/vdso.o $(SRC)/user/vdso/vdso.lds $(SRC)/user/vdso/vdso.ver
+	$(LD) -nostdlib -shared -Bsymbolic --no-undefined -z now -z noexecstack \
+	      --hash-style=both --build-id=none \
+	      --version-script=$(SRC)/user/vdso/vdso.ver \
+	      -T $(SRC)/user/vdso/vdso.lds -soname=linux-vdso.so.1 \
+	      -o $@ $(BUILD)/user/vdso.o
+	@strip --strip-debug $@ 2>/dev/null || true
+
+$(BUILD)/gen/vdso_bin.h: $(BUILD)/user/vdso.so | $(BUILD)/gen
+	@python3 -c "\
+	data=open('$<','rb').read(); \
+	print('/* Auto-generated vDSO binary (%d bytes) */' % len(data)); \
+	print('static const unsigned char vdso_bin[] = {'); \
+	lines = [', '.join('0x%02x'%b for b in data[i:i+16]) for i in range(0,len(data),16)]; \
+	print(',\n'.join('    '+l for l in lines)); \
+	print('};'); \
+	print('static const unsigned long vdso_bin_size = %d;' % len(data))" > $@
+	@echo "vdso_bin.h: $$(wc -c < $<) bytes"
+
+vdso-bin: $(BUILD)/gen/vdso_bin.h
+
 # ── Alpine disk image (ext2) ─────────────────────
 ALPINE_ROOT ?= build/alpine-root
 
@@ -180,6 +213,10 @@ $(BUILD)/kernel/proc/%.o: $(SRC)/kernel/proc/%.c | $(BUILD)/kernel/proc
 
 $(BUILD)/kernel/sys/%.o: $(SRC)/kernel/sys/%.c | $(BUILD)/kernel/sys
 	$(CC) $(KCFLAGS) -I$(SRC)/kernel/sys -o $@ $<
+
+# vdso.o needs gen/vdso_bin.h (the embedded user-space DSO blob)
+$(BUILD)/kernel/sys/vdso.o: $(SRC)/kernel/sys/vdso.c $(BUILD)/gen/vdso_bin.h | $(BUILD)/kernel/sys
+	$(CC) $(KCFLAGS) -I$(SRC)/kernel/sys -I$(SRC)/kernel/gen -o $@ $<
 
 $(BUILD)/kernel/ipc/%.o: $(SRC)/kernel/ipc/%.c | $(BUILD)/kernel/ipc
 	$(CC) $(KCFLAGS) -o $@ $<
