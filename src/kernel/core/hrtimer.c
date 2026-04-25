@@ -50,10 +50,18 @@ uint64_t hrtimer_now_ns(void) {
     if (__builtin_expect(timer_tsc_to_ns_mult == 0, 0)) return 0;
     uint64_t tsc = timer_tsc_now();
     uint64_t delta = tsc - timer_boot_tsc;
-    /* (delta * mult) >> shift — single mul, single shift; selbe Praezision wie
-     * clocksource_read_ns ohne dessen Lock. delta*mult kann fuer ~600s @4GHz
-     * nicht ueberlaufen (TSC_MULT_MAX_SEC_WINDOW=600 garantiert das). */
-    return (delta * (uint64_t)timer_tsc_to_ns_mult) >> timer_tsc_to_ns_shift;
+    /* Split delta in ms-Chunks plus Residue, identisch zu do_clock_gettime.
+     * delta*mult >> shift wuerde nach TSC_MULT_MAX_SEC_WINDOW=600s wrappen
+     * (delta*mult > 2^64) — vorher korrekt fuer kurze Sleeps, danach
+     * Garbage-Vergleich in deadline_ns >= now. Wrap-frei: ms-Anteil via
+     * Division (verlustfrei), Residue (< timer_tsc_per_ms ~2.4e6 cycles)
+     * mit dem Hot-Path-mult/shift fuer ns-Genauigkeit. */
+    uint64_t tpms = timer_tsc_per_ms;
+    if (__builtin_expect(tpms == 0, 0)) return 0;
+    uint64_t ms = delta / tpms;
+    uint64_t residue = delta - ms * tpms;
+    return ms * (uint64_t)NSEC_PER_MSEC
+         + (((residue * (uint64_t)timer_tsc_to_ns_mult) >> timer_tsc_to_ns_shift));
 }
 
 /* ── LAPIC one-shot programming ────────────────────── */
