@@ -80,6 +80,7 @@ KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/procfs.o
 
 KERN_NET  = $(BUILD)/kernel/net/net.o \
+            $(BUILD)/kernel/net/net_ns.o \
             $(BUILD)/kernel/net/netif.o \
             $(BUILD)/kernel/net/lo.o \
             $(BUILD)/kernel/net/dispatch.o \

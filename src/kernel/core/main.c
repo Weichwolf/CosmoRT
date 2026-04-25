@@ -176,6 +176,11 @@ void kernel_main(struct boot_info *info) {
     extern void time_ns_init(void);
     time_ns_init();
 
+    /* Network namespace slab — must be ready before any netif_register
+     * (incl. lo_init in net_init()) so the per-NS list lock is live. */
+    extern void net_ns_init(void);
+    net_ns_init();
+
     extern void alarm_init(void);
     alarm_init();
 
