@@ -42,12 +42,6 @@ static struct clocksource tsc_clocksource = {
 
 uint64_t timer_tsc_per_ms = 0;
 uint64_t timer_boot_tsc = 0;
-/* Hot-path TSC->ns: ns = ((tsc - boot) * tsc_to_ns_mult) >> tsc_to_ns_shift.
- * Calibrated once in tsc_calibrate_and_register; constant thereafter.
- * Replaces the two-division path in hrtimer_now_ns() (12+ cycles -> 3-5 cycles
- * on hot CPUs) so clock_gettime04 stops blowing its <5ms-per-iter budget. */
-uint32_t timer_tsc_to_ns_mult  = 0;
-uint32_t timer_tsc_to_ns_shift = 0;
 #define boot_tsc timer_boot_tsc
 
 static int      tsc_invariant_state;          /* 0 = unknown/not, 1 = invariant */
@@ -143,11 +137,6 @@ static void tsc_calibrate_and_register(void) {
                                                  : CLOCKSOURCE_RATING_TSC_UNSTABLE;
 
     clocksource_hz_to_mult(&tsc_clocksource, tsc_hz, TSC_MULT_MAX_SEC_WINDOW);
-
-    /* Hot-path scale: identische Mathematik wie clocksource, aber als
-     * direkte File-Locals fuer hrtimer_now_ns() ohne Indirektion. */
-    timer_tsc_to_ns_mult  = tsc_clocksource.mult;
-    timer_tsc_to_ns_shift = tsc_clocksource.shift;
 
     serial_puts("tsc: calibrated via ");
     serial_puts(tsc_via_hpet ? "hpet" : "pit");
