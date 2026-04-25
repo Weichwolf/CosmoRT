@@ -30,14 +30,26 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3034/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
-15, 16, 17 erledigt. Branch: `ltp`. Architektur-Doc unter
+ktest **3037/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+15, 16, 17 erledigt. Phase 10.2 zentrale Migration fertig (Schritt 1-3):
+event_queue intern auf wq, sched_wake auf state-CAS (try_to_wake_up),
+thread->wait_head/wait_entry entfernt, kill_one's Doppelpfad fuer
+sigtimedwait sleeper aufgeloest. Branch: `ltp`. Architektur-Doc unter
 `notes/MODERN_KERNEL_DESIGN.md`.
 
-**Strukturelle Blocker für 100% grün**: `thread->wait_head`-Routing in
-`sched_wake` (selbst-erfundene Linux-Abweichung) verhindert saubere
-Wait-Pfad-Migration. Phase 10.2a (Architektur-Refactor) erforderlich
-bevor restliche Pfade migriert werden können.
+**Strukturelle Blocker entfernt** (Phase 10.2-FINAL):
+- `thread->wait_head`-Routing weg → reiner state-CAS
+- event_queue intern auf wait_queue_head_t → eigene wq pro Sleeper
+- kill_one's `if (wait_head) sched_wake : event_post` Konditionalen
+  durch Direct-Calls ersetzt (event_post fuer eq-parked, sched_wake
+  fuer alle anderen)
+
+**Offen** (Phase 10.2-Schritt-4): Subsystem-Migration weg von event_queue.
+event_queue.c bleibt vorerst als korrekt funktionierender Wrapper
+(intern wq-basiert), aber alle ~30 event_post/event_wait Aufrufer
+(eventfd, futex, pipe, socket, epoll, etc) koennten direkt auf
+wait_queue_head_t pro fd/socket/futex umgestellt werden. Reduziert
+~280 Zeilen event_queue.c + entfernt eq aus thread_t.
 
 ---
 
@@ -57,9 +69,12 @@ bevor restliche Pfade migriert werden können.
 | **17** | OOM-Killer + oom_score_adj | alloc-fail → -ENOMEM ohne Reclaim | ~600 LOC | ✓ |
 
 **Reihenfolge Säule 1 (Linux-ABI-Vollständigkeit, Alpine läuft)**:
-- **10.2a** Architektur-Refactor (wait_head raus, try_to_wake_up rein) — laufend
-- **10.2b** Subsysteme einzeln: eventfd → pipe → socket → epoll → futex → wait4 → rt_sigtimedwait
-- **10.2c** event_queue.c löschen
+- **10.2a** Architektur-Refactor (wait_head raus, try_to_wake_up rein) ✓
+- **10.2b** event_queue intern auf wq + kill_one Doppelpfad weg ✓
+- **10.2c** Subsysteme einzeln auf eigene wait_queue_head_t (eventfd/pipe/
+  socket/epoll/futex/wait4/rt_sigtimedwait) — derzeit nutzen sie wq
+  via event_queue (transparent). Direkt-Migration eliminiert event_queue.c
+- **10.2d** event_queue.c und thread_t.eq löschen (nach 10.2c)
 - **12-Rest** hrtimer ns + tickless retry (jetzt mit korrekter waitqueue)
 - **13** SMP-Scheduler-Finalisierung
 - Erfolgskriterium: alle musl + LTP grün auf x86_64, Alpine apk/bash/sshd

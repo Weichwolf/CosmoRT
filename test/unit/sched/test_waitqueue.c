@@ -503,5 +503,86 @@ TEST("waitqueue/17_wait4_multi",         test_wq_17_wait4_multiple_children);
 TEST("waitqueue/21_many_sleepers",       test_wq_21_many_sleepers);
 TEST("waitqueue/22_fork_sleep_kill_30x", test_wq_22_repeated_fork_sleep_kill);
 TEST("waitqueue/23_alternating",         test_wq_23_alternating_sleep_and_signal);
+/* ── 26-27: post-Schritt-3 invariants (wait_head removed) ── */
+
+static void test_wq_26_sigtimedwait_blocked_sigchld(void) {
+    /* runtest.exe pattern: SIGCHLD blocked, sigtimedwait waits for it.
+     * Pre-Schritt-3 with sched_wake-via-wait_head: kill_one's
+     * `if (wait_head) sched_wake : event_post` branch fired sched_wake,
+     * waking the eq->wq without writing the event → spin/hang.
+     * Post-Schritt-3: kill_one writes event_post unconditionally for
+     * blocked-signal sleepers; signal-pending fast-path returns the
+     * matched signal. */
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Block SIGCHLD */
+        uint64_t mask = 1ULL << (SIGCHLD - 1);
+        sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&mask, 0, 8);
+        /* Fork a fast child */
+        long child = sc0(SYS_FORK);
+        if (child == 0) {
+            sc1(SYS_EXIT, 7);
+            __builtin_unreachable();
+        }
+        /* sigtimedwait for SIGCHLD with 2s timeout */
+        struct k_timespec ts = { .tv_sec = 2, .tv_nsec = 0 };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, 0, (long)&ts, 8);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int ws = 0;
+        sc4(SYS_WAIT4, child, (long)&ws, 0, 0);
+        /* Encode r==SIGCHLD and elapsed<200ms */
+        int code = 0;
+        if (r == SIGCHLD) code |= 1;
+        if (elapsed_ms < 200) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (pid < 0) { fail("fork", 0); return; }
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("sigtimedwait blocked SIGCHLD: returns SIGCHLD", (code & 1) != 0);
+    check("sigtimedwait blocked SIGCHLD: woke <200ms", (code & 2) != 0);
+}
+
+static void test_wq_27_kill_then_event_drain(void) {
+    /* Verify kill_one's event_post path works for direct SIGINT to a
+     * sigtimedwait sleeper. SIGINT is not blocked → event_pending fires
+     * via signal_pending fast path (not via event_pop). */
+    install_handler(SIGUSR1, wq_sig_handler);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        install_handler(SIGUSR1, wq_sig_handler);
+        uint64_t mask = 1ULL << (SIGUSR2 - 1);  /* wait for unrelated sig */
+        struct k_timespec ts = { .tv_sec = 5, .tv_nsec = 0 };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc4(128, (long)&mask, 0, (long)&ts, 8);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int code = 0;
+        if (r == -EINTR) code |= 1;
+        if (elapsed_ms < 500) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (pid < 0) { fail("fork", 0); return; }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 50000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGUSR1);
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("sigtimedwait + unrelated SIGUSR1: EINTR", (code & 1) != 0);
+    check("sigtimedwait + unrelated SIGUSR1: woke <500ms", (code & 2) != 0);
+}
+
 TEST("waitqueue/24_long_sleep_signal",   test_wq_24_long_sleep_signal_burst);
 TEST("waitqueue/25_signal_burst_sleep",  test_wq_25_signal_burst_during_sleep);
+TEST("waitqueue/26_sigtimedwait_chld",   test_wq_26_sigtimedwait_blocked_sigchld);
+TEST("waitqueue/27_sigtimedwait_eintr",  test_wq_27_kill_then_event_drain);
