@@ -383,6 +383,17 @@ long do_unshare(unsigned long flags) {
         p->time_ns_for_children = nu;
         if (old) time_ns_put(old);
     }
+    if (flags & CLONE_NEWNET) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        extern struct net_ns *net_ns_alloc(struct net_ns *parent);
+        extern void           net_ns_put(struct net_ns *);
+        struct net_ns *nu = net_ns_alloc(p->net_ns);
+        if (!nu) return -ENOMEM;
+        struct net_ns *old = p->net_ns;
+        p->net_ns = nu;
+        if (old) net_ns_put(old);
+    }
     /* Remaining flags: no-op in single-user kernel. */
     return 0;
 }
@@ -394,10 +405,24 @@ long do_setns(int fd, int nstype) {
     if (!fde) return -EBADF;
     if (fde->type != FD_NSFS) return -EINVAL;
     struct nsfs_handle *h = (struct nsfs_handle *)fde->obj;
-    if (!h || !h->ns) return -EINVAL;
+    if (!h) return -EINVAL;
 
-    /* Linux: if nstype != 0, it must match the namespace kind. 0 accepts
-     * any. For our purposes only CLONE_NEWTIME matters. */
+    /* CLONE_NEWNET: rebind current task's net_ns to the captured target. */
+    if (h->kind == NSFS_KIND_NET) {
+        if (!h->net_ns) return -EINVAL;
+        if (nstype != 0 && nstype != CLONE_NEWNET) return -EINVAL;
+        if (!cred_has_cap_sys_admin(p)) return -EPERM;
+        extern struct net_ns *net_ns_get(struct net_ns *);
+        extern void           net_ns_put(struct net_ns *);
+        struct net_ns *tgt = net_ns_get(h->net_ns);
+        struct net_ns *old = p->net_ns;
+        p->net_ns = tgt;
+        if (old) net_ns_put(old);
+        return 0;
+    }
+
+    /* Time namespace handles. */
+    if (!h->ns) return -EINVAL;
     if (nstype != 0 && nstype != CLONE_NEWTIME) return -EINVAL;
 
     /* setns on an nsfs handle from either /proc/<pid>/ns/time or

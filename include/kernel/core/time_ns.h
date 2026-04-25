@@ -76,17 +76,27 @@ int                     time_ns_clock_affected(int clk_id);
  *
  * kind == 0  → time (current task's time_ns at open-time)
  * kind == 1  → time_for_children (current task's time_ns_for_children at open-time)
+ * kind == 2  → net (current task's net_ns at open-time)
  *
  * The NS pointer holds a reference (incref on open, decref on close).
  * The observable namespace may have moved on in the opening task since
  * then — this matches Linux: nsfs fd binds to a specific ns_common. */
 
+#define NSFS_KIND_TIME              0
+#define NSFS_KIND_TIME_FOR_CHILDREN 1
+#define NSFS_KIND_NET               2
+
+struct net_ns;
+
 struct nsfs_handle {
     int                      kind;
-    struct time_namespace   *ns;
+    /* Exactly one of these is non-NULL based on kind. */
+    struct time_namespace   *ns;       /* kind == TIME / TIME_FOR_CHILDREN */
+    struct net_ns           *net_ns;   /* kind == NET */
 };
 
 struct nsfs_handle *nsfs_handle_alloc(int kind, struct time_namespace *ns);
+struct nsfs_handle *nsfs_handle_alloc_net(struct net_ns *ns);
 void                nsfs_handle_free(struct nsfs_handle *h);
 
 /* Parse and apply one timens_offsets write line.

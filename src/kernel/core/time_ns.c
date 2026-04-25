@@ -49,14 +49,27 @@ void time_ns_init(void) {
 struct nsfs_handle *nsfs_handle_alloc(int kind, struct time_namespace *ns) {
     struct nsfs_handle *h = (struct nsfs_handle *)slab_alloc(&nsfs_handle_slab);
     if (!h) return 0;
-    h->kind = kind;
-    h->ns   = time_ns_get(ns);
+    h->kind   = kind;
+    h->ns     = time_ns_get(ns);
+    h->net_ns = 0;
+    return h;
+}
+
+#include "net/net_ns.h"
+
+struct nsfs_handle *nsfs_handle_alloc_net(struct net_ns *ns) {
+    struct nsfs_handle *h = (struct nsfs_handle *)slab_alloc(&nsfs_handle_slab);
+    if (!h) return 0;
+    h->kind   = NSFS_KIND_NET;
+    h->ns     = 0;
+    h->net_ns = net_ns_get(ns);
     return h;
 }
 
 void nsfs_handle_free(struct nsfs_handle *h) {
     if (!h) return;
-    if (h->ns) time_ns_put(h->ns);
+    if (h->ns)     time_ns_put(h->ns);
+    if (h->net_ns) net_ns_put(h->net_ns);
     slab_free(&nsfs_handle_slab, h);
 }
 

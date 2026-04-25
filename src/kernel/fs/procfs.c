@@ -1286,9 +1286,9 @@ int procfs_pid_exists(const char *name) {
             return 4;
     }
 
-    /* /proc/<pid>/ns/time{,_for_children} — report as symlink-like entries
-     * so stat() on the path succeeds. Actual open() bypasses procfs_open
-     * and creates an FD_NSFS handle directly in do_openat. */
+    /* /proc/<pid>/ns/time{,_for_children} und /proc/<pid>/ns/net —
+     * symlink-like entries. Actual open() bypasses procfs_open and
+     * creates an FD_NSFS handle directly in do_openat. */
     if (file[0]=='n' && file[1]=='s' && file[2]=='/') {
         const char *sub = file + 3;
         if (sub[0]=='t' && sub[1]=='i' && sub[2]=='m' && sub[3]=='e') {
@@ -1299,6 +1299,8 @@ int procfs_pid_exists(const char *name) {
                 sub[16]=='n' && sub[17] == 0)
                 return 2;
         }
+        if (sub[0]=='n' && sub[1]=='e' && sub[2]=='t' && sub[3]==0)
+            return 2;
     }
 
     return 0;
