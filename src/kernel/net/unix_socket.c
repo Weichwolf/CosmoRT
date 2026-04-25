@@ -97,6 +97,27 @@ void usock_decref(void *obj) {
     unix_socket_t *s = (unix_socket_t *)obj;
     if (!s) return;
     if (__sync_sub_and_fetch(&s->refcount, 1) <= 0) {
+        /* If we are still queued in a listener's backlog (close before
+         * accept), unlink first so the listener doesn't dereference us
+         * after slab_free. */
+        if (s->backlog_owner) {
+            uint64_t bf;
+            spin_lock_irq(&usock_lock, &bf);
+            unix_socket_t *L = s->backlog_owner;
+            if (L) {
+                unix_socket_t **pp = &L->backlog_head;
+                unix_socket_t *prev = 0;
+                while (*pp && *pp != s) { prev = *pp; pp = &(*pp)->backlog_next; }
+                if (*pp == s) {
+                    *pp = s->backlog_next;
+                    if (L->backlog_tail == s) L->backlog_tail = prev;
+                    L->backlog_count--;
+                }
+                s->backlog_next = 0;
+                s->backlog_owner = 0;
+            }
+            spin_unlock_irq(&usock_lock, bf);
+        }
         /* Wake blocked reader on peer — they'll see EOF (no peer) */
         thread_t *reader = 0;
         if (s->peer) {
@@ -119,6 +140,34 @@ void usock_decref(void *obj) {
             s->blocked_acceptor = 0;
             spin_unlock_irq(&usock_lock, irqf);
         }
+
+        /* Drain pending backlog: each enqueued client has a thread blocked
+         * in usock_connect waiting for accept(). Wake them with refused-by-
+         * disappearance so they unwind cleanly. The client sockets keep
+         * their own refcounts — only the queue link is dropped. */
+        unix_socket_t *drained_head = 0;
+        if (s->backlog_head) {
+            uint64_t irqf;
+            spin_lock_irq(&usock_lock, &irqf);
+            drained_head = s->backlog_head;
+            s->backlog_head = 0;
+            s->backlog_tail = 0;
+            s->backlog_count = 0;
+            spin_unlock_irq(&usock_lock, irqf);
+        }
+        while (drained_head) {
+            unix_socket_t *next = drained_head->backlog_next;
+            drained_head->backlog_next = 0;
+            drained_head->backlog_owner = 0;
+            thread_t *waiter = (thread_t *)drained_head->blocked_acceptor;
+            drained_head->blocked_acceptor = 0;
+            if (waiter) {
+                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                event_post(waiter, 9 /* EQ_SOCKET_CONNECT */, 0);
+            }
+            drained_head = next;
+        }
+
         if (reader) {
             extern void event_post(thread_t *target, uint32_t type, uint64_t data);
             event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
@@ -338,11 +387,17 @@ long usock_bind(int fd, const struct k_sockaddr_un *addr, int addrlen) {
 /* ── listen ───────────────────────────────────── */
 
 long usock_listen(int fd, int backlog) {
-    (void)backlog;
     unix_socket_t *s = usock_from_fd(fd);
     if (!s) return -EBADF;
-    if (s->state != USOCK_CREATED) return -EINVAL;
+    /* Linux: re-listen on a LISTENING socket only updates the backlog cap. */
+    if (s->state != USOCK_CREATED && s->state != USOCK_LISTENING) return -EINVAL;
     if (s->path_len == 0) return -EINVAL; /* must be bound */
+    /* Linux: negative is silently clamped to SOMAXCONN; 0 stays 0 (rejects
+     * all connects). Positive values are clamped to the system cap. */
+    int cap = backlog;
+    if (cap < 0) cap = USOCK_SOMAXCONN;
+    if (cap > USOCK_SOMAXCONN) cap = USOCK_SOMAXCONN;
+    s->backlog_cap = cap;
     s->state = USOCK_LISTENING;
     return 0;
 }
@@ -373,11 +428,21 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
         if (wr == -4) return -ERESTARTSYS;
     }
 
-    /* Dequeue first pending connection */
-    unix_socket_t *client = s->backlog[0];
-    for (int i = 1; i < s->backlog_count; i++)
-        s->backlog[i - 1] = s->backlog[i];
+    /* Dequeue oldest pending connection from the FIFO. The lock guards
+     * head/tail/count against a concurrent connect() appending. */
+    uint64_t accept_flags;
+    spin_lock_irq(&usock_lock, &accept_flags);
+    unix_socket_t *client = s->backlog_head;
+    if (!client) {
+        spin_unlock_irq(&usock_lock, accept_flags);
+        return -EAGAIN; /* spurious wake — defer to caller's loop */
+    }
+    s->backlog_head = client->backlog_next;
+    if (!s->backlog_head) s->backlog_tail = 0;
+    client->backlog_next = 0;
+    client->backlog_owner = 0;
     s->backlog_count--;
+    spin_unlock_irq(&usock_lock, accept_flags);
 
     /* Create server-side endpoint */
     unix_socket_t *server = usock_alloc();
@@ -460,12 +525,24 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
         spin_unlock_irq(&usock_lock, flags);
         return -ECONNREFUSED;
     }
-    if (listener->backlog_count >= USOCK_BACKLOG_MAX) {
+    if (listener->backlog_count >= listener->backlog_cap) {
         spin_unlock_irq(&usock_lock, flags);
+        /* Linux: a refused-by-full-backlog returns -ECONNREFUSED on UNIX
+         * sockets (different from TCP, which is -ECONNREFUSED only when
+         * no listener exists). We follow the existing return contract. */
         return -EAGAIN;
     }
-    /* Enqueue in listener's backlog */
-    listener->backlog[listener->backlog_count++] = s;
+    /* Enqueue at tail (FIFO). Caller-side socket links via backlog_next;
+     * accept() pops from head. backlog_owner lets close() unlink the
+     * client if it dies before being accepted. */
+    s->backlog_next = 0;
+    s->backlog_owner = listener;
+    if (listener->backlog_tail)
+        listener->backlog_tail->backlog_next = s;
+    else
+        listener->backlog_head = s;
+    listener->backlog_tail = s;
+    listener->backlog_count++;
     thread_t *acceptor = 0;
     if (listener->blocked_acceptor) {
         acceptor = (thread_t *)listener->blocked_acceptor;

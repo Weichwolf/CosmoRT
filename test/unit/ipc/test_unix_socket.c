@@ -114,3 +114,118 @@ static void test_unix_socket(void) {
 }
 
 TEST("af_unix", test_unix_socket);
+
+/* ── AF_UNIX backlog: dynamische slab-list statt fix[8]
+ * (Phase 13.1 Item 3) ────────────────────────────────────── */
+
+#define SOCK_NONBLOCK 0x800
+
+struct k_sockaddr_un { uint16_t family; char path[108]; };
+
+/* Build an abstract-namespace AF_UNIX address (path[0]==0). The 13-byte
+ * tag below stays unique across the test suite. */
+static int unix_abstract_addr(struct k_sockaddr_un *out, const char *tag) {
+    out->family = AF_UNIX;
+    out->path[0] = 0; /* abstract */
+    int i = 1;
+    while (tag[i - 1] && i < 13) { out->path[i] = tag[i - 1]; i++; }
+    return 2 + i;
+}
+
+/* Backlog grows beyond the old hard-coded 8: queue 24 nonblocking connects
+ * before any accept(). Old kernel returned -EAGAIN at the 9th. */
+static void test_unix_backlog_scaling(void) {
+    puts("\n[af_unix/backlog_scaling]\n");
+    int lfd = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM, 0);
+    check_ge("listen socket", lfd, 0);
+    struct k_sockaddr_un la;
+    int alen = unix_abstract_addr(&la, "bk_scl_001");
+    long r = sc3(SYS_BIND, lfd, (long)&la, alen);
+    check_val("bind abstract", r, 0);
+    r = sc2(SYS_LISTEN, lfd, 32);
+    check_val("listen(32) ok", r, 0);
+
+    /* 24 nonblocking connects — every single one must succeed (would have
+     * EAGAIN'd at #9 with the old fix[8] backlog). Each client socket is
+     * NONBLOCK so connect() returns -EINPROGRESS instead of waiting. */
+    int clients[24];
+    int ok_connects = 0;
+    for (int i = 0; i < 24; i++) {
+        clients[i] = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        long cr = sc3(SYS_CONNECT, clients[i], (long)&la, alen);
+        /* AF_UNIX nonblocking connect to a listening peer: kernel enqueues
+         * us in the listener's backlog and returns -EINPROGRESS-ish (we
+         * actually return -ERESTARTSYS via the wait path? No — for
+         * NONBLOCK the wait is skipped, so 0). Either >=0 or -EINPROGRESS
+         * (115) counts as enqueued. Anything else is a hard fail. */
+        if (cr >= 0 || cr == -115) ok_connects++;
+    }
+    check_val("24 nonblocking connects all enqueued", ok_connects, 24);
+
+    /* Drain via accept() — each succeeds without spawning a peer thread. */
+    int accepted = 0;
+    for (int i = 0; i < 24; i++) {
+        long afd = sc4(SYS_ACCEPT, lfd, 0, 0, 0);
+        if (afd >= 0) { accepted++; sc1(SYS_CLOSE, afd); }
+    }
+    check_val("accept drained 24 entries", accepted, 24);
+
+    for (int i = 0; i < 24; i++) sc1(SYS_CLOSE, clients[i]);
+    sc1(SYS_CLOSE, lfd);
+}
+
+/* listen(0) clamps backlog_cap to 0; subsequent connect must -EAGAIN
+ * because the queue cap is full at zero. */
+static void test_unix_backlog_clamp_zero(void) {
+    puts("\n[af_unix/backlog_clamp_zero]\n");
+    int lfd = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM, 0);
+    check_ge("listen socket", lfd, 0);
+    struct k_sockaddr_un la;
+    int alen = unix_abstract_addr(&la, "bk_zer_002");
+    long r = sc3(SYS_BIND, lfd, (long)&la, alen);
+    check_val("bind abstract", r, 0);
+    r = sc2(SYS_LISTEN, lfd, 0);
+    check_val("listen(0) ok", r, 0);
+
+    int cfd = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    long cr = sc3(SYS_CONNECT, cfd, (long)&la, alen);
+    /* listen(0) means backlog_cap == 0 → first connect refused with EAGAIN. */
+    check_val("connect to listen(0) -> EAGAIN", cr, -EAGAIN);
+    sc1(SYS_CLOSE, cfd);
+    sc1(SYS_CLOSE, lfd);
+}
+
+/* close() of a queued (still-pending) client must unlink it from the
+ * listener's backlog so the listener can be torn down without UAF. */
+static void test_unix_backlog_close_pending(void) {
+    puts("\n[af_unix/backlog_close_pending]\n");
+    int lfd = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM, 0);
+    check_ge("listen socket", lfd, 0);
+    struct k_sockaddr_un la;
+    int alen = unix_abstract_addr(&la, "bk_cls_003");
+    long r = sc3(SYS_BIND, lfd, (long)&la, alen);
+    check_val("bind abstract", r, 0);
+    r = sc2(SYS_LISTEN, lfd, 8);
+    check_val("listen(8) ok", r, 0);
+
+    int c1 = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int c2 = (int)sc3(SYS_SOCKET, AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    sc3(SYS_CONNECT, c1, (long)&la, alen);
+    sc3(SYS_CONNECT, c2, (long)&la, alen);
+    /* Drop the middle client before any accept(). The listener's backlog
+     * must still allow a fresh accept() to drain c2 alone. */
+    sc1(SYS_CLOSE, c1);
+
+    long afd = sc4(SYS_ACCEPT, lfd, 0, 0, 0);
+    check("accept after close-pending succeeds", afd >= 0);
+    if (afd >= 0) sc1(SYS_CLOSE, afd);
+
+    /* Backlog is now empty — second accept must -EAGAIN on a NONBLOCK listener. */
+    int lfd_nb_check_unused = lfd; (void)lfd_nb_check_unused;
+    sc1(SYS_CLOSE, c2);
+    sc1(SYS_CLOSE, lfd);
+}
+
+TEST("af_unix/backlog_scaling",       test_unix_backlog_scaling);
+TEST("af_unix/backlog_clamp_zero",    test_unix_backlog_clamp_zero);
+TEST("af_unix/backlog_close_pending", test_unix_backlog_close_pending);

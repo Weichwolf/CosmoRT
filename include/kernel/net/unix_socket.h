@@ -13,8 +13,14 @@
 /* Ring buffer size per direction */
 #define USOCK_BUF_SIZE    (64 * 1024)
 
-/* Max pending connections in accept queue */
-#define USOCK_BACKLOG_MAX 8
+/* Default per-listener backlog cap when listen() is called with backlog<=0
+ * or not called at all (Linux: SOMAXCONN ≈ 4096, but listen(0) is treated
+ * as 0 in modern Linux — we keep 0 too so the test can assert it).
+ *
+ * USOCK_SOMAXCONN: hard upper clamp applied inside listen() per
+ * net.core.somaxconn. Linux default is 4096; a per-listener queue still
+ * grows on demand via slab so this is just a sanity cap. */
+#define USOCK_SOMAXCONN 4096
 
 /* sockaddr_un (matches Linux) */
 struct k_sockaddr_un {
@@ -40,9 +46,16 @@ struct unix_socket {
     char      path[108];
     int       path_len;
 
-    /* Accept queue (for LISTENING sockets) */
-    unix_socket_t *backlog[USOCK_BACKLOG_MAX];
-    int       backlog_count;
+    /* Accept queue (for LISTENING sockets) — singly-linked FIFO of pending
+     * client sockets. Each client links via its own backlog_next pointer
+     * (only one backlog hop per pending socket — owner is unique). The
+     * cap is per-listener via listen(fd, n); no systemwide pool. */
+    unix_socket_t *backlog_head;   /* oldest pending — accept() dequeues here */
+    unix_socket_t *backlog_tail;   /* newest pending — connect() appends here */
+    int            backlog_count;
+    int            backlog_cap;    /* set by listen(); 0 = "not listening yet" */
+    unix_socket_t *backlog_next;   /* link inside another listener's queue */
+    unix_socket_t *backlog_owner;  /* listener whose queue we sit in (or NULL) */
 
     /* Flags from socket() */
     int       flags;
