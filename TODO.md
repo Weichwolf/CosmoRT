@@ -3,16 +3,28 @@
 ## Identität
 
 CosmoRT ist eine **Multimedia-Konsole** mit **WASM als nativem Cartridge-Format**.
-- Konsole = stabile RT-HW-Plattform (Kernel + HAL + Audio/GPU-Treiber)
-- Cartridge = WASM-App-Module: sandbox-by-design, cross-arch, hot-loadable,
-  zero-copy direkt mit framebuffer/audio/GPU via mmap-host-imports
-- Linux-ABI-Kompatibilität (musl/Alpine/LTP/apk) ist die **Bootstrap-Brücke**
-  zur existierenden Software, nicht das Endziel
-- Kein JS, kein DOM, kein Browser-Cargo-Cult — ~10 Host-Imports statt 1500
-  Browser-DOM-APIs
+
+**Zwei dauerhafte Säulen** (nicht entweder-oder):
+
+1. **Linux-ABI-Kompatibilität (permanent, vollständig)** — Alpine Linux läuft
+   komplett. apk, busybox, OpenSSH, bash, Python, Compiler, Editor — alles
+   was als Alpine-Paket verfügbar ist, läuft unverändert. Phase-Roadmap
+   10-17 baut diese Säule (musl + LTP grün auf x86_64).
+2. **WASM-Native (Alleinstellungsmerkmal)** — Neue Multimedia-Apps als
+   WASM-Cartridges. Sandbox-by-Design, cross-arch, hot-loadable, zero-copy
+   direkt mit framebuffer/audio/GPU via mmap-host-imports. Phase-Roadmap
+   18-25 baut diese Säule.
+
+**Konsole** = stabile RT-Plattform; **Cartridge** = WASM-App-Modul.
+~10 Host-Imports statt 1500 Browser-DOM-APIs. Kein JS, kein DOM, kein
+Compositor-Cargo-Cult.
+
+Beide Welten interoperieren: Alpine-Tools bauen WASM-Cartridges,
+WASM-Apps nutzen POSIX-Sockets via WASI, gemeinsames Filesystem.
 
 **Vision-Frage**: Was würde Linus heute bauen, wenn er frisch anfinge auf
-moderner x86_64+aarch64-Hardware mit WASM als Universal-Binary?
+moderner x86_64+aarch64-Hardware mit WASM als Universal-Binary für
+Multimedia-Apps?
 
 ---
 
@@ -44,15 +56,16 @@ bevor restliche Pfade migriert werden können.
 | **16** | IPv6-Stack | AF_INET6 = EPROTONOSUPPORT | ~2500 LOC | in progress |
 | **17** | OOM-Killer + oom_score_adj | alloc-fail → -ENOMEM ohne Reclaim | ~600 LOC | ✓ |
 
-**Reihenfolge Bootstrap-Brücke (Linux-ABI-Vollständigkeit)**:
+**Reihenfolge Säule 1 (Linux-ABI-Vollständigkeit, Alpine läuft)**:
 - **10.2a** Architektur-Refactor (wait_head raus, try_to_wake_up rein) — laufend
 - **10.2b** Subsysteme einzeln: eventfd → pipe → socket → epoll → futex → wait4 → rt_sigtimedwait
 - **10.2c** event_queue.c löschen
 - **12-Rest** hrtimer ns + tickless retry (jetzt mit korrekter waitqueue)
 - **13** SMP-Scheduler-Finalisierung
-- alle musl + LTP grün auf x86_64 → Bootstrap-Brücke fertig
+- Erfolgskriterium: alle musl + LTP grün auf x86_64, Alpine apk/bash/sshd
+  vollständig nutzbar
 
-## Konsole-Phasen (CosmoRT-Identität, nach Bootstrap-Brücke)
+## Konsole-Phasen — Säule 2 (WASM-Native USP)
 
 | # | Phase | Inhalt | Aufwand |
 |---|-------|--------|---------|
@@ -67,10 +80,12 @@ bevor restliche Pfade migriert werden können.
 
 **Reihenfolge Konsole-Phasen**: 18 → 19 (parallel) → 20 → 21 → 22 → 23 → 24 → 25.
 
-Phasen 18-25 sind **CosmoRT-Identität**, nicht optional. Sie sind das
-"Warum CosmoRT existiert". Die Bootstrap-Brücke (Phasen 10-17) macht es
-möglich vorhandene Tools (Compiler, busybox, Editor) auf CosmoRT
-laufen zu lassen während wir die Konsolen-APIs bauen.
+**Beide Säulen sind permanent.** Säule 1 (Linux-ABI) ist nicht "transition
+weg davon" — sie bleibt vollständig nutzbar. Compiler, Editor, Tools laufen
+über Säule 1. Multimedia-Apps werden über Säule 2 ausgeliefert.
+Interoperabilität zwischen beiden ist explizites Designziel:
+gemeinsames Filesystem, Netzwerk, Userspace-Tools können beide Cartridge-
+und ELF-Formate produzieren.
 
 ---
 
