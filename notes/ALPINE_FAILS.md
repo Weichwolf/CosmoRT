@@ -34,6 +34,21 @@ Update: 2026-04-22 Phase 17 OOM-Killer + oom_score_adj
   "oom_score_adj does not exist" geloggt haben finden den
   Knoten jetzt — kein Skipping mehr.
 
+Update: 2026-04-22 Phase 15 Network-Namespaces (4d00182..dfe5b2a).
+  ktest 2951 -> 2978 (+27 sub-asserts via 8 neue net_ns Tests).
+  CLONE_NEWNET + unshare/setns + /proc/<pid>/ns/net symlink +
+  /proc/sys/net/ipv4/conf/{lo,default}/tag per-NS implementiert.
+  - struct net_ns mit netif-list, sysctls, refcount, ns_id.
+  - task_struct.net_ns Pointer; fork inherit (incref) oder
+    CLONE_NEWNET -> net_ns_alloc + eigene loopback-netif.
+  - tcp_hash key = (ns_id, lport, rport, src_ip).
+  - udp_hash key = (ns_id, port).
+  - AF_UNIX abstract path key = (ns_id, path).
+  - HW-NICs (e1000, virtio-net) bleiben in init_net_ns.
+  - LTP clone09: erwarteter PASS (echtes CLONE_NEWNET-Verhalten,
+    conf/{lo,default}/tag per-NS isoliert).
+  Verifikation per make alpine-test ausstehend in dieser Session.
+
 Update: 2026-04-22 Phase 14 vDSO clock_gettime
   (f429103..b1bd226). ktest 2939 -> 2951 (+12), musl 460/11 -> 461/10
   (+1 PASS).

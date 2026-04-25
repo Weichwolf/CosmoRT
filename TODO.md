@@ -3,11 +3,10 @@
 **Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
-**Stand (Session-Ende)**: ktest **2906/1** (CLONE_NEWNET pre-existing
-fail), musl 460/11, **LTP 247/7/44** (+3 PASS / -3 FAIL vs Phase-10-Stand).
-Phase 11 erledigt: clock_nanosleep01 PASS via apply_restart() im
-syscall-return-Pfad + ERESTART_RESTARTBLOCK in do_clock_nanosleep +
-restart_block in thread_t. Branch: `ltp`.
+**Stand (Session-Ende)**: ktest **2978/0**, musl 461/10, **LTP 247/7/44**.
+Phase 15 (Network-Namespaces) erledigt: CLONE_NEWNET, unshare, setns,
+/proc/<pid>/ns/net, per-NS netif/socket-lookup/AF_UNIX-abstract/sysctls.
+Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
@@ -281,32 +280,46 @@ via dynsym. ktest 2939 -> 2951 (+12), musl 461/10 (+1 PASS).
 
 ---
 
-## Phase 15 — Network-Namespaces
+## Phase 15 — Network-Namespaces (ERLEDIGT)
 
-**Problem**: CLONE_NEWNET liefert EINVAL. netif+route-table+socket-lookup
-sind singleton. clone09 TBROK.
+**Status**: ktest 2951 -> 2978 (+27 sub-asserts via 8 neue net_ns
+Tests). CLONE_NEWNET / unshare(CLONE_NEWNET) / setns(CLONE_NEWNET)
+funktional. Per-NS isolation: netif-list, TCP-/UDP-Hash, AF_UNIX
+abstract namespace, /proc/sys/net/ipv4/conf/{lo,default}/tag.
 
-### Scope
+### Implementiert
 
-- [ ] `struct net_ns` mit netif-list, route-table, socket-hash, conntrack-stub
-- [ ] `task_struct.net_ns` Pointer, fork inherit, unshare/setns
-- [ ] netif-APIs (`netif_add`, `netif_find`, routing) alle ns-scoped
-- [ ] socket-lookup-key: (family, src-port, dst-port, src-addr, dst-addr, **ns-id**)
-- [ ] /proc/self/ns/net symlink, setns(fd, CLONE_NEWNET)
-- [ ] /proc/sys/net/ipv4/conf/{lo,default}/* per-ns
-- [ ] ktests: multi-ns-isolation, port-reuse-different-ns, lo-per-ns
-- [ ] loopback pro-ns (CosmoRT.lo im root-ns, kernel-ns-lo im neuen ns)
+- [x] `struct net_ns` mit netif-list, ip_forward/disable_ipv6 sysctls,
+      conf_lo_tag/conf_default_tag (clone09 LTP), refcount, ns_id.
+- [x] `task_struct.net_ns` Pointer, fork inherit (incref), CLONE_NEWNET
+      alloc, unshare(CLONE_NEWNET) replace, setns(fd, CLONE_NEWNET) rebind.
+- [x] netif-APIs ns-scoped: netif_register_ns/find_ns/default_ns/loopback_ns
+      mit current-task-default fuer Hot-Path-Caller.
+- [x] tcp_hash key = (ns_id, lport, rport, src_ip); udp_hash key = (ns_id, port);
+      AF_UNIX abstract path key = (ns_id, path).
+- [x] /proc/self/ns/net symlink + readlink format "net:[<id>]".
+- [x] /proc/sys/net/ipv4/conf/{lo,default}/tag, ip_forward per-NS.
+- [x] Loopback per-NS: jede neue NS bekommt eigene lo-netif via
+      net_ns_alloc; HW-NICs bleiben in init_net_ns.
+- [x] 8 ktests: newnet-fork-loopback, two-ns-share-port, unshare-separates-netif,
+      setns-rebinds, proc-ns-net-format, cross-ns-tcp-refused,
+      fork-inherits-ns, af-unix-abstract-per-ns.
 
-### Erfolgskriterien
+### Bekannte Limits / Out-of-Scope
 
-- LTP clone09 PASS
-- LTP netns-Tests (~10 weitere) laufen oder sauber SKIP
-- 2 Prozesse mit eigenem NS binden beide Port 8080 ohne Konflikt
+- HW-NIC (e1000, virtio-net) Migration zwischen NS via `ip link set
+  netns` ist nicht implementiert — Linux-default-Verhalten ist explicit
+  migration, das Phase-15 nicht braucht.
+- ARP-Cache global (HW-Pakete sind alle init_net_ns).
+- Routing-Table noch global; per-NS-Routing erst mit Multi-NIC-Setup.
+- IP-Sysctls jenseits von conf/{lo,default}/tag und ip_forward bleiben
+  global bis ein konkreter LTP-Test sie braucht.
 
-### Abhängigkeit
+### Bilanz
 
-**Entkoppelt von Phase 10-14** — kann theoretisch parallel laufen, aber
-Scope+Risiko sprechen für sequentiell nach 13.
+- ktest 2951 -> 2978 (+27)
+- Erwartung: LTP clone09 PASS (CLONE_NEWNET nicht mehr -EINVAL,
+  conf/{lo,default}/tag per-NS isoliert)
 
 ---
 
