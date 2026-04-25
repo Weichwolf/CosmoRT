@@ -318,35 +318,41 @@ connect02-family, ~20 LTP net-Tests die aktuell SKIP.
 
 ---
 
-## Phase 17 — OOM-Killer + oom_score_adj
+## Phase 17 — OOM-Killer + oom_score_adj (ERLEDIGT)
 
-**Problem**: `pmm_alloc` bei ENOMEM gibt sofort -ENOMEM zurück, ohne zu
-versuchen durch Killing von Prozessen Speicher freizugeben. cve-2017-17052
-(und zukünftige Memory-Stress-Tests) bleiben nicht-deterministisch.
+**Status**: ktest 2906 -> 2939 (+33), commits 80f648a..50e992c.
+musl 460/11 unveraendert, LTP 247/7/44 unveraendert.
+out_of_memory() fuerte live wahrend cve-2017-17052: "oom: killing
+pid 21 score 986" → Test PASS (vorher Flake je nach Memory-Druck).
 
-### Scope
+### Implementiert
 
-- [ ] `task_struct.oom_score_adj` int16, -1000..1000, clone inherit
-- [ ] `task_struct.oom_score_adj_min` (CAP_SYS_RESOURCE-Gate)
-- [ ] `/proc/$pid/oom_score_adj` (rw)
-- [ ] `/proc/$pid/oom_score` (ro, berechnet)
-- [ ] `/proc/$pid/oom_adj` (legacy -17..15, scaled)
-- [ ] `out_of_memory(alloc_ctx)` bei alloc_pages-fail:
-  - score alle tasks: `(rss + swap + pgtables) / total * 1000 + oom_score_adj * 10`
-  - highest-score: SIGKILL + async-reclaim
-  - immune wenn adj == -1000
-- [ ] init (pid 1) ist immune (panic statt kill)
-- [ ] ktests: oom_score_adj clamp, inherit, OOM-victim-selection, init-protect
+- [x] `task_struct.oom_score_adj` int16, -1000..1000, fork inherit
+- [x] `task_struct.oom_score_adj_min` (CAP_SYS_RESOURCE-Gate fuer
+      Lowering past min, monotonisch)
+- [x] `/proc/$pid/oom_score_adj` (rw)
+- [x] `/proc/$pid/oom_score` (ro, berechnet via `oom_badness`)
+- [x] `/proc/$pid/oom_adj` (legacy -17..15, scaled, OOM_DISABLE special-case)
+- [x] `out_of_memory()` an page_alloc/pages_alloc/huge_page_alloc-fail:
+  - score alle tasks: (rss + pgtables) * 1000 / total + adj * total / 1000
+  - highest-score: SIGKILL + retry-once nach schedule()
+  - immune wenn adj == OOM_SCORE_ADJ_MIN
+  - Re-Entry-Guard: per-CPU oom_in_progress[], plus context-check
+    (in_preempt, current_thread) — kein OOM aus IRQ/preempt
+- [x] init (pid 1) ist immune (panic statt kill)
+- [x] SUID/SGID-exec resetet oom_score_adj{,_min} auf 0 wenn euid != ruid
+      und kein CAP_SYS_RESOURCE
+- [x] ktests: 9 neue (clamp, inherit, min-gate, legacy-roundtrip,
+      score-sanity, init-pid1, exec-preserve, pick-highest-adj,
+      tracks-rss)
 
-### Erfolgskriterien
+### Bilanz
 
-- LTP cve-2017-17052 deterministisch PASS (nicht mehr flake)
-- LTP oom01-05 (falls im install-Set): PASS
-- Memory-Stress-Tests robust
-
-### Abhängigkeit
-
-Entkoppelt — kann nach Phase 13 jederzeit.
+- ktest 2906 -> 2939 (+33 sub-asserts, target +6 deutlich uebertroffen)
+- /proc/self/oom_score_adj read/write: LTP-Setup-Pfade die bisher
+  "oom_score_adj does not exist, skipping" geloggt haben finden
+  jetzt den Knoten.
+- musl/LTP-Baseline keine Regression.
 
 ---
 

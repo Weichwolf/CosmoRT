@@ -20,6 +20,19 @@ Update: 2026-04-25 Phase 11 restart_block + ERESTARTSYS (f20ad1d..52c905b
   dynamic-Variante derselben Tests bleibt PASS.
   pthread_atfork-errno-clobber bleibt FAIL (anderer root cause als
   Phase 11 vermutete; errno-Erhaltung ueber sigreturn).
+Update: 2026-04-22 Phase 17 OOM-Killer + oom_score_adj
+  (80f648a..50e992c). ktest 2906 -> 2939 (+33 sub-asserts).
+  musl 460/11 unveraendert, LTP 247/7/44 unveraendert.
+  out_of_memory() fuerte live wahrend cve-2017-17052: "oom: killing
+  pid 21 score 986 (cve-2017-17052)" → Test PASS. Alle anderen 7 LTP-FAILs
+  pre-existing (clock_gettime04, epoll-ltp TBROK, cve-2017-17053
+  TBROK fehlt modify_ldt, epoll_wait02/05, etc.).
+  /proc/\$pid/oom_score_adj rw + /proc/\$pid/oom_score ro +
+  /proc/\$pid/oom_adj legacy. Score-Formel via oom_badness:
+  (rss + pgtables) * 1000 / total + adj * total / 1000.
+  Init (PID 1) panic-protected. LTP-Setup-Pfade die
+  "oom_score_adj does not exist" geloggt haben finden den
+  Knoten jetzt — kein Skipping mehr.
 
 ## Ergebnis
 
