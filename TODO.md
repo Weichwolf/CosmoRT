@@ -17,20 +17,24 @@ SMP-Stabilität brüchig.
 
 ## Roadmap
 
-| # | Phase | Kern-Problem | Aufwand | Blocker für |
-|---|-------|--------------|---------|-------------|
-| **10** | **Waitqueue-System** | alle Wait-Pfade eigener ad-hoc Code | ~1500 LOC Big-Bang | 11, 13 |
-| **11** | **restart_block + signal-restartable syscalls** | EINTR ohne rem-Recovery | ~500 LOC | 12 |
-| **12** | **hrtimer ns-Präzision + Tick-less** | timer_ms() in Hot-Path | ~800 LOC | 14 |
-| **13** | **SMP-saubere Scheduler-Finalisierung** | globales rq_lock | ~1200 LOC | 15 |
-| **14** | **vDSO clock_gettime** | syscall pro clock_gettime | ~600 LOC | — |
-| **15** | **Network-Namespaces** | netif+route-table global | ~2000 LOC | 16, 17 |
-| **16** | **IPv6-Stack** | AF_INET6 = EPROTONOSUPPORT | ~2500 LOC | 17 |
-| **17** | **OOM-Killer + oom_score_adj** | alloc-fail → -ENOMEM ohne Reclaim | ~600 LOC | — |
-| **18** | **aarch64-Port** | HAL-Stubs nur x86_64 real | mehrere Sessions | Multi-Arch |
-| **19** | **Audio-Subsystem** | RT-Audio-Identität | Neubau | CosmoRT-USP |
+| # | Phase | Kern-Problem | Aufwand | Status |
+|---|-------|--------------|---------|--------|
+| **10.1** | Waitqueue-Infrastruktur | atomic blocking primitive | ~600 LOC | ✓ |
+| **10.2** | **Waitqueue-Migration restliche Wait-Pfade** | event_wait/futex/pipe/socket/epoll/signalfd/timerfd/wait4 | ~1500 LOC, 1 Pfad/Agent | **NEXT** |
+| **11** | restart_block + signal-restartable syscalls | EINTR ohne rem-Recovery | ~500 LOC | ✓ |
+| **12** | hrtimer ns-Präzision + Tick-less | timer_ms() in Hot-Path | ~800 LOC | partial (TSC mult/shift einzeln) |
+| **13.1** | **Skalierungs-Audit (Linus-today Limits)** | FD_CEILING, NGROUPS_MAX, USOCK_BACKLOG | ~400 LOC | nach 16 + 10.2 |
+| **13** | SMP-saubere Scheduler-Finalisierung | globales rq_lock | ~1200 LOC | nach 10.2 |
+| **14** | vDSO clock_gettime | syscall pro clock_gettime | ~600 LOC | ✓ |
+| **15** | Network-Namespaces | netif+route-table global | ~2000 LOC | ✓ |
+| **16** | IPv6-Stack | AF_INET6 = EPROTONOSUPPORT | ~2500 LOC | in progress |
+| **17** | OOM-Killer + oom_score_adj | alloc-fail → -ENOMEM ohne Reclaim | ~600 LOC | ✓ |
 
-Reihenfolge ist **nicht** verhandelbar bis 15 — danach orthogonal parallelisierbar.
+**Reihenfolge ab hier**: 16 (IPv6 abschliessen) → **10.2 (Waitqueue-Migration)** → 13.1 (Skalierung) → 12-Rest (hrtimer ns + tickless retry, jetzt mit waitqueue-Fundament) → 13 (SMP-Final).
+
+10.2 ist **vorgezogen** — ohne dass alle Wait-Pfade auf waitqueue laufen, reproduzieren spätere Phasen (12-tickless, 13-SMP-Final) dieselben Missed-Wakeup-Races.
+
+aarch64-Port + Audio-Subsystem **gestrichen** — Fokus auf Linux-Kompatibilität auf x86_64 zuerst, alles muss grün sein bevor weitere Architekturen oder USP-Features angegangen werden.
 
 ---
 
