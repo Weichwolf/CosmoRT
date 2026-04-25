@@ -99,13 +99,23 @@ struct netif *netif_loopback(void) {
 }
 
 void netif_tx(const uint8_t *frame, uint16_t len) {
-    /* Route: 127.x.x.x → current NS's loopback, else → current NS's default NIC.
-     * Hardware NICs live only in init_net_ns; non-init NS without a default
-     * NIC silently drops non-loopback frames (matches Linux netns isolation). */
+    /* Route: IPv4 127.x.x.x or IPv6 ::1 → current NS's loopback,
+     * else → current NS's default NIC. Hardware NICs live only in
+     * init_net_ns; non-init NS without a default NIC silently drops
+     * non-loopback frames (matches Linux netns isolation). */
     struct net_ns *ns = net_ns_current();
     if (len >= 34 && frame[12] == 0x08 && frame[13] == 0x00 && frame[30] == 127) {
         struct netif *lo = netif_loopback_ns(ns);
         if (lo && lo->send) { lo->send(lo, frame, len); return; }
+    }
+    /* IPv6: dst at offset 14+24 = 38, ::1 = 15 zero bytes + 0x01 */
+    if (len >= 14 + 40 && frame[12] == 0x86 && frame[13] == 0xDD) {
+        int is_loopback6 = 1;
+        for (int i = 0; i < 15; i++) if (frame[38 + i] != 0) { is_loopback6 = 0; break; }
+        if (is_loopback6 && frame[38 + 15] == 1) {
+            struct netif *lo = netif_loopback_ns(ns);
+            if (lo && lo->send) { lo->send(lo, frame, len); return; }
+        }
     }
     struct netif *def = netif_default_ns(ns);
     if (def && def->send) def->send(def, frame, len);

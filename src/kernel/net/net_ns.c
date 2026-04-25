@@ -54,6 +54,8 @@ static void net_ns_fail(const char *msg) {
 
 extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
+extern void ipv6_input(uint32_t ns_id, const uint8_t *frame, int len);
+extern void ipv6_attach_loopback_for_ns(struct net_ns *ns);
 extern void epoll_wake_all(void);
 
 #include "net/net.h"
@@ -64,6 +66,13 @@ static void per_ns_lo_send(struct netif *nif, const uint8_t *data, uint16_t len)
     uint8_t buf[1600];
     if (len > 1600) return;
     for (int i = 0; i < len; i++) buf[i] = data[i];
+
+    /* IPv6 frame? */
+    if (len >= 14 && buf[12] == 0x86 && buf[13] == 0xDD) {
+        ipv6_input(ns_id, buf, len);
+        epoll_wake_all();
+        return;
+    }
 
     uint8_t proto = buf[23];
     if (proto == 6) {
@@ -140,6 +149,7 @@ struct net_ns *net_ns_alloc(struct net_ns *parent) {
         slab_free(&net_ns_slab, ns);
         return 0;
     }
+    ipv6_attach_loopback_for_ns(ns);
     return ns;
 }
 

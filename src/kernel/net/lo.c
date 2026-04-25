@@ -12,6 +12,7 @@
 #include "net/net_ns.h"
 extern void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
+extern void ipv6_input(uint32_t ns_id, const uint8_t *frame, int len);
 extern void sched_wake(struct thread *t);
 extern void epoll_wake_all(void);
 
@@ -25,6 +26,13 @@ static void lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
     for (int i = 0; i < len; i++) buf[i] = data[i];
 
     uint32_t ns = init_net_ns.ns_id;
+
+    if (len >= 14 && buf[12] == 0x86 && buf[13] == 0xDD) {
+        ipv6_input(ns, buf, len);
+        epoll_wake_all();
+        return;
+    }
+
     uint8_t proto = buf[23];
     if (proto == 6) {
         tcp_input(ns, buf, len);

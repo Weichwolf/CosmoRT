@@ -99,9 +99,12 @@ static void net_tx_tick(void) { (void)net_tx_poll(NET_POLL_MAX_WORK); }
 static struct tick_callback net_rx_cb;
 static struct tick_callback net_tx_cb;
 
+extern void ipv6_init(void);
+
 int net_init(void) {
     lo_init();
     udp_init();
+    ipv6_init();
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
     tick_register(&net_rx_cb, net_rx_tick, TICK_EVERY);
