@@ -49,6 +49,12 @@ struct net_ns {
     /* IP-stack sysctls (/proc/sys/net/ipv4/...). */
     int               ip_forward;
     int               disable_ipv6;
+
+    /* Per-NS conf/<dev>/tag (LTP clone09). Linux maintains a `tag` field
+     * in struct in_device. Wir tracken pro NS einen lo-tag und einen
+     * default-tag (template fuer neue NICs). */
+    int               conf_lo_tag;
+    int               conf_default_tag;
 };
 
 /* Boot namespace — pinned, never freed. Hosts the original loopback and

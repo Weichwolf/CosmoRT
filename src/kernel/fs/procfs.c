@@ -875,6 +875,83 @@ static long procfs_sys_pipe_max_size_write(const char *buf, int size,
     return size;
 }
 
+/* ── /proc/sys/net/ipv4/conf/{lo,default}/tag ─────────
+ * Per-network-namespace integer (Linux NETIF_CONF_LO/DEFAULT). LTP
+ * clone09 writes tag in the parent NS, then a CLONE_NEWNET child reads
+ * it and expects the default value (proof that NS isolation worked). */
+
+#include "net/net_ns.h"
+
+static int procfs_sys_net_conf_lo_tag(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    struct net_ns *ns = net_ns_current();
+    char tmp[16];
+    int pos = itoa_buf(tmp, 16, (long)ns->conf_lo_tag);
+    tmp[pos++] = '\n';
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+static long procfs_sys_net_conf_lo_tag_write(const char *buf, int size,
+                                             int offset, void *ctx) {
+    (void)offset; (void)ctx;
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    if (v < -0x7FFFFFFFLL || v > 0x7FFFFFFFLL) return -EINVAL;
+    struct net_ns *ns = net_ns_current();
+    ns->conf_lo_tag = (int)v;
+    return size;
+}
+
+static int procfs_sys_net_conf_def_tag(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    struct net_ns *ns = net_ns_current();
+    char tmp[16];
+    int pos = itoa_buf(tmp, 16, (long)ns->conf_default_tag);
+    tmp[pos++] = '\n';
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+static long procfs_sys_net_conf_def_tag_write(const char *buf, int size,
+                                              int offset, void *ctx) {
+    (void)offset; (void)ctx;
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    if (v < -0x7FFFFFFFLL || v > 0x7FFFFFFFLL) return -EINVAL;
+    struct net_ns *ns = net_ns_current();
+    ns->conf_default_tag = (int)v;
+    return size;
+}
+
+/* ── /proc/sys/net/ipv4/ip_forward ──────────────────── */
+
+static int procfs_sys_net_ip_forward(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    struct net_ns *ns = net_ns_current();
+    char tmp[8];
+    int pos = itoa_buf(tmp, 8, (long)ns->ip_forward);
+    tmp[pos++] = '\n';
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
+static long procfs_sys_net_ip_forward_write(const char *buf, int size,
+                                            int offset, void *ctx) {
+    (void)offset; (void)ctx;
+    long long v;
+    int consumed = procfs_parse_int(buf, size, &v);
+    if (consumed < 0) return consumed;
+    struct net_ns *ns = net_ns_current();
+    ns->ip_forward = v ? 1 : 0;
+    return size;
+}
+
 /* ── /proc/sys/fs/lease-break-time ────────────────── */
 
 static int procfs_sys_lease_break_time(char *buf, int size, int offset, void *ctx) {
@@ -1295,6 +1372,15 @@ void procfs_init(void) {
     procfs_register_rw("sys/fs/pipe-max-size",
                        procfs_sys_pipe_max_size,
                        procfs_sys_pipe_max_size_write, 0);
+    procfs_register_rw("sys/net/ipv4/conf/lo/tag",
+                       procfs_sys_net_conf_lo_tag,
+                       procfs_sys_net_conf_lo_tag_write, 0);
+    procfs_register_rw("sys/net/ipv4/conf/default/tag",
+                       procfs_sys_net_conf_def_tag,
+                       procfs_sys_net_conf_def_tag_write, 0);
+    procfs_register_rw("sys/net/ipv4/ip_forward",
+                       procfs_sys_net_ip_forward,
+                       procfs_sys_net_ip_forward_write, 0);
     procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
@@ -1304,7 +1390,7 @@ void procfs_init(void) {
     procfs_register("mounts", procfs_mounts, 0);
     procfs_register("self/mounts", procfs_mounts, 0);
     procfs_register("sys/vm/mmap_min_addr", procfs_mmap_min_addr, 0);
-    serial_puts("procfs: init (29 entries)\n");
+    serial_puts("procfs: init (32 entries)\n");
 }
 
 /* ── VFS ops stubs (procfs uses its own dispatch via FD_PROCFS) ── */
