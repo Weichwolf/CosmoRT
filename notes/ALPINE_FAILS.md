@@ -1,5 +1,21 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-26 Phase 12-Rest Teilfortschritt.
+  ktest 3047 -> 3059 (+12 sub-asserts via 5 neue hrtimer_ns Tests).
+  - core/hrtimer: hrtimer_now_ns() jetzt wrap-frei via ms-Split
+    (Division statt overflow-praefixierten 600s-Window-Multiply).
+    Manifestation der vorigen Bug: nach >600s Uptime gab hrtimer_now_ns
+    Garbage-Werte, schedule_timeout/futex_wait/event_wait verglichen
+    deadlines wrong, Late-Tests (clock_nanosleep01, qsort-static,
+    sem_open-static) hingen.
+  - core/hrtimer: lapic_arm_ns Overflow-Cap (defensive, derzeit
+    unused-cast — Tickless-Switch-ready).
+  - sys/time ns-Praezision wurde versucht (sleep_until_ns,
+    expires_ns in restart_block) — REVERTIERT, weil pthread_cond /
+    tls_init / pthread-robust-detach Tests neue Race-Window
+    introduzieren. Die Wrap-fix selbst bleibt, ns-Sleep braucht erst
+    futex/event_wait ns-Migration (Phase 12 spaeter).
+
 Update: 2026-04-22 Phase 13.1 Skalierungs-Audit (Linus-today Limits).
   ktest 3022 -> 3034 (+12 sub-asserts via 9 neue Tests).
   - proc/cred: NGROUPS_MAX 32 -> 65536 (Linux ngroups_max).

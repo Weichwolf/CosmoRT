@@ -259,7 +259,9 @@ Regression — eigene Boost-Rollback-Semantik).
 
 ### Scope
 
-- [ ] `hrtimer_now_ns()` als ein-Funktions-Aufruf-Hot-Path, TSC-direct
+- [x] `hrtimer_now_ns()` als ein-Funktions-Aufruf-Hot-Path, TSC-direct
+- [x] **Wrap-Safety**: hrtimer_now_ns via ms-Split, kein 600s-Limit mehr
+- [x] `lapic_arm_ns` Overflow-Cap (defensive, Tickless-ready)
 - [ ] `HZ_ns` = 1_000_000 für default-tick (1ms), konfigurierbar
 - [ ] **Tick-less**: statt periodischer Tick ein one-shot LAPIC-Timer
       auf nächste Deadline (min(sched-quantum-expire, hrtimer-expire))
@@ -267,13 +269,24 @@ Regression — eigene Boost-Rollback-Semantik).
 - [ ] TSC-calibration bei boot + Hyper-V TSC-page reference
 - [ ] `clock_gettime(CLOCK_MONOTONIC)`-Kernel-Pfad: TSC-read + ns-scale
       (ohne syscall-Overhead wird erst Phase 14 erreicht)
-- [ ] ktests: ns-precision-sleep, hrtimer-reprogram-race, tickless-idle
+- [x] ktests: 5 hrtimer_ns Tests (sub-ms-sleep, clock_gettime
+      sub-100us, batch-loop, ABSTIME-ns, epoll_wait-batch)
+- [ ] sys/time do_nanosleep ns-Praezise — versucht, revertiert
+      (4 pthread-Tests Race-Regression). Braucht erst futex/event_wait
+      ns-Migration (Schritt-3 unten).
+
+### Aktueller Stand
+
+ktest 3047 -> 3059 (+12 hrtimer_ns sub-asserts), wrap-safe hrtimer
+behebt late-test Hangs (qsort-static, sem_open-static, tls_init-static
+nach >10min Uptime). Vollstaendige ns-Praezision in nanosleep
+verschoben bis futex_wait/event_wait ebenfalls ns-deadline kennen.
 
 ### Erfolgskriterien
 
-- LTP epoll_wait02 PASS
-- LTP clock_gettime04 PASS
-- musl nanosleep-precision-Tests durchlaufen <2% jitter
+- LTP epoll_wait02 PASS (ausstehend, braucht ns-event_wait)
+- LTP clock_gettime04 PASS (ausstehend, vDSO-syscall Overhead)
+- musl nanosleep-precision-Tests durchlaufen <2% jitter (ausstehend)
 
 ---
 
