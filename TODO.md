@@ -1,17 +1,31 @@
 # CosmoRT — TODO
 
-**Ziel**: POSIX/Linux-kompatibler RT-Kernel, x86_64 + aarch64, ohne 30-Jahre-Legacy.
-Vision: was Linus heute bauen würde auf moderner Hardware.
+## Identität
 
-**Stand (Session-Ende)**: ktest **2978/0**, musl 461/10, **LTP 247/7/44**.
-Phase 15 (Network-Namespaces) erledigt: CLONE_NEWNET, unshare, setns,
-/proc/<pid>/ns/net, per-NS netif/socket-lookup/AF_UNIX-abstract/sysctls.
-Branch: `ltp`.
+CosmoRT ist eine **Multimedia-Konsole** mit **WASM als nativem Cartridge-Format**.
+- Konsole = stabile RT-HW-Plattform (Kernel + HAL + Audio/GPU-Treiber)
+- Cartridge = WASM-App-Module: sandbox-by-design, cross-arch, hot-loadable,
+  zero-copy direkt mit framebuffer/audio/GPU via mmap-host-imports
+- Linux-ABI-Kompatibilität (musl/Alpine/LTP/apk) ist die **Bootstrap-Brücke**
+  zur existierenden Software, nicht das Endziel
+- Kein JS, kein DOM, kein Browser-Cargo-Cult — ~10 Host-Imports statt 1500
+  Browser-DOM-APIs
 
-**Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
-kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
-Ohne diese Fundamente bleiben Signal-Handling, Timer-Präzision und
-SMP-Stabilität brüchig.
+**Vision-Frage**: Was würde Linus heute bauen, wenn er frisch anfinge auf
+moderner x86_64+aarch64-Hardware mit WASM als Universal-Binary?
+
+---
+
+## Stand (Session-Ende)
+
+ktest **3034/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+15, 16, 17 erledigt. Branch: `ltp`. Architektur-Doc unter
+`notes/MODERN_KERNEL_DESIGN.md`.
+
+**Strukturelle Blocker für 100% grün**: `thread->wait_head`-Routing in
+`sched_wake` (selbst-erfundene Linux-Abweichung) verhindert saubere
+Wait-Pfad-Migration. Phase 10.2a (Architektur-Refactor) erforderlich
+bevor restliche Pfade migriert werden können.
 
 ---
 
@@ -30,11 +44,33 @@ SMP-Stabilität brüchig.
 | **16** | IPv6-Stack | AF_INET6 = EPROTONOSUPPORT | ~2500 LOC | in progress |
 | **17** | OOM-Killer + oom_score_adj | alloc-fail → -ENOMEM ohne Reclaim | ~600 LOC | ✓ |
 
-**Reihenfolge ab hier**: 16 (IPv6 abschliessen) → **10.2 (Waitqueue-Migration)** → 13.1 (Skalierung) → 12-Rest (hrtimer ns + tickless retry, jetzt mit waitqueue-Fundament) → 13 (SMP-Final).
+**Reihenfolge Bootstrap-Brücke (Linux-ABI-Vollständigkeit)**:
+- **10.2a** Architektur-Refactor (wait_head raus, try_to_wake_up rein) — laufend
+- **10.2b** Subsysteme einzeln: eventfd → pipe → socket → epoll → futex → wait4 → rt_sigtimedwait
+- **10.2c** event_queue.c löschen
+- **12-Rest** hrtimer ns + tickless retry (jetzt mit korrekter waitqueue)
+- **13** SMP-Scheduler-Finalisierung
+- alle musl + LTP grün auf x86_64 → Bootstrap-Brücke fertig
 
-10.2 ist **vorgezogen** — ohne dass alle Wait-Pfade auf waitqueue laufen, reproduzieren spätere Phasen (12-tickless, 13-SMP-Final) dieselben Missed-Wakeup-Races.
+## Konsole-Phasen (CosmoRT-Identität, nach Bootstrap-Brücke)
 
-aarch64-Port + Audio-Subsystem **gestrichen** — Fokus auf Linux-Kompatibilität auf x86_64 zuerst, alles muss grün sein bevor weitere Architekturen oder USP-Features angegangen werden.
+| # | Phase | Inhalt | Aufwand |
+|---|-------|--------|---------|
+| **18** | **Audio-Subsystem-Core** | HDA + virtio-snd + USB-audio Treiber, RT-DMA-Buffer, native C-API | ~3000 LOC |
+| **19** | **GPU-Subsystem-Core** | virtio-gpu + Framebuffer + minimal Vulkan-Cmd-Queue | ~4000 LOC |
+| **20** | **binfmt_wasm + WASI-Shim** | Magic-Detection, AOT-Helper-Fork, /var/cache/wasm, WASI ↔ POSIX | ~3000 LOC |
+| **21** | **cosmort-multimedia Host-Imports** | ~10 Funktionen: fb_acquire, audio_open, gpu_submit, input_poll | ~1500 LOC |
+| **22** | **libcosmort-multimedia + SDL3-Shim** | Userspace-Library, SDL3-API on top von Host-Imports | ~5000 LOC |
+| **23** | **WASM-Audio-Plugin-API** | LADSPA-Replacement, hot-loadable, sandboxed | ~2000 LOC |
+| **24** | **aarch64-Port** | HAL-Stubs zu echtem Code, Alpine-aarch64 grün | mehrere Sessions |
+| **25** | **Cross-Arch-Cartridge-Verifikation** | gleiches .wasm läuft x86_64+aarch64 identisch | (passive) |
+
+**Reihenfolge Konsole-Phasen**: 18 → 19 (parallel) → 20 → 21 → 22 → 23 → 24 → 25.
+
+Phasen 18-25 sind **CosmoRT-Identität**, nicht optional. Sie sind das
+"Warum CosmoRT existiert". Die Bootstrap-Brücke (Phasen 10-17) macht es
+möglich vorhandene Tools (Compiler, busybox, Editor) auf CosmoRT
+laufen zu lassen während wir die Konsolen-APIs bauen.
 
 ---
 

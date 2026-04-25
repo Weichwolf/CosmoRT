@@ -88,43 +88,36 @@ void remove_wait_queue(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     spin_unlock_irq(&wq->lock, flags);
 }
 
-/* Link the current thread to this waitqueue entry so sched_wake on
- * the thread routes through wq->lock (see sched.c::try_to_wake_up).
- * Called under wq->lock, so publication is safe. */
-static void bind_wait(wait_queue_head_t *wq, wait_queue_entry_t *e) {
-    thread_t *t = e->task;
-    if (!t) return;
-    t->wait_entry = e;
-    t->wait_head  = wq;
-}
-
-static void unbind_wait(wait_queue_entry_t *e) {
-    thread_t *t = e->task;
-    if (!t) return;
-    t->wait_entry = 0;
-    t->wait_head  = 0;
-}
-
 void prepare_to_wait(wait_queue_head_t *wq, wait_queue_entry_t *e, int state) {
+    /* Linux: BOTH list-membership AND state-set inside wq->lock. Wake-Path
+     * iterates the list under the same lock, so a sleeper either:
+     *   (a) has its state set, gets woken by try_to_wake_up's CAS, OR
+     *   (b) hasn't set state yet, but the waker is blocked on wq->lock
+     *       and will see THREAD_BLOCKED once we release the lock — the
+     *       waker iterates again on next wake_up call (cond re-check
+     *       in the sleeper's loop catches the missed event). The classic
+     *       wait_event re-check pattern requires the cond to be set
+     *       BEFORE wake_up, so a missed wake means cond is already true
+     *       and the sleeper bails before schedule(). */
+    if (!e->func) e->func = default_wake_function;
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
     if (!wq_is_queued(e)) {
         e->flags &= ~WQ_FLAG_EXCLUSIVE;
         wq_insert_head(wq, e);
     }
-    bind_wait(wq, e);
     if (e->task) __atomic_store_n(&e->task->state, state, __ATOMIC_RELEASE);
     spin_unlock_irq(&wq->lock, flags);
 }
 
 void prepare_to_wait_exclusive(wait_queue_head_t *wq, wait_queue_entry_t *e, int state) {
+    if (!e->func) e->func = default_wake_function;
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
     if (!wq_is_queued(e)) {
         e->flags |= WQ_FLAG_EXCLUSIVE;
         wq_insert_tail(wq, e);
     }
-    bind_wait(wq, e);
     if (e->task) __atomic_store_n(&e->task->state, state, __ATOMIC_RELEASE);
     spin_unlock_irq(&wq->lock, flags);
 }
@@ -136,62 +129,29 @@ void finish_wait(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
     if (wq_is_queued(e)) wq_remove(wq, e);
-    unbind_wait(e);
     spin_unlock_irq(&wq->lock, flags);
 }
 
 /* ── Wake ─────────────────────────────────── */
 
-extern void sched_add(struct thread *t);
-
-/* Try to transition t from BLOCKED -> RUNNABLE and enqueue.
- * Returns 1 if we performed the wake, 0 otherwise.
- * Caller must hold the waitqueue lock (matches Linux try_to_wake_up's
- * p->pi_lock ownership during schedule). */
-static int try_to_wake_up_locked(thread_t *t) {
-    if (!t) return 0;
-    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-    if (old == THREAD_BLOCKED) { sched_add(t); return 1; }
-    /* Also wake STOPPED (SIGCONT semantics when used as generic waker) */
-    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
-    if (old == THREAD_STOPPED) { sched_add(t); return 1; }
-    return 0;
+/* Default wait-queue callback: state-CAS via try_to_wake_up. Linux:
+ * default_wake_function in kernel/sched/wait.c. Mode is passed straight
+ * through; flags/key unused (epoll-style callbacks ignore them).
+ * Returns 1 on successful wake (state matched mask), else 0. */
+int default_wake_function(wait_queue_entry_t *e, unsigned int mode,
+                          int flags, void *key) {
+    (void)flags; (void)key;
+    return try_to_wake_up(e->task, mode);
 }
 
-int wake_up_nr(wait_queue_head_t *wq, int n) {
-    if (n <= 0) return 0;
-    int woken = 0;
-
-    uint64_t flags;
-    spin_lock_irq(&wq->lock, &flags);
-
-    wait_queue_entry_t *start = wq->head;
-    if (start) {
-        wait_queue_entry_t *cur = start;
-        for (;;) {
-            wait_queue_entry_t *next = cur->next;
-            int exclusive = (cur->flags & WQ_FLAG_EXCLUSIVE) != 0;
-            thread_t *task = cur->task;
-
-            /* Entries stay in the queue; finish_wait removes them.
-             * We only flip state + enqueue on the runqueue. */
-            if (try_to_wake_up_locked(task)) {
-                woken++;
-                if (exclusive && woken >= n) break;
-            }
-            if (next == start) break;
-            cur = next;
-        }
-    }
-
-    spin_unlock_irq(&wq->lock, flags);
-    return woken;
-}
-
-int wake_up(wait_queue_head_t *wq) {
-    /* Linux wake_up: wake all non-exclusive + first exclusive (nr_exclusive=1) */
+/* __wake_up: iterate wq list, call e->func(e, mode); count successes;
+ * stop after `nr` exclusive wakes (nr<0 = unlimited).
+ * Linux: kernel/sched/wait.c::__wake_up_common. */
+static int __wake_up_common(wait_queue_head_t *wq, unsigned int mode,
+                            int nr, void *key) {
     if (!wq) return 0;
     int woken = 0;
+    int exclusive_remaining = nr;   /* -1 = unbounded, >0 = budget */
 
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
@@ -199,18 +159,18 @@ int wake_up(wait_queue_head_t *wq) {
     wait_queue_entry_t *start = wq->head;
     if (start) {
         wait_queue_entry_t *cur = start;
-        int exclusive_woken = 0;
         for (;;) {
             wait_queue_entry_t *next = cur->next;
             int exclusive = (cur->flags & WQ_FLAG_EXCLUSIVE) != 0;
-            thread_t *task = cur->task;
-
-            if (exclusive && exclusive_woken) {
-                /* Keep the extra exclusive waiters parked. */
-            } else {
-                if (try_to_wake_up_locked(task)) {
-                    woken++;
-                    if (exclusive) exclusive_woken = 1;
+            wait_func_t func = cur->func ? cur->func : default_wake_function;
+            int waked = func(cur, mode, 0, key);
+            if (waked) {
+                woken++;
+                if (exclusive) {
+                    if (exclusive_remaining > 0) {
+                        if (--exclusive_remaining == 0) break;
+                    }
+                    /* nr==-1: keep waking exclusives too (wake_up_all). */
                 }
             }
             if (next == start) break;
@@ -222,30 +182,27 @@ int wake_up(wait_queue_head_t *wq) {
     return woken;
 }
 
-int wake_up_all(wait_queue_head_t *wq) {
-    if (!wq) return 0;
-    int woken = 0;
-
-    uint64_t flags;
-    spin_lock_irq(&wq->lock, &flags);
-
-    wait_queue_entry_t *start = wq->head;
-    if (start) {
-        wait_queue_entry_t *cur = start;
-        for (;;) {
-            wait_queue_entry_t *next = cur->next;
-            if (try_to_wake_up_locked(cur->task)) woken++;
-            if (next == start) break;
-            cur = next;
-        }
-    }
-
-    spin_unlock_irq(&wq->lock, flags);
-    return woken;
+/* Linux wake_up: wake all non-exclusive + first exclusive. */
+int wake_up(wait_queue_head_t *wq) {
+    return __wake_up_common(wq, TASK_NORMAL, 1, 0);
 }
 
-int wake_up_one(wait_queue_head_t *wq) { return wake_up_nr(wq, 1); }
-int wake_up_interruptible(wait_queue_head_t *wq) { return wake_up(wq); }
+int wake_up_all(wait_queue_head_t *wq) {
+    return __wake_up_common(wq, TASK_NORMAL, -1, 0);
+}
+
+int wake_up_nr(wait_queue_head_t *wq, int n) {
+    if (n <= 0) return 0;
+    return __wake_up_common(wq, TASK_NORMAL, n, 0);
+}
+
+int wake_up_one(wait_queue_head_t *wq) {
+    return __wake_up_common(wq, TASK_NORMAL, 1, 0);
+}
+
+int wake_up_interruptible(wait_queue_head_t *wq) {
+    return __wake_up_common(wq, TASK_INTERRUPTIBLE_BIT, 1, 0);
+}
 
 /* ── Signal-deliverable helper (used by __wait_event_interruptible) ── */
 
@@ -259,14 +216,14 @@ int signal_deliverable(void) {
 /* ── schedule_timeout family ─────────────────── */
 
 /* Timer fires in IRQ ctx; uses thread_t as payload so thread_free's
- * hrtimer_cancel_by_data(t) reliably reaps it on zombie cleanup. The
- * thread's wait_head pointer is the handle we actually need to wake. */
+ * hrtimer_cancel_by_data(t) reliably reaps it on zombie cleanup.
+ * Wake the target directly via state-CAS — no waitqueue indirection.
+ * The sleeper's loop sees state=RUNNABLE, schedule() returns, the
+ * post-wake re-check classifies as timeout and breaks out. */
 static void wq_timeout_fn(hrtimer_t *timer) {
     thread_t *t = (thread_t *)timer->data;
     if (!t) return;
-    wait_queue_head_t *wh =
-        (wait_queue_head_t *)__atomic_load_n(&t->wait_head, __ATOMIC_ACQUIRE);
-    if (wh) wake_up_all(wh);
+    (void)try_to_wake_up(t, TASK_NORMAL);
 }
 
 /* Internal: park current thread on wq until woken or (optionally) deadline.

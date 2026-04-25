@@ -401,6 +401,81 @@ static void test_wq_23_alternating_sleep_and_signal(void) {
     check_ge("alternating sleeps: >= 3 interruptions", intr, 3);
 }
 
+/* ── 24-26: try_to_wake_up state-CAS semantik (Phase 10.2a) ──
+ * Indirekte Tests: try_to_wake_up ist kernel-internal, beobachtbar nur
+ * via End-to-End-Verhalten. Wir prufen dass der state-CAS exakt die
+ * dokumentierten Pfade triggert: signal weckt INTERRUPTIBLE-Sleeper,
+ * SIGCONT weckt STOPPED-Sleeper, SIGKILL→DEAD blockiert spaetere Wakes
+ * (kein use-after-free). */
+
+/* TASK_INTERRUPTIBLE_BIT: signal during sleep wakes via state-CAS,
+ * sleep loop sees signal_pending → -EINTR. */
+static void test_wq_24_ttwu_interruptible_path(void) {
+    install_handler(SIGUSR1, wq_sig_handler);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        install_handler(SIGUSR1, wq_sig_handler);
+        struct k_timespec rq = { .tv_sec = 5, .tv_nsec = 0 }; /* 5s */
+        struct k_timespec rem = { 0 };
+        long r = sc2(SYS_NANOSLEEP, (long)&rq, (long)&rem);
+        /* Must wake fast (signal hit) and report -EINTR. */
+        sc1(SYS_EXIT, (r == -EINTR && rem.tv_sec < 5) ? 0 : 1);
+        __builtin_unreachable();
+    }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 30000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGUSR1);
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    check_val("ttwu interruptible path: child got -EINTR fast", (ws >> 8) & 0xFF, 0);
+}
+
+/* TASK_STOPPED_BIT: SIGCONT after SIGSTOP wakes via state-CAS on STOPPED. */
+static void test_wq_25_ttwu_stopped_path(void) {
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Child: spin briefly so parent has a clear window to STOP us. */
+        for (volatile int i = 0; i < 100000; i++) { }
+        struct k_timespec rq = { .tv_sec = 0, .tv_nsec = 50000000 };
+        sc2(SYS_NANOSLEEP, (long)&rq, 0);
+        sc1(SYS_EXIT, 42);
+        __builtin_unreachable();
+    }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 5000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGSTOP);
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGCONT);  /* try_to_wake_up(t, TASK_NORMAL) */
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    check_val("ttwu stopped path: SIGCONT resumed, exit=42", (ws >> 8) & 0xFF, 42);
+}
+
+/* DEAD/FREE state guard: SIGKILL marks DEAD; subsequent kill must not crash
+ * (try_to_wake_up bails on THREAD_DEAD/THREAD_FREE). */
+static void test_wq_26_ttwu_dead_guard(void) {
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        struct k_timespec rq = { .tv_sec = 10, .tv_nsec = 0 };
+        sc2(SYS_NANOSLEEP, (long)&rq, 0);
+        sc1(SYS_EXIT, 0);
+        __builtin_unreachable();
+    }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 20000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, pid, SIGKILL);
+    /* Race window: fire 5 more signals while child transitions to DEAD.
+     * try_to_wake_up must bail; if it didn't, sched_add on a freed thread
+     * would corrupt the runqueue and cascade-fail subsequent tests. */
+    for (int i = 0; i < 5; i++)
+        sc2(SYS_KILL, pid, SIGUSR1);
+    int ws = 0;
+    sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+    /* Killed by signal: WIFSIGNALED bits — exit-status low byte = signal. */
+    int sig = ws & 0x7F;
+    check_val("ttwu dead guard: child died via SIGKILL", sig, SIGKILL);
+}
+
 TEST("waitqueue/01_short_sleep",         test_wq_01_short_sleep);
 TEST("waitqueue/02_zero_sleep",          test_wq_02_zero_sleep);
 TEST("waitqueue/03_repeated_sleeps",     test_wq_03_repeated_sleeps);
@@ -418,3 +493,6 @@ TEST("waitqueue/17_wait4_multi",         test_wq_17_wait4_multiple_children);
 TEST("waitqueue/21_many_sleepers",       test_wq_21_many_sleepers);
 TEST("waitqueue/22_fork_sleep_kill_30x", test_wq_22_repeated_fork_sleep_kill);
 TEST("waitqueue/23_alternating",         test_wq_23_alternating_sleep_and_signal);
+TEST("waitqueue/24_ttwu_interruptible",  test_wq_24_ttwu_interruptible_path);
+TEST("waitqueue/25_ttwu_stopped",        test_wq_25_ttwu_stopped_path);
+TEST("waitqueue/26_ttwu_dead_guard",     test_wq_26_ttwu_dead_guard);

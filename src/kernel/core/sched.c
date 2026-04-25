@@ -80,33 +80,38 @@ void sched_add(thread_t *t) {
     spin_unlock_irq(&rq_lock, flags);
 }
 
-void sched_wake(thread_t *t) {
-    if (!t) return;
+/* try_to_wake_up — Linux's single wake primitive (kernel/sched/core.c).
+ *
+ * Atomic state-CAS gated by `state_mask`: only wake if t->state's bit
+ * (1u << state) is in the mask. No waitqueue routing — wakers do NOT
+ * touch any waitqueue. Sleepers are responsible for their own loop:
+ * after schedule() returns they re-check (cond || signal_pending).
+ *
+ * This is THE wake function. sched_wake, signal_wake_up, event_post all
+ * funnel through here. The pre-refactor wait_head-routing path is gone:
+ * a fremde Waitqueue darf nie aus dem Wake-Pfad bewegt werden. */
+int try_to_wake_up(thread_t *t, unsigned int state_mask) {
+    if (!t) return 0;
 
-    /* Fast bail on dead/free threads: their wait_head may point at a
-     * freed/recycled stack. Callers (kill_one fatal path) sometimes
-     * stamp state=DEAD right after calling sched_wake, so this also
-     * guards re-entries on the same thread. */
-    int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
-    if (st == THREAD_DEAD || st == THREAD_FREE) return;
-
-    /* Waitqueue-aware wake: if the thread is parked via
-     * prepare_to_wait(), route through wake_up_all on its waitqueue
-     * head. The waitqueue lock serializes state transitions with the
-     * waitee's prepare_to_wait, closing the missed-wakeup race that
-     * caused 3x reverted thread_block_ms patches. */
-    wait_queue_head_t *wh = (wait_queue_head_t *)__atomic_load_n(&t->wait_head, __ATOMIC_ACQUIRE);
-    if (wh) {
-        wake_up_all(wh);
-        return;
+    for (;;) {
+        int old = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+        if (old == THREAD_DEAD || old == THREAD_FREE) return 0;
+        if (!((1u << old) & state_mask)) return 0;
+        if (__atomic_compare_exchange_n(&t->state, &old, THREAD_RUNNABLE,
+                                        0,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            sched_add(t);
+            return 1;
+        }
+        /* CAS lost a race (another waker, schedule()'s state-set). Retry —
+         * loop checks bound by THREAD_DEAD/non-mask state, both terminal. */
     }
+}
 
-    /* Not on a waitqueue — legacy event_queue / direct wake path. */
-    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-    if (old == THREAD_BLOCKED) { sched_add(t); return; }
-    /* Also wake STOPPED threads (SIGCONT) */
-    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
-    if (old == THREAD_STOPPED) sched_add(t);
+void sched_wake(thread_t *t) {
+    /* TASK_NORMAL covers BLOCKED + STOPPED — preserves SIGCONT path. */
+    (void)try_to_wake_up(t, TASK_NORMAL);
 }
 
 __attribute__((hot))
