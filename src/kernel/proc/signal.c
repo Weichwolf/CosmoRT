@@ -393,20 +393,19 @@ long kill_one(process_t *target, int sig) {
     target->sig_pending |= SIG_BIT(sig);
 
     /* Wake blocked threads that have this signal unblocked.
-     * sched_wake routes waitqueue-parked sleepers through their waitqueue
-     * lock (atomic with prepare_to_wait), and event_queue-parked waiters
-     * get a stale-free wake too. Legacy event_post path kept for callers
-     * that consume EQ_CHILD_EXITED as a wakeup reason (sigtimedwait). */
+     * Always do both: event_post writes EQ_CHILD_EXITED + wakes eq->wq
+     * (sigtimedwait-Path), sched_wake macht state-CAS BLOCKED→RUNNABLE
+     * (nanosleep/futex/socket-wait Pfade). Wakes sind idempotent — der
+     * Sleeper checkt seine Bedingung im Loop und filtert via signal_pending
+     * was er sehen will. */
     {
         extern void event_post(thread_t *target, uint32_t type, uint64_t data);
         extern void sched_wake(thread_t *t);
         thread_t *t = target->threads;
         while (t) {
             if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked)) {
-                if (t->wait_head)
-                    sched_wake(t);
-                else
-                    event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                sched_wake(t);
             }
             t = t->proc_next;
         }

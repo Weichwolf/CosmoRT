@@ -80,31 +80,29 @@ void sched_add(thread_t *t) {
     spin_unlock_irq(&rq_lock, flags);
 }
 
+/* try_to_wake_up — Linux's single wake primitive (kernel/sched/core.c).
+ *
+ * Pure state CAS: BLOCKED|STOPPED → RUNNABLE + sched_add. No waitqueue
+ * routing — the waker never touches a waitqueue. Sleepers re-check
+ * their condition (cond || signal) in their own loop after schedule()
+ * returns. This is the *one* way to bring a sleeping task back to the
+ * runqueue.
+ *
+ * Older sched_wake routed via t->wait_head (a fremde Waitqueue), which
+ * was a CosmoRT invention that Linux never had. Removing it ends the
+ * "stale events / spurious wake" Race-Klasse that reverted multiple
+ * waitqueue migration patches in Phase 10.2. */
 void sched_wake(thread_t *t) {
     if (!t) return;
 
-    /* Fast bail on dead/free threads: their wait_head may point at a
-     * freed/recycled stack. Callers (kill_one fatal path) sometimes
-     * stamp state=DEAD right after calling sched_wake, so this also
-     * guards re-entries on the same thread. */
     int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
     if (st == THREAD_DEAD || st == THREAD_FREE) return;
 
-    /* Waitqueue-aware wake: if the thread is parked via
-     * prepare_to_wait(), route through wake_up_all on its waitqueue
-     * head. The waitqueue lock serializes state transitions with the
-     * waitee's prepare_to_wait, closing the missed-wakeup race that
-     * caused 3x reverted thread_block_ms patches. */
-    wait_queue_head_t *wh = (wait_queue_head_t *)__atomic_load_n(&t->wait_head, __ATOMIC_ACQUIRE);
-    if (wh) {
-        wake_up_all(wh);
-        return;
-    }
-
-    /* Not on a waitqueue — legacy event_queue / direct wake path. */
+    /* CAS BLOCKED → RUNNABLE: success means we won the race against
+     * schedule()'s state-set or another waker. sched_add enqueues. */
     int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
     if (old == THREAD_BLOCKED) { sched_add(t); return; }
-    /* Also wake STOPPED threads (SIGCONT) */
+    /* SIGCONT path: wake STOPPED threads. */
     old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
     if (old == THREAD_STOPPED) sched_add(t);
 }

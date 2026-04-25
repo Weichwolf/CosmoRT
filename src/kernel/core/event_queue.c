@@ -169,6 +169,13 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
 
+    /* Signal vor Event: ein deliverable Signal liefert EINTR auch wenn
+     * ein Wake-Event in derselben Window queued wurde. kill_one macht
+     * heute beides (event_post + sched_wake) — futex_wait und socket-recv
+     * brauchen den EINTR-Cleanup-Pfad. Polling caller (timeout_ms==0)
+     * skippt den Signal-Check; sie wollen nur den Queue-Status. */
+    if (timeout_ms != 0 && eq_signal_pending(cur)) return -4; /* EINTR */
+
     /* Fast path: event already queued. */
     if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
         uint32_t t = eq->tail;
@@ -177,7 +184,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
         return 0;
     }
     if (timeout_ms == 0) return -11; /* EAGAIN */
-    if (eq_signal_pending(cur)) return -4; /* EINTR */
 
     hrtimer_t timer;
     int has_timer = 0;
@@ -194,6 +200,10 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
     for (;;) {
         prepare_to_wait(&eq->wq, &ent, THREAD_BLOCKED);
 
+        /* Signal beats event in the loop too: same race window logic
+         * as the fast-path check. */
+        if (eq_signal_pending(cur)) { rc = -4 /* EINTR */; break; }
+
         if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
             uint32_t t = eq->tail;
             *out = eq->events[t & eq->mask];
@@ -201,7 +211,6 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
             rc = 0;
             break;
         }
-        if (eq_signal_pending(cur)) { rc = -4 /* EINTR */; break; }
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             rc = -11 /* EAGAIN (timeout) */;
             break;
@@ -209,8 +218,8 @@ int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
 
         schedule();
         /* Loop and re-evaluate. prepare_to_wait sets state again; if a
-         * spurious wake happened (signal that filtered out, ipi), we
-         * just sleep again until the deadline or a real event. */
+         * spurious wake happened (ipi, ignored signal), we just sleep
+         * again until the deadline or a real event/signal. */
     }
     finish_wait(&eq->wq, &ent);
     if (has_timer) hrtimer_cancel(&timer);

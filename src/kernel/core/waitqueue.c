@@ -88,23 +88,6 @@ void remove_wait_queue(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     spin_unlock_irq(&wq->lock, flags);
 }
 
-/* Link the current thread to this waitqueue entry so sched_wake on
- * the thread routes through wq->lock (see sched.c::try_to_wake_up).
- * Called under wq->lock, so publication is safe. */
-static void bind_wait(wait_queue_head_t *wq, wait_queue_entry_t *e) {
-    thread_t *t = e->task;
-    if (!t) return;
-    t->wait_entry = e;
-    t->wait_head  = wq;
-}
-
-static void unbind_wait(wait_queue_entry_t *e) {
-    thread_t *t = e->task;
-    if (!t) return;
-    t->wait_entry = 0;
-    t->wait_head  = 0;
-}
-
 void prepare_to_wait(wait_queue_head_t *wq, wait_queue_entry_t *e, int state) {
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
@@ -112,7 +95,6 @@ void prepare_to_wait(wait_queue_head_t *wq, wait_queue_entry_t *e, int state) {
         e->flags &= ~WQ_FLAG_EXCLUSIVE;
         wq_insert_head(wq, e);
     }
-    bind_wait(wq, e);
     if (e->task) __atomic_store_n(&e->task->state, state, __ATOMIC_RELEASE);
     spin_unlock_irq(&wq->lock, flags);
 }
@@ -124,7 +106,6 @@ void prepare_to_wait_exclusive(wait_queue_head_t *wq, wait_queue_entry_t *e, int
         e->flags |= WQ_FLAG_EXCLUSIVE;
         wq_insert_tail(wq, e);
     }
-    bind_wait(wq, e);
     if (e->task) __atomic_store_n(&e->task->state, state, __ATOMIC_RELEASE);
     spin_unlock_irq(&wq->lock, flags);
 }
@@ -136,7 +117,6 @@ void finish_wait(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     uint64_t flags;
     spin_lock_irq(&wq->lock, &flags);
     if (wq_is_queued(e)) wq_remove(wq, e);
-    unbind_wait(e);
     spin_unlock_irq(&wq->lock, flags);
 }
 
@@ -259,14 +239,14 @@ int signal_deliverable(void) {
 /* ── schedule_timeout family ─────────────────── */
 
 /* Timer fires in IRQ ctx; uses thread_t as payload so thread_free's
- * hrtimer_cancel_by_data(t) reliably reaps it on zombie cleanup. The
- * thread's wait_head pointer is the handle we actually need to wake. */
+ * hrtimer_cancel_by_data(t) reliably reaps it on zombie cleanup.
+ * Direct state-CAS via sched_wake — no waitqueue routing. The sleeper
+ * loop in schedule_timeout_common re-evaluates the deadline after the
+ * wake and breaks out with -ETIMEDOUT. */
+extern void sched_wake(thread_t *t);
 static void wq_timeout_fn(hrtimer_t *timer) {
     thread_t *t = (thread_t *)timer->data;
-    if (!t) return;
-    wait_queue_head_t *wh =
-        (wait_queue_head_t *)__atomic_load_n(&t->wait_head, __ATOMIC_ACQUIRE);
-    if (wh) wake_up_all(wh);
+    if (t) sched_wake(t);
 }
 
 /* Internal: park current thread on wq until woken or (optionally) deadline.
