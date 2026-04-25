@@ -43,16 +43,6 @@ static uint64_t lapic_ticks_per_ms;
 /* Minimum LAPIC one-shot value (avoid zero-length timer) */
 #define LAPIC_MIN_TICKS 100
 
-/* Tick-less mode: LAPIC laeuft im one-shot, deadline ist immer
- * min(next-hrtimer, next-periodic-tick). next_periodic_tick_ns wird in
- * timer_handler nach jedem Fire re-armiert. Periodischer 1000Hz-Tick
- * bleibt fuer Legacy-tick_run/sched_preempt erhalten — Subsysteme sehen
- * nichts vom Mode-Wechsel. Phase 12.x. */
-#define TICK_PERIOD_NS 1000000ULL  /* 1ms */
-static uint64_t next_periodic_tick_ns;
-/* Set in init nach LAPIC-Calibration. 0 vorher -> reprogram Noop. */
-static int tickless_active;
-
 /* ── Monotonic clock ───────────────────────────────── */
 
 uint64_t hrtimer_now_ns(void) {
@@ -152,15 +142,15 @@ void hrtimer_init_subsystem(void) {
     { uint64_t v = lapic_ticks_per_ms; char b[12]; int i = 0;
       do { b[i++] = '0' + v % 10; v /= 10; } while (v);
       while (i--) serial_putchar(b[i]); }
-    serial_puts(" ticks/ms, tickless one-shot mode\n");
+    serial_puts(" ticks/ms, one-shot mode\n");
 
-    /* Tick-less aktivieren: LAPIC im one-shot, Deadline = next-periodic-tick.
-     * hrtimer_start() kann frueher reprogrammieren. timer_handler
-     * re-armiert nach jedem Fire. */
-    next_periodic_tick_ns = hrtimer_now_ns() + TICK_PERIOD_NS;
-    tickless_active = 1;
+    /* Restore periodic LAPIC timer (1000Hz) for legacy compatibility.
+     * sched_preempt, net_poll, timer_wheel still depend on periodic ticks.
+     * hrtimer_run_expired runs alongside in timer_handler.
+     * TODO: remove periodic tick once all callers use hrtimer. */
     lapic_write(LAPIC_TIMER_DIV, 0x03);
-    lapic_arm_ns(TICK_PERIOD_NS);
+    lapic_write(LAPIC_TIMER_LVT, 0x20000 | LAPIC_TIMER_VECTOR); /* periodic, vector 32 */
+    lapic_write(LAPIC_TIMER_INIT, (uint32_t)lapic_ticks_per_ms); /* 1000Hz */
 }
 
 void hrtimer_init(hrtimer_t *t, void (*fn)(hrtimer_t *), void *data) {
@@ -260,33 +250,13 @@ void hrtimer_run_expired(void) {
         t->fn(t);
     }
 
-    /* Re-armiere periodischen Tick relativ zur jetzigen Zeit. Wenn der
-     * letzte Tick wegen langer hrtimer-Arbeit schon ueberfaellig ist,
-     * setze sofort eine kuerzere Deadline — der naechste IRQ holt nach. */
-    next_periodic_tick_ns = hrtimer_now_ns() + TICK_PERIOD_NS;
     hrtimer_reprogram();
 }
 
-/* Choose LAPIC deadline = min(next-hrtimer, next-periodic-tick).
- * Fast-Path: kein hrtimer pending -> periodischer Tick.
- * Hot path called from hrtimer_start/cancel und timer_handler tail. */
 void hrtimer_reprogram(void) {
-    if (__builtin_expect(!tickless_active, 0)) return;
-
-    uint64_t now = hrtimer_now_ns();
-    uint64_t deadline_ns = next_periodic_tick_ns;
-
-    uint64_t flags;
-    spin_lock_irq(&base.lock, &flags);
-    rb_node_t *leftmost = base.tree.leftmost;
-    if (leftmost) {
-        hrtimer_t *t = rb_entry(leftmost, hrtimer_t, node);
-        if (t->deadline_ns < deadline_ns)
-            deadline_ns = t->deadline_ns;
-    }
-    spin_unlock_irq(&base.lock, flags);
-
-    /* Linus-today: lieber 1us zu frueh feuern als zu spaet. */
-    uint64_t delta_ns = (deadline_ns > now) ? (deadline_ns - now) : 1000;
-    lapic_arm_ns(delta_ns);
+    /* While periodic LAPIC is still active, hrtimer piggybacks on the
+     * 1000Hz tick via hrtimer_run_expired() in timer_handler.
+     * No LAPIC reprogramming needed — just let the next tick fire it.
+     * TODO: switch to pure one-shot once periodic tick is removed. */
+    (void)lapic_arm_ns;
 }

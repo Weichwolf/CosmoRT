@@ -52,9 +52,11 @@ static void test_repeated_sub_ms_sleeps(void) {
     sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
     long d = delta_ns(before, after);
     check("100x nanosleep(100us) total >= 10ms", d >= 10000000);
-    /* Tickless-LAPIC: jeder Sleep ~150us echter Wake-Latenz auf QEMU-Last. */
-    check("100x nanosleep(100us) total <= 50ms (tickless)",
-          d <= 50000000);
+    /* Mit periodischem 1000Hz-Tick + hrtimer-piggyback: ~1ms pro Sleep
+     * (LAPIC-Deadline programmierbar, aber expired-check laeuft im Tick).
+     * Echte tickless-LAPIC-one-shot wuerde <30ms erlauben (Phase 12.2). */
+    check("100x nanosleep(100us) total <= 120ms (periodic-tick bound)",
+          d <= 120000000);
     puts("  100x100us total "); put_int(d / 1000000); puts("ms\n");
 }
 
