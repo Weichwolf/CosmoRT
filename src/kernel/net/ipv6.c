@@ -265,3 +265,33 @@ int ipv6_addr_add(struct net_ns *ns, struct netif *nif,
                   const struct in6_addr *a, uint8_t prefix) {
     return ipv6_addr_attach(ns, nif, a, prefix, 0);
 }
+
+/* ── Interface bring-up: SLAAC link-local + DAD ──
+ *
+ * Called from net_init() after the HW NIC registered. Generates the
+ * fe80::<EUI64> link-local for the default interface and tries DAD by
+ * sending one Neighbor Solicitation; on a switched LAN the absence of
+ * a NA after a tick means the address is unique. We don't block on
+ * DAD here — the address is installed optimistically and removed if a
+ * conflicting NA arrives later (Linux's "optimistic DAD" mode). */
+
+extern void ndp_make_linklocal(const uint8_t mac[6], struct in6_addr *out);
+extern void ndp_send_dad_ns(uint32_t ns_id, const struct in6_addr *target);
+
+void ipv6_iface_bringup(struct netif *nif) {
+    if (!nif) return;
+    /* Loopback is a special case — ::1 only, no link-local. */
+    if (nif->flags & NETIF_F_LOOPBACK) return;
+
+    uint8_t mac[6];
+    nif->get_mac(nif, mac);
+    /* Skip zero-MAC (uninitialised drivers). */
+    int all_zero = 1;
+    for (int i = 0; i < 6; i++) if (mac[i]) { all_zero = 0; break; }
+    if (all_zero) return;
+
+    struct in6_addr ll;
+    ndp_make_linklocal(mac, &ll);
+    ipv6_addr_attach(&init_net_ns, nif, &ll, 64, 0);
+    ndp_send_dad_ns(init_net_ns.ns_id, &ll);
+}

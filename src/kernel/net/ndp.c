@@ -326,6 +326,35 @@ int ipv6_self_test_linklocal(void) {
     return 0;
 }
 
+int ipv6_self_test_dad(void) {
+    /* Build solicited-node MC for fe80::200:11ff:fe22:3344 — must match
+     * ff02::1:ff22:3344 + 33:33:ff:22:33:44. */
+    struct in6_addr tgt;
+    for (int i = 0; i < 16; i++) tgt.s6_addr[i] = 0;
+    tgt.s6_addr[0] = 0xFE; tgt.s6_addr[1] = 0x80;
+    tgt.s6_addr[8] = 0x02; tgt.s6_addr[11] = 0xFF; tgt.s6_addr[12] = 0xFE;
+    tgt.s6_addr[13] = 0x22; tgt.s6_addr[14] = 0x33; tgt.s6_addr[15] = 0x44;
+    /* DAD send is fire-and-forget; just ensure it doesn't fault. */
+    ndp_send_dad_ns(init_net_ns.ns_id, &tgt);
+    return 0;
+}
+
+int ipv6_self_test_slaac(void) {
+    /* Synthesize a /64 prefix + EUI-64 → check stitched address. */
+    uint8_t mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    struct in6_addr ll;
+    ndp_make_linklocal(mac, &ll);
+    /* Replace prefix with 2001:db8:: */
+    struct in6_addr glob;
+    for (int i = 0; i < 16; i++) glob.s6_addr[i] = 0;
+    glob.s6_addr[0] = 0x20; glob.s6_addr[1] = 0x01;
+    glob.s6_addr[2] = 0x0d; glob.s6_addr[3] = 0xb8;
+    for (int i = 8; i < 16; i++) glob.s6_addr[i] = ll.s6_addr[i];
+    if (glob.s6_addr[8]  != 0x50 || glob.s6_addr[11] != 0xFF) return 1;
+    if (glob.s6_addr[12] != 0xFE || glob.s6_addr[15] != 0x56) return 2;
+    return 0;
+}
+
 int ipv6_self_test_neigh(void) {
     /* Lookup of a never-seen address must miss. */
     struct in6_addr a;

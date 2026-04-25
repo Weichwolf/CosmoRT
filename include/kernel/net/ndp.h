@@ -62,5 +62,7 @@ void ndp_make_linklocal(const uint8_t mac[6], struct in6_addr *out);
 /* Test self-checks (used by ktest unit). */
 int  ipv6_self_test_linklocal(void);
 int  ipv6_self_test_neigh(void);
+int  ipv6_self_test_dad(void);
+int  ipv6_self_test_slaac(void);
 
 #endif

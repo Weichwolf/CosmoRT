@@ -101,6 +101,7 @@ static struct tick_callback net_tx_cb;
 
 extern void ipv6_init(void);
 extern void ndp_init(void);
+extern void ipv6_iface_bringup(struct netif *nif);
 
 int net_init(void) {
     lo_init();
@@ -109,6 +110,8 @@ int net_init(void) {
     ndp_init();
     if (!nic) return -1;
     nic->get_mac(net_my_mac);
+    /* Bring up IPv6 link-local (SLAAC) on the hardware NIC. */
+    ipv6_iface_bringup(&hw_netif);
     tick_register(&net_rx_cb, net_rx_tick, TICK_EVERY);
     tick_register(&net_tx_cb, net_tx_tick, TICK_EVERY);
     return 0;
