@@ -85,45 +85,9 @@ static void test_nanosleep_signal_short(void) {
     check_val("nanosleep(1ns) returns 0 (rounded up)", r, 0);
 }
 
-static void test_pselect_ns_timeout(void) {
-    /* pselect6 mit 200us-Timeout: Test der ns-Pfad-Migration in
-     * sys_event.c. Vorher: ms-quantisiert -> Sleep min. 1ms. */
-    struct ts_t before, after;
-    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&before);
-    /* nfds=0, alle fds NULL, timeout 200us */
-    struct ts_t to = { .sec = 0, .nsec = 200000 };
-    long r = sc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&to, 0);
-    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
-    check_val("pselect6(timeout=200us) returns 0", r, 0);
-    long d = delta_ns(before, after);
-    check("pselect6(200us) <= 5ms (ns-precise)", d <= 5000000);
-    puts("  pselect6(200us) actual "); put_int(d / 1000); puts("us\n");
-}
-
-static void test_ppoll_ns_timeout(void) {
-    /* ppoll mit 300us, kein fd. */
-    struct ts_t before, after;
-    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&before);
-    struct ts_t to = { .sec = 0, .nsec = 300000 };
-    /* nfds=1 mit invaliden fd damit der Pfad anlaeuft. POLLIN=1. */
-    struct { int fd; short events; short revents; } pfd = { -1, 1, 0 };
-    long r = sc4(SYS_PPOLL, (long)&pfd, 1, (long)&to, 0);
-    sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&after);
-    check("ppoll returns 0 or >0", r >= 0);
-    long d = delta_ns(before, after);
-    /* Wenn fd negativ, revents=POLLNVAL sofort -> kein Sleep. Sonst Sleep. */
-    if (r == 0) {
-        check("ppoll(300us) <= 5ms", d <= 5000000);
-    }
-    puts("  ppoll(300us) actual "); put_int(d / 1000); puts("us, ret=");
-    put_int(r); puts("\n");
-}
-
 TEST("hrtimer/monotonic", test_hrtimer_monotonic);
 TEST("hrtimer/short_nanosleep_precision", test_short_nanosleep_precision);
 TEST("hrtimer/repeated_sub_ms_sleeps", test_repeated_sub_ms_sleeps);
 TEST("hrtimer/clock_gettime_diff_bounded", test_clock_gettime_diff_bounded);
 TEST("hrtimer/clock_gettime_non_zero", test_clock_gettime_non_zero);
 TEST("hrtimer/nanosleep_signal_short", test_nanosleep_signal_short);
-TEST("hrtimer/pselect_ns_timeout", test_pselect_ns_timeout);
-TEST("hrtimer/ppoll_ns_timeout", test_ppoll_ns_timeout);

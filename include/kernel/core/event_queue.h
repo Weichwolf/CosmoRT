@@ -134,12 +134,6 @@ void event_post(struct thread *target, uint32_t type, uint64_t data);
  * -ETIMEDOUT (deadline expired). */
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms);
 
-/* Same as event_wait but ns-precise timeout.
- * timeout_ns < 0: infinite. timeout_ns == 0: non-blocking.
- * Used by hot-path event_wait pfade die sub-ms-Praezision brauchen
- * (epoll_wait, poll, select mit ppoll/pselect6 timespec). */
-int event_wait_ns(event_queue_t *eq, event_t *out, int64_t timeout_ns);
-
 /* Block current thread for timeout_ms milliseconds (preemptible sleep).
  * Does not touch the event queue — purely time-based blocking.
  * On timeout, syscall restarts. For userspace nanosleep/clock_nanosleep. */
