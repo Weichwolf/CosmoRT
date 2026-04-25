@@ -176,29 +176,31 @@ Regression — eigene Boost-Rollback-Semantik).
 
 ---
 
-## Phase 12 — hrtimer ns-Präzision + Tick-less (ERLEDIGT)
+## Phase 12 — hrtimer ns-Präzision + Tick-less
 
-**Status**: Hot-Path migriert, tickless LAPIC aktiv, restart_block ns.
+**Problem**: `timer_ms()` rundet auf ms, Ticks bei 1000Hz (1ms). Zu grob für:
+- `epoll_wait02` (500×epoll_wait(1ms), erwartet <2s)
+- `clock_gettime04` (aufeinanderfolgende clock_gettime >5ms diff)
+- precision-sleep unter 1ms
+- RT-Audio-Deadline (<250µs für 48kHz stereo)
 
-- [x] `hrtimer_now_ns()` Hot-Path: TSC * mult >> shift (3-5 Zyklen)
-- [x] `clocksource_calc_mult_shift` Werte in `timer_tsc_to_ns_{mult,shift}`
-- [x] **Tickless LAPIC**: one-shot mode mit min(next-hrtimer, next-1ms-tick)
-- [x] `sleep_until_ns` ersetzt `sleep_until_ms` in do_nanosleep/do_clock_nanosleep
-- [x] `restart_block.nanosleep.expires_ns` (rename + Mathematik)
-- [x] `event_wait_ns` als Hot-Path, `event_wait` Wrapper bleibt
-- [x] do_epoll_wait, poll_loop_ns, do_pselect6, do_ppoll, do_futex auf ns
-- [x] 8 ktests in test_hrtimer_ns.c
+### Scope
 
-### Bilanz
+- [ ] `hrtimer_now_ns()` als ein-Funktions-Aufruf-Hot-Path, TSC-direct
+- [ ] `HZ_ns` = 1_000_000 für default-tick (1ms), konfigurierbar
+- [ ] **Tick-less**: statt periodischer Tick ein one-shot LAPIC-Timer
+      auf nächste Deadline (min(sched-quantum-expire, hrtimer-expire))
+- [ ] `schedule_timeout(ns)` nutzt hrtimer statt tick-count
+- [ ] TSC-calibration bei boot + Hyper-V TSC-page reference
+- [ ] `clock_gettime(CLOCK_MONOTONIC)`-Kernel-Pfad: TSC-read + ns-scale
+      (ohne syscall-Overhead wird erst Phase 14 erreicht)
+- [ ] ktests: ns-precision-sleep, hrtimer-reprogram-race, tickless-idle
 
-- nanosleep(500us) Pre-Phase-12: ~1.5ms -> Post: 1085us
-- 100x nanosleep(100us) Pre: 193ms -> tickless Post: 36ms
-- max-diff(clock_gettime) ueber 1000 reads: 62us (vorher Tick-quantisiert)
+### Erfolgskriterien
 
-### Verbleibend (out-of-scope Phase 12)
-
-- timerfd ms->ns Migration (eigene Subsystem-Modernisierung)
-- futex_wait restart_block ns (Phase 13 SMP)
+- LTP epoll_wait02 PASS
+- LTP clock_gettime04 PASS
+- musl nanosleep-precision-Tests durchlaufen <2% jitter
 
 ---
 
