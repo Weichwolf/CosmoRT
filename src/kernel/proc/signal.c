@@ -229,15 +229,17 @@ long kill_one(process_t *target, int sig) {
             }
             if (any_blocked) {
                 target->sig_pending |= SIG_BIT(sig);
-                /* Wake Threads in sigtimedwait (sind BLOCKED mit event_wait). */
+                /* sigtimedwait wartet im event_wait BLOCKED auf eq->wq.
+                 * Signal ist im wait_mask (geblockt), also greift der
+                 * signal_pending-Filter im event_wait nicht — wir muessen
+                 * das Event explizit in die Queue schreiben, damit der
+                 * Sleeper aus event_wait herausfindet. event_post tut
+                 * beides: write event + wake_up_interruptible(eq->wq). */
                 extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                extern void sched_wake(thread_t *t);
                 thread_t *w = target->threads;
                 while (w) {
-                    if (w->state == THREAD_BLOCKED) {
-                        if (w->wait_head) sched_wake(w);
-                        else event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
-                    }
+                    if (w->state == THREAD_BLOCKED)
+                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     w = w->proc_next;
                 }
             }
@@ -326,17 +328,17 @@ long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
             if (all_blocked) {
-                /* Signal blocked on all threads — set pending und wake
-                 * etwaige sigtimedwait-Threads (die in event_wait stehen). */
+                /* Signal blocked on all threads → sigtimedwait-Pfad.
+                 * event_post fuer eq-parked sleepers (write event + wake);
+                 * sched_wake-only-Pfad spinnt weil der Sleeper aufwacht,
+                 * nichts findet (head==tail, sig blocked → nicht
+                 * deliverable), wieder schlaeft. */
                 target->sig_pending |= SIG_BIT(sig);
                 extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-                extern void sched_wake(thread_t *t);
                 thread_t *wt = target->threads;
                 while (wt) {
-                    if (wt->state == THREAD_BLOCKED) {
-                        if (wt->wait_head) sched_wake(wt);
-                        else event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
-                    }
+                    if (wt->state == THREAD_BLOCKED)
+                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
                     wt = wt->proc_next;
                 }
                 return 0;
