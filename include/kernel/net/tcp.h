@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "config.h"
 #include "spinlock.h"
+#include "net/in6.h"
 
 struct thread; /* forward declaration for wait_thread */
 
@@ -46,7 +47,11 @@ enum tcp_state {
 
 typedef struct tcp_request {
     struct tcp_request *next;     /* singly-linked FIFO per queue */
-    uint8_t  src_ip[4];
+    uint8_t  is_v6;
+    uint8_t  _pad_v6;
+    uint8_t  src_ip[4];           /* used when is_v6==0 */
+    struct in6_addr src_ip6;      /* used when is_v6==1 */
+    struct in6_addr local_ip6;    /* listener's address for v6 */
     uint8_t  src_mac[6];
     uint16_t src_port;            /* peer port (big-endian on wire, host here) */
     uint16_t local_port;          /* listener port (host order) */
@@ -87,9 +92,14 @@ int      rxring_free(const tcp_rxring_t *r);
 /* ── TCP Connection ───────────────────────────────── */
 
 typedef struct net_tcp {
+    uint8_t  is_v6;             /* 1 = IPv6 connection (uses dst_ip6/local_ip6) */
+    uint8_t  _pad_v6;
     uint8_t  dst_ip[4];
     uint8_t  dst_mac[6];
     uint16_t local_port, remote_port;
+    /* IPv6-only addresses (zero on v4 sockets). */
+    struct in6_addr dst_ip6;
+    struct in6_addr local_ip6;
 
     uint32_t snd_nxt, snd_una;   /* send sequence space */
     uint32_t rcv_nxt;            /* receive sequence space */
@@ -199,10 +209,14 @@ void     tcp_unregister(net_tcp_t *c);
 /* Lookup keyed by ns_id (caller's NS). */
 net_tcp_t *tcp_find(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
                     const uint8_t *src_ip);
+/* IPv6 lookup variant — distinguished by is_v6 bit on the connection. */
+net_tcp_t *tcp_find6(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
+                     const struct in6_addr *src_ip);
 
 /* ── TCP API (called by socket.c) ─────────────────── */
 
 int  net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port);
+int  net_tcp6_connect(net_tcp_t *c, const struct in6_addr *dst, uint16_t port);
 int  net_tcp_accept(net_tcp_t *c, uint16_t local_port, int timeout_ms);
 int  net_tcp_accept_child(net_tcp_t *listener, net_tcp_t *child);
 int  net_tcp_send(net_tcp_t *c, const void *data, int len);

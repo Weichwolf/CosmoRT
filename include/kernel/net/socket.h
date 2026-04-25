@@ -25,13 +25,20 @@ struct socket {
     int       state;
     int       refcount;    /* number of FDs referencing this socket */
 
+    /* IPv6 support */
+    uint8_t   is_v6;       /* 1 = AF_INET6 socket */
+    uint8_t   v6only;      /* IPV6_V6ONLY default 1 */
+    uint8_t   _pad6[2];
+
     /* bind state */
-    uint32_t  local_ip;    /* big-endian */
+    uint32_t  local_ip;    /* big-endian (IPv4) */
     uint16_t  local_port;  /* big-endian */
+    struct in6_addr local_ip6;   /* IPv6 bind addr */
 
     /* connect/accept state */
-    uint32_t  remote_ip;   /* big-endian */
+    uint32_t  remote_ip;   /* big-endian (IPv4) */
     uint16_t  remote_port; /* big-endian */
+    struct in6_addr remote_ip6;  /* IPv6 connect addr */
 
     /* shutdown flags */
     uint8_t   shut_rd;
@@ -91,6 +98,11 @@ int sock_has_listener(uint32_t ns_id, uint16_t local_port_host);
 
 /* Returns the listening socket for (ns_id, local_port_host), or NULL. */
 socket_t *sock_find_listener(uint32_t ns_id, uint16_t local_port_host);
+
+/* IPv6-only variant — matches a listening AF_INET6 socket.
+ * If a v6 listener has v6only=0 (dual-stack) it accepts v4 too via the
+ * v4 path (Linux semantic). */
+socket_t *sock_find_listener6(uint32_t ns_id, uint16_t local_port_host);
 
 /* Called from do_read/do_write/do_close for FD_SOCKET */
 long socket_read(int fd, void *buf, long count);

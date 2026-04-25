@@ -4,6 +4,9 @@
 
 #include "net/socket.h"
 #include "net/net_ns.h"
+#include "net/in6.h"
+#include "net/ipv6.h"
+#include "linux/in6.h"
 #include "proc/process.h"
 #include "event/fd.h"
 #include "hw/serial.h"
@@ -97,7 +100,23 @@ socket_t *sock_find_listener(uint32_t ns_id, uint16_t local_port_host) {
     spin_lock_irq(&sock_lock, &flags);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
         if (o->state == SOCK_LISTENING && o->local_port == be &&
-            o->ns_id == ns_id) {
+            o->ns_id == ns_id && !o->is_v6) {
+            found = o;
+            break;
+        }
+    }
+    spin_unlock_irq(&sock_lock, flags);
+    return found;
+}
+
+socket_t *sock_find_listener6(uint32_t ns_id, uint16_t local_port_host) {
+    uint16_t be = bswap16(local_port_host);
+    uint64_t flags;
+    socket_t *found = 0;
+    spin_lock_irq(&sock_lock, &flags);
+    for (socket_t *o = sock_active_head; o; o = o->next_active) {
+        if (o->state == SOCK_LISTENING && o->local_port == be &&
+            o->ns_id == ns_id && o->is_v6) {
             found = o;
             break;
         }
@@ -156,19 +175,26 @@ long do_socket(int domain, int type, int protocol) {
     /* AF_UNIX (1): delegate to unix socket layer */
     if (domain == 1 /* AF_UNIX */) return usock_socket(type);
 
-    /* Only AF_INET (2) + SOCK_STREAM (1) / SOCK_DGRAM (2) supported */
-    if (domain != 2 /* AF_INET */) return -EAFNOSUPPORT;
+    /* AF_INET (2) and AF_INET6 (10) — TCP / UDP. Linux uses AF_INET6 = 10. */
+    if (domain != 2 && domain != 10) return -EAFNOSUPPORT;
     if (base_type != 1 && base_type != 2) return -EPROTONOSUPPORT;
+    /* SCTP (protocol=132) is not supported even on AF_INET6 — return
+     * EPROTONOSUPPORT explicitly so LTP bind04 SCTP-subcases SKIP cleanly
+     * instead of TBROK. */
+    if (protocol == 132 /* IPPROTO_SCTP */) return -EPROTONOSUPPORT;
 
     socket_t *s = sock_alloc();
     if (!s) return -EMFILE;
     s->refcount = 1;
     s->is_dgram = (base_type == 2); /* SOCK_DGRAM */
+    s->is_v6    = (domain == 10);
+    s->v6only   = 1; /* Linux default for AF_INET6 sockets */
 
     process_t *p = proc_current();
     if (!p) { sock_free(s); return -EFAULT; }
     s->ns_id = p->net_ns ? p->net_ns->ns_id : init_net_ns.ns_id;
     s->tcp.ns_id = s->ns_id;
+    s->tcp.is_v6 = s->is_v6;
 
     int flags = 0x02; /* O_RDWR */
     if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC -> O_CLOEXEC */
@@ -191,12 +217,78 @@ long do_connect(int fd, const void *addr, int addrlen) {
         if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
-    if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
-
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state == SOCK_CONNECTED && !s->is_dgram) return -EISCONN;
     if (s->state == SOCK_LISTENING) return -EISCONN;
+
+    /* IPv6 connect path. */
+    if (s->is_v6) {
+        if (addrlen < (int)sizeof(struct sockaddr_in6)) return -EINVAL;
+        struct sockaddr_in6 sa6;
+        { int r = copy_from_user(&sa6, addr, sizeof(sa6)); if (r) return r; }
+        if (sa6.sin6_family != AF_INET6) return -EAFNOSUPPORT;
+
+        struct in6_addr dst;
+        in6_copy(&dst, &sa6.sin6_addr);
+        /* connect(::) loopback semantic — match Linux. */
+        if (in6_is_any(&dst)) in6_copy(&dst, &in6addr_loopback);
+        uint16_t port = bswap16(sa6.sin6_port);
+
+        if (s->is_dgram) {
+            in6_copy(&s->remote_ip6, &dst);
+            s->remote_port = sa6.sin6_port;
+            return 0;
+        }
+
+        /* Reset tcp state on first call (preserve ns_id / is_v6). */
+        if (s->tcp.state == TCP_CLOSED && !s->tcp.got_rst) {
+            uint32_t saved_ns = s->ns_id;
+            for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
+                ((uint8_t *)&s->tcp)[i] = 0;
+            s->tcp.ns_id = saved_ns;
+            s->tcp.is_v6 = 1;
+        }
+
+        uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
+        thread_t *ct = thread_current();
+        for (;;) {
+            __atomic_store_n(&s->tcp.wait_thread, ct, __ATOMIC_RELEASE);
+            int r = net_tcp6_connect(&s->tcp, &dst, port);
+            if (r == 0) {
+                s->state = SOCK_CONNECTED;
+                in6_copy(&s->remote_ip6, &dst);
+                s->remote_port = sa6.sin6_port;
+                s->tcp.wait_thread = 0;
+                s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
+                return 0;
+            }
+            if (r == -11) {
+                int nonblock = 0;
+                process_t *rp = proc_current();
+                if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                    if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; }
+                if (nonblock) {
+                    s->sockflags |= SOCKF_CONNECTING;
+                    in6_copy(&s->remote_ip6, &dst);
+                    s->remote_port = sa6.sin6_port;
+                    return -EINPROGRESS;
+                }
+                if (timer_ms() >= connect_deadline) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
+                int remain = (int)(connect_deadline - timer_ms());
+                if (remain <= 0) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
+                event_t ev;
+                int wr = event_wait(&ct->eq, &ev, remain);
+                if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
+                continue;
+            }
+            s->tcp.wait_thread = 0;
+            if (s->tcp.got_rst) return -ECONNREFUSED;
+            return -ETIMEDOUT;
+        }
+    }
+
+    if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
 
     /* Non-blocking connect in progress: check if completed */
     if (s->sockflags & SOCKF_CONNECTING) {
@@ -603,12 +695,92 @@ long do_bind(int fd, const void *addr, int addrlen) {
         if (fde->type != FD_SOCKET) return -ENOTSOCK;
     }
 
-    if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
-
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
     if (s->state != SOCK_CREATED) return -EINVAL;
     if (s->local_port != 0) return -EINVAL;
+
+    /* IPv6 bind path. */
+    if (s->is_v6) {
+        if (addrlen < (int)sizeof(struct sockaddr_in6)) return -EINVAL;
+        struct sockaddr_in6 sa6;
+        { int r = copy_from_user(&sa6, addr, sizeof(sa6)); if (r) return r; }
+        if (sa6.sin6_family != AF_INET6) return -EAFNOSUPPORT;
+
+        /* Privileged-port check (port < 1024 needs euid==0). */
+        if (sa6.sin6_port != 0) {
+            uint16_t port_host = bswap16(sa6.sin6_port);
+            if (port_host < SOCKET_PRIVILEGED_PORT_MAX) {
+                process_t *cp = proc_current();
+                if (cp && cp->euid != 0) return -EACCES;
+            }
+        }
+        /* Non-:: address must be locally configured. */
+        if (!ipv6_addr_local(s->ns_id, &sa6.sin6_addr))
+            return -EADDRNOTAVAIL;
+
+        /* Ephemeral port assignment. */
+        if (sa6.sin6_port == 0) {
+            extern int random_get(void *, unsigned long);
+            uint16_t rnd;
+            if (random_get(&rnd, sizeof(rnd)) < 0)
+                rnd = (uint16_t)(timer_ms() & 0xFFFF);
+            uint64_t lflags;
+            spin_lock_irq(&sock_lock, &lflags);
+            for (int attempt = 0; attempt < 128; attempt++) {
+                uint16_t port_host = (uint16_t)(49152 + ((rnd + attempt) & 0x3FFF));
+                uint16_t port_be   = bswap16(port_host);
+                int conflict = 0;
+                for (socket_t *o = sock_active_head; o; o = o->next_active) {
+                    if (o == s) continue;
+                    if (o->ns_id != s->ns_id) continue;
+                    if (!o->is_v6) continue;
+                    if (o->local_port == port_be) { conflict = 1; break; }
+                }
+                if (!conflict) {
+                    in6_copy(&s->local_ip6, &sa6.sin6_addr);
+                    s->local_port = port_be;
+                    if (s->is_dgram) {
+                        s->udp_local_port = port_host;
+                        spin_unlock_irq(&sock_lock, lflags);
+                        udp_bind_ns(s->ns_id, port_host);
+                        return 0;
+                    }
+                    spin_unlock_irq(&sock_lock, lflags);
+                    return 0;
+                }
+            }
+            spin_unlock_irq(&sock_lock, lflags);
+            return -EADDRINUSE;
+        }
+
+        /* Conflict check. */
+        uint64_t lflags;
+        spin_lock_irq(&sock_lock, &lflags);
+        for (socket_t *o = sock_active_head; o; o = o->next_active) {
+            if (o == s) continue;
+            if (o->ns_id != s->ns_id) continue;
+            if (!o->is_v6) continue;
+            if (o->local_port == sa6.sin6_port &&
+                (in6_eq(&o->local_ip6, &sa6.sin6_addr) ||
+                 in6_is_any(&sa6.sin6_addr) || in6_is_any(&o->local_ip6))) {
+                if (!(s->sockflags & SOCKF_REUSEADDR)) {
+                    spin_unlock_irq(&sock_lock, lflags);
+                    return -EADDRINUSE;
+                }
+            }
+        }
+        spin_unlock_irq(&sock_lock, lflags);
+        in6_copy(&s->local_ip6, &sa6.sin6_addr);
+        s->local_port = sa6.sin6_port;
+        if (s->is_dgram) {
+            s->udp_local_port = bswap16(sa6.sin6_port);
+            udp_bind_ns(s->ns_id, s->udp_local_port);
+        }
+        return 0;
+    }
+
+    if (addrlen < (int)sizeof(struct k_sockaddr_in)) return -EINVAL;
 
     struct k_sockaddr_in k_addr;
     { int r = copy_from_user(&k_addr, addr, sizeof(k_addr)); if (r) return r; }
@@ -779,7 +951,10 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     if (!ns) return -EMFILE;
     ns->refcount = 1;
     /* Inherit listener's NS — accepted child must hash in same NS as listener. */
-    ns->ns_id = ls->ns_id;
+    ns->ns_id  = ls->ns_id;
+    ns->is_v6  = ls->is_v6;
+    ns->v6only = ls->v6only;
+    ns->tcp.is_v6 = ls->is_v6;
 
     int rc;
     for (;;) {
@@ -810,12 +985,17 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     ls->tcp.wait_thread = 0;
 
     ns->state = SOCK_CONNECTED;
-    ns->local_ip = ls->local_ip;
     ns->local_port = ls->local_port;
-    ns->remote_ip = (uint32_t)ns->tcp.dst_ip[0] |
-                    ((uint32_t)ns->tcp.dst_ip[1] << 8) |
-                    ((uint32_t)ns->tcp.dst_ip[2] << 16) |
-                    ((uint32_t)ns->tcp.dst_ip[3] << 24);
+    if (ns->is_v6) {
+        in6_copy(&ns->local_ip6,  &ls->local_ip6);
+        in6_copy(&ns->remote_ip6, &ns->tcp.dst_ip6);
+    } else {
+        ns->local_ip = ls->local_ip;
+        ns->remote_ip = (uint32_t)ns->tcp.dst_ip[0] |
+                        ((uint32_t)ns->tcp.dst_ip[1] << 8) |
+                        ((uint32_t)ns->tcp.dst_ip[2] << 16) |
+                        ((uint32_t)ns->tcp.dst_ip[3] << 24);
+    }
     ns->remote_port = bswap16(ns->tcp.remote_port);
 
     p = proc_current();
@@ -824,14 +1004,24 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     if (newfd < 0) { sock_free(ns); return -EMFILE; }
 
     if (addr && addrlen) {
-        struct k_sockaddr_in sa;
-        for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
-        sa.sin_family = 2;
-        sa.sin_port = ns->remote_port;
-        sa.sin_addr = ns->remote_ip;
-        copy_to_user(addr, &sa, sizeof(sa));
-        int len = (int)sizeof(struct k_sockaddr_in);
-        copy_to_user(addrlen, &len, sizeof(int));
+        if (ns->is_v6) {
+            struct sockaddr_in6 sa6 = {0};
+            sa6.sin6_family = AF_INET6;
+            sa6.sin6_port   = ns->remote_port;
+            in6_copy(&sa6.sin6_addr, &ns->remote_ip6);
+            copy_to_user(addr, &sa6, sizeof(sa6));
+            int len = (int)sizeof(sa6);
+            copy_to_user(addrlen, &len, sizeof(int));
+        } else {
+            struct k_sockaddr_in sa;
+            for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
+            sa.sin_family = 2;
+            sa.sin_port = ns->remote_port;
+            sa.sin_addr = ns->remote_ip;
+            copy_to_user(addr, &sa, sizeof(sa));
+            int len = (int)sizeof(struct k_sockaddr_in);
+            copy_to_user(addrlen, &len, sizeof(int));
+        }
     }
 
     /* accept4 flags: SOCK_NONBLOCK (0x800) → O_NONBLOCK, SOCK_CLOEXEC (0x80000) → O_CLOEXEC */
@@ -942,6 +1132,19 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
         }
     }
 
+    if (level == IPPROTO_IPV6) {
+        switch (optname) {
+        case IPV6_V6ONLY:
+            s->v6only = val ? 1 : 0;
+            return 0;
+        case IPV6_UNICAST_HOPS:
+        case IPV6_MULTICAST_HOPS:
+            return 0; /* accept */
+        default:
+            return 0;
+        }
+    }
+
     /* SOL_IP (0) — IGMP multicast: we have no multicast implementation, but
      * must reject LEAVE_GROUP without a prior JOIN per Linux (CVE-2017-8890:
      * accept()-cloned sockets must NOT inherit multicast group membership). */
@@ -1029,6 +1232,13 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
         case TCP_KEEPCNT: val = 9; break;     /* Linux default: 9 */
         default: break;
         }
+    } else if (level == IPPROTO_IPV6) {
+        switch (optname) {
+        case IPV6_V6ONLY:        val = s->v6only; break;
+        case IPV6_UNICAST_HOPS:
+        case IPV6_MULTICAST_HOPS: val = IPV6_DEFAULT_HOPLIM; break;
+        default: break;
+        }
     }
 
     { int r = copy_to_user(optval, &val, sizeof(int)); if (r) return r; }
@@ -1074,6 +1284,16 @@ long do_getsockname(int fd, void *addr, int *addrlen) {
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;
 
+    if (s->is_v6) {
+        struct sockaddr_in6 sa6 = {0};
+        sa6.sin6_family = AF_INET6;
+        sa6.sin6_port   = s->local_port;
+        in6_copy(&sa6.sin6_addr, &s->local_ip6);
+        { int r = copy_to_user(addr, &sa6, sizeof(sa6)); if (r) return r; }
+        { int len = (int)sizeof(sa6); int r = copy_to_user(addrlen, &len, sizeof(int)); if (r) return r; }
+        return 0;
+    }
+
     struct k_sockaddr_in sa;
     for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;
     sa.sin_family = 2; /* AF_INET */
@@ -1092,6 +1312,16 @@ long do_getpeername(int fd, void *addr, int *addrlen) {
     socket_t *s = sock_lookup(fd, &err);
     if (!s) return err;
     if (s->state != SOCK_CONNECTED) return -ENOTCONN;
+
+    if (s->is_v6) {
+        struct sockaddr_in6 sa6 = {0};
+        sa6.sin6_family = AF_INET6;
+        sa6.sin6_port   = s->remote_port;
+        in6_copy(&sa6.sin6_addr, &s->remote_ip6);
+        { int r = copy_to_user(addr, &sa6, sizeof(sa6)); if (r) return r; }
+        { int len = (int)sizeof(sa6); int r = copy_to_user(addrlen, &len, sizeof(int)); if (r) return r; }
+        return 0;
+    }
 
     struct k_sockaddr_in sa;
     for (int i = 0; i < (int)sizeof(sa); i++) ((uint8_t *)&sa)[i] = 0;

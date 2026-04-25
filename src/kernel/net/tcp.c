@@ -6,10 +6,15 @@
 #include "net/tcp.h"
 #include "net/net.h"
 #include "net/net_util.h"
+#include "net/in6.h"
+#include "net/ipv6.h"
 #include "core/timer.h"
 #include "mm/page_alloc.h"
 #include "mm/slab.h"
 #include "core/event_queue.h"
+
+/* Forward decl — IPv6 neighbour resolution. */
+extern int ndp_resolve(uint32_t ns_id, const struct in6_addr *addr, uint8_t *mac_out);
 
 /* From socket.c — listener lookup (host-order port). Returns the
  * listening socket's embedded tcp state, or NULL. Used by tcp_input to
@@ -107,8 +112,18 @@ static uint32_t tcp_hash_fn(uint32_t ns_id, uint16_t lport, uint16_t rport,
     return h & (TCP_HASH_SIZE - 1);
 }
 
+/* IPv6 hash: XOR-fold all 16 bytes into 4, then reuse v4 hasher. */
+static uint32_t tcp_hash_fn6(uint32_t ns_id, uint16_t lport, uint16_t rport,
+                             const struct in6_addr *sip) {
+    uint8_t squashed[4] = {0,0,0,0};
+    for (int i = 0; i < 16; i++) squashed[i & 3] ^= sip->s6_addr[i];
+    return tcp_hash_fn(ns_id, lport, rport, squashed);
+}
+
 void tcp_register(net_tcp_t *c) {
-    uint32_t idx = tcp_hash_fn(c->ns_id, c->local_port, c->remote_port, c->dst_ip);
+    uint32_t idx = c->is_v6
+        ? tcp_hash_fn6(c->ns_id, c->local_port, c->remote_port, &c->dst_ip6)
+        : tcp_hash_fn (c->ns_id, c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
     c->hash_next = tcp_hash[idx];
@@ -117,7 +132,9 @@ void tcp_register(net_tcp_t *c) {
 }
 
 void tcp_unregister(net_tcp_t *c) {
-    uint32_t idx = tcp_hash_fn(c->ns_id, c->local_port, c->remote_port, c->dst_ip);
+    uint32_t idx = c->is_v6
+        ? tcp_hash_fn6(c->ns_id, c->local_port, c->remote_port, &c->dst_ip6)
+        : tcp_hash_fn (c->ns_id, c->local_port, c->remote_port, c->dst_ip);
     uint64_t flags;
     spin_lock_irq(&tcp_hash_lock, &flags);
     net_tcp_t **pp = &tcp_hash[idx];
@@ -137,10 +154,24 @@ net_tcp_t *tcp_find(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
     uint32_t idx = tcp_hash_fn(ns_id, local_port, remote_port, src_ip);
     net_tcp_t *c = __atomic_load_n(&tcp_hash[idx], __ATOMIC_ACQUIRE);
     while (c) {
-        if (c->ns_id == ns_id &&
+        if (!c->is_v6 && c->ns_id == ns_id &&
             c->local_port == local_port && c->remote_port == remote_port &&
             c->dst_ip[0] == src_ip[0] && c->dst_ip[1] == src_ip[1] &&
             c->dst_ip[2] == src_ip[2] && c->dst_ip[3] == src_ip[3])
+            return c;
+        c = c->hash_next;
+    }
+    return 0;
+}
+
+net_tcp_t *tcp_find6(uint32_t ns_id, uint16_t local_port, uint16_t remote_port,
+                     const struct in6_addr *src_ip) {
+    uint32_t idx = tcp_hash_fn6(ns_id, local_port, remote_port, src_ip);
+    net_tcp_t *c = __atomic_load_n(&tcp_hash[idx], __ATOMIC_ACQUIRE);
+    while (c) {
+        if (c->is_v6 && c->ns_id == ns_id &&
+            c->local_port == local_port && c->remote_port == remote_port &&
+            in6_eq(&c->dst_ip6, src_ip))
             return c;
         c = c->hash_next;
     }
@@ -201,6 +232,27 @@ static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip,
     return (uint16_t)~sum;
 }
 
+/* IPv6 TCP checksum — RFC 8200 §8.1 pseudo-header:
+ *   src(16) | dst(16) | upper-len(32 BE) | zero(24) | next_hdr(8=6) */
+static uint16_t tcp_cksum6(const struct in6_addr *src, const struct in6_addr *dst,
+                            const uint8_t *tcp, int tlen) {
+    uint32_t sum = 0;
+    for (int i = 0; i < 16; i += 2)
+        sum += (uint32_t)((src->s6_addr[i] << 8) | src->s6_addr[i + 1]);
+    for (int i = 0; i < 16; i += 2)
+        sum += (uint32_t)((dst->s6_addr[i] << 8) | dst->s6_addr[i + 1]);
+    sum += (uint32_t)((tlen >> 16) & 0xFFFF);
+    sum += (uint32_t)(tlen & 0xFFFF);
+    sum += 6;
+    for (int i = 0; i < tlen; i += 2) {
+        uint16_t w = (uint16_t)(tcp[i] << 8);
+        if (i + 1 < tlen) w |= tcp[i + 1];
+        sum += w;
+    }
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
 /* ── Send TCP Segment (with options support) ──────── */
 
 /* Build Timestamp option (10 bytes): NOP+NOP+Kind8+Len10+TSval+TSecr */
@@ -228,7 +280,6 @@ static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
     int thdr = 20 + total_optlen;
     while (thdr & 3) thdr++;
     int tt = thdr + dlen;
-    mzero(pkt, 54 + total_optlen + dlen);
 
     /* ECN: set ECT(0) = 0x02 on outgoing TCP if ECN negotiated */
     uint8_t tos = 0;
@@ -241,8 +292,22 @@ static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
         if (c->ecn_cwr_sent)  { flags |= 0x80; c->ecn_cwr_sent = 0; }
     }
 
-    net_build_ip_hdr_tos(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt, tos);
-    uint8_t *t = pkt + 34;
+    /* IPv6 path: 14 byte ethernet + 40 byte IPv6 header + TCP. */
+    int eth_off, l4_off;
+    if (c->is_v6) {
+        mzero(pkt, 54 + total_optlen + dlen);
+        ipv6_build_header(pkt, c->dst_mac, &c->local_ip6, &c->dst_ip6,
+                          6, (uint16_t)tt, IPV6_DEFAULT_HOPLIM);
+        eth_off = 14;
+        l4_off  = 54;
+    } else {
+        mzero(pkt, 54 + total_optlen + dlen);
+        net_build_ip_hdr_tos(pkt, c->dst_mac, c->dst_ip, 6, (uint16_t)tt, tos);
+        eth_off = 14;
+        l4_off  = 34;
+    }
+
+    uint8_t *t = pkt + l4_off;
     put16(t, c->local_port);
     put16(t + 2, c->remote_port);
     put32(t + 4, c->snd_nxt);
@@ -266,13 +331,16 @@ static void send_tcp_opts(net_tcp_t *c, uint8_t flags,
     if (optlen > 0 && opts) mcpy(t + 20, opts, optlen);
     if (ts_len > 0) mcpy(t + 20 + optlen, ts_opt, ts_len);
     if (dlen > 0 && data) mcpy(t + thdr, data, dlen);
-    uint16_t ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
+    uint16_t ck;
+    if (c->is_v6) ck = tcp_cksum6(&c->local_ip6, &c->dst_ip6, t, tt);
+    else          ck = tcp_cksum(net_my_ip, c->dst_ip, t, tt);
     t[16] = (uint8_t)(ck >> 8);
     t[17] = (uint8_t)ck;
-    net_send_raw(pkt, (uint16_t)(34 + tt));
+    if (c->is_v6) ipv6_send_frame(pkt, (uint16_t)(eth_off + 40 + tt));
+    else          net_send_raw(pkt, (uint16_t)(eth_off + 20 + tt));
 }
 
-static void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
+void send_tcp(net_tcp_t *c, uint8_t flags, const void *data, int dlen) {
     /* For SACK blocks on ACKs: build SACK option if we have blocks */
     if ((flags & 0x10) && c->sack_count > 0 && dlen == 0) {
         uint8_t opts[40]; /* max 4 SACK blocks = 2 + 4*8 = 34 bytes */
@@ -488,21 +556,21 @@ static void tcp_req_slab_ensure(void) {
         slab_init_dynamic(&tcp_req_slab, (int)sizeof(tcp_request_t), 0);
 }
 
-static tcp_request_t *tcp_req_alloc(void) {
+tcp_request_t *tcp_req_alloc(void) {
     tcp_req_slab_ensure();
     tcp_request_t *r = (tcp_request_t *)slab_alloc(&tcp_req_slab);
     if (r) mzero(r, sizeof(*r));
     return r;
 }
 
-static void tcp_req_free(tcp_request_t *r) {
+void tcp_req_free(tcp_request_t *r) {
     slab_free(&tcp_req_slab, r);
 }
 
 /* FIFO append (tail insert). Caller holds no lock; SMP safety relies on
  * tcp_input being serialised per-packet via irq-disabled net_poll path.
  * If that ever changes, wrap with spinlock_irq on listener->rx.lock. */
-static void tcp_req_enqueue(tcp_request_t **head, tcp_request_t *r) {
+void tcp_req_enqueue(tcp_request_t **head, tcp_request_t *r) {
     r->next = 0;
     tcp_request_t **pp = head;
     while (*pp) pp = &(*pp)->next;
@@ -518,7 +586,7 @@ static tcp_request_t *tcp_req_dequeue(tcp_request_t **head) {
 /* Peek-search: returns a pointer to a request matching {src_ip, src_port}
  * without removing it. Used to append early data to an already-promoted
  * request still sitting on accept_queue. */
-static tcp_request_t *tcp_req_find(tcp_request_t *head,
+tcp_request_t *tcp_req_find(tcp_request_t *head,
                                    const uint8_t *src_ip, uint16_t src_port) {
     for (tcp_request_t *r = head; r; r = r->next) {
         if (r->src_port == src_port &&
@@ -531,7 +599,7 @@ static tcp_request_t *tcp_req_find(tcp_request_t *head,
 
 /* Remove first entry that matches {src_ip, src_port}. Returns NULL if
  * no match (e.g. stray ACK). */
-static tcp_request_t *tcp_req_remove(tcp_request_t **head,
+tcp_request_t *tcp_req_remove(tcp_request_t **head,
                                      const uint8_t *src_ip, uint16_t src_port) {
     tcp_request_t **pp = head;
     while (*pp) {
@@ -552,10 +620,16 @@ static tcp_request_t *tcp_req_remove(tcp_request_t **head,
  * existing send_syn() / send_tcp() machinery can emit SYN-ACK (and later
  * RST) without duplicating option-building logic. Caller keeps the real
  * listener untouched. */
-static void tcp_req_prime_stub(net_tcp_t *stub, const tcp_request_t *r) {
+void tcp_req_prime_stub(net_tcp_t *stub, const tcp_request_t *r) {
     mzero(stub, sizeof(*stub));
     mcpy(stub->dst_mac, r->src_mac, 6);
-    mcpy(stub->dst_ip,  r->src_ip,  4);
+    if (r->is_v6) {
+        stub->is_v6 = 1;
+        in6_copy(&stub->dst_ip6,   &r->src_ip6);
+        in6_copy(&stub->local_ip6, &r->local_ip6);
+    } else {
+        mcpy(stub->dst_ip,  r->src_ip,  4);
+    }
     stub->local_port  = r->local_port;
     stub->remote_port = r->src_port;
     stub->snd_nxt     = r->iss;
@@ -575,7 +649,7 @@ static void tcp_req_prime_stub(net_tcp_t *stub, const tcp_request_t *r) {
 /* Send SYN-ACK in response to a SYN that landed on a listening socket.
  * Does not allocate any net_tcp_t — the full socket is only created
  * once accept() pops the request. */
-static void send_synack_req(const tcp_request_t *r) {
+void send_synack_req(const tcp_request_t *r) {
     net_tcp_t stub;
     tcp_req_prime_stub(&stub, r);
     send_syn(&stub, 0x12); /* SYN+ACK */
@@ -1251,7 +1325,13 @@ int net_tcp_accept_child(net_tcp_t *listener, net_tcp_t *child) {
     child->ns_id = listener->ns_id;
 
     mcpy(child->dst_mac, r->src_mac, 6);
-    mcpy(child->dst_ip,  r->src_ip,  4);
+    if (r->is_v6) {
+        child->is_v6 = 1;
+        in6_copy(&child->dst_ip6,   &r->src_ip6);
+        in6_copy(&child->local_ip6, &r->local_ip6);
+    } else {
+        mcpy(child->dst_ip,  r->src_ip,  4);
+    }
     child->local_port  = r->local_port;
     child->remote_port = r->src_port;
     child->snd_nxt     = r->iss;
@@ -1341,6 +1421,59 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     c->state = TCP_SYN_SENT;
     tcp_register(c);
     /* SYN with MSS + Window Scale + SACK Permitted options */
+    send_syn(c, 0x02);
+    return -11;
+}
+
+/* IPv6 connect — same lifecycle, IPv6 addressing.
+ * Sets is_v6, picks src via ipv6_select_src(), resolves NDP. */
+int net_tcp6_connect(net_tcp_t *c, const struct in6_addr *dst, uint16_t port) {
+    switch (c->state) {
+    case TCP_ESTABLISHED:
+    case TCP_FIN_WAIT1:
+    case TCP_FIN_WAIT2:
+    case TCP_CLOSE_WAIT:
+    case TCP_CLOSING:
+    case TCP_LAST_ACK:
+    case TCP_TIME_WAIT:
+        return 0;
+    case TCP_SYN_SENT:
+        return -11;
+    default: break;
+    }
+    if (c->got_rst) return -1;
+
+    struct thread *saved_wt = c->wait_thread;
+    uint32_t saved_ns = c->ns_id;
+    mzero(c, sizeof(*c));
+    c->wait_thread = saved_wt;
+    c->ns_id = saved_ns;
+    c->is_v6 = 1;
+    rxring_init(&c->rx);
+    in6_copy(&c->dst_ip6, dst);
+    ipv6_select_src(c->ns_id, dst, &c->local_ip6);
+    c->remote_port = port;
+    uint32_t rseq;
+    net_random(&rseq, (int)sizeof(rseq));
+    uint16_t rport;
+    net_random(&rport, (int)sizeof(rport));
+    c->local_port = (uint16_t)((rport % 16384) + 49152);
+    c->snd_nxt = rseq;
+    c->snd_una = rseq;
+    c->rcv_nxt = 0;
+    c->rcv_wnd = (uint16_t)(NET_TCP_RXBUF >> RCV_WSCALE);
+    c->rcv_wscale = RCV_WSCALE;
+    c->state = TCP_CLOSED;
+    cc_init(c);
+
+    /* Resolve dst MAC: loopback → zero MAC; otherwise NDP. */
+    if (in6_is_loopback(dst))
+        for (int i = 0; i < 6; i++) c->dst_mac[i] = 0;
+    else if (ndp_resolve(c->ns_id, dst, c->dst_mac) < 0)
+        return -1;
+
+    c->state = TCP_SYN_SENT;
+    tcp_register(c);
     send_syn(c, 0x02);
     return -11;
 }
