@@ -121,18 +121,23 @@ void event_post(thread_t *target, uint32_t type, uint64_t data) {
      * acquires eq->wq.lock — same lock event_wait_ns holds during
      * prepare_to_wait. That serialization closes the missed-wakeup race
      * the old "sched_wake(target)" path had between event_wait_ns's
-     * cur->state=BLOCKED and the schedule() call. */
+     * cur->state=BLOCKED and the schedule() call.
+     *
+     * Wir behalten den sched_wake(target)-Pfad solange event_wait_ns
+     * noch nicht via prepare_to_wait an eq->wq gebunden ist — wird im
+     * naechsten Commit entfernt sobald event_wait_ns ein wq-Waiter ist. */
     wake_up_interruptible(&eq->wq);
+
+    extern void sched_wake(struct thread *t);
+    sched_wake(target);
 }
 
-/* ── hrtimer timeout callback: wake the eq's waitqueue ──
- * Payload is the eq pointer; firing the wq matches Linux
- * wait_event_interruptible_timeout's hrtimer_handler, which wakes via
- * the same wq the waiter is parked on. */
+/* ── hrtimer timeout callback: wake blocked thread ── */
 
-static void eq_timeout_wake(hrtimer_t *timer) {
-    event_queue_t *eq = (event_queue_t *)timer->data;
-    if (eq) wake_up_interruptible(&eq->wq);
+static void timeout_wake(hrtimer_t *timer) {
+    thread_t *t = (thread_t *)timer->data;
+    extern void sched_wake(thread_t *t);
+    sched_wake(t);
 }
 
 /* ── Block: pure timeout sleep, waitqueue-backed ──
@@ -143,98 +148,92 @@ static void eq_timeout_wake(hrtimer_t *timer) {
 
 void thread_block_ms(int timeout_ms) {
     if (timeout_ms <= 0) return;
+    (void)timeout_wake;
     (void)sleep_interruptible_ns((uint64_t)timeout_ms * NSEC_PER_MSEC);
 }
 
-/* ── Wait: consume next event, block if empty ──
- *
- * Waitqueue-backed (Phase 10.2c). prepare_to_wait + finish_wait
- * serialize state-set + queue-membership under eq->wq.lock. Producers
- * (event_post) take the same lock for wake_up_interruptible — so any
- * event posted between our ring-empty check and schedule() either:
- *   (a) arrives BEFORE prepare_to_wait → next iteration sees it, OR
- *   (b) arrives AFTER prepare_to_wait → wake_up_interruptible finds us
- *       BLOCKED on the wq and transitions us RUNNABLE.
- * No window remains where the wake can be lost.
- *
- * Ersetzt das alte naked state=BLOCKED+mfence+schedule()-Pattern, das
- * unter Phase-12-tickless deterministisch in sem_init/tls_init hing
- * (musl pthread_once + tls_init Race-Window).
- *
- * SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23, SIGWINCH=28, SIGIO=29)
- * werden gefiltert um spurious EINTR zu vermeiden. */
-
-#define EQ_SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
-
-static int eq_signal_real_pending(thread_t *cur) {
-    if (!cur->proc) return 0;
-    uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
-    uint64_t deliverable = all_pending & ~cur->sig_blocked;
-    if (!deliverable) return 0;
-    uint64_t real = deliverable;
-    for (int s = 1; s < 64 && real; s++) {
-        if (!(real & (1ULL << (s - 1)))) continue;
-        if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
-            ((1ULL << (s - 1)) & EQ_SIG_DFL_IGNORE))
-            real &= ~(1ULL << (s - 1));
-    }
-    return real != 0;
-}
-
-static int eq_try_consume(event_queue_t *eq, event_t *out) {
-    uint32_t h = hal_cpu_load_acquire(&eq->head);
-    uint32_t t = eq->tail;
-    if (h == t) return 0;
-    *out = eq->events[t & eq->mask];
-    hal_cpu_store_release(&eq->tail, t + 1);
-    return 1;
-}
+/* ── Wait: consume next event, block if empty ── */
 
 int event_wait_ns(event_queue_t *eq, event_t *out, int64_t timeout_ns) {
     thread_t *cur = thread_current();
     if (!cur) return -14; /* EFAULT */
-
-    /* Fast path: events already pending — no block at all. */
-    if (eq_try_consume(eq, out)) return 0;
-
-    if (timeout_ns == 0) return -11; /* EAGAIN */
-
-    if (eq_signal_real_pending(cur)) return -4; /* EINTR */
 
     hrtimer_t timer;
     int has_timer = 0;
     uint64_t deadline_ns = 0;
     if (timeout_ns > 0) {
         deadline_ns = hrtimer_now_ns() + (uint64_t)timeout_ns;
-        hrtimer_init(&timer, eq_timeout_wake, eq);
+        hrtimer_init(&timer, timeout_wake, cur);
         has_timer = 1;
     }
 
-    int rc = 0;
-    DEFINE_WAIT(wait);
-
     for (;;) {
-        /* Atomic state=BLOCKED + queue insertion under eq->wq.lock.
-         * Idempotent across loop iterations. */
-        prepare_to_wait(&eq->wq, &wait, THREAD_BLOCKED);
+        /* Signal check — fatal signals (SIGALRM, SIGKILL) must interrupt.
+         * Ignore SIG_DFL-ignored signals (SIGCHLD=17, SIGURG=23,
+         * SIGWINCH=28, SIGIO=29) to avoid spurious EINTR. */
+        if (cur->proc) {
+            uint64_t all_pending = cur->proc->sig_pending | cur->sig_thread_pending;
+            uint64_t deliverable = all_pending & ~cur->sig_blocked;
+            if (deliverable) {
+                #define SIG_DFL_IGNORE ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
+                uint64_t real = deliverable;
+                for (int s = 1; s < 64 && real; s++) {
+                    if (!(real & (1ULL << (s-1)))) continue;
+                    if ((uint64_t)cur->proc->sig_actions[s].sa_handler == 0 &&
+                        ((1ULL << (s-1)) & SIG_DFL_IGNORE))
+                        real &= ~(1ULL << (s-1));
+                }
+                if (real) {
+                    if (has_timer) hrtimer_cancel(&timer);
+                    return -4; /* EINTR */
+                }
+            }
+        }
 
-        if (eq_try_consume(eq, out)) { rc = 0; break; }
-        if (eq_signal_real_pending(cur)) { rc = -4; break; }
-        if (has_timer && hrtimer_now_ns() >= deadline_ns) { rc = -11; break; }
+        uint32_t h = hal_cpu_load_acquire(&eq->head);
+        uint32_t t = eq->tail;
+
+        if (h != t) {
+            *out = eq->events[t & eq->mask];
+            hal_cpu_store_release(&eq->tail, t + 1);
+            if (has_timer) hrtimer_cancel(&timer);
+            return 0;
+        }
+
+        if (timeout_ns == 0)
+            return -11; /* EAGAIN */
+
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            return -11; /* EAGAIN (timeout) */
+        }
 
         if (has_timer)
             hrtimer_start(&timer, deadline_ns);
 
+        cur->state = THREAD_BLOCKED;
+
+        /* Close race: event arrived between fast-path and BLOCKED */
+        hal_cpu_mfence();
+        if (hal_cpu_load_acquire(&eq->head) != eq->tail) {
+            cur->state = THREAD_RUNNING;
+            continue;
+        }
+
         extern void schedule(void);
         schedule();
 
-        /* Post-wake: re-loop. The next prepare_to_wait re-arms
-         * BLOCKED and re-checks ring/signal/deadline. */
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            hrtimer_cancel(&timer);
+            h = hal_cpu_load_acquire(&eq->head);
+            if (h != eq->tail) {
+                *out = eq->events[eq->tail & eq->mask];
+                hal_cpu_store_release(&eq->tail, eq->tail + 1);
+                return 0;
+            }
+            return -11; /* EAGAIN (timeout) */
+        }
     }
-
-    finish_wait(&eq->wq, &wait);
-    if (has_timer) hrtimer_cancel(&timer);
-    return rc;
 }
 
 int event_wait(event_queue_t *eq, event_t *out, int timeout_ms) {
