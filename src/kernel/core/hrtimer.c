@@ -58,9 +58,24 @@ uint64_t hrtimer_now_ns(void) {
 
 /* ── LAPIC one-shot programming ────────────────────── */
 
+/* Maximum delta we can represent without overflowing delta_ns *
+ * lapic_ticks_per_ms (uint64_t product). At 100k ticks/ms ≈ 1.84e14 ns
+ * (~51 hours); at 1M ticks/ms ≈ 1.84e13 ns (~5 hours). Caller must
+ * cap on its own; we additionally clamp the LAPIC INIT register at
+ * 2^32-1 ticks (≈ 71s @ 60kHz) — beyond that the periodic tick callback
+ * will rearm us before the deadline expires. */
 static void lapic_arm_ns(uint64_t delta_ns) {
-    /* Convert ns to LAPIC ticks */
-    uint64_t ticks = (delta_ns * lapic_ticks_per_ms) / NSEC_PER_MSEC;
+    uint64_t per_ms = lapic_ticks_per_ms;
+    /* Overflow-safe product. UINT64_MAX / per_ms gives the largest
+     * delta_ns we can multiply without wrap. Anything beyond saturates
+     * the LAPIC INIT register at 0xFFFFFFFF — the IRQ then refires
+     * lapic_arm_ns from hrtimer_run_expired (or the periodic tick
+     * trampoline does) on the residual deadline. */
+    uint64_t max_safe_ns = per_ms ? (UINT64_MAX / per_ms) : 0;
+    uint64_t ticks;
+    if (delta_ns > max_safe_ns) ticks = 0xFFFFFFFF;
+    else ticks = (delta_ns * per_ms) / NSEC_PER_MSEC;
+
     if (ticks < LAPIC_MIN_TICKS) ticks = LAPIC_MIN_TICKS;
     if (ticks > 0xFFFFFFFF) ticks = 0xFFFFFFFF;
 
