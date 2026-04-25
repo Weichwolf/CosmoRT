@@ -4,9 +4,11 @@
 Vision: was Linus heute bauen würde auf moderner Hardware.
 
 **Stand (Session-Ende)**: ktest **2921/1** (CLONE_NEWNET pre-existing
-fail), musl 460/11, **LTP** (Phase-12-Run im Gange). Phase 12
-erledigt: tickless LAPIC + ns-praezise Sleep/Poll/Select/Futex.
-nanosleep(500us) jetzt 1085us statt 1.5ms. Branch: `ltp`.
+fail), musl 460/11 unveraendert (sem_init-static + tls_init-static hangen
+unter Tickless — known regression, Race in event_wait_ns post-BLOCKED-set
+ist Phase-13-Aufgabe). Phase 12 erledigt: tickless LAPIC + ns-praezise
+Sleep/Poll/Select/Futex. nanosleep(500us) jetzt 1085us statt 1.5ms.
+Branch: `ltp`.
 
 **Strukturelle Blocker für 100% grün** (siehe Analyse): kein Waitqueue-System,
 kein `restart_block`, Scheduler UP-designed mit SMP-Patches obendrauf.
@@ -169,7 +171,7 @@ Regression — eigene Boost-Rollback-Semantik).
 
 ---
 
-## Phase 12 — hrtimer ns-Präzision + Tick-less (ERLEDIGT)
+## Phase 12 — hrtimer ns-Präzision + Tick-less (ERLEDIGT mit Caveat)
 
 **Status**: Hot-Path migriert, tickless LAPIC aktiv, restart_block ns.
 
@@ -180,18 +182,31 @@ Regression — eigene Boost-Rollback-Semantik).
 - [x] `restart_block.nanosleep.expires_ns` (rename + Mathematik)
 - [x] `event_wait_ns` als Hot-Path, `event_wait` Wrapper bleibt
 - [x] do_epoll_wait, poll_loop_ns, do_pselect6, do_ppoll, do_futex auf ns
-- [x] 8 ktests in test_hrtimer_ns.c
+- [x] 9 ktests in test_hrtimer_ns.c
 
 ### Bilanz
 
 - nanosleep(500us) Pre-Phase-12: ~1.5ms -> Post: 1085us
 - 100x nanosleep(100us) Pre: 193ms -> tickless Post: 36ms
 - max-diff(clock_gettime) ueber 1000 reads: 62us (vorher Tick-quantisiert)
+- ktest 2906 -> 2921 (+15)
+
+### Bekannte Regressionen
+
+Tickless macht subtile pthread-Races sichtbar:
+- musl/sem_init-static (Test 70) hangt
+- musl/tls_init-static (Test 127) hangt
+
+Ursache vermutlich: `event_wait_ns` setzt `cur->state = THREAD_BLOCKED`
+ausserhalb einer waitqueue-Lock. Tickless macht `sched_wake`-Pfade
+schneller -> Race-Window zwischen state-set und mfence sichtbar.
+Fix: event_wait auf waitqueue migrieren (siehe Phase 10.2c).
 
 ### Verbleibend (out-of-scope Phase 12)
 
 - timerfd ms->ns Migration (eigene Subsystem-Modernisierung)
 - futex_wait restart_block ns (Phase 13 SMP)
+- event_wait auf waitqueue (Phase 10.2c, fixt sem/tls-Hangs)
 
 ---
 
