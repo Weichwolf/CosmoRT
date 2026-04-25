@@ -144,6 +144,11 @@ void kernel_main(struct boot_info *info) {
     hrtimer_init_subsystem();
     random_init(info);
 
+    /* vDSO: needs page_alloc + calibrated TSC. Boot-once, mapped per-mm
+     * in process_exec.c::build_user_stack. */
+    extern void vdso_init(void);
+    vdso_init();
+
     /* TSS + SYSCALL */
     extern void tss_init(void);
     extern void syscall_init(void);

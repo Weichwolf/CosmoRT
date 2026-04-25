@@ -57,6 +57,7 @@ KERN_SYS  = $(BUILD)/kernel/sys/dispatch.o \
              $(BUILD)/kernel/sys/sys_event.o \
              $(BUILD)/kernel/sys/sys_id.o \
              $(BUILD)/kernel/sys/stubs.o \
+             $(BUILD)/kernel/sys/vdso.o \
              $(BUILD)/kernel/sys/sys_cosmo.o
 
 KERN_IPC  = $(BUILD)/kernel/ipc/ipc.o \
