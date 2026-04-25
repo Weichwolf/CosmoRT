@@ -22,6 +22,12 @@ extern uint64_t timer_tsc_per_ms;
 /* Boot TSC value (for absolute TSC→ms conversion) */
 extern uint64_t timer_boot_tsc;
 
+/* Hot-path TSC->ns scaling: ns = (delta_tsc * mult) >> shift.
+ * Set once in timer_init via clocksource_calc_mult_shift, then read-only.
+ * Avoids two integer divisions in hrtimer_now_ns(). */
+extern uint32_t timer_tsc_to_ns_mult;
+extern uint32_t timer_tsc_to_ns_shift;
+
 /* Raw TSC read */
 static inline uint64_t timer_tsc_now(void) {
     uint32_t lo, hi;

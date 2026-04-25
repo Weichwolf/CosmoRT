@@ -46,12 +46,14 @@ static uint64_t lapic_ticks_per_ms;
 /* ── Monotonic clock ───────────────────────────────── */
 
 uint64_t hrtimer_now_ns(void) {
-    if (__builtin_expect(timer_tsc_per_ms == 0, 0)) return 0;
+    /* Slow path nur vor timer_init: Mult ist noch 0, kein TSC-Read sinnvoll. */
+    if (__builtin_expect(timer_tsc_to_ns_mult == 0, 0)) return 0;
     uint64_t tsc = timer_tsc_now();
-    uint64_t since_boot = tsc - timer_boot_tsc;
-    uint64_t ms = since_boot / timer_tsc_per_ms;
-    uint64_t rem = since_boot % timer_tsc_per_ms;
-    return ms * NSEC_PER_MSEC + (rem * NSEC_PER_MSEC) / timer_tsc_per_ms;
+    uint64_t delta = tsc - timer_boot_tsc;
+    /* (delta * mult) >> shift — single mul, single shift; selbe Praezision wie
+     * clocksource_read_ns ohne dessen Lock. delta*mult kann fuer ~600s @4GHz
+     * nicht ueberlaufen (TSC_MULT_MAX_SEC_WINDOW=600 garantiert das). */
+    return (delta * (uint64_t)timer_tsc_to_ns_mult) >> timer_tsc_to_ns_shift;
 }
 
 /* ── LAPIC one-shot programming ────────────────────── */
