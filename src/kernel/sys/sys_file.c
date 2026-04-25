@@ -345,7 +345,7 @@ long do_read(int fd, void *buf, size_t count) {
     if (fde->type == FD_EVENTFD)
         return eventfd_read(fde->obj, buf, (long)count, fde->flags & O_NONBLOCK);
     if (fde->type == FD_TIMERFD)
-        return timerfd_read(fde->obj, buf, (long)count);
+        return timerfd_read(fde->obj, buf, (long)count, fde->flags & O_NONBLOCK);
     if (fde->type == FD_INOTIFY)
         return inotify_read(fde->obj, buf, (long)count);
     if (fde->type == FD_PTY_SLAVE) {

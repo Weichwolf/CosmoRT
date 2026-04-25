@@ -11,6 +11,9 @@
 #define __KERNEL__
 #include "linux/abi.h"
 
+#include "core/waitqueue.h"
+#include "core/hrtimer.h"
+
 /* ── eventfd_t — exposed so syscall.c can check .counter for readiness ── */
 
 typedef struct {
@@ -27,13 +30,18 @@ typedef struct {
 /* ── timerfd_t — exposed so syscall.c can check expiration for readiness ── */
 
 typedef struct {
-    uint64_t   expire_ms;     /* absolute expiration in timer_ms() */
-    uint64_t   interval_ms;   /* 0 = one-shot */
-    uint64_t   expirations;   /* unread expiration count */
-    int        armed;
-    int        flags;
-    int        refcount;
-    spinlock_t lock;
+    uint64_t          expire_ms;     /* absolute expiration in timer_ms() */
+    uint64_t          interval_ms;   /* 0 = one-shot */
+    uint64_t          expirations;   /* unread expiration count */
+    int               armed;
+    int               flags;
+    int               refcount;
+    spinlock_t        lock;
+    /* Waitqueue for blocking timerfd_read; hrtimer fires wake_up_interruptible
+     * on expiry. Multiple readers permitted; close broadcasts via wake_up_all. */
+    wait_queue_head_t wq;
+    hrtimer_t         timer;
+    int               timer_armed;   /* hrtimer_start was called, cancel needed */
 } timerfd_t;
 
 /* Initialise epoll/eventfd/timerfd slab pools */
@@ -77,7 +85,7 @@ void inotify_destroy(void *obj);
  * nonblock=1 when the caller's fd has O_NONBLOCK; 0 blocks via event_wait. */
 long eventfd_read(void *obj, void *buf, long count, int nonblock);
 long eventfd_write(void *obj, const void *buf, long count, int nonblock);
-long timerfd_read(void *obj, void *buf, long count);
+long timerfd_read(void *obj, void *buf, long count, int nonblock);
 long inotify_read(void *obj, void *buf, long count);
 int  inotify_has_events(void *obj);
 
