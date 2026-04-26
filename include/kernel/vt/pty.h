@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include "spinlock.h"
+#include "core/waitqueue.h"
 
 #define PTY_BUF_SIZE     4096
 #define PTY_LINE_MAX     256
@@ -102,8 +103,11 @@ typedef struct pty {
         uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel;
     } ws;
 
-    /* Blocked reader (thread waiting for input data) */
-    struct thread *blocked_reader;
+    /* Per-direction waitqueues. Master->slave (m2s) wakes slave-side readers
+     * blocked on input_buf; slave->master (s2m) wakes master-side readers
+     * blocked on output_buf. Multi-waiter safe (POSIX). */
+    wait_queue_head_t m2s_wq;
+    wait_queue_head_t s2m_wq;
 
     /* Persistent identifier for /dev/pts/N, fd obj payload, serial_vt mapping */
     int      id;

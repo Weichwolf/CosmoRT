@@ -1,6 +1,7 @@
 /* CosmoRT Syscall Layer — process, thread syscalls */
 
 #include "internal.h"
+#include "core/waitqueue.h"
 #include "linux/capability.h"
 
 /* ── SYS_arch_prctl (158) ────────────────────────── */
@@ -744,9 +745,21 @@ long do_times(void *buf_) {
 long do_pause(void) {
     thread_t *t = thread_current();
     if (!t) return -EFAULT;
-    /* Block indefinitely — returns on signal delivery */
-    event_t ev;
-    event_wait(&t->eq, &ev, -1);
+    process_t *p = t->proc;
+    if (!p) return -EFAULT;
+
+    /* Block until any deliverable signal arrives. signal_wake_up (kill_one,
+     * tgkill, alarm, …) does the state-CAS directly; the loop re-checks
+     * sig_pending after schedule()-return. Local wq, no event_queue. */
+    wait_queue_head_t local_wq = WAIT_QUEUE_HEAD_INIT;
+    init_waitqueue_head(&local_wq);
+    DEFINE_WAIT(wait);
+    for (;;) {
+        prepare_to_wait(&local_wq, &wait, /*THREAD_BLOCKED*/ 3);
+        if ((p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked) break;
+        schedule();
+    }
+    finish_wait(&local_wq, &wait);
     return -EINTR;
 }
 

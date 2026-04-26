@@ -1,7 +1,7 @@
 /* CosmoRT Syscall Layer — file I/O syscalls */
 
 #include "internal.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 #include "core/time_ns.h"
 #include "event/epoll.h"
 #include "linux/capability.h"
@@ -350,56 +350,49 @@ long do_read(int fd, void *buf, size_t count) {
         return inotify_read(fde->obj, buf, (long)count);
     if (fde->type == FD_PTY_SLAVE) {
         int pty_id = (int)(long)fde->obj;
+        pty_t *pty = pty_get(pty_id);
+        if (!pty) return -EBADF;
+        thread_t *t = thread_current();
+        if (!t) return -EFAULT;
+
         uint8_t kbuf[256];
         size_t want = count > 256 ? 256 : count;
-        for (;;) {
-            int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
-            if (got > 0) {
-                copy_to_user(buf, kbuf, (size_t)got);
-                extern void vt_flush(int vt_id);
-                vt_flush(pty_id);
-                return (long)got;
-            }
-            /* No data — block until pty_master_write event_posts us */
-            thread_t *t = thread_current();
-            pty_t *pty = pty_get(pty_id);
-            if (!t || !pty) return -EAGAIN;
+        extern void vt_flush(int vt_id);
 
-            uint64_t irqf;
-            spin_lock_irq(&pty->lock, &irqf);
-            int avail = (pty->input_tail - pty->input_head
-                         + PTY_BUF_SIZE) % PTY_BUF_SIZE;
-            if (avail > 0) {
-                int n = avail > (int)want ? (int)want : avail;
-                for (int i = 0; i < n; i++) {
-                    kbuf[i] = (uint8_t)pty->input_buf[pty->input_head];
-                    pty->input_head = (pty->input_head + 1) % PTY_BUF_SIZE;
-                }
-                spin_unlock_irq(&pty->lock, irqf);
-                copy_to_user(buf, kbuf, (size_t)n);
-                extern void vt_flush(int vt_id);
-                vt_flush(pty_id);
-                return (long)n;
-            }
-            pty->blocked_reader = t;
-            spin_unlock_irq(&pty->lock, irqf);
-
-            extern void vt_flush(int vt_id);
+        /* Fast path: data already pending. */
+        int got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
+        if (got > 0) {
+            copy_to_user(buf, kbuf, (size_t)got);
             vt_flush(pty_id);
+            return (long)got;
+        }
 
-            /* Check for pending signals before blocking (POSIX: blocking
-             * read returns ERESTARTSYS so the syscall-return path either
-             * restarts under SA_RESTART or surfaces -EINTR). */
+        /* Block on m2s_wq. prepare_to_wait serializes state-transition
+         * and queue insertion under wq->lock; pty_master_write/_input_direct
+         * call wake_up after dropping pty->lock, so no missed-wakeup. */
+        DEFINE_WAIT(wait);
+        long rc = 0;
+        for (;;) {
+            prepare_to_wait(&pty->m2s_wq, &wait, /*THREAD_BLOCKED*/ 3);
+
+            got = pty_slave_read(pty_id, (char *)kbuf, (int)want);
+            if (got > 0) { rc = got; break; }
+
             if (t->proc) {
                 uint64_t deliverable = t->proc->sig_pending & ~t->sig_blocked;
-                if (deliverable) return -ERESTARTSYS;
+                if (deliverable) { rc = -ERESTARTSYS; break; }
             }
 
-            event_t ev;
-            int _wr = event_wait(&t->eq, &ev, -1);
-            if (_wr == -4) return -ERESTARTSYS;
-            /* If returned, loop re-checks. */
+            vt_flush(pty_id);
+            schedule();
         }
+        finish_wait(&pty->m2s_wq, &wait);
+
+        if (rc > 0) {
+            copy_to_user(buf, kbuf, (size_t)rc);
+            vt_flush(pty_id);
+        }
+        return rc;
     }
     return -EBADF;
 }

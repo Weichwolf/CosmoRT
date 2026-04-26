@@ -30,12 +30,13 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3164/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
-15, 16, 17 erledigt. Phase 10.2 zentrale Migration fertig (Schritt 1-3):
-event_queue intern auf wq, sched_wake auf state-CAS (try_to_wake_up),
-thread->wait_head/wait_entry entfernt, kill_one's Doppelpfad fuer
-sigtimedwait sleeper aufgeloest. Branch: `ltp`. Architektur-Doc unter
-`notes/MODERN_KERNEL_DESIGN.md`.
+ktest **3191/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+15, 16, 17 erledigt. Phase 10.2 fast komplett: 10.2a (try_to_wake_up,
+entry.func) ✓, 10.2b-1..9 (eventfd, pipe, unix_socket, tcp/udp, epoll,
+futex, wait4, sigtimedwait, pty/pause) ✓ — keine event_post/event_wait
+Caller mehr ausser event_queue.c selbst. 10.2c (event_queue.c +
+thread_t.eq loeschen) als naechster Schritt. Branch: `ltp`. Architektur-
+Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
 
 **Strukturelle Blocker entfernt** (Phase 10.2-FINAL):
 - `thread->wait_head`-Routing weg → reiner state-CAS
@@ -255,6 +256,17 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       signal_wake_up zusaetzlich zu wake_up(children_wq).
       3 neue ktests (sigtw_kill_wake, sigtw_timeout, sigtw_multi_pend).
       ktest 3181 -> 3187. **LTP clock_nanosleep01 PASS.**
+- [x] **Phase 10.2b-9 — letzte event_post/event_wait Caller weg**.
+      pty.c bekommt `m2s_wq` + `s2m_wq` (Linux-style per-Direction wq);
+      pty_master_write/_input_direct/_slave_write rufen `wake_up(...)` statt
+      `event_post(blocked_reader, ...)`. `blocked_reader` Single-Slot-Feld
+      geloescht. sys_file FD_PTY_SLAVE Read-Loop blockt via
+      `prepare_to_wait(&pty->m2s_wq, ...)` + signal-pending-Recheck statt
+      `event_wait(&t->eq, ...)`. sys_proc do_pause blockt auf lokaler wq +
+      DEFINE_WAIT mit signal-pending-Loop (analog rt_sigsuspend). Keine
+      `event_post`/`event_wait`-Caller mehr in src/kernel/ (ausser
+      event_queue.c selbst). 2 neue ktests (pause_kill_wakeup,
+      pause_no_spurious). ktest 3187 -> 3191.
 
 ### Erfolgskriterien
 

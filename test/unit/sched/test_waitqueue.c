@@ -768,3 +768,72 @@ TEST("waitqueue/29_ltp01_nanosleep",     test_wq_29_ltp_sigint_burst_nanosleep);
 TEST("waitqueue/30_sigtw_kill_wake",     test_wq_30_sigtimedwait_kill_wakeup);
 TEST("waitqueue/31_sigtw_timeout",       test_wq_31_sigtimedwait_timeout);
 TEST("waitqueue/32_sigtw_multi_pend",    test_wq_32_sigtimedwait_multi_pending);
+
+/* ── 33-34: Phase 10.2b-9 do_pause migration coverage ─────────
+ *
+ * do_pause parkt jetzt auf einer lokalen wq + DEFINE_WAIT, signal_wake_up
+ * macht den state-CAS direkt. Der Loop bricht ab, sobald sig_pending nach
+ * schedule()-Return nicht mehr leer ist. */
+
+static void test_wq_33_pause_kill_wakeup(void) {
+    /* Child registers SIGUSR2-Handler ohne SA_RESTART, ruft pause(), Parent
+     * killt mit SIGUSR2. Child muss <500ms zurueckkehren mit -EINTR. */
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        install_handler(SIGUSR2, wq_sig_handler);
+
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc0(SYS_PAUSE);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int code = 0;
+        if (r == -EINTR) code |= 1;
+        if (elapsed_ms < 500) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 50000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, cpid, SIGUSR2);
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("pause kill_wakeup: returns -EINTR", (code & 1) != 0);
+    check("pause kill_wakeup: woke <500ms",   (code & 2) != 0);
+}
+
+static void test_wq_34_pause_blocks_until_signal(void) {
+    /* pause() darf nicht spuriously returnen. Parent wartet 200ms vor KILL,
+     * Child muss exakt in dieser Zeit blockieren — kein Frueh-Return durch
+     * unrelated waitqueue-Wakeups, kein Timer-Misfire. */
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        install_handler(SIGUSR2, wq_sig_handler);
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc0(SYS_PAUSE);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int code = 0;
+        if (r == -EINTR) code |= 1;
+        if (elapsed_ms >= 150) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 200000000 /* 200ms */ };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, cpid, SIGUSR2);
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("pause blocks_until_signal: returns -EINTR", (code & 1) != 0);
+    check("pause blocks_until_signal: blocked >= 150ms", (code & 2) != 0);
+}
+
+TEST("waitqueue/33_pause_kill_wakeup",   test_wq_33_pause_kill_wakeup);
+TEST("waitqueue/34_pause_no_spurious",   test_wq_34_pause_blocks_until_signal);

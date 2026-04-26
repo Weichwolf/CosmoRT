@@ -7,6 +7,7 @@
 #include "proc/process.h"
 #include "proc/thread.h"
 #include "mm/slab.h"
+#include "core/waitqueue.h"
 
 _Static_assert(sizeof(((pty_t *)0)->line_buf) == PTY_LINE_MAX,
                "PTY_LINE_MAX must match line_buf array size");
@@ -114,6 +115,8 @@ int pty_alloc(void) {
     kmemset(p, 0, sizeof(*p));
     p->lock = (spinlock_t)SPINLOCK_INIT;
     p->in_use = 1;
+    init_waitqueue_head(&p->m2s_wq);
+    init_waitqueue_head(&p->s2m_wq);
     termios_init(&p->termios);
     p->ws.ws_col = (uint16_t)vt_cols();
     p->ws.ws_row = (uint16_t)vt_rows();
@@ -285,19 +288,15 @@ int pty_master_write(int id, const char *buf, int len) {
         }
     }
 
-    /* Wake blocked reader if input data OR echo output pending */
-    if (p->blocked_reader &&
-        (ring_count(p->input_head, p->input_tail) > 0 ||
-         ring_count(p->output_head, p->output_tail) > 0)) {
-        thread_t *reader = p->blocked_reader;
-        p->blocked_reader = 0;
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 4 /* EQ_PIPE_DATA */, 0);
-    }
+    int input_avail  = ring_count(p->input_head,  p->input_tail)  > 0;
+    int output_avail = ring_count(p->output_head, p->output_tail) > 0;
 
     spin_unlock_irq(&p->lock, flags);
-    /* PTY has no per-fd wq yet; epoll falls back to readiness re-scan on
-     * each epoll_wait iteration (level-trigger only). */
+
+    /* Wake direction-specific waiters. m2s parks slave readers on input_buf;
+     * s2m parks master readers on echo'd output. Multi-waiter safe via wq. */
+    if (input_avail)  wake_up(&p->m2s_wq);
+    if (output_avail) wake_up(&p->s2m_wq);
     return len;
 }
 
@@ -341,6 +340,7 @@ int pty_slave_write(int id, const char *buf, int len) {
     }
 
     spin_unlock_irq(&p->lock, flags);
+    if (wrote > 0) wake_up(&p->s2m_wq);
     return wrote;
 }
 
@@ -361,14 +361,8 @@ int pty_input_direct(int id, const char *buf, int len) {
         p->input_tail = (p->input_tail + 1) % PTY_BUF_SIZE;
         written++;
     }
-    /* Wake blocked reader */
-    if (written > 0 && p->blocked_reader) {
-        thread_t *reader = p->blocked_reader;
-        p->blocked_reader = 0;
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 4, 0);
-    }
     spin_unlock_irq(&p->lock, flags);
+    if (written > 0) wake_up(&p->m2s_wq);
     return written;
 }
 
