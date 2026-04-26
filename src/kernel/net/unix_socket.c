@@ -643,9 +643,9 @@ long usock_write(int fd, const void *buf, long count) {
  * ->write_wq) after draining its (== our peer's) buffer.
  *
  * prepare_to_wait + re-check-under-usock_lock closes the missed-wakeup
- * race that the legacy 50ms event_wait timeout was a workaround for:
- * any usock_read or usock_decref between condition-check and schedule()
- * must take write_wq->lock to wake us, so the wake cannot be lost. */
+ * race: any usock_read or usock_decref between condition-check and
+ * schedule() must take write_wq->lock to wake us, so the wake cannot
+ * be lost. */
 long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
     DEFINE_WAIT(wait);
     long rc = 0;

@@ -1,7 +1,7 @@
-/* Class A: Event-Queue Ring-Growth.
+/* Class A: epoll batched ready-list under load.
  *
- * Viele pending Socket-Data-Events → Ring waechst (Initial 256, verdoppelt).
- * Strategie: 300 pipes, schreibe in alle. epoll_wait auf alle fds. */
+ * 300 pipes, schreibe in alle. epoll_wait auf alle fds — must report
+ * >256 ready descriptors in one batch. */
 #include "ktest.h"
 
 #define PIPE_COUNT      300

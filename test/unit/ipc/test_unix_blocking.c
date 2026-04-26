@@ -1,8 +1,7 @@
-/* Phase 10.2b-3 — AF_UNIX waitqueue migration tests.
+/* AF_UNIX blocking-IO tests.
  *
- * usock->{read,write,accept,connect}_wq replaced single-slot blocked_reader/
- * _acceptor + per-thread event_queue. Validates POSIX-correct multi-waiter
- * wakeup + signal interruption:
+ * usock->{read,write,accept,connect}_wq carry blocked sleepers. Validates
+ * POSIX-correct multi-waiter wakeup + signal interruption:
  *   - blocking read on socketpair wakes when peer writes
  *   - blocking read returns -EINTR on signal (no SA_RESTART)
  *   - blocking accept wakes when client connect()s

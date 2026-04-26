@@ -8,7 +8,6 @@
 
 #include <stdint.h>
 #include "config.h"
-#include "core/event_queue.h"
 #include "spinlock.h"
 
 /* Thread states */
@@ -163,9 +162,6 @@ typedef struct thread {
     uint64_t sigalt_size;     /* ss_size: size of alternate signal stack */
     int      sigalt_flags;    /* ss_flags: SS_DISABLE etc. */
 
-    /* ── Event Queue (per-thread, for blocking syscalls) ── */
-    event_queue_t eq;
-
     /* ── FPU/SSE/AVX state (XSAVE/XRSTOR, FXSAVE fallback) ── */
     uint8_t xsave_area[XSAVE_MAX_SIZE] __attribute__((aligned(64)));
 
@@ -177,9 +173,6 @@ typedef struct thread {
     void           *rcu_blocked_node;  /* rcu_node_t* if preempted during CS, else NULL */
     struct thread  *rcu_next;          /* blocked reader list: forward link */
     struct thread  *rcu_prev;          /* blocked reader list: back link (O(1) removal) */
-
-    /* Serializes eq producers (IRQ + syscall) and ring growth. */
-    spinlock_t      eq_lock;
 
     /* ── Restart block (Linux current->restart_block) ── */
     struct restart_block restart_block;

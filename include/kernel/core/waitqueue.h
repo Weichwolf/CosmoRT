@@ -5,10 +5,6 @@
  * so wake_up cannot miss a waiter: either the waker sees the entry and
  * wakes it, or the waiter sees the condition and skips the sleep.
  *
- * Closes the missed-wakeup race that 3x reverted patches tried to fix
- * with CAS/flag tricks in thread_block_ms: the proper fix is lock-serialized
- * state+queue transitions, not more atomics on thread->state.
- *
  * Usage:
  *   wait_queue_head_t wq;
  *   init_waitqueue_head(&wq);
@@ -98,8 +94,7 @@ long schedule_timeout_interruptible(wait_queue_head_t *wq, wait_queue_entry_t *e
 
 /* Pure sleep until timeout_ns (absolute monotonic) or signal.
  * Internally uses a private waitqueue. Returns 0 on full sleep,
- * -EINTR on signal, -ETIMEDOUT only if timeout_ns == 0 (never-fire).
- * Replaces legacy thread_block_ms. */
+ * -EINTR on signal, -ETIMEDOUT only if timeout_ns == 0 (never-fire). */
 int sleep_interruptible_ns(uint64_t timeout_ns);
 
 /* ── Wake-Primitive (mask-filtered, public) ──────

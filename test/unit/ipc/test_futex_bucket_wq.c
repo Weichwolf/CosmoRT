@@ -1,4 +1,4 @@
-/* Phase 10.2b-6: futex on bucket-wq instead of event_queue.
+/* Futex on per-bucket wait_queue_head_t.
  * Verifies key-filtered wake (multiple waiters, partial wake), and that
  * SIGUSR1 delivery during FUTEX_WAIT returns -EINTR after restart. */
 #include "ktest.h"

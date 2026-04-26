@@ -1,7 +1,7 @@
 /* CosmoRT Futex — Fast Userspace Mutex with Priority Inheritance
  *
  * Linux-compatible subset: FUTEX_WAIT, FUTEX_WAKE, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI.
- * True blocking via event_wait/event_post + syscall restart.
+ * Blocking via per-bucket wait_queue_head_t + try_to_wake_up + syscall restart.
  * Timeout support: FUTEX_WAIT blocks for at most the specified duration.
  */
 #ifndef FUTEX_H

@@ -154,7 +154,7 @@ static long sleep_until_ms(uint64_t deadline_ms, uint64_t *out_left_ms) {
         }
         uint64_t remaining = deadline_ms - timer_ms();
         if (remaining == 0) break;
-        thread_block_ms((int)(remaining > (uint64_t)0x7FFFFFFF ? 0x7FFFFFFF : remaining));
+        (void)sleep_interruptible_ns(remaining * NSEC_PER_MSEC);
     }
     if (out_left_ms) *out_left_ms = 0;
     return 0;

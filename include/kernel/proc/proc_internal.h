@@ -18,7 +18,6 @@
 #include "uaccess.h"
 #include "sys/syscall.h"
 #include "core/irq.h"
-#include "core/event_queue.h"
 #include "net/socket.h"
 #include "net/net_ns.h"
 #include "arch/arch.h"

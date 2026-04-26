@@ -1401,7 +1401,7 @@ long do_flock(int fd, int operation) {
             uint64_t deliverable = (th->proc->sig_pending | th->sig_thread_pending) & ~th->sig_blocked;
             if (deliverable) return -ERESTARTSYS;
         }
-        thread_block_ms(10);
+        (void)sleep_interruptible_ns(10ULL * NSEC_PER_MSEC);
         spin_lock(&flock_lock);
         r = flock_whole_setlk(ino, p->pid, owner, t);
         spin_unlock(&flock_lock);
@@ -1552,7 +1552,7 @@ static long fcntl_do_lock(int cmd, short kind, fd_entry_t *fde, uint32_t pid,
         }
         spin_unlock(&flock_lock);
 
-        thread_block_ms(10);
+        (void)sleep_interruptible_ns(10ULL * NSEC_PER_MSEC);
         spin_lock(&flock_lock);
         r = flock_byterange_setlk(ino, kind, pid, owner, ufl.l_type, start, end);
         spin_unlock(&flock_lock);

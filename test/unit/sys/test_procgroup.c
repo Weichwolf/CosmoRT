@@ -48,8 +48,8 @@ static void test_procgroup(void) {
         sc1(SYS_EXIT_GROUP, 0);
     }
     if (child > 0) {
-        /* Parent: poll for child (avoids event_wait stale-event race
-         * when prior tests left events in the queue). */
+        /* Parent: poll for child via WNOHANG to keep the test independent
+         * of any single-shot wait4 wake-ordering assumption. */
         int wstatus = 0;
         long w = 0;
         for (int tries = 0; tries < 1000000; tries++) {

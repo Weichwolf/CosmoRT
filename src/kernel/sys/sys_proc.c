@@ -750,7 +750,7 @@ long do_pause(void) {
 
     /* Block until any deliverable signal arrives. signal_wake_up (kill_one,
      * tgkill, alarm, …) does the state-CAS directly; the loop re-checks
-     * sig_pending after schedule()-return. Local wq, no event_queue. */
+     * sig_pending after schedule()-return. Local wq. */
     wait_queue_head_t local_wq = WAIT_QUEUE_HEAD_INIT;
     init_waitqueue_head(&local_wq);
     DEFINE_WAIT(wait);

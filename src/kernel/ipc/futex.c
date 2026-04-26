@@ -2,15 +2,15 @@
  *
  * Block via per-bucket wait_queue_head_t + DEFINE_WAIT-style stack-allocated
  * futex_waiter_t. Wake iterates bucket->wq.head under wq.lock, filters by
- * (uaddr, pid) and calls try_to_wake_up directly. No event_queue, no slab
- * pool — waiter struct lives on the kernel stack frame of the blocked thread.
+ * (uaddr, pid) and calls try_to_wake_up directly. No slab pool — waiter
+ * struct lives on the kernel stack frame of the blocked thread.
  *
  * Timeout: hrtimer fires sched_wake on the waiting thread; the wait loop
  * re-evaluates hrtimer_now_ns() and returns -ETIMEDOUT.
  *
  * PI (Priority Inheritance): high-prio waiter on a PI-futex boosts the
- * current owner's priority. PI walks no event_queue — it touches the
- * bucket-protected (by hash slot lock) priority field of the owner_t.
+ * current owner's priority. PI touches the bucket-protected (by hash slot
+ * lock) priority field of the owner_t.
  */
 
 #include "ipc/futex.h"

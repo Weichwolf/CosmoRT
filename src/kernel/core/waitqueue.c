@@ -2,9 +2,7 @@
  *
  * All state-transitions on the waitee happen under wq->lock. The waker
  * takes the same lock to inspect entries, so there is no window in which
- * a pending wakeup can slip past a sleeping state. This is the invariant
- * the 3x reverted thread_block_ms patches failed to provide — they tried
- * to fix the race with extra CAS/flag tricks instead of a proper lock.
+ * a pending wakeup can slip past a sleeping state.
  */
 
 #include "core/waitqueue.h"
@@ -133,11 +131,10 @@ extern void sched_add(struct thread *t);
  * Loop ist Race-Fix: zwischen Load und CAS kann der Thread seinen state
  * von BLOCKED nach STOPPED (oder umgekehrt) wechseln. Single-CAS mit
  * fixiertem Erwartungswert wuerde fehlschlagen und einen verbleibenden
- * im-Mask-State ungeweckt lassen — das war der 10.2a-WIP-Bug, der
- * event_queue/futex/getdents-Tests in TIMEOUT trieb. Linux's pi_lock-
- * Modell vermeidet den Loop durch Lock-Akquisition; wir nehmen die CAS-
- * Loop-Variante, weil unsere Wake-Pfade (sched_wake, signal_wake_up)
- * keinen pi_lock-Aequivalenten haben. */
+ * im-Mask-State ungeweckt lassen. Linux's pi_lock-Modell vermeidet den
+ * Loop durch Lock-Akquisition; wir nehmen die CAS-Loop-Variante, weil
+ * unsere Wake-Pfade (sched_wake, signal_wake_up) keinen pi_lock-
+ * Aequivalenten haben. */
 int try_to_wake_up(thread_t *t, unsigned int mask) {
     if (!t) return 0;
     for (;;) {
@@ -367,7 +364,7 @@ static long schedule_timeout_common(wait_queue_head_t *wq,
         /* Post-wake classification:
          *   - Timeout? return -ETIMEDOUT.
          *   - Signal?  return -EINTR (interruptible only).
-         *   - Spurious wake (event_post from unrelated subsystem, SMP IPI,
+         *   - Spurious wake (cross-subsystem wake_up, SMP IPI,
          *     or explicit wake_up on this wq)? Re-enter the loop and sleep
          *     again up to the original deadline. This matches Linux
          *     wait_event_* semantics where callers handle spurious wakes
@@ -399,10 +396,7 @@ long schedule_timeout_interruptible(wait_queue_head_t *wq, wait_queue_entry_t *e
 
 /* Generic timed sleep: waitqueue-backed, signal-interruptible, ns precision.
  * Uses a caller-local head (stack), so per-thread, no global state.
- * Returns -EINTR on signal, 0 on full sleep.
- *
- * This is the waitqueue-proper replacement for thread_block_ms's naked
- * state=BLOCKED + schedule() pattern that leaked the missed-wakeup race. */
+ * Returns -EINTR on signal, 0 on full sleep. */
 int sleep_interruptible_ns(uint64_t timeout_ns) {
     if (timeout_ns == 0) return 0;
 

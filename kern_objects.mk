@@ -17,7 +17,6 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/arch/x86_64/cpu/tss.o \
             $(BUILD)/kernel/core/percpu.o \
             $(BUILD)/kernel/core/timer_wheel.o \
-            $(BUILD)/kernel/core/event_queue.o \
             $(BUILD)/kernel/core/waitqueue.o \
             $(BUILD)/kernel/core/rbtree.o \
             $(BUILD)/kernel/core/hrtimer.o \

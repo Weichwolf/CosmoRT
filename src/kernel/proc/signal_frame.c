@@ -1,7 +1,6 @@
 /* CosmoRT Syscall Layer — signal frame setup/teardown, sigreturn */
 
 #include "sys/internal.h"
-#include "core/event_queue.h"
 
 /* sigaltstack flags */
 #define SS_ONSTACK 1

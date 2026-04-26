@@ -1,7 +1,6 @@
 /* CosmoRT Syscall Layer — sigaction, sigaltstack, signal helpers */
 
 #include "sys/internal.h"
-#include "core/event_queue.h"
 #include "core/tick.h"
 
 /* sigaltstack flags */
@@ -140,8 +139,8 @@ void check_alarm_timers(void) {
         if (p->alarm_deadline_ms == 0 || now < p->alarm_deadline_ms) continue;
         p->alarm_deadline_ms = 0;
         /* Set SIGALRM pending and wake blocked threads.
-         * Actual delivery happens in event_wait signal check or
-         * check_signals_syscall_path on next syscall return. */
+         * Actual delivery happens via signal_deliverable() check inside
+         * sleep loops or check_signals_syscall_path on next syscall return. */
         __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGALRM));
         extern void sched_wake(thread_t *t);
         thread_t *t = p->threads;

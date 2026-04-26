@@ -201,7 +201,7 @@ uint32_t timer_epoch_sec(void) {
 }
 
 /* Kernel-only non-preemptible delay. For HW init timing (SMP SIPI, device
- * reset). NOT for userspace sleep — use event_wait with timeout instead. */
+ * reset). NOT for userspace sleep — use sleep_interruptible_ns instead. */
 void timer_sleep_ms(uint32_t ms) {
     if (ms < 10) {
         uint64_t target = rdtsc() + (uint64_t)ms * timer_tsc_per_ms;

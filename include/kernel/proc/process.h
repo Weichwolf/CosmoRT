@@ -118,8 +118,7 @@ typedef struct process {
 
     /* Parent-side waitqueue for wait4: child state transitions
      * (exit/stop/continue) wake_up(&parent->children_wq). Linux's
-     * task->signal->wait_chldexit equivalent. Replaces the old
-     * event_post(parent_thread, EQ_CHILD_*) routing. */
+     * task->signal->wait_chldexit equivalent. */
     wait_queue_head_t children_wq;
 
     /* Resource limits (at end to avoid offset shifts) */

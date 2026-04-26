@@ -144,7 +144,6 @@ thread_t *thread_alloc(void) {
         t->tid = tid;
         tid_table[tid] = t;
         spin_unlock_irq(&pid_lock, flags);
-        event_queue_init(&t->eq);
     }
     return t;
 }
@@ -155,7 +154,6 @@ void thread_free(thread_t *t) {
     hrtimer_cancel_by_data(t);
     if (t->tid > 0 && t->tid < tid_capacity)
         tid_table[t->tid] = 0;
-    event_queue_destroy(&t->eq);
     if (t->kstack)
         pages_free(t->kstack, KSTACK_SIZE / 4096);
     slab_free(&thread_slab, t);

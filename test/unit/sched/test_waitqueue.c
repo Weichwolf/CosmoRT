@@ -1,16 +1,15 @@
 /* CosmoRT Waitqueue ktests
  *
  * The waitqueue primitive is kernel-internal. We exercise it by driving
- * all blocking syscalls that now route through it:
- *   - nanosleep / clock_nanosleep (thread_block_ms → sleep_interruptible_ns)
+ * all blocking syscalls that route through it:
+ *   - nanosleep / clock_nanosleep (sleep_interruptible_ns)
  *   - pipe_read/write blocking
  *   - futex_wait/wake
- *   - signal-during-sleep missed-wakeup race (the 3x reverted regression)
+ *   - signal-during-sleep missed-wakeup race
  *
  * Focus: the missed-wakeup race. A signal is queued immediately before or
- * after the target enters nanosleep. Pre-waitqueue implementations dropped
- * that wake, leaving the thread asleep for the full timeout — this is the
- * specific failure pattern that reverted 3 prior patches.
+ * after the target enters nanosleep. The waitqueue lock-serialized state
+ * transitions guarantee the signal wake cannot be lost.
  */
 
 #include "ktest.h"
@@ -401,14 +400,12 @@ static void test_wq_23_alternating_sleep_and_signal(void) {
     check_ge("alternating sleeps: >= 3 interruptions", intr, 3);
 }
 
-/* ── 24-25: event_queue + waitqueue migration regression ─────────
+/* ── 24-25: long sleep + signal-burst regression ────────────────
  *
- * Phase 10.2-FINAL: event_queue's blocking primitive moved off
- * sched_wake-via-thread->wait_head and onto eq->wq + prepare_to_wait.
- * These tests reproduce the exact LTP clock_nanosleep01 hang scenario
- * that reverted the prior 10.2a refactor: a long sleep, periodic
- * SIGINT bursts. The child must wake under 1s. Pre-migration: hang
- * for the full sleep duration. */
+ * LTP clock_nanosleep01 test 4 pattern: a long sleep with periodic
+ * SIGINT bursts. The child must wake under 1s. Hangs in earlier
+ * waitqueue-routing variants reproduced here so any future refactor
+ * trips them before LTP does. */
 
 static void test_wq_24_long_sleep_signal_burst(void) {
     /* Replicates LTP clock_nanosleep01 test 4: child sleeps 10s, parent
@@ -507,12 +504,8 @@ TEST("waitqueue/23_alternating",         test_wq_23_alternating_sleep_and_signal
 
 static void test_wq_26_sigtimedwait_blocked_sigchld(void) {
     /* runtest.exe pattern: SIGCHLD blocked, sigtimedwait waits for it.
-     * Pre-Schritt-3 with sched_wake-via-wait_head: kill_one's
-     * `if (wait_head) sched_wake : event_post` branch fired sched_wake,
-     * waking the eq->wq without writing the event → spin/hang.
-     * Post-Schritt-3: kill_one writes event_post unconditionally for
-     * blocked-signal sleepers; signal-pending fast-path returns the
-     * matched signal. */
+     * signal_wake_up flips state under wq->lock; sigtimedwait's signal-
+     * pending fast-path returns the matched signal. */
     long pid = sc0(SYS_FORK);
     if (pid == 0) {
         /* Block SIGCHLD */
@@ -549,10 +542,10 @@ static void test_wq_26_sigtimedwait_blocked_sigchld(void) {
     check("sigtimedwait blocked SIGCHLD: woke <200ms", (code & 2) != 0);
 }
 
-static void test_wq_27_kill_then_event_drain(void) {
-    /* Verify kill_one's event_post path works for direct SIGINT to a
-     * sigtimedwait sleeper. SIGINT is not blocked → event_pending fires
-     * via signal_pending fast path (not via event_pop). */
+static void test_wq_27_kill_then_signal_pending(void) {
+    /* Direct SIGUSR1 to a sigtimedwait sleeper waiting on SIGUSR2.
+     * Unrelated signal must wake via signal_pending fast path and
+     * (because the handler is installed) be delivered as EINTR. */
     install_handler(SIGUSR1, wq_sig_handler);
     long pid = sc0(SYS_FORK);
     if (pid == 0) {
@@ -762,7 +755,7 @@ static void test_wq_32_sigtimedwait_multi_pending(void) {
 TEST("waitqueue/24_long_sleep_signal",   test_wq_24_long_sleep_signal_burst);
 TEST("waitqueue/25_signal_burst_sleep",  test_wq_25_signal_burst_during_sleep);
 TEST("waitqueue/26_sigtimedwait_chld",   test_wq_26_sigtimedwait_blocked_sigchld);
-TEST("waitqueue/27_sigtimedwait_eintr",  test_wq_27_kill_then_event_drain);
+TEST("waitqueue/27_sigtimedwait_eintr",  test_wq_27_kill_then_signal_pending);
 TEST("waitqueue/28_ltp01_sigint_burst",  test_wq_28_ltp_sigint_burst);
 TEST("waitqueue/29_ltp01_nanosleep",     test_wq_29_ltp_sigint_burst_nanosleep);
 TEST("waitqueue/30_sigtw_kill_wake",     test_wq_30_sigtimedwait_kill_wakeup);

@@ -1,8 +1,8 @@
-/* Phase 10.2b-4 — TCP/UDP waitqueue migration tests.
+/* TCP/UDP blocking-IO tests.
  *
- * net_tcp_t.wait_wq + udp_sock_t.recv_wq replaced wait_thread single-slot
- * + per-thread event_queue. Validates POSIX-correct multi-waiter wakeup
- * + signal interruption on AF_INET / AF_INET6 sockets:
+ * net_tcp_t.wait_wq + udp_sock_t.recv_wq carry blocked recv/accept/connect
+ * sleepers. Validates POSIX-correct multi-waiter wakeup + signal
+ * interruption on AF_INET / AF_INET6 sockets:
  *   - blocking TCP recv wakes when peer sends
  *   - blocking TCP accept wakes when client connect()s
  *   - blocking TCP recv returns -EINTR on signal
