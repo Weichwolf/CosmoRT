@@ -30,7 +30,7 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3152/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+ktest **3164/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
 15, 16, 17 erledigt. Phase 10.2 zentrale Migration fertig (Schritt 1-3):
 event_queue intern auf wq, sched_wake auf state-CAS (try_to_wake_up),
 thread->wait_head/wait_entry entfernt, kill_one's Doppelpfad fuer
@@ -150,17 +150,23 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       SIGTERM/SIGKILL during sleep, pipe block, wait4 wake, 20 concurrent sleepers,
       30x signal-wake stress, 5 alternating sleeps
 
-**Phase 10.2a — futex auf waitqueue (ERLEDIGT, ef2994d)**
+**Phase 10.2b-6 — futex auf bucket-wq (ERLEDIGT)**
 
 - [x] `futex_wait`/`futex_wake` → wait_queue_head_t pro bucket
-- [x] FUTEX_LOCK_PI/UNLOCK_PI auf gleiche Infrastruktur
-- [x] FUTEX_WAITER_MAX=256 slab entfernt — stack-allocated via
-      DEFINE_WAIT. Kein systemweites Pool mehr, Prozess kann nur
-      seinen eigenen Kernel-Stack erschoepfen.
-- [x] FUTEX_REQUEUE transplantiert entry zwischen buckets + re-bindet
-      thread->wait_head atomar.
-- [x] Neue ktests: `futex_bucket_key_filter` (2 keys, selber bucket),
-      `futex_wake_n` (wake genau N von 5 waiters).
+- [x] FUTEX_LOCK_PI/UNLOCK_PI auf gleiche Infrastruktur, PI-Boost
+      bleibt unter bucket-Lock serialisiert.
+- [x] `FUTEX_WAITER_MAX 256` slab geloescht — stack-allocated
+      `futex_waiter_t` (entry + key) auf dem Kernel-Stack des wartenden
+      Threads. Kein systemweites Pool mehr — RLIMIT-Cap ueber Kernel-
+      Stack-Groesse, prozess-isoliert.
+- [x] FUTEX_REQUEUE rethreaded waiter entries direkt zwischen
+      bucket-wqs unter Doppel-Lock (bucket-Index-ordered).
+- [x] `futex_drain_events` / `EQ_FUTEX_WAKE` / event_queue-Pfad in
+      futex.c entfernt.
+- [x] Neue ktests: `futex/bucket-multiple-waiters` (3 waiters, WAKE 2
+      → genau 2 wachen, 1 schlaeft weiter; dann WAKE 1 → letzte wacht),
+      `futex/bucket-separate-keys` (Wake auf Key A weckt Waiter auf
+      Key B im selben Bucket nicht). 13 sub-asserts.
 
 **Phase 10.2b — pipe auf waitqueue (ERLEDIGT, 0277e99)**
 

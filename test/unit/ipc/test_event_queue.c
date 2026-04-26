@@ -7,6 +7,11 @@
  * event_wait is covered through fork+wait4 and nanosleep below. */
 #define TEST_EQ_CAP 64
 
+/* EQ_TEST_TYPE_X was removed when futex migrated to bucket-wq (Phase 10.2b-6).
+ * The event_queue ring is a generic event-type carrier — pick any unused
+ * type id to exercise mixed-type push/drain. */
+#define EQ_TEST_TYPE_X 6
+
 static void eq_setup(event_queue_t *eq, event_t *buf, uint32_t cap) {
     eq->events = buf;
     eq->capacity = cap;
@@ -38,7 +43,7 @@ static void test_event_queue(void) {
     check_val("pop empty: return -1", (long)r, -1);
 
     eq_push(&eq, EQ_PIPE_DATA, 100);
-    eq_push(&eq, EQ_FUTEX_WAKE, 200);
+    eq_push(&eq, EQ_TEST_TYPE_X, 200);
     check_val("2 push: pending=2", (long)event_pending(&eq), 2);
 
     r = eq_pop(&eq, &ev);
@@ -48,7 +53,7 @@ static void test_event_queue(void) {
 
     r = eq_pop(&eq, &ev);
     check_val("fifo pop 2: return 0", (long)r, 0);
-    check_val("fifo pop 2: type=FUTEX_WAKE", (long)ev.type, EQ_FUTEX_WAKE);
+    check_val("fifo pop 2: type=X", (long)ev.type, EQ_TEST_TYPE_X);
     check_val("fifo pop 2: data=200", (long)ev.data, 200);
 
     eq_setup(&eq, buf, TEST_EQ_CAP);
@@ -77,7 +82,7 @@ static void test_event_queue(void) {
     eq_push(&eq, EQ_PIPE_DATA, 10);
     eq_push(&eq, EQ_CHILD_EXITED, 20);
     eq_push(&eq, EQ_PIPE_DATA, 30);
-    eq_push(&eq, EQ_FUTEX_WAKE, 40);
+    eq_push(&eq, EQ_TEST_TYPE_X, 40);
     eq_push(&eq, EQ_PIPE_DATA, 50);
 
     event_t drained[8];
@@ -92,7 +97,7 @@ static void test_event_queue(void) {
     check_val("after drain: first=CHILD_EXITED", (long)ev.type, EQ_CHILD_EXITED);
     check_val("after drain: first.data=20", (long)ev.data, 20);
     eq_pop(&eq, &ev);
-    check_val("after drain: second=FUTEX_WAKE", (long)ev.type, EQ_FUTEX_WAKE);
+    check_val("after drain: second=X", (long)ev.type, EQ_TEST_TYPE_X);
     check_val("after drain: second.data=40", (long)ev.data, 40);
 
     eq_setup(&eq, buf, TEST_EQ_CAP);
