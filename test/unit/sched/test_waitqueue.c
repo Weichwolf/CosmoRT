@@ -668,9 +668,103 @@ static void test_wq_29_ltp_sigint_burst_nanosleep(void) {
     check("ltp01 SEND_SIGINT (nanosleep): woke <2s", elapsed_ms < 2000);
 }
 
+/* ── 30-32: Phase 10.2b-8 sigtimedwait migration coverage ─────────
+ *
+ * Phase 10.2b-8: sigtimedwait blockt auf lokaler wq + DEFINE_WAIT,
+ * kill_one weckt via signal_wake_up (state-CAS direkt). Diese Tests
+ * decken Wakeup-via-kill, Timeout, und Multi-Signal-Auswahl ab. */
+
+static void test_wq_30_sigtimedwait_kill_wakeup(void) {
+    /* Parent forks child, child sigtimedwaits with 5s timeout on SIGUSR2.
+     * Parent kills child with SIGUSR2 → child returns SIGUSR2 in <500ms. */
+    long parent_pid = sc0(SYS_GETPID);
+    (void)parent_pid;
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        uint64_t mask = 1ULL << (SIGUSR2 - 1);
+        sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&mask, 0, 8);
+        struct k_timespec ts = { .tv_sec = 5, .tv_nsec = 0 };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, 0, (long)&ts, 8);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int code = 0;
+        if (r == SIGUSR2) code |= 1;
+        if (elapsed_ms < 500) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+    /* Give child time to enter sigtimedwait */
+    struct k_timespec d = { .tv_sec = 0, .tv_nsec = 50000000 };
+    sc2(SYS_NANOSLEEP, (long)&d, 0);
+    sc2(SYS_KILL, cpid, SIGUSR2);
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("sigtimedwait kill_wakeup: returns SIGUSR2", (code & 1) != 0);
+    check("sigtimedwait kill_wakeup: woke <500ms",   (code & 2) != 0);
+}
+
+static void test_wq_31_sigtimedwait_timeout(void) {
+    /* sigtimedwait with 100ms timeout, no signal arrives → -EAGAIN.
+     * Elapsed must be >= 80ms (timer slack) and < 500ms. */
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        uint64_t mask = 1ULL << (SIGUSR2 - 1);
+        sc4(SYS_RT_SIGPROCMASK, 0, (long)&mask, 0, 8);
+        struct k_timespec ts = { .tv_sec = 0, .tv_nsec = 100000000 /* 100ms */ };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, 0, (long)&ts, 8);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        int code = 0;
+        if (r == -EAGAIN) code |= 1;
+        if (elapsed_ms >= 80 && elapsed_ms < 500) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0x3;
+    check("sigtimedwait timeout: returns -EAGAIN", (code & 1) != 0);
+    check("sigtimedwait timeout: 80ms <= elapsed < 500ms", (code & 2) != 0);
+}
+
+static void test_wq_32_sigtimedwait_multi_pending(void) {
+    /* Two pending signals (SIGUSR1 + SIGUSR2 both blocked + already pending).
+     * sigtimedwait waits for both — must return the lower-numbered (SIGUSR1=10). */
+    long cpid = sc0(SYS_FORK);
+    if (cpid == 0) {
+        uint64_t mask = (1ULL << (SIGUSR1 - 1)) | (1ULL << (SIGUSR2 - 1));
+        sc4(SYS_RT_SIGPROCMASK, 0 /* SIG_BLOCK */, (long)&mask, 0, 8);
+        long mypid = sc0(SYS_GETPID);
+        sc2(SYS_KILL, mypid, SIGUSR2);
+        sc2(SYS_KILL, mypid, SIGUSR1);
+        struct k_timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+        long r = sc4(SYS_RT_SIGTIMEDWAIT, (long)&mask, 0, (long)&ts, 8);
+        /* lower number first */
+        sc1(SYS_EXIT, (int)r);
+        __builtin_unreachable();
+    }
+    if (cpid < 0) { fail("fork", 0); return; }
+    int ws = 0;
+    sc4(SYS_WAIT4, cpid, (long)&ws, 0, 0);
+    int code = (ws >> 8) & 0xFF;
+    check_val("sigtimedwait multi_pending: returns SIGUSR1", code, SIGUSR1);
+}
+
 TEST("waitqueue/24_long_sleep_signal",   test_wq_24_long_sleep_signal_burst);
 TEST("waitqueue/25_signal_burst_sleep",  test_wq_25_signal_burst_during_sleep);
 TEST("waitqueue/26_sigtimedwait_chld",   test_wq_26_sigtimedwait_blocked_sigchld);
 TEST("waitqueue/27_sigtimedwait_eintr",  test_wq_27_kill_then_event_drain);
 TEST("waitqueue/28_ltp01_sigint_burst",  test_wq_28_ltp_sigint_burst);
 TEST("waitqueue/29_ltp01_nanosleep",     test_wq_29_ltp_sigint_burst_nanosleep);
+TEST("waitqueue/30_sigtw_kill_wake",     test_wq_30_sigtimedwait_kill_wakeup);
+TEST("waitqueue/31_sigtw_timeout",       test_wq_31_sigtimedwait_timeout);
+TEST("waitqueue/32_sigtw_multi_pend",    test_wq_32_sigtimedwait_multi_pending);

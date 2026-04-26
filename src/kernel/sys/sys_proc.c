@@ -103,6 +103,9 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
                 if (init) {
                     __sync_fetch_and_or(&init->sig_pending, SIG_BIT(SIGCHLD));
                     wake_up(&init->children_wq);
+                    for (thread_t *pt = init->threads; pt; pt = pt->proc_next) {
+                        if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
+                    }
                 }
             }
         }
@@ -122,13 +125,19 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     p->pml4 = 0;
     p->vma_root = 0;
 
-    /* Send exit signal to parent + wake if blocked in wait4 */
+    /* Send exit signal to parent + wake if blocked in wait4 oder sigtimedwait.
+     * children_wq weckt wait4-Sleeper. signal_wake_up auf jedem blockierten
+     * parent-Thread weckt sigtimedwait-Sleeper (lokale wq, kein zentrales
+     * Routing) — der Loop checkt sig_pending nach schedule()-Return. */
     if (p->parent_pid) {
         process_t *parent = proc_find(p->parent_pid);
         if (parent) {
             int nsig = p->notify_signal ? p->notify_signal : SIGCHLD;
             __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
             wake_up(&parent->children_wq);
+            for (thread_t *pt = parent->threads; pt; pt = pt->proc_next) {
+                if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
+            }
         }
     }
 }

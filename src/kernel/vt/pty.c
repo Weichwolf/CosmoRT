@@ -148,25 +148,23 @@ static inline int pty_icrnl(pty_t *p)  { return (p->termios.c_iflag & ICRNL)  !=
 /* ── Master write: keyboard → line discipline → input buffer ── */
 
 /* Send signal to foreground process group (or slave_pid fallback).
- * IRQ-safe: only sets sig_pending + event_post, no do_kill. */
+ * IRQ-safe: only sets sig_pending + signal_wake_up, no do_kill. */
 static void send_signal_to_fg(pty_t *p, int sig) {
     int pgid = p->fg_pgid;
     if (pgid <= 0) pgid = p->slave_pid;
     if (pgid <= 0) return;
 
     extern process_t *proc_find(uint32_t pid);
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+    extern void signal_wake_up(thread_t *t);
     int cap = pid_table_capacity();
     for (int i = 1; i < cap; i++) {
         process_t *proc = proc_find((uint32_t)i);
         if (!proc) continue;
         if ((int)proc->pgid != pgid) continue;
         __sync_fetch_and_or(&proc->sig_pending, SIG_BIT(sig));
-        /* Wake blocked threads for signal delivery */
         thread_t *t = proc->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED)
-                event_post(t, 4 /* EQ_PIPE_DATA */, 0);
+            if (t->state == THREAD_BLOCKED) signal_wake_up(t);
             t = t->proc_next;
         }
     }

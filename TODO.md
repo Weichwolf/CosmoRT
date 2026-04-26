@@ -241,10 +241,20 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       weg, EQ_CHILD_EXITED bleibt fuer nicht-migrierte sigtimedwait-
       Pfade (10.2b-8). 4 neue ktests (block_wakeup_on_exit,
       block_signal_eintr, wnohang_returns_zero, multiple_children).
-      ktest 3165 -> 3181. Bekannte Residual-Regression:
-      `sigtimedwait blocked SIGCHLD: woke <200ms` — sigtimedwait wartet
-      noch auf cur->eq, exit_notify weckt nur children_wq. 10.2b-8
-      (signal_wq) raeumt das auf.
+      ktest 3165 -> 3181.
+- [x] `rt_sigtimedwait` + `rt_sigsuspend` + `kill_one` Doppelpfad →
+      `signal_wake_up(t)` (Phase 10.2b-8). kill_one/tgkill/exit_notify
+      ersetzen `event_post(t, EQ_CHILD_EXITED) + sched_wake(t)` durch
+      `signal_wake_up(t)` (try_to_wake_up TASK_INTERRUPTIBLE | KILLABLE).
+      rt_sigtimedwait blockt auf lokaler wq + DEFINE_WAIT, hrtimer treibt
+      Timeout-Kante. rt_sigsuspend ebenfalls auf lokaler wq. Alle
+      `event_wait(&t->eq, ...)`-Aufrufe in signal.c entfernt, alle
+      `event_post(EQ_CHILD_*)`-Forward-Decls weg. pty.c send_signal_to_fg
+      wechselt von event_post auf signal_wake_up (sigtimedwait sleeper).
+      sys_proc.c exit_notify weckt parent's blocked threads via
+      signal_wake_up zusaetzlich zu wake_up(children_wq).
+      3 neue ktests (sigtw_kill_wake, sigtw_timeout, sigtw_multi_pend).
+      ktest 3181 -> 3187. **LTP clock_nanosleep01 PASS.**
 
 ### Erfolgskriterien
 

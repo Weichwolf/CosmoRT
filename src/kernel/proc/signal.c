@@ -1,7 +1,8 @@
 /* CosmoRT Syscall Layer — signal delivery, kill, mask operations */
 
 #include "sys/internal.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
+#include "core/hrtimer.h"
 
 /* ── check_pending_signals — deliver pending signals to current thread ── */
 
@@ -212,17 +213,14 @@ long kill_one(process_t *target, int sig) {
             }
             if (any_blocked) {
                 __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
-                /* sigtimedwait wartet im event_wait BLOCKED auf eq->wq.
-                 * Signal ist im wait_mask (geblockt), also greift der
-                 * signal_pending-Filter im event_wait nicht — wir muessen
-                 * das Event explizit in die Queue schreiben, damit der
-                 * Sleeper aus event_wait herausfindet. event_post tut
-                 * beides: write event + wake_up_interruptible(eq->wq). */
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+                /* sigtimedwait blockt auf einer eigenen lokalen wq und
+                 * weckt sich selbst durch try_to_wake_up + signal_pending-
+                 * Recheck. signal_wake_up macht den state-CAS direkt; die
+                 * sigtimedwait-Loop entdeckt match nach schedule()-Return. */
                 thread_t *w = target->threads;
                 while (w) {
                     if (w->state == THREAD_BLOCKED)
-                        event_post(w, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                        signal_wake_up(w);
                     w = w->proc_next;
                 }
             }
@@ -298,17 +296,15 @@ long kill_one(process_t *target, int sig) {
                 t = t->proc_next;
             }
             if (all_blocked) {
-                /* Signal blocked on all threads → sigtimedwait-Pfad.
-                 * event_post fuer eq-parked sleepers (write event + wake);
-                 * sched_wake-only-Pfad spinnt weil der Sleeper aufwacht,
-                 * nichts findet (head==tail, sig blocked → nicht
-                 * deliverable), wieder schlaeft. */
+                /* Blocked auf allen Threads → sigtimedwait-Pfad. Sleeper
+                 * parkt auf lokaler wq mit signal_pending-Recheck; ein
+                 * direkter state-CAS via signal_wake_up genuegt, die Loop
+                 * findet das Signal nach schedule()-Return. */
                 __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
-                extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 thread_t *wt = target->threads;
                 while (wt) {
                     if (wt->state == THREAD_BLOCKED)
-                        event_post(wt, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                        signal_wake_up(wt);
                     wt = wt->proc_next;
                 }
                 return 0;
@@ -325,12 +321,11 @@ long kill_one(process_t *target, int sig) {
         target->state = PROC_ZOMBIE;
         target->exit_code = 128 + sig;
         {
-            extern void sched_wake(thread_t *t);
             thread_t *t = target->threads;
             while (t) {
                 int old = t->state;
                 if (old == THREAD_BLOCKED) {
-                    sched_wake(t);
+                    signal_wake_up(t);
                     t->state = THREAD_DEAD;
                 } else if (old == THREAD_RUNNING || old == THREAD_STOPPED ||
                            old == THREAD_RUNNABLE) {
@@ -345,6 +340,9 @@ long kill_one(process_t *target, int sig) {
                 int nsig = target->notify_signal ? target->notify_signal : SIGCHLD;
                 __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
                 wake_up(&parent->children_wq);
+                for (thread_t *pt = parent->threads; pt; pt = pt->proc_next) {
+                    if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
+                }
             }
         }
         return 0;
@@ -357,21 +355,16 @@ long kill_one(process_t *target, int sig) {
      * loses one of those bits when both fire close together. */
     __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
 
-    /* Wake blocked threads that have this signal unblocked.
-     * Always do both: event_post writes EQ_CHILD_EXITED + wakes eq->wq
-     * (sigtimedwait-Path), sched_wake macht state-CAS BLOCKED→RUNNABLE
-     * (nanosleep/futex/socket-wait Pfade). Wakes sind idempotent — der
-     * Sleeper checkt seine Bedingung im Loop und filtert via signal_pending
-     * was er sehen will. */
+    /* Wake blocked threads that have this signal unblocked. Eine Primitive:
+     * signal_wake_up macht try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE),
+     * also state-CAS BLOCKED→RUNNABLE. Der Sleep-Loop des Empfaengers
+     * (nanosleep / futex / socket-recv / sigtimedwait) checkt nach Return aus
+     * schedule() seinen signal_pending-Filter und liefert EINTR oder konsumiert. */
     {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        extern void sched_wake(thread_t *t);
         thread_t *t = target->threads;
         while (t) {
-            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked)) {
-                event_post(t, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
-                sched_wake(t);
-            }
+            if (t->state == THREAD_BLOCKED && !(SIG_BIT(sig) & t->sig_blocked))
+                signal_wake_up(t);
             t = t->proc_next;
         }
     }
@@ -448,9 +441,8 @@ long do_tgkill(int tgid, int tid, int sig) {
         if (sig == SIGCHLD || sig == SIGURG || sig == SIGWINCH || sig == SIGIO) {
             if (SIG_BIT(sig) & target->sig_blocked) {
                 __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
-                extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
                 if (target->state == THREAD_BLOCKED)
-                    event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
+                    signal_wake_up(target);
             }
             return 0;
         }
@@ -472,13 +464,8 @@ long do_tgkill(int tgid, int tid, int sig) {
      * tgkill targets a specific thread, so use thread-level pending
      * (not process-level) to ensure the correct thread handles it. */
     __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
-    if (!(SIG_BIT(sig) & target->sig_blocked)) {
-        extern void event_post(thread_t *tgt, uint32_t type, uint64_t data);
-        if (target->state == THREAD_BLOCKED)
-            event_post(target, 1 /* EQ_CHILD_EXITED */, (uint64_t)sig);
-        extern void sched_wake(thread_t *t);
-        sched_wake(target);
-    }
+    if (!(SIG_BIT(sig) & target->sig_blocked))
+        signal_wake_up(target);
     return 0;
 }
 
@@ -509,6 +496,51 @@ long do_rt_sigpending(uint64_t *set, size_t sigsetsize) {
 
 /* ── SYS_RT_SIGTIMEDWAIT (128) — wait for signal with timeout ── */
 
+/* hrtimer-Callback: bei Timeout wird die Sleeper-wq geweckt. Der Sleeper-
+ * Loop checkt timer_ms() >= deadline_ms und returnt -EAGAIN. */
+static void sigwait_timer_fn(hrtimer_t *timer) {
+    wait_queue_head_t *wq = (wait_queue_head_t *)timer->data;
+    if (wq) wake_up(wq);
+}
+
+/* Pull lowest-numbered matching signal from process- oder thread-pending,
+ * fill siginfo_t (incl. dnotify SI_POLL), re-pend wenn weitere dnotify-
+ * Eintraege fuer denselben sig in der Queue stecken (RT-Queue-Semantik).
+ * Return: sig number (>0) wenn match, 0 wenn nichts pending. */
+static int sigwait_consume(thread_t *t, process_t *p, uint64_t wait_mask,
+                           void *uinfo) {
+    uint64_t match = (p->sig_pending | t->sig_thread_pending) & wait_mask;
+    if (!match) return 0;
+
+    int sig;
+    for (sig = 1; sig < 64; sig++)
+        if (match & SIG_BIT(sig)) break;
+
+    if (t->sig_thread_pending & SIG_BIT(sig))
+        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
+    else
+        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
+
+    extern int dnotify_queue_pop_fd(process_t *p, int sig);
+    extern int dnotify_queue_peek_fd(process_t *p, int sig);
+    int dn_fd = dnotify_queue_pop_fd(p, sig);
+    if (uinfo) {
+        int ksi[32];
+        kmemset(ksi, 0, sizeof(ksi));
+        ksi[0] = sig;
+        if (dn_fd >= 0) {
+            ksi[2] = -6; /* SI_POLL */
+            long band = 0;
+            kmemcpy((char *)ksi + 16, &band, 8);
+            kmemcpy((char *)ksi + 24, &dn_fd, 4);
+        }
+        copy_to_user(uinfo, ksi, 128);
+    }
+    if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
+        __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
+    return sig;
+}
+
 long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timespec *uts, size_t sigsetsize) {
     if (sigsetsize != 8 && sigsetsize != 16) return -EINVAL;
     thread_t *t = thread_current();
@@ -518,156 +550,75 @@ long do_rt_sigtimedwait(const uint64_t *uset, void *uinfo, const struct k_timesp
     uint64_t wait_mask;
     { int r = copy_from_user(&wait_mask, uset, 8); if (r) return r; }
 
-    /* Compute deadline once, use remaining time on syscall restart */
-    int timeout_ms = -1;
+    /* Deadline ist absolute monotonic ms; 0 == infinity. nanosleep_deadline
+     * persistiert ueber syscall-restart. */
+    uint64_t deadline_ms = 0;
+    int has_timeout = 0;
     if (uts) {
+        has_timeout = 1;
         if (t->nanosleep_deadline) {
-            /* Restarted after blocking — use remaining time */
-            uint64_t now = timer_ms();
-            if (now >= t->nanosleep_deadline) {
-                t->nanosleep_deadline = 0;
-                /* Drain stale events from previous block */
-                { event_t ev; while (event_wait(&t->eq, &ev, 0) == 0) { } }
-                /* Check one more time before returning */
-                uint64_t match2 = (p->sig_pending | t->sig_thread_pending) & wait_mask;
-                if (match2) {
-                    int sig;
-                    for (sig = 1; sig < 64; sig++)
-                        if (match2 & SIG_BIT(sig)) break;
-                    if (t->sig_thread_pending & SIG_BIT(sig))
-                        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-                    else
-                        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
-                    if (uinfo) {
-                        int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
-                        ksi[0] = sig;
-                        copy_to_user(uinfo, ksi, 128);
-                    }
-                    return sig;
-                }
-                return -EAGAIN; /* timeout expired */
-            }
-            timeout_ms = (int)(t->nanosleep_deadline - now);
-            if (timeout_ms <= 0) timeout_ms = 1;
+            deadline_ms = t->nanosleep_deadline;
         } else {
             struct k_timespec kts;
             int r = copy_from_user(&kts, uts, sizeof(kts));
             if (r) return r;
-            timeout_ms = (int)(kts.tv_sec * 1000 + kts.tv_nsec / 1000000);
-            if (timeout_ms < 0) timeout_ms = 0;
-            if (timeout_ms == 0) {
-                /* Check pending and return immediately */
-                uint64_t match = (p->sig_pending | t->sig_thread_pending) & wait_mask;
-                if (match) {
-                    int sig;
-                    for (sig = 1; sig < 64; sig++)
-                        if (match & SIG_BIT(sig)) break;
-                    if (t->sig_thread_pending & SIG_BIT(sig))
-                        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-                    else
-                        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
-                    if (uinfo) {
-                        int ksi[32]; kmemset(ksi, 0, sizeof(ksi));
-                        ksi[0] = sig;
-                        copy_to_user(uinfo, ksi, 128);
-                    }
-                    return sig;
-                }
-                return -EAGAIN;
+            long ms = (long)(kts.tv_sec * 1000 + kts.tv_nsec / 1000000);
+            if (ms < 0) ms = 0;
+            if (ms == 0) {
+                /* Polling: check pending and return immediately */
+                int sig = sigwait_consume(t, p, wait_mask, uinfo);
+                return sig ? (long)sig : -EAGAIN;
             }
-            /* Set deadline for future restarts */
-            t->nanosleep_deadline = timer_ms() + (uint64_t)timeout_ms;
+            deadline_ms = timer_ms() + (uint64_t)ms;
+            t->nanosleep_deadline = deadline_ms;
         }
     }
 
-    /* Check if any waited signal is already pending */
-    uint64_t match = (p->sig_pending | t->sig_thread_pending) & wait_mask;
-    if (match) {
-        int sig;
-        for (sig = 1; sig < 64; sig++)
-            if (match & SIG_BIT(sig)) break;
-        if (t->sig_thread_pending & SIG_BIT(sig))
-            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-        else
-            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
-        /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
-         * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
-        extern int dnotify_queue_pop_fd(process_t *p, int sig);
-        extern int dnotify_queue_peek_fd(process_t *p, int sig);
-        int dn_fd = dnotify_queue_pop_fd(p, sig);
-        if (uinfo) {
-            int ksi[32];
-            kmemset(ksi, 0, sizeof(ksi));
-            ksi[0] = sig;
-            if (dn_fd >= 0) {
-                ksi[2] = -6; /* SI_POLL */
-                /* band=0 at byte 16, fd at byte 24 */
-                long band = 0;
-                kmemcpy((char *)ksi + 16, &band, 8);
-                kmemcpy((char *)ksi + 24, &dn_fd, 4);
-            }
-            copy_to_user(uinfo, ksi, 128);
-        }
-        if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
-            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
-        t->nanosleep_deadline = 0;
-        return sig;
-    }
-
-    /* Drain stale events before blocking */
-    { event_t ev;
-      while (event_wait(&t->eq, &ev, 0) == 0) { /* drain */ }
-    }
-
-    /* Block, waiting for signal */
+    /* Fast path: signal already pending */
     {
-        event_t ev;
-        int r = event_wait(&t->eq, &ev, timeout_ms);
-        if (r == -ETIMEDOUT) { t->nanosleep_deadline = 0; return -EAGAIN; }
-        if (r == -4 /* EINTR */) {
-            /* Wake by unrelated unblocked signal — Linux returns EINTR
-             * (POSIX: signal not in waitset must interrupt sigtimedwait). */
-            uint64_t match2 = (p->sig_pending | t->sig_thread_pending) & wait_mask;
-            if (!match2) { t->nanosleep_deadline = 0; return -EINTR; }
-            /* Fall through to match-handling — sig in waitset wins. */
-        }
+        int sig = sigwait_consume(t, p, wait_mask, uinfo);
+        if (sig) { t->nanosleep_deadline = 0; return sig; }
     }
 
-    /* Re-check after wake (dead code — event_wait uses syscall restart,
-     * so the function re-enters from the top on wake. Kept for clarity.) */
-    match = (p->sig_pending | t->sig_thread_pending) & wait_mask;
-    if (match) {
-        int sig;
-        for (sig = 1; sig < 64; sig++)
-            if (match & SIG_BIT(sig)) break;
-        if (t->sig_thread_pending & SIG_BIT(sig))
-            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-        else
-            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
-        /* dnotify: populate si_code=SI_POLL + si_fd, und re-pend wenn noch
-         * weitere Eintraege fuer diesen sig queued sind (RT-Queue-Semantik). */
-        extern int dnotify_queue_pop_fd(process_t *p, int sig);
-        extern int dnotify_queue_peek_fd(process_t *p, int sig);
-        int dn_fd = dnotify_queue_pop_fd(p, sig);
-        if (uinfo) {
-            int ksi[32];
-            kmemset(ksi, 0, sizeof(ksi));
-            ksi[0] = sig;
-            if (dn_fd >= 0) {
-                ksi[2] = -6; /* SI_POLL */
-                /* band=0 at byte 16, fd at byte 24 */
-                long band = 0;
-                kmemcpy((char *)ksi + 16, &band, 8);
-                kmemcpy((char *)ksi + 24, &dn_fd, 4);
-            }
-            copy_to_user(uinfo, ksi, 128);
-        }
-        if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
-            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
-        return sig;
+    /* Block-Loop. Lokale wq, kein Routing — signal_wake_up macht state-CAS
+     * direkt (kill_one/tgkill rufen es). hrtimer treibt die Timeout-Kante:
+     * wq_timeout_fn weckt local_wq, schedule() returnt. Out-of-set deliverable
+     * Signale terminieren mit -EINTR (POSIX: sigtimedwait wird von
+     * Signalen ausserhalb der waitset unterbrochen). */
+    wait_queue_head_t local_wq = WAIT_QUEUE_HEAD_INIT;
+    init_waitqueue_head(&local_wq);
+    DEFINE_WAIT(wait);
+    hrtimer_t timer;
+    int has_timer = 0;
+    if (has_timeout) {
+        uint64_t deadline_ns = ms_to_ns(deadline_ms);
+        hrtimer_init(&timer, sigwait_timer_fn, &local_wq);
+        hrtimer_start(&timer, deadline_ns);
+        has_timer = 1;
     }
 
-    return -EAGAIN;
+    long rc;
+    for (;;) {
+        prepare_to_wait(&local_wq, &wait, /*THREAD_BLOCKED*/ 3);
+
+        int sig = sigwait_consume(t, p, wait_mask, uinfo);
+        if (sig) { rc = sig; break; }
+
+        if (has_timeout && timer_ms() >= deadline_ms) {
+            rc = -EAGAIN;
+            break;
+        }
+
+        uint64_t deliverable = (p->sig_pending | t->sig_thread_pending)
+                             & ~t->sig_blocked;
+        if (deliverable & ~wait_mask) { rc = -EINTR; break; }
+
+        schedule();
+    }
+    finish_wait(&local_wq, &wait);
+    if (has_timer) hrtimer_cancel(&timer);
+    t->nanosleep_deadline = 0;
+    return rc;
 }
 
 /* ── SYS_RT_SIGQUEUEINFO (129) — send signal with info ── */
@@ -711,12 +662,17 @@ long do_rt_sigsuspend(const uint64_t *mask, size_t sigsetsize) {
     t->sig_saved_mask = old_blocked;
     t->in_sigsuspend = 1;
 
-    /* Block via event_wait — do_kill will event_post us.
-     * On wake, syscall restarts: sigsuspend re-checks pending signals. */
-    {
-        event_t ev;
-        int _wr = event_wait(&t->eq, &ev, -1);
-        if (_wr == -4) return -EINTR;
+    /* Block bis ein deliverable Signal eintrifft. signal_wake_up macht den
+     * state-CAS direkt; nach schedule()-Return prueft die Loop ob jetzt
+     * etwas im sig_pending ist, das durch die temp-Maske durchkommt. */
+    wait_queue_head_t local_wq = WAIT_QUEUE_HEAD_INIT;
+    init_waitqueue_head(&local_wq);
+    DEFINE_WAIT(wait);
+    for (;;) {
+        prepare_to_wait(&local_wq, &wait, /*THREAD_BLOCKED*/ 3);
+        if ((p->sig_pending | t->sig_thread_pending) & ~t->sig_blocked) break;
+        schedule();
     }
-    return -EINTR; /* unreachable — syscall restarts */
+    finish_wait(&local_wq, &wait);
+    return -EINTR;
 }
