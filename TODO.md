@@ -30,7 +30,7 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3037/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+ktest **3108/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
 15, 16, 17 erledigt. Phase 10.2 zentrale Migration fertig (Schritt 1-3):
 event_queue intern auf wq, sched_wake auf state-CAS (try_to_wake_up),
 thread->wait_head/wait_entry entfernt, kill_one's Doppelpfad fuer
@@ -172,6 +172,20 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
 - [x] `pipe_close` ruft `wake_up_all` zum EOF/EPIPE-Broadcast.
 - [x] Neue ktests: `pipe/two_readers_exclusive_wake`,
       `pipe/close_broadcasts_eof`.
+
+**Phase 10.2b-3 — AF_UNIX auf waitqueue (ERLEDIGT)**
+
+- [x] `unix_socket_t.{read,write,accept,connect}_wq` ersetzen
+      `blocked_reader`/`blocked_acceptor`-Single-Slots. Multi-waiter
+      korrekt (dup'd listener, parallel readers).
+- [x] `usock_read_blocking`/`usock_write_blocking`/`usock_accept4`/
+      `usock_connect` → DEFINE_WAIT + prepare_to_wait + schedule.
+- [x] `usock_decref` weckt peer.read_wq + peer.write_wq + s.accept_wq +
+      backlog-clients.connect_wq via wake_up_all.
+- [x] 50ms-Timeout in usock_write_blocking entfaellt — prepare_to_wait
+      schliesst die Wakeup-Race strukturell.
+- [x] Neue ktests: `unix/block_read_wakeup`, `unix/block_read_signal`,
+      `unix/block_accept_wakeup` (15 sub-asserts).
 
 **Phase 10.2c — Restliche Blocking-Pfade**
 

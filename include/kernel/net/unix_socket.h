@@ -3,6 +3,7 @@
 #define UNIX_SOCKET_H
 
 #include <stdint.h>
+#include "core/waitqueue.h"
 
 /* AF_UNIX socket states */
 #define USOCK_UNUSED      0
@@ -66,10 +67,17 @@ struct unix_socket {
     uint8_t   oob_byte;
     int       oob_present;
 
-    /* Blocked reader (waiting for data) */
-    void     *blocked_reader;   /* thread_t* — blocked in read() */
-    /* Blocked accept (waiting for incoming connection) */
-    void     *blocked_acceptor; /* thread_t* — blocked in accept() */
+    /* Per-socket waitqueues. Replace single-slot blocked_reader/_acceptor —
+     * any number of concurrent waiters supported.
+     *   read_wq     — readers waiting for data on s->buf (woken by peer write)
+     *   write_wq    — writers waiting for room in peer->buf (woken when peer
+     *                 drains its own buf via read)
+     *   accept_wq   — listener waiting for incoming connect on s->backlog
+     *   connect_wq  — client waiting for accept() to upgrade s to CONNECTED */
+    wait_queue_head_t read_wq;
+    wait_queue_head_t write_wq;
+    wait_queue_head_t accept_wq;
+    wait_queue_head_t connect_wq;
 
     /* Owning network namespace. Abstract sockets (path[0]==0) are isolated
      * per-NS; pathname sockets remain global because they live on the VFS,

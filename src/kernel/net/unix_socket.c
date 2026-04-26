@@ -14,7 +14,7 @@
 #include "sys/syscall.h"
 #include "cosmort.h"
 #include "arch/arch.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 #include "mm/slab.h"
 #include "fs/vfs.h"
 
@@ -63,6 +63,10 @@ static unix_socket_t *usock_alloc(void) {
     s->state = USOCK_CREATED;
     s->refcount = 1;
     s->ns_id = net_ns_current()->ns_id;
+    init_waitqueue_head(&s->read_wq);
+    init_waitqueue_head(&s->write_wq);
+    init_waitqueue_head(&s->accept_wq);
+    init_waitqueue_head(&s->connect_wq);
     uint64_t flags;
     spin_lock_irq(&usock_lock, &flags);
     usock_list_add(s);
@@ -118,33 +122,21 @@ void usock_decref(void *obj) {
             }
             spin_unlock_irq(&usock_lock, bf);
         }
-        /* Wake blocked reader on peer — they'll see EOF (no peer) */
-        thread_t *reader = 0;
+        /* Detach from peer — readers on peer wake to see EOF (no peer) */
+        unix_socket_t *peer = 0;
         if (s->peer) {
             uint64_t irqf;
             spin_lock_irq(&usock_lock, &irqf);
-            if (s->peer->blocked_reader) {
-                reader = (thread_t *)s->peer->blocked_reader;
-                s->peer->blocked_reader = 0;
-            }
-            s->peer->peer = 0;
-            spin_unlock_irq(&usock_lock, irqf);
+            peer = s->peer;
+            if (peer) peer->peer = 0;
             s->peer = 0;
-        }
-        /* Wake blocked_acceptor on a LISTENING socket being closed */
-        thread_t *acceptor = 0;
-        if (s->blocked_acceptor) {
-            uint64_t irqf;
-            spin_lock_irq(&usock_lock, &irqf);
-            acceptor = (thread_t *)s->blocked_acceptor;
-            s->blocked_acceptor = 0;
             spin_unlock_irq(&usock_lock, irqf);
         }
 
         /* Drain pending backlog: each enqueued client has a thread blocked
-         * in usock_connect waiting for accept(). Wake them with refused-by-
-         * disappearance so they unwind cleanly. The client sockets keep
-         * their own refcounts — only the queue link is dropped. */
+         * in usock_connect waiting for accept(). Wake them via their own
+         * connect_wq so they re-check state and unwind cleanly. The client
+         * sockets keep their own refcounts — only the queue link is dropped. */
         unix_socket_t *drained_head = 0;
         if (s->backlog_head) {
             uint64_t irqf;
@@ -159,23 +151,18 @@ void usock_decref(void *obj) {
             unix_socket_t *next = drained_head->backlog_next;
             drained_head->backlog_next = 0;
             drained_head->backlog_owner = 0;
-            thread_t *waiter = (thread_t *)drained_head->blocked_acceptor;
-            drained_head->blocked_acceptor = 0;
-            if (waiter) {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                event_post(waiter, 9 /* EQ_SOCKET_CONNECT */, 0);
-            }
+            wake_up_all(&drained_head->connect_wq);
             drained_head = next;
         }
 
-        if (reader) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
+        /* Broadcast EOF/HUP to peer-side blocked readers/writers. */
+        if (peer) {
+            wake_up_all(&peer->read_wq);
+            wake_up_all(&peer->write_wq);
         }
-        if (acceptor) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(acceptor, 9 /* EQ_SOCKET_CONNECT */, 0);
-        }
+        /* Wake any acceptor blocked on this listener — re-check finds
+         * USOCK_LISTENING dropped (refcount reached 0 → socket dies). */
+        wake_up_all(&s->accept_wq);
         usock_release(s);
     }
 }
@@ -410,39 +397,43 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     if (!s) return -EBADF;
     if (s->state != USOCK_LISTENING) return -EINVAL;
 
-    /* Block until a connection arrives (unless O_NONBLOCK). Per-socket
-     * blocked_acceptor is posted by usock_connect on enqueue. */
+    /* Block until a connection arrives (unless O_NONBLOCK). prepare_to_wait
+     * serialises state-transition with usock_connect's wake_up — re-check
+     * under usock_lock catches any enqueue between sleep prep and schedule. */
     int nonblock = 0;
     { process_t *rp = proc_current();
       if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                  if (rf && (rf->flags & 0x800)) nonblock = 1; } }
-    thread_t *ct = thread_current();
-    while (s->backlog_count == 0) {
-        if (nonblock) return -EAGAIN;
-        if (!ct) return -EAGAIN;
-        __atomic_store_n(&s->blocked_acceptor, ct, __ATOMIC_RELEASE);
-        if (s->backlog_count > 0) { s->blocked_acceptor = 0; break; }
-        event_t ev;
-        int wr = event_wait(&ct->eq, &ev, -1);
-        s->blocked_acceptor = 0;
-        if (wr == -4) return -ERESTARTSYS;
-    }
 
-    /* Dequeue oldest pending connection from the FIFO. The lock guards
-     * head/tail/count against a concurrent connect() appending. */
-    uint64_t accept_flags;
-    spin_lock_irq(&usock_lock, &accept_flags);
-    unix_socket_t *client = s->backlog_head;
-    if (!client) {
-        spin_unlock_irq(&usock_lock, accept_flags);
-        return -EAGAIN; /* spurious wake — defer to caller's loop */
+    unix_socket_t *client = 0;
+    {
+        DEFINE_WAIT(wait);
+        long rc = 0;
+        for (;;) {
+            prepare_to_wait(&s->accept_wq, &wait, /*THREAD_BLOCKED*/ 3);
+
+            uint64_t lf;
+            spin_lock_irq(&usock_lock, &lf);
+            if (s->backlog_head) {
+                client = s->backlog_head;
+                s->backlog_head = client->backlog_next;
+                if (!s->backlog_head) s->backlog_tail = 0;
+                client->backlog_next = 0;
+                client->backlog_owner = 0;
+                s->backlog_count--;
+                spin_unlock_irq(&usock_lock, lf);
+                break;
+            }
+            spin_unlock_irq(&usock_lock, lf);
+
+            if (nonblock) { rc = -EAGAIN; break; }
+            if (signal_deliverable()) { rc = -ERESTARTSYS; break; }
+            schedule();
+        }
+        finish_wait(&s->accept_wq, &wait);
+        if (rc < 0) return rc;
     }
-    s->backlog_head = client->backlog_next;
-    if (!s->backlog_head) s->backlog_tail = 0;
-    client->backlog_next = 0;
-    client->backlog_owner = 0;
-    s->backlog_count--;
-    spin_unlock_irq(&usock_lock, accept_flags);
+    if (!client) return -EAGAIN;
 
     /* Create server-side endpoint */
     unix_socket_t *server = usock_alloc();
@@ -453,13 +444,8 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     client->peer = server;
     server->state = USOCK_CONNECTED;
     client->state = USOCK_CONNECTED;
-    /* Wake connecting thread blocked in usock_connect */
-    if (client->blocked_acceptor) {
-        thread_t *conn_thread = (thread_t *)client->blocked_acceptor;
-        client->blocked_acceptor = 0;
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(conn_thread, 9 /* EQ_SOCKET_CONNECT */, 0);
-    }
+    /* Wake any thread blocked in usock_connect on the client side. */
+    wake_up_all(&client->connect_wq);
 
     process_t *p = proc_current();
     if (!p) { usock_release(server); return -EFAULT; }
@@ -543,16 +529,10 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
         listener->backlog_head = s;
     listener->backlog_tail = s;
     listener->backlog_count++;
-    thread_t *acceptor = 0;
-    if (listener->blocked_acceptor) {
-        acceptor = (thread_t *)listener->blocked_acceptor;
-        listener->blocked_acceptor = 0;
-    }
     spin_unlock_irq(&usock_lock, flags);
-    if (acceptor) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(acceptor, 9 /* EQ_SOCKET_CONNECT */, 0);
-    }
+    /* Wake any acceptor blocked on the listener; multiple acceptors are
+     * legal (e.g. dup'd listener fd in two threads). */
+    wake_up_all(&listener->accept_wq);
     /* Wake select/poll waiters too */
     extern void epoll_wake_all(void);
     epoll_wake_all();
@@ -562,21 +542,19 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
      * and see USOCK_CREATED -> SIGPIPE. O_NONBLOCK returns EINPROGRESS. */
     int cnonblock = (s->flags & 0x800) ? 1 : 0;
     if (!cnonblock) {
-        thread_t *ct = thread_current();
-        while (s->state != USOCK_CONNECTED) {
-            if (!ct) break;
-            s->blocked_acceptor = ct;
-            if (s->state == USOCK_CONNECTED) { s->blocked_acceptor = 0; break; }
-            event_t ev;
-            int wr = event_wait(&ct->eq, &ev, -1);
-            s->blocked_acceptor = 0;
-            if (wr == -4) return -ERESTARTSYS;
+        DEFINE_WAIT(wait);
+        long rc = 0;
+        for (;;) {
+            prepare_to_wait(&s->connect_wq, &wait, /*THREAD_BLOCKED*/ 3);
+            if (s->state == USOCK_CONNECTED) break;
+            if (signal_deliverable()) { rc = -ERESTARTSYS; break; }
+            schedule();
         }
+        finish_wait(&s->connect_wq, &wait);
+        if (rc < 0) return rc;
     }
 
-    /* Connection completes when accept() dequeues us.
-     * For simplicity (no blocking connect), return 0 — client
-     * transitions to CONNECTED when accept creates the peer. */
+    /* Connection completes when accept() dequeues us. */
     return 0;
 }
 
@@ -596,7 +574,12 @@ long usock_read(int fd, void *buf, long count) {
     }
 
     int n = ring_read(s, (uint8_t *)buf, (int)count);
+    unix_socket_t *peer = s->peer;
     spin_unlock_irq(&usock_lock, irqf);
+
+    /* Drained s->buf → wake any writer blocked because peer's buf (== s) was
+     * full. Writer parks on its own write_wq; peer is the writer side. */
+    if (peer) wake_up(&peer->write_wq);
 
     /* Wake epoll/poll */
     extern void epoll_wake_all(void);
@@ -606,36 +589,38 @@ long usock_read(int fd, void *buf, long count) {
 }
 
 /* Blocking unix socket read: called when usock_read returned -EAGAIN
- * and O_NONBLOCK is not set. Re-checks buffer, blocks if still empty,
- * restarts syscall on wake. */
+ * and O_NONBLOCK is not set. prepare_to_wait/finish_wait closes the wakeup
+ * race: state=BLOCKED is set under read_wq->lock before re-checking
+ * s->count/s->peer; any usock_write between check and schedule must take
+ * read_wq->lock to wake us, so we never miss a wakeup. */
 long usock_read_blocking(unix_socket_t *s, void *buf, long count) {
-    thread_t *t = thread_current();
-    if (!t) return -EAGAIN;
-
+    DEFINE_WAIT(wait);
+    long rc = 0;
     for (;;) {
-        /* Re-check under spinlock — data may have arrived */
+        prepare_to_wait(&s->read_wq, &wait, /*THREAD_BLOCKED*/ 3);
+
         uint64_t irqf;
         spin_lock_irq(&usock_lock, &irqf);
-
         if (s->count > 0) {
             int n = ring_read(s, (uint8_t *)buf, (int)count);
+            unix_socket_t *peer = s->peer;
             spin_unlock_irq(&usock_lock, irqf);
-            return (long)n;
+            if (peer) wake_up(&peer->write_wq);
+            rc = (long)n;
+            break;
         }
         if (!s->peer) {
             spin_unlock_irq(&usock_lock, irqf);
-            return 0; /* EOF: peer closed */
+            rc = 0; /* EOF: peer closed */
+            break;
         }
-
-        /* Register as blocked reader — peer's write will event_post us */
-        s->blocked_reader = t;
         spin_unlock_irq(&usock_lock, irqf);
 
-        /* Block via event_wait — usock_write/usock_decref will event_post */
-        event_t ev;
-        int _wr = event_wait(&t->eq, &ev, -1);
-        if (_wr == -4) return -ERESTARTSYS;
+        if (signal_deliverable()) { rc = -ERESTARTSYS; break; }
+        schedule();
     }
+    finish_wait(&s->read_wq, &wait);
+    return rc;
 }
 
 long usock_write(int fd, const void *buf, long count) {
@@ -652,18 +637,10 @@ long usock_write(int fd, const void *buf, long count) {
     /* Write into peer's receive buffer (under lock — protects ring) */
     int n = ring_write(peer, (const uint8_t *)buf, (int)count);
     if (n == 0) { spin_unlock_irq(&usock_lock, irqf); return -EAGAIN; }
-
-    /* Wake blocked reader on peer */
-    thread_t *reader = 0;
-    if (peer->blocked_reader) {
-        reader = (thread_t *)peer->blocked_reader;
-        peer->blocked_reader = 0;
-    }
     spin_unlock_irq(&usock_lock, irqf);
-    if (reader) {
-        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-        event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-    }
+
+    /* Wake reader(s) blocked on peer's read_wq — data just landed in peer->buf. */
+    wake_up(&peer->read_wq);
 
     /* Wake epoll/poll */
     extern void epoll_wake_all(void);
@@ -672,42 +649,41 @@ long usock_write(int fd, const void *buf, long count) {
     return (long)n;
 }
 
-/* Blocking write: retry until at least 1 byte written or peer closes */
+/* Blocking write: retry until at least 1 byte written or peer closes.
+ * Park on s->write_wq; the partner's reader wakes us via wake_up(&peer
+ * ->write_wq) after draining its (== our peer's) buffer.
+ *
+ * prepare_to_wait + re-check-under-usock_lock closes the missed-wakeup
+ * race that the legacy 50ms event_wait timeout was a workaround for:
+ * any usock_read or usock_decref between condition-check and schedule()
+ * must take write_wq->lock to wake us, so the wake cannot be lost. */
 long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
-    thread_t *t = thread_current();
-    if (!t) return -EAGAIN;
-
+    DEFINE_WAIT(wait);
+    long rc = 0;
     for (;;) {
+        prepare_to_wait(&s->write_wq, &wait, /*THREAD_BLOCKED*/ 3);
+
         uint64_t irqf;
         spin_lock_irq(&usock_lock, &irqf);
         unix_socket_t *peer = s->peer;
-        if (!peer) { spin_unlock_irq(&usock_lock, irqf); return send_sigpipe(); }
+        if (!peer) { spin_unlock_irq(&usock_lock, irqf); rc = send_sigpipe(); break; }
 
         int n = ring_write(peer, (const uint8_t *)buf, (int)count);
         if (n > 0) {
-            thread_t *reader = 0;
-            if (peer->blocked_reader) {
-                reader = (thread_t *)peer->blocked_reader;
-                peer->blocked_reader = 0;
-            }
             spin_unlock_irq(&usock_lock, irqf);
-            if (reader) {
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                event_post(reader, 8, 0);
-            }
+            wake_up(&peer->read_wq);
             extern void epoll_wake_all(void);
             epoll_wake_all();
-            return (long)n;
+            rc = (long)n;
+            break;
         }
-
-        /* Buffer full — register as blocked writer on peer, wait for drain */
         spin_unlock_irq(&usock_lock, irqf);
 
-        /* Use event_wait with short timeout to avoid deadlock */
-        event_t ev;
-        int _wr = event_wait(&t->eq, &ev, 50);
-        if (_wr == -4) return -ERESTARTSYS;
+        if (signal_deliverable()) { rc = -ERESTARTSYS; break; }
+        schedule();
     }
+    finish_wait(&s->write_wq, &wait);
+    return rc;
 }
 
 /* ── close ────────────────────────────────────── */
@@ -797,19 +773,8 @@ long usock_sendmsg(int fd, const void *msg_ptr, int flags) {
     }
 done:
     if (total > 0) {
-        /* Wake blocked reader on peer */
-        uint64_t irqf2;
-        spin_lock_irq(&usock_lock, &irqf2);
-        thread_t *reader = 0;
-        if (peer->blocked_reader) {
-            reader = (thread_t *)peer->blocked_reader;
-            peer->blocked_reader = 0;
-        }
-        spin_unlock_irq(&usock_lock, irqf2);
-        if (reader) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-        }
+        /* Wake reader(s) blocked on peer's read_wq — data just landed. */
+        wake_up(&peer->read_wq);
         extern void epoll_wake_all(void);
         epoll_wake_all();
     }
@@ -877,6 +842,9 @@ recvdone:
     copy_to_user(msg_ptr, &kmsg, sizeof(kmsg));
 
     if (total > 0) {
+        /* Drained s->buf → peer-side writer may have room now. */
+        unix_socket_t *peer = s->peer;
+        if (peer) wake_up(&peer->write_wq);
         extern void epoll_wake_all(void);
         epoll_wake_all();
     }
@@ -908,16 +876,8 @@ long usock_send(int fd, const void *buf, long len, int flags) {
         }
         peer->oob_byte = kbyte;
         peer->oob_present = 1;
-        thread_t *reader = 0;
-        if (peer->blocked_reader) {
-            reader = (thread_t *)peer->blocked_reader;
-            peer->blocked_reader = 0;
-        }
         spin_unlock_irq(&usock_lock, irqf);
-        if (reader) {
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            event_post(reader, 8 /* EQ_SOCKET_DATA */, 0);
-        }
+        wake_up(&peer->read_wq);
         extern void epoll_wake_all(void);
         epoll_wake_all();
         return 1;
