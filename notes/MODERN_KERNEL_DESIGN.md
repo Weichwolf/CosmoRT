@@ -1,64 +1,91 @@
-# Modernes Kernel-Design für CosmoRT (Stand 2026)
+# Modernes Kernel-Design für CosmoRT (Stand 2026-04-26)
 
 Architektur-Recherche und Recommendations. Linus-today-Geist: das *beste* Design,
 nicht das Linux-Design. ABI bleibt Linux x86_64 — Internas duerfen modern sein.
 
-Ausloeser: Phase 10.2 Waitqueue-Migration scheitert reproduzierbar an einer
-subtilen Architektur-Verletzung in `sched_wake`. Dieses Dokument benennt die
-Wurzel, vergleicht mit Linux/seL4/Zircon/io_uring und gibt eine konkrete
-Migrations-Sequenz.
+Historie: Phase 10.2 Waitqueue-Migration scheiterte mehrfach an einer
+Architektur-Verletzung in `sched_wake` (Routing ueber `t->wait_head`). Die
+Wurzel ist seit Commit 02e0215 / 5ca01f4 entfernt: `sched_wake` ist heute
+pure State-CAS, `t->wait_head`/`t->wait_entry` sind aus `thread_t` weg,
+`bind_wait`/`unbind_wait` geloescht. timerfd ist als einzige Migration
+korrekt durch.
+
+Was noch fehlt: das `func`-Callback-Modell (epoll/futex/socket koennen ihren
+eigenen Wake-Pfad nicht registrieren), Public `try_to_wake_up(t, mask)`, und
+9 Subsysteme parken weiter auf der per-thread `event_queue`. Dieses Dokument
+beschreibt das Zielmodell, vergleicht mit Linux/seL4/Zircon/io_uring und
+gibt die Restmigrations-Sequenz.
 
 ---
 
 ## 1. Executive Summary
 
-| # | Empfehlung | Hebel |
-|---|------------|-------|
-| 1 | `sched_wake` darf NICHT mehr ueber `wait_head` routen. State-CAS auf `task->state` macht den Wake. Waitqueue ist nur Callback-Liste, kein Routing-Target. | Phase 10.2 Blockade aufloesen, Signal/Timer/IO-Wakeups orthogonal. |
-| 2 | Eine Wake-Funktion: `try_to_wake_up(task, state_mask)`. Alle anderen (`sched_wake`, `event_post`, `wake_up`, `signal_wake_up`) sind Wrapper. | Race-Audit-Surface von ~14 Pfaden auf 1. |
-| 3 | `event_queue` aus `thread_t` entfernen. Per-Subsystem-Waitqueue + `prepare_to_wait` ist die einzige Block-Mechanik. `event_post` wird Wrapper. | ~280 Zeilen `event_queue.c` weg. Race-Klasse "stale events" verschwindet. |
-| 4 | Signal-Wake ist ein State-Bit (`TIF_SIGPENDING`-Aequivalent), kein Wakeup. Wake setzt zusaetzlich Run-State, Routing entfaellt. | sigtimedwait/futex/epoll alle korrekt unterbrechbar ohne Sonderpfade. |
-| 5 | Interne Audio-API auf io_uring-aehnlichem Completion-Modell statt epoll. epoll bleibt fuer ABI. UMWAIT fuer Sub-µs-Wakeups in Phase 19. | Sub-ms-Latenz erreichbar; epoll als ABI-Wrapper bleibt korrekt. |
+Stand-Tracking: ✅ erledigt, ◐ teilweise, ☐ offen.
+
+| # | Empfehlung | Status | Hebel |
+|---|------------|--------|-------|
+| 1 | `sched_wake` darf NICHT ueber `wait_head` routen. State-CAS auf `task->state` macht den Wake. Waitqueue ist nur Callback-Liste, kein Routing-Target. | ✅ | Phase 10.2 Blockade aufgeloest. Signal/Timer/IO-Wakeups orthogonal. |
+| 2 | Eine Wake-Funktion: `try_to_wake_up(task, state_mask)`. Alle anderen (`sched_wake`, `event_post`, `wake_up`, `signal_wake_up`) sind Wrapper. | ✅ | Public `try_to_wake_up(t, mask)` mit CAS-Loop. `wait_queue_entry.func`-Dispatch via `wq_call`. `signal_wake_up` als Wrapper. `sched_wake` -> `try_to_wake_up(t, TASK_NORMAL)`. |
+| 3 | `event_queue` aus `thread_t` entfernen. Per-Subsystem-Waitqueue + `prepare_to_wait` ist die einzige Block-Mechanik. `event_post` wird Wrapper. | ☐ | ~280 Zeilen `event_queue.c` weg. Race-Klasse "stale events" verschwindet. 9 Subsysteme noch zu migrieren. |
+| 4 | Signal-Wake ist ein State-Bit (`TIF_SIGPENDING`-Aequivalent), kein Wakeup. Wake setzt zusaetzlich Run-State, Routing entfaellt. | ☐ | `kill_one` verteilt heute auf `event_post` + `sched_wake` (Doppelpfad). `signal_wake_up()` als Wrapper fehlt. |
+| 5 | Interne Audio-API auf io_uring-aehnlichem Completion-Modell statt epoll. epoll bleibt fuer ABI. UMWAIT fuer Sub-µs-Wakeups in Phase 19. | ☐ | Sub-ms-Latenz erreichbar; epoll als ABI-Wrapper bleibt korrekt. Phase 19. |
 
 ---
 
-## 2. Task-State-Machine — die eigentliche Wurzel
+## 2. Task-State-Machine — Wurzel + Restarbeit
 
-### 2.1 Status quo CosmoRT
+### 2.1 Stand 2026-04-26
 
-`thread_t.state` (in `include/kernel/proc/thread.h:82`):
+`thread_t.state` (in `include/kernel/proc/thread.h:14-20`):
 ```
 THREAD_FREE / RUNNABLE / RUNNING / BLOCKED / DEAD / STOPPED
 ```
 
-`thread_t.wait_head` ist `void*` und wird in `prepare_to_wait()` gesetzt
-(`waitqueue.c:97`). `sched_wake()` (`sched.c:83-110`) macht:
+`sched_wake()` (`src/kernel/core/sched.c:95-108`) ist pure State-CAS, kein
+Routing mehr:
 
 ```c
-wait_queue_head_t *wh = atomic_load(&t->wait_head);
-if (wh) { wake_up_all(wh); return; }       // (A) routing!
-old = CAS(&t->state, BLOCKED, RUNNABLE);   // (B) direct path
-if (old == BLOCKED) sched_add(t);
+void sched_wake(thread_t *t) {
+    if (!t) return;
+    int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+    if (st == THREAD_DEAD || st == THREAD_FREE) return;
+
+    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
+    if (old == THREAD_BLOCKED) { sched_add(t); return; }
+    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
+    if (old == THREAD_STOPPED) sched_add(t);
+}
 ```
 
-**Das ist der Bug**. Pfad (A) wuenscht sich:
-"Thread parkt auf wq → Waker, der das nicht weiss, soll das richtige tun".
-Was er tatsaechlich tut: jeder Aufrufer von `sched_wake` (Signal-Delivery,
-Timer-Expiry, kill_one, exit_notify, …) ruft auf einer fremden Waitqueue
-`wake_up_all` — auch wenn die Bedingung dieser Waitqueue unerfuellt ist.
+`t->wait_head`/`t->wait_entry` sind aus `thread_t` raus, `bind_wait`/`unbind_wait`
+geloescht. `prepare_to_wait`/`finish_wait` (waitqueue.c:91-121) verwenden
+ausschliesslich Stack-lokale `wait_queue_entry_t` (DEFINE_WAIT). Die "stale
+event / spurious wake"-Race-Klasse aus dem alten Routing-Bug ist weg.
 
-**Konsequenzen** (alle empirisch beobachtet):
-- `nanosleep01` haengt: Signal kommt waehrend Sleep auf eigener wq. `sched_wake`
-  ruft `wake_up_all` der Sleep-Wq → Thread wacht, sleep_interruptible_ns
-  klassifiziert als "spurious", schlaeft erneut. Signal nie geliefert.
-- `pthread_cond` flaky: Condvar parkt auf futex-Hashbucket-wq. `kill` (oder
-  Timer) → wake_up_all auf der falschen wq → Wakeup bei korrektem futex_wake
-  rennt gegen "schon wach durch fremden Wake".
-- `tls_init`/`sem_init`-Deadlocks: gemischter Pfad (event_queue + waitqueue
-  gleichzeitig) — `t->wait_head` gesetzt, `t->eq` ebenfalls verwendet → Wake
-  geht an wq, event_queue wartet weiter.
+### 2.2 Restarbeit nach 10.2a
 
-### 2.2 Linux-Modell (faktisch)
+10.2a hat die Wake-Primitive vereinheitlicht:
+
+- `wait_queue_entry_t.func` ist Pflichtfeld; DEFINE_WAIT setzt
+  `autoremove_wake_function`.
+- `try_to_wake_up(t, mask)` ist public, CAS-Loop fuer race-sicheren
+  Multi-state-Wake. Linux-aequivalente Mask-Filterung.
+- `wake_up*` delegieren via `wq_call(e, mask)` an `e->func`.
+- `signal_wake_up(t)` als Wrapper; Caller-Migration in 10.2b-8.
+- `TASK_*`-Masken in thread.h. Bemerkung: bei uns kollabieren
+  TASK_INTERRUPTIBLE und TASK_UNINTERRUPTIBLE auf denselben Speicherwert
+  (THREAD_BLOCKED) — die Trennung sitzt im Sleep-Loop, nicht im State.
+
+Was bleibt:
+
+- `kill_one` Doppelpfad (`event_post` + `sched_wake`) — entfaellt erst,
+  wenn 10.2b-8 `event_post` aus signal.c entfernt.
+- 9 Subsysteme (eventfd, pipe, sockets×3, epoll, futex, wait4, sigtimedwait)
+  parken auf `t->eq`. Jedes bekommt in 10.2b eine eigene wq.
+- Per-Core-Sleeper-Array in `epoll.c:230-272` — Workaround fuer fehlendes
+  `func`-Modell, faellt mit 10.2b-5 weg.
+
+### 2.3 Linux-Modell (faktisch)
 
 ```
 struct task_struct {
@@ -98,46 +125,61 @@ Callbacks. Der Callback weiss, welchen Task er weckt.** Damit ist Wake total
 entkoppelt vom Routing — Signal-Delivery ruft `signal_wake_up(p, resume)`
 direkt, ohne irgendeine Waitqueue zu beruehren.
 
-### 2.3 Empfehlung CosmoRT
+### 2.4 Linux-Modell auf CosmoRT abgebildet
 
-**Drei diskrete Schritte:**
+**Drei diskrete Schritte (alles Restarbeit gegen Stand 2.1):**
 
 ```c
-/* Schritt 1: state-Mask fuer try_to_wake_up */
-#define TASK_RUNNING        0x0000
-#define TASK_INTERRUPTIBLE  0x0001
-#define TASK_UNINTERRUPTIBLE 0x0002
-#define TASK_STOPPED        0x0004
-#define TASK_KILLABLE       (TASK_INTERRUPTIBLE | __TASK_KILLABLE)
-#define TASK_NORMAL         (TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE)
+/* Schritt 1: state-Mask fuer try_to_wake_up.
+ * THREAD_* bleibt der Speicherwert in t->state (4-byte int @ Offset 0,
+ * Context-Switch-ABI). TASK_*-Masken sind Bit-Aliase fuer das mask-Argument
+ * von try_to_wake_up — sie sagen "wecke nur, wenn t->state genau das ist". */
+#define TASK_RUNNING         (1 << THREAD_RUNNING)    /* informativ */
+#define TASK_INTERRUPTIBLE   (1 << THREAD_BLOCKED)    /* signal-deliverable Sleep */
+#define TASK_UNINTERRUPTIBLE (1 << THREAD_BLOCKED)    /* Linux trennt diese; CosmoRT
+                                                       * codiert die Trennung im
+                                                       * Sleep-Loop, nicht im State */
+#define TASK_STOPPED         (1 << THREAD_STOPPED)
+#define TASK_KILLABLE        TASK_INTERRUPTIBLE
+#define TASK_NORMAL          (TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE)
 
-/* Schritt 2: einzige Wake-Primitive */
+/* Schritt 2: einzige Wake-Primitive (public, mit Mask) */
 int try_to_wake_up(thread_t *t, unsigned int mask);
-/* CAS p->state bei state & mask, sched_add. Sonst no-op. */
+/* if ((1 << t->state) & mask) { CAS state -> RUNNABLE; sched_add; return 1; }
+ * Sonst no-op, return 0. */
 
-/* Schritt 3: wait_head/wait_entry aus thread_t ENTFERNEN */
+/* Schritt 3: sched_wake bleibt Wrapper, kompatibel mit Bestandscode */
+static inline void sched_wake(thread_t *t) { try_to_wake_up(t, TASK_NORMAL); }
 ```
 
-Waitqueue wird:
+Waitqueue-Entry wird erweitert:
 ```c
-struct wait_queue_entry {
-    unsigned int flags;
-    void        *priv;       /* zumeist thread_t* */
-    int        (*func)(struct wait_queue_entry *, unsigned int mask);
-    struct list_head list;
-};
+typedef int (*wait_func_t)(struct wait_queue_entry *e, unsigned int mask);
+
+typedef struct wait_queue_entry {
+    struct thread          *task;     /* bleibt — convenience field */
+    unsigned int            flags;
+    wait_func_t             func;     /* NEU: Default = autoremove_wake_function */
+    struct wait_queue_entry *next, *prev;
+} wait_queue_entry_t;
 ```
 
-`wake_up(wq)` iteriert und ruft `e->func(e, TASK_NORMAL)`. Default-Func ist
-`autoremove_wake_function` → `try_to_wake_up(e->priv, mask)`. epoll-Aequivalent
-(siehe §3) registriert eigene Funktion `ep_poll_callback`.
+`wake_up(wq)` iteriert und ruft `e->func(e, mask)`. Default-Func:
 
-**Migration aus `sched_wake`**:
-- `sched_wake(t)` wird zu `try_to_wake_up(t, TASK_NORMAL)`.
-- `wait_head`-Loesch-Branch ENTFAELLT komplett.
-- THREAD_BLOCKED wird durch das Maskenmodell ersetzt — Mapping:
-  - `THREAD_BLOCKED` + `interruptible` → `TASK_INTERRUPTIBLE`
-  - `THREAD_BLOCKED` ohne signal-Pfad → `TASK_UNINTERRUPTIBLE`
+```c
+int autoremove_wake_function(wait_queue_entry_t *e, unsigned int mask) {
+    int r = try_to_wake_up(e->task, mask);
+    /* finish_wait raeumt den Eintrag — autoremove markiert nur via Flag. */
+    return r;
+}
+```
+
+epoll-Aequivalent (siehe §3) registriert eigene Funktion `ep_poll_callback`.
+
+**Migration aus `sched_wake`**: bleibt — `sched_wake(t)` ist gueltig, intern
+ein `try_to_wake_up(t, TASK_NORMAL)`-Aufruf. Caller-Code muss nicht angefasst
+werden, ausser Subsysteme die explizit Mask-Filterung wollen
+(`signal_wake_up(t)` → `try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE)`).
 
 Quelle Linux: `kernel/sched/core.c::try_to_wake_up`,
 `include/linux/sched.h` (TASK_*-Bits).
@@ -148,9 +190,24 @@ Quelle Linux: `kernel/sched/core.c::try_to_wake_up`,
 
 ### 3.1 Status quo CosmoRT
 
-`waitqueue.c` ist gut bauplangetreu (`prepare_to_wait` → `schedule` →
-`finish_wait`), aber `bind_wait`/`unbind_wait` setzen `t->wait_head`. Das
-schliesst den Race lokal, oeffnet aber den Routing-Bug global (§2).
+`waitqueue.c` ist sauber: `prepare_to_wait` → `schedule` → `finish_wait`,
+state-Transition unter `wq->lock` serialisiert. Stack-lokales `wait_queue_entry_t`
+via `DEFINE_WAIT(name)`. `bind_wait`/`unbind_wait` und `t->wait_head`-Routing
+sind seit Commit 02e0215 entfernt.
+
+Was fehlt: `wait_queue_entry_t.func` (siehe §2.2). Ohne `func` kann kein
+Subsystem eigene Wake-Logik registrieren. Konsumenten wie epoll fallen
+zurueck auf:
+- per-Core-Sleeper-Array (`epoll.c:230-272`) — Workaround fuer fehlendes `func`,
+- `event_post`/`event_wait` ueber `t->eq` — paralleles Wait-System, das die
+  Race-Klassen aus §2.3 (Doppelpfad mit Signalen) offen haelt.
+
+Bestehende wq-Konsumenten:
+- `timerfd` — voll auf wq, korrekt (Vorbild).
+- `socket.c` (TCP) — partial: nur `prepare_to_wait`-pattern fuer accept-loop,
+  Datenpfade noch event_queue.
+- `epoll.h` deklariert `wait_queue_head_t wq` als Member, `epoll.c` benutzt
+  ihn aber nicht — Sleeper liegen im per-Core-Array.
 
 ### 3.2 Linux ep_poll_callback exakt
 
@@ -251,17 +308,25 @@ ersatzlos. Ebenso die `epoll_wake_all`-Funktion und der `wake_at_tsc`-Hack.
 
 ### 4.1 Status quo
 
-`signal.c::kill_one` (Zeile 354-411) hat fuer JEDEN Pfad doppelte Logik:
+`signal.c::kill_one` (Zeile ~340-413) macht heute fuer jeden Sig-Empfaenger
+**beides**:
 
 ```c
-if (t->wait_head)
-    sched_wake(t);                 /* wuerde wake_up_all routen */
-else
-    event_post(t, EQ_CHILD_EXITED, sig);  /* legacy event_queue */
+extern void event_post(thread_t *target, uint32_t type, uint64_t data);
+extern void sched_wake(thread_t *t);
+event_post(t, EQ_CHILD_EXITED, (uint64_t)sig);  /* fuer eq-parker */
+sched_wake(t);                                   /* fuer wq-parker */
 ```
 
-Das ist Symptom, nicht Ursache. Der wirkliche Defekt: Signal-Delivery hat keinen
-*einheitlichen* Mechanismus — sie versucht "den richtigen Wake-Pfad zu raten".
+Der `wait_head`-Branch ist seit der Wurzel-Korrektur weg, aber die parallele
+event_queue-Mechanik haelt den Doppelpfad lebendig. Solange Sleeper auf
+`t->eq` parken, MUSS `kill_one` `event_post` rufen — sonst kein Wake. Solange
+Sleeper auf wq parken, MUSS `kill_one` `sched_wake` rufen. Die "Wahl"
+trifft heute der Code, indem er beide ruft.
+
+Wirklicher Defekt: Signal-Delivery hat keinen *einheitlichen* Mechanismus.
+Die Loesung ist nicht "noch einen Mechanismus dazu", sondern "den eq-Pfad
+abloesen" (10.2b) und dann `signal_wake_up()` als einzigen Wrapper einfuehren.
 
 ### 4.2 Linux-Modell
 
@@ -599,61 +664,99 @@ kritischen Pfad fuer Phase 10-19.
 
 ## 9. Konkrete Migrations-Reihenfolge Phase 10.2
 
-**Falsch wäre**: weiter Pfad-fuer-Pfad migrieren mit dem aktuellen
-`sched_wake`-Routing-Bug. Jeder weitere migrierte Pfad zerbricht nanosleep01
-neu, weil das System-State-Modell inkonsistent bleibt.
+Wurzel-Bug aus §2.1 ist seit Commit 02e0215/5ca01f4 weg. Die folgende Sequenz
+spiegelt die **Restarbeit** Stand 2026-04-26.
 
-**Richtig**:
+Ziel der Migration: alle musl- und LTP-Tests gruen. Aktueller Baseline-Snapshot
+in `notes/cosmo-serial.log` (2189 ktest gruen, 117 LTP-Failures gegen den
+pre-10.1-Stand).
 
-### Phase 10.2a — Architekturkorrektur (1 Commit, kein Funktions-Refactor)
+### Phase 10.2a — Func-Callback + Mask (1 Commit) ✅
 
-1. `wait_func_t` und `wait_queue_entry.func` einfuehren.
-2. `default_wake_function` / `autoremove_wake_function` schreiben.
-3. `try_to_wake_up(t, mask)` einfuehren (CAS state + sched_add).
-4. `wake_up(wq, mask, nr)` ruft `e->func(e, mask)` statt eigener
-   try_to_wake_up_locked.
-5. `sched_wake(t)` wird Wrapper: `try_to_wake_up(t, TASK_NORMAL)`.
-6. `t->wait_head` und `t->wait_entry` ENTFERNEN aus `thread_t`.
-7. `bind_wait/unbind_wait` in waitqueue.c LOESCHEN.
-8. Test: alle 2189 ktest, alle musl/LTP runs identisch zu pre-10.1 baseline.
+Aktuelle Wq-Mechanik laesst keine Subsystem-eigene Wake-Logik registrieren.
+Ohne das ist epoll/futex-Migration unmoeglich.
 
-**Erwartung**: 0 Regressions. Das ist Refactor zu cleaner Wake-Path-Semantik
-ohne semantische Aenderung an Sleepers.
+1. `wait_func_t` typedef + `func`-Feld in `wait_queue_entry_t`. DEFINE_WAIT
+   und DEFINE_WAIT_EXCLUSIVE setzen `.func = autoremove_wake_function`.
+2. `default_wake_function` / `autoremove_wake_function` als public Symbole
+   in waitqueue.c. Beide rufen `try_to_wake_up(e->task, mask)`.
+3. `try_to_wake_up(thread_t *t, unsigned int mask)` als public Symbol.
+   Aktuelles `try_to_wake_up_locked` wird Implementierungsdetail; `mask`
+   wird gegen `(1u << t->state)` gefiltert (siehe §2.5).
+4. `wake_up`, `wake_up_all`, `wake_up_one`, `wake_up_nr`, `wake_up_interruptible`
+   delegieren an `e->func(e, mask)` statt direkt `try_to_wake_up_locked` zu
+   rufen. Bestehende Mask-Semantik (`wake_up_interruptible` → TASK_INTERRUPTIBLE-
+   only) wird im Mask-Argument ausgedrueckt.
+5. `TASK_*`-Masken in `include/kernel/proc/thread.h` (Aliase auf `1 << THREAD_*`).
+6. `signal_wake_up(thread_t *t)` als public Wrapper:
+   `try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE)`. Caller-Migration
+   in 10.2b-8 (kill_one, sigtimedwait).
+7. Tests: ktest-Count steigt um mind. 4 Tests fuer try_to_wake_up + Mask-
+   Filterung + autoremove + signal_wake_up (CLAUDE.md: "Kein neuer Code ohne
+   Tests").
 
-### Phase 10.2b — Migrationsreihenfolge (gestaffelt, je 1 Commit)
+**Erwartung**: 0 Regressions an Subsystem-Tests. timerfd nutzt das neue
+`func`-Modell sofort transparent (DEFINE_WAIT setzt Default).
 
-Niedriges Risiko zuerst (kein Signal/RT-Pfad), dann hoch:
+### Phase 10.2b — Subsystem-Migration (je 1 Commit)
+
+Subsysteme heute auf `event_queue` (und damit `event_post` + `event_wait`):
+
+| Subsystem | Datei | EQ-Types |
+|-----------|-------|----------|
+| eventfd | `event/eventfd.c` | EQ_EVENTFD_READY |
+| pipe | `sys/sys_ipc.c` | EQ_PIPE_DATA, EQ_PIPE_CLOSED |
+| socket Unix | `net/unix_socket.c` | EQ_SOCKET_DATA, EQ_SOCKET_CONNECT |
+| socket TCP/UDP | `net/tcp.c`, `net/tcp6.c`, `net/udp.c`, `net/udp6.c` | EQ_SOCKET_DATA, EQ_SOCKET_CONNECT |
+| epoll | `event/epoll.c` (+ Per-Core-Sleeper-Array) | EQ_EPOLL_READY, EQ_TIMEOUT |
+| futex | `ipc/futex.c` | EQ_FUTEX_WAKE |
+| wait4 | `proc/process_wait.c` | EQ_CHILD_EXITED |
+| sigtimedwait + kill_one | `proc/signal.c` | EQ_CHILD_EXITED, EQ_CHILD_STOPPED, EQ_CHILD_CONTINUED |
+
+Reihenfolge nach Risiko:
 
 1. **eventfd** — counter+wq, einfach. Risiko: minimal.
-2. **pipe** — 2 wqs (read/write). Risiko: minimal.
-3. **socket/poll** — viele wqs (sk_wq pro fd). Risiko: mittel.
-4. **epoll** — eppoll_entry mit eigenem `func`. Loescht
-   `epoll_sleeper_add/remove`, `epoll_wake_all`, per-core sleeper array.
+2. **pipe** — `pipe.read_wq`/`pipe.write_wq` ersetzen `blocked_reader`/
+   `blocked_writer`-Felder (heute single-slot, gegen POSIX). Risiko: niedrig.
+3. **socket Unix** — `usock->read_wq`, `usock->accept_wq`. Risiko: mittel.
+4. **socket TCP/UDP** — `sk->read_wq` pro Socket, `accept_wq` auf Listening.
    Risiko: mittel.
-5. **futex** — bucket-wq, `wait_event_interruptible_timeout`. Loescht
-   `futex_drain_events`, EQ_FUTEX_WAKE-Type. Risiko: hoch (PI-Boost-Pfad
-   beruehrt!).
-6. **wait4 / process_wait** — proc-wq, `wait_event_interruptible`. Loescht
-   `EQ_CHILD_EXITED`-Wakeup-Mechanik. Risiko: hoch (Reaping-Race).
-7. **rt_sigtimedwait** — proc->signal_wq + signal_pending(t)-Loop. Loescht
-   `event_wait`-Aufruf in signal.c. Risiko: hoch.
-8. **event_wait selbst LOESCHEN** — keine Caller mehr. event_queue.c geht
-   ersatzlos weg. `thread_t.eq` und `thread_t.eq_lock` entfernen.
+5. **epoll** — `epitem.entry.func = ep_poll_callback`, `ep->wq` fuer
+   `epoll_wait`-Sleeper. Loescht Per-Core-Sleeper-Array
+   (`epoll.c:230-272`), `epoll_wake_all`, `wake_at_tsc`-Hack. Risiko: mittel.
+6. **futex** — bucket-wq, `wait_event_interruptible_timeout`. Loescht
+   `futex_drain_events`, EQ_FUTEX_WAKE. Risiko: hoch (PI-Boost-Pfad).
+   `FUTEX_WAITER_MAX 256` slab+RLIMIT-konvertieren (CLAUDE.md "keine fixen Pools").
+7. **wait4 / process_wait** — `proc->children_wq`,
+   `wait_event_interruptible`. Loescht `EQ_CHILD_EXITED`-Wakeup-Mechanik.
+   Risiko: hoch (Reaping-Race).
+8. **rt_sigtimedwait + kill_one** — `proc->signal_wq` + `signal_pending(t)`-Loop.
+   `kill_one`-Doppelpfad (`event_post` + `sched_wake`) ersetzt durch
+   `signal_wake_up(t)`. Loescht alle `event_wait`/`event_post`-Aufrufe in
+   signal.c. Risiko: hoch.
+9. **event_wait LOESCHEN** — keine Caller mehr. `event_queue.c::event_wait`
+   und `event_post` weg. Funktion-Sigs aus internal.h. `thread_t.eq` /
+   `thread_t.eq_lock` bleiben noch (10.2c).
 
 **Pro Schritt**:
-- Vor dem Commit: `make test-hw` und `make alpine-test` muessen identisch
-  zur baseline sein.
-- Wenn nicht: NICHT raten. Diff zeigt einen state-Race — finden, fixen, dann commit.
+- Davor: `make` + `make test-hw` + `make alpine-test` baselinen.
+- Migration eines Subsystems in **einem** Commit (kein Halb-Migrationsstand).
+- Tests: jeder neue Pfad bekommt eigenen ktest (CLAUDE.md). Subsystem-LTP-
+  Tests (z.B. eventfd01..02, pipe01..05, futex01..04) muessen gruen sein.
+- Wenn Regression: NICHT raten, NICHT Test-Code reverten — Diff zeigt einen
+  state-Race oder fehlenden Wakeup. Finden, fixen, dann commit.
 
-### Phase 10.2c — Aufraeumen (1 Commit)
+### Phase 10.2c — event_queue ersatzlos entfernen (1 Commit)
 
-- `thread_t.eq`, `thread_t.eq_lock` weg.
-- `event_queue.c` und `core/event_queue.h` weg.
-- `EQ_*`-Konstanten weg (oder, wenn ein Signal-Path noch
-  EQ_CHILD_STOPPED braucht: refactor zu proper notification primitive).
+- `thread_t.eq`, `thread_t.eq_lock` weg (thread.h).
+- `src/kernel/core/event_queue.c` + `include/kernel/core/event_queue.h` weg.
+- `EQ_*`-Konstanten weg.
+- `process_exec.c::sigsuspend_drain` u. a. drain-Stellen weg (kein eq mehr).
+- Build: `core/event_queue.c` aus Makefile, alle `extern void event_post(...)`-
+  Forward-Decls aus den Subsystem-Files weg.
 
 **Geschaetzte Diff-Groesse**: -800 / +300 LOC. Nettozugewinn: 500 LOC weg,
-zwei Concurrency-Klassen verschwinden.
+zwei Concurrency-Klassen (event_queue + Per-Core-Sleeper-Arrays) verschwinden.
 
 ---
 

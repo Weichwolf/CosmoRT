@@ -19,6 +19,17 @@
 #define THREAD_DEAD      4
 #define THREAD_STOPPED   5
 
+/* TASK_* — bit aliases of THREAD_* for try_to_wake_up's mask argument.
+ * "Wecke nur, wenn t->state in mask." TASK_INTERRUPTIBLE und
+ * TASK_UNINTERRUPTIBLE kollabieren bei uns auf denselben Speicherwert
+ * (THREAD_BLOCKED) — die Trennung sitzt im Sleep-Loop, nicht im State. */
+#define TASK_RUNNING         (1u << THREAD_RUNNING)
+#define TASK_INTERRUPTIBLE   (1u << THREAD_BLOCKED)
+#define TASK_UNINTERRUPTIBLE (1u << THREAD_BLOCKED)
+#define TASK_STOPPED         (1u << THREAD_STOPPED)
+#define TASK_KILLABLE        TASK_INTERRUPTIBLE
+#define TASK_NORMAL          (TASK_INTERRUPTIBLE | TASK_STOPPED)
+
 /* Scheduling policies (POSIX) */
 #define SCHED_OTHER  0   /* Default: fair timesharing */
 #define SCHED_FIFO   1   /* RT: run until yield/block, no timeslice */

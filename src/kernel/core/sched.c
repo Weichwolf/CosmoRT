@@ -80,31 +80,14 @@ void sched_add(thread_t *t) {
     spin_unlock_irq(&rq_lock, flags);
 }
 
-/* try_to_wake_up — Linux's single wake primitive (kernel/sched/core.c).
+/* sched_wake — Wrapper auf try_to_wake_up(t, TASK_NORMAL).
  *
- * Pure state CAS: BLOCKED|STOPPED → RUNNABLE + sched_add. No waitqueue
- * routing — the waker never touches a waitqueue. Sleepers re-check
- * their condition (cond || signal) in their own loop after schedule()
- * returns. This is the *one* way to bring a sleeping task back to the
- * runqueue.
- *
- * Older sched_wake routed via t->wait_head (a fremde Waitqueue), which
- * was a CosmoRT invention that Linux never had. Removing it ends the
- * "stale events / spurious wake" Race-Klasse that reverted multiple
- * waitqueue migration patches in Phase 10.2. */
+ * Wirkung unveraendert gegenueber dem alten direkten CAS-Pfad: TASK_NORMAL
+ * deckt THREAD_BLOCKED + THREAD_STOPPED, beides via einen einzigen state-CAS
+ * gewickelt in waitqueue.c::try_to_wake_up. Damit existiert genau *eine*
+ * Wake-Primitive im Kernel, statt der alten Doppelimplementierung. */
 void sched_wake(thread_t *t) {
-    if (!t) return;
-
-    int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
-    if (st == THREAD_DEAD || st == THREAD_FREE) return;
-
-    /* CAS BLOCKED → RUNNABLE: success means we won the race against
-     * schedule()'s state-set or another waker. sched_add enqueues. */
-    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-    if (old == THREAD_BLOCKED) { sched_add(t); return; }
-    /* SIGCONT path: wake STOPPED threads. */
-    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
-    if (old == THREAD_STOPPED) sched_add(t);
+    try_to_wake_up(t, TASK_NORMAL);
 }
 
 __attribute__((hot))

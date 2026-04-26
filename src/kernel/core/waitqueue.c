@@ -124,18 +124,55 @@ void finish_wait(wait_queue_head_t *wq, wait_queue_entry_t *e) {
 
 extern void sched_add(struct thread *t);
 
-/* Try to transition t from BLOCKED -> RUNNABLE and enqueue.
- * Returns 1 if we performed the wake, 0 otherwise.
- * Caller must hold the waitqueue lock (matches Linux try_to_wake_up's
- * p->pi_lock ownership during schedule). */
-static int try_to_wake_up_locked(thread_t *t) {
+/* Linux's einzige Wake-Primitive. Mask-Filter via (1u << t->state) & mask:
+ *   TASK_INTERRUPTIBLE -> matcht THREAD_BLOCKED
+ *   TASK_STOPPED       -> matcht THREAD_STOPPED
+ *   TASK_NORMAL        -> beide
+ * Bei Match: CAS state -> RUNNABLE, sched_add. Returns 1 bei Wake, 0 sonst.
+ *
+ * Loop ist Race-Fix: zwischen Load und CAS kann der Thread seinen state
+ * von BLOCKED nach STOPPED (oder umgekehrt) wechseln. Single-CAS mit
+ * fixiertem Erwartungswert wuerde fehlschlagen und einen verbleibenden
+ * im-Mask-State ungeweckt lassen — das war der 10.2a-WIP-Bug, der
+ * event_queue/futex/getdents-Tests in TIMEOUT trieb. Linux's pi_lock-
+ * Modell vermeidet den Loop durch Lock-Akquisition; wir nehmen die CAS-
+ * Loop-Variante, weil unsere Wake-Pfade (sched_wake, signal_wake_up)
+ * keinen pi_lock-Aequivalenten haben. */
+int try_to_wake_up(thread_t *t, unsigned int mask) {
     if (!t) return 0;
-    int old = __sync_val_compare_and_swap(&t->state, THREAD_BLOCKED, THREAD_RUNNABLE);
-    if (old == THREAD_BLOCKED) { sched_add(t); return 1; }
-    /* Also wake STOPPED (SIGCONT semantics when used as generic waker) */
-    old = __sync_val_compare_and_swap(&t->state, THREAD_STOPPED, THREAD_RUNNABLE);
-    if (old == THREAD_STOPPED) { sched_add(t); return 1; }
-    return 0;
+    for (;;) {
+        int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+        if (st == THREAD_DEAD || st == THREAD_FREE) return 0;
+        if (!((1u << st) & mask)) return 0;
+        if (__sync_bool_compare_and_swap(&t->state, st, THREAD_RUNNABLE)) {
+            sched_add(t);
+            return 1;
+        }
+    }
+}
+
+int default_wake_function(wait_queue_entry_t *e, unsigned int mask) {
+    return try_to_wake_up(e->task, mask);
+}
+
+int autoremove_wake_function(wait_queue_entry_t *e, unsigned int mask) {
+    int r = try_to_wake_up(e->task, mask);
+    if (r) e->flags |= WQ_FLAG_AUTOREMOVE;
+    return r;
+}
+
+void signal_wake_up(thread_t *t) {
+    try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE);
+}
+
+/* Dispatch via e->func — Subsysteme registrieren eigene Callbacks (epoll).
+ * Default ist autoremove_wake_function ueber DEFINE_WAIT. NULL-Func wird
+ * als default_wake_function behandelt (defensive bei manuell konstruierten
+ * Eintraegen ohne DEFINE_WAIT). */
+static inline int wq_call(wait_queue_entry_t *e, unsigned int mask) {
+    wait_func_t fn = e->func;
+    if (!fn) fn = default_wake_function;
+    return fn(e, mask);
 }
 
 int wake_up_nr(wait_queue_head_t *wq, int n) {
@@ -151,11 +188,8 @@ int wake_up_nr(wait_queue_head_t *wq, int n) {
         for (;;) {
             wait_queue_entry_t *next = cur->next;
             int exclusive = (cur->flags & WQ_FLAG_EXCLUSIVE) != 0;
-            thread_t *task = cur->task;
 
-            /* Entries stay in the queue; finish_wait removes them.
-             * We only flip state + enqueue on the runqueue. */
-            if (try_to_wake_up_locked(task)) {
+            if (wq_call(cur, TASK_NORMAL)) {
                 woken++;
                 if (exclusive && woken >= n) break;
             }
@@ -183,12 +217,9 @@ int wake_up(wait_queue_head_t *wq) {
         for (;;) {
             wait_queue_entry_t *next = cur->next;
             int exclusive = (cur->flags & WQ_FLAG_EXCLUSIVE) != 0;
-            thread_t *task = cur->task;
 
-            if (exclusive && exclusive_woken) {
-                /* Keep the extra exclusive waiters parked. */
-            } else {
-                if (try_to_wake_up_locked(task)) {
+            if (!(exclusive && exclusive_woken)) {
+                if (wq_call(cur, TASK_NORMAL)) {
                     woken++;
                     if (exclusive) exclusive_woken = 1;
                 }
@@ -214,7 +245,7 @@ int wake_up_all(wait_queue_head_t *wq) {
         wait_queue_entry_t *cur = start;
         for (;;) {
             wait_queue_entry_t *next = cur->next;
-            if (try_to_wake_up_locked(cur->task)) woken++;
+            if (wq_call(cur, TASK_NORMAL)) woken++;
             if (next == start) break;
             cur = next;
         }
@@ -225,7 +256,36 @@ int wake_up_all(wait_queue_head_t *wq) {
 }
 
 int wake_up_one(wait_queue_head_t *wq) { return wake_up_nr(wq, 1); }
-int wake_up_interruptible(wait_queue_head_t *wq) { return wake_up(wq); }
+
+int wake_up_interruptible(wait_queue_head_t *wq) {
+    if (!wq) return 0;
+    int woken = 0;
+
+    uint64_t flags;
+    spin_lock_irq(&wq->lock, &flags);
+
+    wait_queue_entry_t *start = wq->head;
+    if (start) {
+        wait_queue_entry_t *cur = start;
+        int exclusive_woken = 0;
+        for (;;) {
+            wait_queue_entry_t *next = cur->next;
+            int exclusive = (cur->flags & WQ_FLAG_EXCLUSIVE) != 0;
+
+            if (!(exclusive && exclusive_woken)) {
+                if (wq_call(cur, TASK_INTERRUPTIBLE)) {
+                    woken++;
+                    if (exclusive) exclusive_woken = 1;
+                }
+            }
+            if (next == start) break;
+            cur = next;
+        }
+    }
+
+    spin_unlock_irq(&wq->lock, flags);
+    return woken;
+}
 
 /* ── Signal-deliverable helper (used by __wait_event_interruptible) ── */
 

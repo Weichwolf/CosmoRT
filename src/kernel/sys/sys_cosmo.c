@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "core/clocksource.h"
 #include "core/timer.h"
+#include "core/waitqueue.h"
 #include "hw/acpi.h"
 #include "hw/hyperv.h"
 #include "hw/kvmclock.h"
@@ -11,6 +12,7 @@
 #include "arch/acpi_pm.h"
 #include "config.h"
 #include "memops.h"
+#include "proc/thread.h"
 
 #define HW_CAP_CHECK() do { \
     process_t *_p = proc_current(); \
@@ -1200,6 +1202,157 @@ static long tsc_path_consistent(void) {
     return 0;
 }
 
+/* ── Waitqueue/wake selftests (subcases 200-203) ─────
+ * Exercise try_to_wake_up's mask filter, wait_queue_entry func dispatch,
+ * signal_wake_up wrapper, and autoremove_wake_function return contract.
+ *
+ * Test threads are slab-allocated via thread_alloc with proc=NULL, so
+ * schedule()'s !next->proc skip-path silently drops them if the run queue
+ * picks them up before cleanup. State is moved to THREAD_DEAD before
+ * thread_free so the picker's THREAD_DEAD branch reaps them via the
+ * existing thread_free(next) path. */
+
+static int wq_test_func_calls;
+static unsigned int wq_test_func_last_mask;
+static int wq_test_func(wait_queue_entry_t *e, unsigned int mask) {
+    (void)e;
+    wq_test_func_calls++;
+    wq_test_func_last_mask = mask;
+    return 1;
+}
+
+static void wq_test_thread_release(thread_t *t) {
+    if (!t) return;
+    __atomic_store_n(&t->state, THREAD_DEAD, __ATOMIC_RELEASE);
+    thread_free(t);
+}
+
+static long wq_mask_filter_test(void) {
+    thread_t *t = thread_alloc();
+    if (!t) return -1;
+    long rc = 0;
+
+    /* (a) STOPPED + TASK_INTERRUPTIBLE-only mask -> No-Op (return 0). */
+    __atomic_store_n(&t->state, THREAD_STOPPED, __ATOMIC_RELEASE);
+    if (try_to_wake_up(t, TASK_INTERRUPTIBLE) != 0) { rc = -10; goto out; }
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_STOPPED) { rc = -11; goto out; }
+
+    /* (b) STOPPED + TASK_STOPPED mask -> wakes (return 1, state=RUNNABLE). */
+    if (try_to_wake_up(t, TASK_STOPPED) != 1) { rc = -20; goto out; }
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_RUNNABLE) { rc = -21; goto out; }
+
+    /* (c) BLOCKED + TASK_STOPPED-only mask -> No-Op. */
+    __atomic_store_n(&t->state, THREAD_BLOCKED, __ATOMIC_RELEASE);
+    if (try_to_wake_up(t, TASK_STOPPED) != 0) { rc = -30; goto out; }
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_BLOCKED) { rc = -31; goto out; }
+
+    /* (d) BLOCKED + TASK_INTERRUPTIBLE -> wakes. */
+    if (try_to_wake_up(t, TASK_INTERRUPTIBLE) != 1) { rc = -40; goto out; }
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_RUNNABLE) { rc = -41; goto out; }
+
+    /* (e) Already RUNNABLE -> No-Op for any mask. */
+    if (try_to_wake_up(t, TASK_NORMAL) != 0) { rc = -50; goto out; }
+
+out:
+    wq_test_thread_release(t);
+    return rc;
+}
+
+static long wq_func_called_test(void) {
+    thread_t *t = thread_alloc();
+    if (!t) return -1;
+    __atomic_store_n(&t->state, THREAD_BLOCKED, __ATOMIC_RELEASE);
+
+    wait_queue_head_t wq;
+    init_waitqueue_head(&wq);
+    wait_queue_entry_t ent = {
+        .task = t, .flags = 0, .func = wq_test_func, .next = 0, .prev = 0,
+    };
+    add_wait_queue(&wq, &ent);
+
+    wq_test_func_calls = 0;
+    wq_test_func_last_mask = 0;
+    int woken = wake_up(&wq);
+
+    long rc = 0;
+    if (wq_test_func_calls != 1) rc = -1;
+    else if (woken != 1) rc = -2;
+    else if (wq_test_func_last_mask != TASK_NORMAL) rc = -3;
+    /* Custom func did NOT actually CAS state — entry's task remains BLOCKED. */
+    else if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_BLOCKED) rc = -4;
+
+    /* Test wake_up_interruptible passes TASK_INTERRUPTIBLE. */
+    wq_test_func_calls = 0;
+    wq_test_func_last_mask = 0;
+    woken = wake_up_interruptible(&wq);
+    if (rc == 0) {
+        if (wq_test_func_calls != 1) rc = -5;
+        else if (woken != 1) rc = -6;
+        else if (wq_test_func_last_mask != TASK_INTERRUPTIBLE) rc = -7;
+    }
+
+    remove_wait_queue(&wq, &ent);
+    wq_test_thread_release(t);
+    return rc;
+}
+
+static long wq_signal_wake_up_test(void) {
+    thread_t *t = thread_alloc();
+    if (!t) return -1;
+    long rc = 0;
+
+    /* signal_wake_up matches BLOCKED via TASK_INTERRUPTIBLE | TASK_KILLABLE. */
+    __atomic_store_n(&t->state, THREAD_BLOCKED, __ATOMIC_RELEASE);
+    signal_wake_up(t);
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_RUNNABLE) { rc = -1; goto out; }
+
+    /* signal_wake_up does NOT touch STOPPED (that's SIGCONT's job). */
+    __atomic_store_n(&t->state, THREAD_STOPPED, __ATOMIC_RELEASE);
+    signal_wake_up(t);
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_STOPPED) { rc = -2; goto out; }
+
+out:
+    wq_test_thread_release(t);
+    return rc;
+}
+
+static long wq_autoremove_test(void) {
+    thread_t *t = thread_alloc();
+    if (!t) return -1;
+    __atomic_store_n(&t->state, THREAD_BLOCKED, __ATOMIC_RELEASE);
+
+    wait_queue_head_t wq;
+    init_waitqueue_head(&wq);
+    wait_queue_entry_t ent = {
+        .task = t, .flags = 0, .func = autoremove_wake_function,
+        .next = 0, .prev = 0,
+    };
+    add_wait_queue(&wq, &ent);
+
+    long rc = 0;
+    /* autoremove returns 1 on successful wake. */
+    if (autoremove_wake_function(&ent, TASK_INTERRUPTIBLE) != 1) { rc = -1; goto out; }
+    /* AUTOREMOVE flag set so finish_wait knows to dequeue. */
+    if (!(ent.flags & WQ_FLAG_AUTOREMOVE)) { rc = -2; goto out; }
+    /* State transitioned to RUNNABLE. */
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != THREAD_RUNNABLE) { rc = -3; goto out; }
+
+    /* finish_wait dequeues the entry; head must be empty afterwards. */
+    finish_wait(&wq, &ent);
+    if (wq.head != 0) { rc = -4; goto out; }
+    if (ent.next != 0 || ent.prev != 0) { rc = -5; goto out; }
+
+    /* No-match path: thread already RUNNABLE -> autoremove returns 0,
+     * AUTOREMOVE flag NOT set on this call (we cleared it via finish_wait). */
+    ent.flags = 0;
+    if (autoremove_wake_function(&ent, TASK_INTERRUPTIBLE) != 0) { rc = -6; goto out; }
+    if (ent.flags & WQ_FLAG_AUTOREMOVE) { rc = -7; goto out; }
+
+out:
+    wq_test_thread_release(t);
+    return rc;
+}
+
 /* ── RT Query (subcommands via a1) ────────────────── */
 
 static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
@@ -1270,6 +1423,10 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 113: return tsc_rating_downgrade();
     case 114: return tsc_freq_plausible();
     case 115: return tsc_path_consistent();
+    case 200: return wq_mask_filter_test();
+    case 201: return wq_func_called_test();
+    case 202: return wq_signal_wake_up_test();
+    case 203: return wq_autoremove_test();
     default: return -EINVAL;
     }
 }

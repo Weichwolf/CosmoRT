@@ -30,12 +30,20 @@
 #include "spinlock.h"
 
 struct thread;
+struct wait_queue_entry;
 
-#define WQ_FLAG_EXCLUSIVE 0x01
+#define WQ_FLAG_EXCLUSIVE  0x01
+#define WQ_FLAG_AUTOREMOVE 0x02
+
+/* Wake-Callback. Linux's wait_queue_func_t. Default: autoremove_wake_function.
+ * Subsysteme wie epoll registrieren eigene Funktionen, die statt sched_add
+ * z.B. ein Ready-Bit setzen und den epoll-eigenen Sleeper wecken. */
+typedef int (*wait_func_t)(struct wait_queue_entry *e, unsigned int mask);
 
 typedef struct wait_queue_entry {
     struct thread           *task;
     unsigned int             flags;
+    wait_func_t              func;
     struct wait_queue_entry *next;
     struct wait_queue_entry *prev;
 } wait_queue_entry_t;
@@ -94,17 +102,39 @@ long schedule_timeout_interruptible(wait_queue_head_t *wq, wait_queue_entry_t *e
  * Replaces legacy thread_block_ms. */
 int sleep_interruptible_ns(uint64_t timeout_ns);
 
+/* ── Wake-Primitive (mask-filtered, public) ──────
+ * try_to_wake_up: einzige Wake-Funktion. Prueft (1u << t->state) & mask;
+ * bei Match CAS state -> RUNNABLE + sched_add. Returns 1 bei Wake, 0 sonst.
+ * Caller haelt KEINE Locks (Lock-Akquisition durch wake_up* ueber wq->lock). */
+int try_to_wake_up(struct thread *t, unsigned int mask);
+
+/* Default-Funktion: nutzt die Convenience-Felder e->task. */
+int default_wake_function(wait_queue_entry_t *e, unsigned int mask);
+
+/* Default fuer DEFINE_WAIT: weckt + markiert Eintrag fuer finish_wait-Cleanup. */
+int autoremove_wake_function(wait_queue_entry_t *e, unsigned int mask);
+
+/* Signal-Wake. Wrapper fuer try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE).
+ * Semantik: nur Threads in interruptible Sleep wecken — Uninterruptible (D)
+ * bleibt schlafend. Bei uns kollabiert das auf denselben State, aber der
+ * Wrapper drueckt die Intent aus, die kill_one in 10.2b uebernimmt. */
+void signal_wake_up(struct thread *t);
+
 /* ── DEFINE_WAIT helpers ──────────────────────── */
 #define DEFINE_WAIT(name)                                  \
     wait_queue_entry_t name = {                            \
         .task = thread_current(),                          \
-        .flags = 0, .next = 0, .prev = 0                   \
+        .flags = 0,                                        \
+        .func = autoremove_wake_function,                  \
+        .next = 0, .prev = 0                               \
     }
 
 #define DEFINE_WAIT_EXCLUSIVE(name)                        \
     wait_queue_entry_t name = {                            \
         .task = thread_current(),                          \
-        .flags = WQ_FLAG_EXCLUSIVE, .next = 0, .prev = 0   \
+        .flags = WQ_FLAG_EXCLUSIVE,                        \
+        .func = autoremove_wake_function,                  \
+        .next = 0, .prev = 0                               \
     }
 
 /* ── wait_event_interruptible: loop that waits for `cond` ──
