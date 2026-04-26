@@ -19,8 +19,6 @@
 /* ── Event Types ─────────────────────────────── */
 
 #define EQ_CHILD_EXITED    1
-#define EQ_CHILD_STOPPED   2
-#define EQ_CHILD_CONTINUED 3
 #define EQ_PIPE_DATA       4
 #define EQ_PIPE_CLOSED     5
 #define EQ_SOCKET_DATA     8

@@ -194,6 +194,8 @@ process_t *proc_alloc(void) {
         /* Default network namespace — init_net_ns (pinned). clone() with
          * CLONE_NEWNET swaps to a fresh NS in process_fork. */
         p->net_ns = net_ns_get(&init_net_ns);
+
+        init_waitqueue_head(&p->children_wq);
     }
     return p;
 }

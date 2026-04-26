@@ -102,12 +102,7 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
                 process_t *init = proc_find(1);
                 if (init) {
                     __sync_fetch_and_or(&init->sig_pending, SIG_BIT(SIGCHLD));
-                    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                    thread_t *it = init->threads;
-                    while (it) {
-                        event_post(it, 1 /* EQ_CHILD_EXITED */, (uint64_t)child->pid);
-                        it = it->proc_next;
-                    }
+                    wake_up(&init->children_wq);
                 }
             }
         }
@@ -133,16 +128,7 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
         if (parent) {
             int nsig = p->notify_signal ? p->notify_signal : SIGCHLD;
             __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
-
-            extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-            uint64_t pflags;
-            spin_lock_irq(&parent->lock, &pflags);
-            thread_t *pt = parent->threads;
-            while (pt) {
-                event_post(pt, 1 /* EQ_CHILD_EXITED */, (uint64_t)p->pid);
-                pt = pt->proc_next;
-            }
-            spin_unlock_irq(&parent->lock, pflags);
+            wake_up(&parent->children_wq);
         }
     }
 }

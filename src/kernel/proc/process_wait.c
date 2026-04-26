@@ -2,6 +2,7 @@
 
 #include "proc/proc_internal.h"
 #include "core/time_ns.h"
+#include "core/waitqueue.h"
 #include "net/net_ns.h"
 #include "linux/signal.h"
 
@@ -130,8 +131,39 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
     int wuntraced  = options & 2;  /* WUNTRACED = 2 */
     int wcontinued = options & 8;  /* WCONTINUED = 8 */
 
-    /* Scan for matching child */
+    DEFINE_WAIT(wait);
+    int wait_armed = 0;
+    long rc = 0;
+    uint64_t saved_sig_blocked = cur->sig_blocked;
+
+    /* Linux do_wait pattern: prepare_to_wait BEFORE scanning the child set.
+     * If a child's exit_notify slips in after the scan but before schedule(),
+     * its wake_up(&children_wq) sees us already on the queue and flips our
+     * state RUNNABLE — schedule() returns immediately, we re-scan and find
+     * the new zombie. WNOHANG skips the wait machinery entirely.
+     *
+     * The child-signal mask is set once per syscall: SIGCHLD plus every
+     * configured exit signal at entry. New children added by clone() during
+     * the wait inherit through fork(); their notify_signal will be SIGCHLD
+     * (default) or already in our snapshot. */
+    if (!wnohang) {
+        uint64_t wait_block = SIG_BIT(SIGCHLD);
+        int cap0 = pid_table_capacity();
+        for (int i = 1; i < cap0; i++) {
+            process_t *c = pid_table[i];
+            if (c && c->parent_pid == parent->pid && c->notify_signal > 0
+                && c->notify_signal <= 63)
+                wait_block |= SIG_BIT(c->notify_signal);
+        }
+        cur->sig_blocked |= wait_block;
+    }
+
     for (;;) {
+        if (!wnohang) {
+            prepare_to_wait(&parent->children_wq, &wait, THREAD_BLOCKED);
+            wait_armed = 1;
+        }
+
         int found_child = 0;
         int cap = pid_table_capacity();
 
@@ -154,7 +186,7 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                     int kstatus = (stop_sig << 8) | 0x7F; /* WIFSTOPPED */
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
-                return child_pid;
+                rc = child_pid; goto out;
             }
 
             /* WCONTINUED: report continued children */
@@ -165,7 +197,7 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                     int kstatus = 0xFFFF; /* WIFCONTINUED */
                     kmemcpy(wstatus, &kstatus, sizeof(kstatus));
                 }
-                return child_pid;
+                rc = child_pid; goto out;
             }
 
             if (child->state == PROC_ZOMBIE) {
@@ -193,47 +225,27 @@ long do_wait4(int pid, int *wstatus, int options, void *rusage) {
                 }
 
                 proc_cleanup(child);
-                return child_pid;
+                rc = child_pid; goto out;
             }
         }
 
-        if (!found_child) return -ECHILD;
-        if (wnohang) return 0;
+        if (!found_child) { rc = -ECHILD; goto out; }
+        if (wnohang)      { rc = 0;       goto out; }
 
-        /* Block until child state change.
-         * Temporarily suppress SIGCHLD and every child's configured exit
-         * signal during event_wait. Linux do_wait() is woken by event_post,
-         * not by signal delivery, and does not return EINTR when the child's
-         * exit signal arrives — we rescan for zombies after the wake. */
+        /* Any signal outside the wait_block surfaces as ERESTARTSYS so the
+         * syscall-return path can SA_RESTART or convert to -EINTR. */
         {
-            (void)parent;
-            uint64_t wait_block = SIG_BIT(SIGCHLD);
-            int cap2 = pid_table_capacity();
-            for (int i = 1; i < cap2; i++) {
-                process_t *c = pid_table[i];
-                if (c && c->parent_pid == parent->pid && c->notify_signal > 0
-                    && c->notify_signal <= 63)
-                    wait_block |= SIG_BIT(c->notify_signal);
-            }
-            uint64_t save_blocked = cur->sig_blocked;
-            cur->sig_blocked |= wait_block;
-
-            event_t ev;
-            int _wr = event_wait(&cur->eq, &ev, -1);
-
-            cur->sig_blocked = save_blocked;
-
-            if (_wr == -4) {
-                /* Signal interrupted wait. Rescan once; only if still nothing
-                 * matches surface ERESTARTSYS for the non-child signal so the
-                 * syscall-return path either restarts (SA_RESTART) or
-                 * converts to -EINTR. Linux: wait4 is SA_RESTART-restartable;
-                 * args are still in user registers so RIP-rewind suffices. */
-                uint64_t remaining = (parent->sig_pending | cur->sig_thread_pending)
-                                   & ~cur->sig_blocked & ~wait_block;
-                if (remaining)
-                    return -ERESTARTSYS;
-            }
+            uint64_t deliverable = (parent->sig_pending | cur->sig_thread_pending)
+                                 & ~cur->sig_blocked;
+            if (deliverable) { rc = -ERESTARTSYS; goto out; }
         }
+
+        schedule();
     }
+
+out:
+    if (wait_armed)
+        finish_wait(&parent->children_wq, &wait);
+    cur->sig_blocked = saved_sig_blocked;
+    return rc;
 }

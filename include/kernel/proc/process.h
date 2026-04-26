@@ -9,6 +9,7 @@
 #include "proc/thread.h"
 #include "event/fd.h"
 #include "mm/vma.h"
+#include "core/waitqueue.h"
 
 /* Linux /proc/sys/kernel/ngroups_max default. The actual array is allocated
  * lazily via pages_alloc — process_t holds only a pointer + count, so a
@@ -114,6 +115,12 @@ typedef struct process {
     int         thread_count;
 
     spinlock_t  lock;
+
+    /* Parent-side waitqueue for wait4: child state transitions
+     * (exit/stop/continue) wake_up(&parent->children_wq). Linux's
+     * task->signal->wait_chldexit equivalent. Replaces the old
+     * event_post(parent_thread, EQ_CHILD_*) routing. */
+    wait_queue_head_t children_wq;
 
     /* Resource limits (at end to avoid offset shifts) */
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_DEFAULT_NOFILE) */

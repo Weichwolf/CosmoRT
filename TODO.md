@@ -232,14 +232,19 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       epoll_check_timeouts, epoll_nearest_deadline_tsc, wake_at_tsc-Hack
       ersatzlos weg. poll(2)/select(2) ebenfalls migriert: pro fd
       wait_queue_entry mit func=default_wake_function. ktest 3136 -> 3152.
-- [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD
-
-Hinweis 10.2c: wait4-Migration wurde angefangen (child_wait_wq auf
-process_t plus wake_up_interruptible in den exit/stop/continue-Pfaden)
-und wegen PID_TABLE_GROWTH-Hang wieder verworfen. Die Signal-
-Interlocking-Logik zwischen event_post und wait_queue braucht
-separate Analyse — vermutlich Lock-Ordnung zwischen parent->lock und
-child_wait_wq.lock oder eq_lock-Rekursion. Phase 10.2c nimmt das an.
+- [x] `process_wait`/`wait4` → waitqueue pro process (Phase 10.2b-7).
+      `process_t.children_wq`; do_wait4 nutzt prepare_to_wait + scan +
+      schedule (Linux do_wait Pattern). exit_kill_process /
+      check_pending_signals / kill_one ersetzen
+      `event_post(parent_thread, EQ_CHILD_*)` durch
+      `wake_up(&parent->children_wq)`. EQ_CHILD_STOPPED/CONTINUED
+      weg, EQ_CHILD_EXITED bleibt fuer nicht-migrierte sigtimedwait-
+      Pfade (10.2b-8). 4 neue ktests (block_wakeup_on_exit,
+      block_signal_eintr, wnohang_returns_zero, multiple_children).
+      ktest 3165 -> 3181. Bekannte Residual-Regression:
+      `sigtimedwait blocked SIGCHLD: woke <200ms` — sigtimedwait wartet
+      noch auf cur->eq, exit_notify weckt nur children_wq. 10.2b-8
+      (signal_wq) raeumt das auf.
 
 ### Erfolgskriterien
 

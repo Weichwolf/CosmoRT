@@ -76,13 +76,7 @@ void check_pending_signals(void) {
                 /* Notify parent (wake if blocked in wait4) */
                 if (p->parent_pid) {
                     process_t *parent = proc_find(p->parent_pid);
-                    if (parent) {
-                        thread_t *pt = parent->threads;
-                        while (pt) {
-                            event_post(pt, EQ_CHILD_STOPPED, ((uint64_t)sig << 32) | p->pid);
-                            pt = pt->proc_next;
-                        }
-                    }
+                    if (parent) wake_up(&parent->children_wq);
                 }
                 /* Current thread stopped.
                  * Set state and notify parent. Callers handle the actual yield:
@@ -111,13 +105,7 @@ void check_pending_signals(void) {
                 }
                 if (resumed && p->parent_pid) {
                     process_t *parent = proc_find(p->parent_pid);
-                    if (parent) {
-                        thread_t *pt = parent->threads;
-                        while (pt) {
-                            event_post(pt, EQ_CHILD_CONTINUED, (uint64_t)p->pid);
-                            pt = pt->proc_next;
-                        }
-                    }
+                    if (parent) wake_up(&parent->children_wq);
                 }
                 continue;
             }
@@ -143,15 +131,8 @@ void check_pending_signals(void) {
                     }
                     /* Notify parent */
                     if (p->parent_pid) {
-                        extern void event_post(thread_t *target, uint32_t type, uint64_t data);
                         process_t *parent = proc_find(p->parent_pid);
-                        if (parent) {
-                            thread_t *pt = parent->threads;
-                            while (pt) {
-                                event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
-                                pt = pt->proc_next;
-                            }
-                        }
+                        if (parent) wake_up(&parent->children_wq);
                     }
                     return;
                 }
@@ -252,7 +233,6 @@ long kill_one(process_t *target, int sig) {
             /* Stop all threads immediately — don't defer to check_pending_signals.
              * Threads on other cores will be preempted and see THREAD_STOPPED. */
             {
-                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
                 thread_t *t = target->threads;
                 while (t) {
                     if (t->state == THREAD_RUNNING || t->state == THREAD_RUNNABLE)
@@ -266,15 +246,8 @@ long kill_one(process_t *target, int sig) {
             target->was_continued = 0;
             /* Notify parent */
             if (target->parent_pid) {
-                extern void event_post(thread_t *t, uint32_t type, uint64_t data);
                 process_t *parent = proc_find(target->parent_pid);
-                if (parent) {
-                    thread_t *pt = parent->threads;
-                    while (pt) {
-                        event_post(pt, EQ_CHILD_STOPPED, ((uint64_t)sig << 32) | target->pid);
-                        pt = pt->proc_next;
-                    }
-                }
+                if (parent) wake_up(&parent->children_wq);
             }
             return 0;
         }
@@ -308,13 +281,7 @@ long kill_one(process_t *target, int sig) {
                 /* Notify parent */
                 if (resumed && target->parent_pid) {
                     process_t *parent = proc_find(target->parent_pid);
-                    if (parent) {
-                        thread_t *pt = parent->threads;
-                        while (pt) {
-                            event_post(pt, EQ_CHILD_CONTINUED, (uint64_t)target->pid);
-                            pt = pt->proc_next;
-                        }
-                    }
+                    if (parent) wake_up(&parent->children_wq);
                 }
             }
             return 0;
@@ -377,15 +344,7 @@ long kill_one(process_t *target, int sig) {
             if (parent) {
                 int nsig = target->notify_signal ? target->notify_signal : SIGCHLD;
                 __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
-                extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-                uint64_t pflags;
-                spin_lock_irq(&parent->lock, &pflags);
-                thread_t *pt = parent->threads;
-                while (pt) {
-                    event_post(pt, 1 /* EQ_CHILD_EXITED */, 0);
-                    pt = pt->proc_next;
-                }
-                spin_unlock_irq(&parent->lock, pflags);
+                wake_up(&parent->children_wq);
             }
         }
         return 0;
