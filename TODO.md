@@ -187,6 +187,22 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
 - [x] Neue ktests: `unix/block_read_wakeup`, `unix/block_read_signal`,
       `unix/block_accept_wakeup` (15 sub-asserts).
 
+**Phase 10.2b-4 — TCP/UDP auf waitqueue (ERLEDIGT)**
+
+- [x] `net_tcp_t.wait_wq` ersetzt `wait_thread`-Single-Slot. tcp_input
+      weckt via wake_up bei SYN-ACK / Daten / RST / FIN / state change.
+      Listener nutzen dieselbe wq fuer accept_queue-Admission.
+- [x] `udp_sock_t.recv_wq` ersetzt `wait_thread`. udp_input/udp6_input
+      wecken via wake_up nach q_push.
+- [x] `do_connect` (v4+v6), `do_accept4`, `do_recvfrom` (TCP+UDP+UDP6),
+      `socket_read` (TCP) → DEFINE_WAIT + prepare_to_wait +
+      schedule + signal/timeout/EAGAIN-Re-Check.
+- [x] event_post(EQ_SOCKET_DATA|EQ_SOCKET_CONNECT) komplett raus aus
+      tcp.c/tcp6.c/udp.c/udp6.c.
+- [x] Neue ktests: `tcp/block_recv_wakeup`, `tcp/block_accept_wakeup`,
+      `tcp/block_recv_signal`, `udp/block_recvfrom_wakeup` (28 sub-asserts).
+      ktest 3108 -> 3136.
+
 **Phase 10.2c — Restliche Blocking-Pfade**
 
 - [x] `event_wait_ns` → waitqueue auf `event_queue_t` (58c3b93, 1a3d33a,
@@ -199,8 +215,8 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       (`src/kernel/event/signalfd.c`). Migration eines nicht-existenten
       Pfads sinnlos. Volle signalfd-Implementierung waere eigene Phase
       (~500 LOC). LTP installiert keine signalfd-Tests, kein Blocker.
-- [ ] socket recv/accept → waitqueue pro socket (TCP/Unix nutzen
-      event_wait — profitiert indirekt schon von 10.2c)
+- [x] socket recv/accept → waitqueue pro socket (Phase 10.2b-3 + 10.2b-4
+      jeweils AF_UNIX bzw. AF_INET/AF_INET6 abgeschlossen).
 - [ ] epoll_wait → eigene waitqueue + ep_poll_callback pro registriertem
       fd (heute event_wait-getragen, indirekter Fix via 10.2c)
 - [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD

@@ -9,8 +9,7 @@
 #include "config.h"
 #include "spinlock.h"
 #include "net/in6.h"
-
-struct thread; /* forward declaration for wait_thread */
+#include "core/waitqueue.h"
 
 /* ── Config ────────────────────────────────────────── */
 
@@ -168,8 +167,13 @@ typedef struct net_tcp {
     uint8_t  tfo_cookie[16];  /* cached cookie */
     uint8_t  tfo_cookie_len;  /* 0 = no cookie */
 
-    /* Sleep/wake: thread blocked on this connection (recv/connect/close) */
-    struct thread *wait_thread;
+    /* Per-connection waitqueue. tcp_input wakes here on:
+     *   - SYN-ACK arrival (connect completion)
+     *   - data push into rx ringbuffer
+     *   - RST / FIN / state transition
+     * Listening sockets reuse the same wq for accept_queue admission
+     * (a net_tcp_t is either listener or connection, never both at once). */
+    wait_queue_head_t wait_wq;
 
     /* Owning network-namespace ID (init_net_ns.ns_id == 1). Hash key
      * includes this so two NS can hold the same 4-tuple independently. */

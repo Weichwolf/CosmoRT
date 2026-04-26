@@ -5,8 +5,7 @@
 #include <stdint.h>
 #include "config.h"
 #include "spinlock.h"
-
-struct thread; /* forward declaration for wait_thread */
+#include "core/waitqueue.h"
 
 /* ── Config ────────────────────────────────────────── */
 
@@ -20,7 +19,7 @@ typedef struct udp_sock {
     uint16_t   port;               /* host byte order, 0 = unused      */
     uint32_t   ns_id;              /* owning network namespace         */
     pkt_queue_t q;
-    struct thread *wait_thread;    /* thread blocked on recv, or NULL   */
+    wait_queue_head_t recv_wq;     /* readers blocked on q drain       */
     struct udp_sock *hash_next;    /* hash-chain link                   */
 } udp_sock_t;
 

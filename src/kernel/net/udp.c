@@ -9,7 +9,7 @@
 #include "net/net_util.h"
 #include "hw/serial.h"
 #include "core/timer.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 #include "mm/slab.h"
 
 /* ── Slab Pool (dynamic — grows on demand) ─────────── */
@@ -78,7 +78,7 @@ udp_sock_t *udp_bind_ns(uint32_t ns_id, uint16_t port) {
     fresh->port = port;
     fresh->ns_id = ns_id;
     fresh->q = (pkt_queue_t)PKT_QUEUE_INIT;
-    fresh->wait_thread = 0;
+    init_waitqueue_head(&fresh->recv_wq);
 
     /* Insert at head of hash chain */
     fresh->hash_next = udp_hash[idx];
@@ -111,7 +111,7 @@ void udp_unbind(udp_sock_t *s) {
     s->hash_next = 0;
     s->q.head = 0;
     s->q.count = 0;
-    s->wait_thread = 0;
+    wake_up_all(&s->recv_wq);
 
     spin_unlock_irq(&udp_table_lock, flags);
 
@@ -126,9 +126,7 @@ int udp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
     udp_sock_t *s = udp_find_ns(ns_id, dport);
     if (!s) return 0;
     q_push(&s->q, pkt, len);
-    /* Wake thread blocked on recv */
-    struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
-    if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+    wake_up(&s->recv_wq);
     return 1;
 }
 

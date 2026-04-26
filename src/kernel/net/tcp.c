@@ -11,7 +11,7 @@
 #include "core/timer.h"
 #include "mm/page_alloc.h"
 #include "mm/slab.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 
 /* Forward decl — IPv6 neighbour resolution. */
 extern int ndp_resolve(uint32_t ns_id, const struct in6_addr *addr, uint8_t *mac_out);
@@ -1078,8 +1078,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
                 tcp_req_enqueue(&ltcp->accept_queue, r);
                 ltcp->accept_qlen++;
 
-                struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
-                if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
+                wake_up(&ltcp->wait_wq);
                 extern void epoll_wake_all(void);
                 epoll_wake_all();
                 return;
@@ -1171,8 +1170,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
         c->state = TCP_ESTABLISHED;
         c->connect_err = 0;
         cc_init(c);
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+        wake_up(&c->wait_wq);
         return;
     }
 
@@ -1181,8 +1179,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
         c->state = TCP_CLOSED;
         c->got_rst = 1;
         c->connect_err = -1;
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+        wake_up_all(&c->wait_wq);
         return;
     }
 
@@ -1255,8 +1252,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
             c->state = TCP_CLOSED; tcp_unregister(c); state_changed = 1;
         }
         if (state_changed) {
-            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-            if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+            wake_up_all(&c->wait_wq);
         }
     }
 
@@ -1268,8 +1264,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
             c->rcv_nxt = tseq + (uint32_t)stored;
             ooo_drain(c);
             send_tcp(c, 0x10, 0, 0);
-            struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-            if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+            wake_up(&c->wait_wq);
         } else if ((int32_t)(tseq - c->rcv_nxt) > 0) {
             ooo_insert(c, tseq, payload, plen);
             send_tcp(c, 0x10, 0, 0); /* DupACK with SACK */
@@ -1292,8 +1287,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
             c->state = TCP_TIME_WAIT;
             send_tcp(c, 0x10, 0, 0);
         }
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+        wake_up_all(&c->wait_wq);
     }
 
     /* Keepalive: reset probe timer on any valid packet */
@@ -1386,16 +1380,15 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     }
     if (c->got_rst) return -1;
 
-    /* Preserve wait_thread + ns_id across mzero: caller (do_connect) set
-     * wait_thread for recursive loopback wakeup via send_syn -> tcp_input;
-     * ns_id was assigned at socket() time and must survive into
-     * tcp_register so the hash key targets the right namespace.
-     * OOO list is freed by net_tcp_close before reuse; mzero on a freshly
-     * allocated socket is safe (head was never written). */
-    struct thread *saved_wt = c->wait_thread;
+    /* Preserve wait_wq + ns_id across mzero. wait_wq holds blocked waiters
+     * for connect-completion wake (recursive loopback path: send_syn ->
+     * tcp_input -> wake_up); the embedded spinlock + list head must
+     * survive. ns_id was assigned at socket() time and is part of the
+     * hash key. OOO list is freed by net_tcp_close before reuse. */
+    wait_queue_head_t saved_wq = c->wait_wq;
     uint32_t saved_ns = c->ns_id;
     mzero(c, sizeof(*c));
-    c->wait_thread = saved_wt;
+    c->wait_wq = saved_wq;
     c->ns_id = saved_ns;
     rxring_init(&c->rx);
     mcpy(c->dst_ip, dst_ip, 4);
@@ -1443,10 +1436,10 @@ int net_tcp6_connect(net_tcp_t *c, const struct in6_addr *dst, uint16_t port) {
     }
     if (c->got_rst) return -1;
 
-    struct thread *saved_wt = c->wait_thread;
+    wait_queue_head_t saved_wq = c->wait_wq;
     uint32_t saved_ns = c->ns_id;
     mzero(c, sizeof(*c));
-    c->wait_thread = saved_wt;
+    c->wait_wq = saved_wq;
     c->ns_id = saved_ns;
     c->is_v6 = 1;
     rxring_init(&c->rx);
@@ -1568,8 +1561,7 @@ void net_tcp_keepalive_probe(void *conn) {
     if (c->keepalive_probes >= NET_TCP_KEEPALIVE_MAX_PROBES) {
         c->state = TCP_CLOSED;
         c->got_rst = 1;
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+        wake_up_all(&c->wait_wq);
         return;
     }
 

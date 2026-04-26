@@ -12,7 +12,7 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 #include "mm/slab.h"
 
 extern int ndp_resolve(uint32_t ns_id, const struct in6_addr *addr, uint8_t *mac_out);
@@ -62,7 +62,7 @@ static udp_sock_t *udp6_bind(uint32_t ns_id, uint16_t port) {
     fresh->port = port;
     fresh->ns_id = ns_id;
     fresh->q = (pkt_queue_t)PKT_QUEUE_INIT;
-    fresh->wait_thread = 0;
+    init_waitqueue_head(&fresh->recv_wq);
     fresh->hash_next = udp6_hash[idx];
     __atomic_store_n(&udp6_hash[idx], fresh, __ATOMIC_RELEASE);
     spin_unlock_irq(&udp6_hash_lock, flags);
@@ -175,8 +175,7 @@ int udp6_input(uint32_t ns_id, const ipv6_pkt_t *p) {
     }
     /* Push the FULL frame so udp6_recv can extract addresses + payload. */
     q_push(&s->q, p->frame, p->frame_len);
-    struct thread *wt = __atomic_load_n(&s->wait_thread, __ATOMIC_ACQUIRE);
-    if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+    wake_up(&s->recv_wq);
     return 1;
 }
 
@@ -200,7 +199,7 @@ void udp6_unbind(udp_sock_t *s) {
         pp = &(*pp)->hash_next;
     }
     s->port = 0; s->hash_next = 0; s->q.head = 0; s->q.count = 0;
-    s->wait_thread = 0;
+    wake_up_all(&s->recv_wq);
     spin_unlock_irq(&udp6_hash_lock, flags);
     slab_free(&udp6_slab, s);
 }

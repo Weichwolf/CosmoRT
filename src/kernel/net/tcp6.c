@@ -14,7 +14,7 @@
 #include "net/net.h"
 #include "net/net_util.h"
 #include "core/timer.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 #include "mm/slab.h"
 #include "proc/process.h"
 
@@ -159,8 +159,7 @@ static void promote_v6_request(net_tcp_t *ltcp,
         tcp_req_enqueue(&ltcp->accept_queue, r);
         ltcp->accept_qlen++;
 
-        struct thread *lwt = __atomic_load_n(&ltcp->wait_thread, __ATOMIC_ACQUIRE);
-        if (lwt) event_post(lwt, 9 /* EQ_SOCKET_CONNECT */, 0);
+        wake_up(&ltcp->wait_wq);
         extern void epoll_wake_all(void);
         epoll_wake_all();
         return;
@@ -209,8 +208,7 @@ static void process_v6_segment(net_tcp_t *c, const uint8_t *t, int tlen,
         send_tcp(c, 0x10, 0, 0);
         c->state = TCP_ESTABLISHED;
         c->connect_err = 0;
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8 /* EQ_SOCKET_DATA */, 0);
+        wake_up(&c->wait_wq);
         return;
     }
 
@@ -219,8 +217,7 @@ static void process_v6_segment(net_tcp_t *c, const uint8_t *t, int tlen,
         c->state = TCP_CLOSED;
         c->got_rst = 1;
         c->connect_err = -1;
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8, 0);
+        wake_up_all(&c->wait_wq);
         return;
     }
 
@@ -242,8 +239,7 @@ static void process_v6_segment(net_tcp_t *c, const uint8_t *t, int tlen,
         int stored = rxring_push(&c->rx, payload, plen);
         c->rcv_nxt = tseq + (uint32_t)stored;
         send_tcp(c, 0x10, 0, 0);
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8, 0);
+        wake_up(&c->wait_wq);
     }
 
     /* FIN. */
@@ -262,8 +258,7 @@ static void process_v6_segment(net_tcp_t *c, const uint8_t *t, int tlen,
             c->state = TCP_TIME_WAIT;
             send_tcp(c, 0x10, 0, 0);
         }
-        struct thread *wt = __atomic_load_n(&c->wait_thread, __ATOMIC_ACQUIRE);
-        if (wt) event_post(wt, 8, 0);
+        wake_up_all(&c->wait_wq);
     }
 }
 

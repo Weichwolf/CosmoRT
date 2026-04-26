@@ -18,13 +18,13 @@
 #include "config.h"
 #include "core/percpu.h"
 #include "event/epoll.h"
-#include "core/event_queue.h"
+#include "core/waitqueue.h"
 
 extern long send_sigpipe(void);
 #include "arch/arch.h"
 #include "core/timer_wheel.h"
 
-/* sock_block_thread eliminated — all blocking uses event_wait now */
+/* All socket blocking uses per-tcp/udp wait_queue_head_t. */
 
 /* Byte-swap helper (used by sock_has_listener + elsewhere) */
 static inline uint16_t bswap16(uint16_t v) {
@@ -79,6 +79,7 @@ socket_t *sock_alloc(void) {
     socket_t *s = (socket_t *)slab_alloc(&sock_slab);
     if (s) {
         s->state = SOCK_CREATED;
+        init_waitqueue_head(&s->tcp.wait_wq);
         sock_list_add(s);
     }
     spin_unlock_irq(&sock_lock, flags);
@@ -163,7 +164,6 @@ static void sock_finalize_connect(socket_t *s) {
     if ((s->sockflags & SOCKF_CONNECTING) && s->tcp.state == TCP_ESTABLISHED) {
         s->state = SOCK_CONNECTED;
         s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
-        s->tcp.wait_thread = 0;
     }
 }
 
@@ -252,15 +252,15 @@ long do_connect(int fd, const void *addr, int addrlen) {
         }
 
         uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
-        thread_t *ct = thread_current();
         for (;;) {
-            __atomic_store_n(&s->tcp.wait_thread, ct, __ATOMIC_RELEASE);
+            DEFINE_WAIT(wait);
+            prepare_to_wait(&s->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
             int r = net_tcp6_connect(&s->tcp, &dst, port);
             if (r == 0) {
+                finish_wait(&s->tcp.wait_wq, &wait);
                 s->state = SOCK_CONNECTED;
                 in6_copy(&s->remote_ip6, &dst);
                 s->remote_port = sa6.sin6_port;
-                s->tcp.wait_thread = 0;
                 s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
                 return 0;
             }
@@ -270,20 +270,25 @@ long do_connect(int fd, const void *addr, int addrlen) {
                 if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; }
                 if (nonblock) {
+                    finish_wait(&s->tcp.wait_wq, &wait);
                     s->sockflags |= SOCKF_CONNECTING;
                     in6_copy(&s->remote_ip6, &dst);
                     s->remote_port = sa6.sin6_port;
                     return -EINPROGRESS;
                 }
-                if (timer_ms() >= connect_deadline) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
-                int remain = (int)(connect_deadline - timer_ms());
-                if (remain <= 0) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
-                event_t ev;
-                int wr = event_wait(&ct->eq, &ev, remain);
-                if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
+                if (timer_ms() >= connect_deadline) {
+                    finish_wait(&s->tcp.wait_wq, &wait);
+                    return -ETIMEDOUT;
+                }
+                if (signal_deliverable()) {
+                    finish_wait(&s->tcp.wait_wq, &wait);
+                    return -ERESTARTSYS;
+                }
+                schedule();
+                finish_wait(&s->tcp.wait_wq, &wait);
                 continue;
             }
-            s->tcp.wait_thread = 0;
+            finish_wait(&s->tcp.wait_wq, &wait);
             if (s->tcp.got_rst) return -ECONNREFUSED;
             return -ETIMEDOUT;
         }
@@ -296,7 +301,6 @@ long do_connect(int fd, const void *addr, int addrlen) {
         if (s->tcp.state == TCP_ESTABLISHED) {
             s->state = SOCK_CONNECTED;
             s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
-            s->tcp.wait_thread = 0;
             return 0;
         }
         if (s->tcp.got_rst) {
@@ -349,15 +353,15 @@ long do_connect(int fd, const void *addr, int addrlen) {
         return -ENETUNREACH;
 
     uint64_t connect_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
-    thread_t *ct = thread_current();
     for (;;) {
-        __atomic_store_n(&s->tcp.wait_thread, ct, __ATOMIC_RELEASE);
+        DEFINE_WAIT(wait);
+        prepare_to_wait(&s->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
         int r = net_tcp_connect(&s->tcp, dst_ip, port);
         if (r == 0) {
+            finish_wait(&s->tcp.wait_wq, &wait);
             s->state = SOCK_CONNECTED;
             s->remote_ip = k_addr.sin_addr;
             s->remote_port = k_addr.sin_port;
-            s->tcp.wait_thread = 0;
             s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
             return 0;
         }
@@ -367,20 +371,25 @@ long do_connect(int fd, const void *addr, int addrlen) {
               if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
                          if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
             if (nonblock) {
+                finish_wait(&s->tcp.wait_wq, &wait);
                 s->sockflags |= SOCKF_CONNECTING;
                 s->remote_ip = k_addr.sin_addr;
                 s->remote_port = k_addr.sin_port;
                 return -EINPROGRESS;
             }
-            if (timer_ms() >= connect_deadline) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
-            int remain = (int)(connect_deadline - timer_ms());
-            if (remain <= 0) { s->tcp.wait_thread = 0; return -ETIMEDOUT; }
-            event_t ev;
-            int wr = event_wait(&ct->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
+            if (timer_ms() >= connect_deadline) {
+                finish_wait(&s->tcp.wait_wq, &wait);
+                return -ETIMEDOUT;
+            }
+            if (signal_deliverable()) {
+                finish_wait(&s->tcp.wait_wq, &wait);
+                return -ERESTARTSYS;
+            }
+            schedule();
+            finish_wait(&s->tcp.wait_wq, &wait);
             continue;
         }
-        s->tcp.wait_thread = 0;
+        finish_wait(&s->tcp.wait_wq, &wait);
         /* RST during SYN_SENT = no listener = ECONNREFUSED (Linux semantics) */
         if (s->tcp.got_rst) return -ECONNREFUSED;
         return -ETIMEDOUT;
@@ -542,14 +551,15 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         uint8_t kbuf[1400];
         struct in6_addr sip6;
         uint16_t sport;
-        thread_t *t = thread_current();
         udp_sock_t *us = udp6_find_ns(s->ns_id, s->udp_local_port);
-        if (us) __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE);
+        if (!us) return -EAGAIN;
         for (;;) {
+            DEFINE_WAIT(wait);
+            prepare_to_wait(&us->recv_wq, &wait, /*THREAD_BLOCKED*/ 3);
             int r = udp6_recv(s->ns_id, s->udp_local_port, kbuf,
                               (int)len > 1400 ? 1400 : (int)len, &sip6, &sport, 0);
             if (r >= 0) {
-                if (us) us->wait_thread = 0;
+                finish_wait(&us->recv_wq, &wait);
                 { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 if (src_addr && addrlen) {
                     struct sockaddr_in6 sa6 = {0};
@@ -562,16 +572,11 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
                 }
                 return r;
             }
-            if (nonblock_udp) { if (us) us->wait_thread = 0; return -EAGAIN; }
-            if (timer_ms() >= udp_deadline) { if (us) us->wait_thread = 0; return -EAGAIN; }
-            if (!us) { us = udp6_find_ns(s->ns_id, s->udp_local_port);
-                       if (!us) return -EAGAIN;
-                       __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE); }
-            int remain = (int)(udp_deadline - timer_ms());
-            if (remain <= 0) { us->wait_thread = 0; return -EAGAIN; }
-            event_t ev;
-            int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { us->wait_thread = 0; return -ERESTARTSYS; }
+            if (nonblock_udp) { finish_wait(&us->recv_wq, &wait); return -EAGAIN; }
+            if (timer_ms() >= udp_deadline) { finish_wait(&us->recv_wq, &wait); return -EAGAIN; }
+            if (signal_deliverable()) { finish_wait(&us->recv_wq, &wait); return -ERESTARTSYS; }
+            schedule();
+            finish_wait(&us->recv_wq, &wait);
         }
     }
 
@@ -586,14 +591,15 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         uint8_t kbuf[1400];
         uint8_t sip[4];
         uint16_t sport;
-        thread_t *t = thread_current();
         udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
-        if (us) __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE);
+        if (!us) return -EAGAIN;
         for (;;) {
+            DEFINE_WAIT(wait);
+            prepare_to_wait(&us->recv_wq, &wait, /*THREAD_BLOCKED*/ 3);
             int r = net_udp_recv(s->udp_local_port, kbuf, (int)len > 1400 ? 1400 : (int)len,
                                  sip, &sport, 0);
             if (r >= 0) {
-                if (us) us->wait_thread = 0;
+                finish_wait(&us->recv_wq, &wait);
                 { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 if (src_addr && addrlen) {
                     struct k_sockaddr_in sa;
@@ -608,15 +614,11 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
                 }
                 return r;
             }
-            if (nonblock_udp) { if (us) us->wait_thread = 0; return -EAGAIN; }
-            if (timer_ms() >= udp_deadline) { if (us) us->wait_thread = 0; return -EAGAIN; }
-            if (!us) { us = udp_find_ns(s->ns_id, s->udp_local_port); if (!us) return -EAGAIN;
-                       __atomic_store_n(&us->wait_thread, t, __ATOMIC_RELEASE); }
-            int remain = (int)(udp_deadline - timer_ms());
-            if (remain <= 0) { us->wait_thread = 0; return -EAGAIN; }
-            event_t ev;
-            int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { us->wait_thread = 0; return -ERESTARTSYS; }
+            if (nonblock_udp) { finish_wait(&us->recv_wq, &wait); return -EAGAIN; }
+            if (timer_ms() >= udp_deadline) { finish_wait(&us->recv_wq, &wait); return -EAGAIN; }
+            if (signal_deliverable()) { finish_wait(&us->recv_wq, &wait); return -ERESTARTSYS; }
+            schedule();
+            finish_wait(&us->recv_wq, &wait);
         }
     }
 
@@ -635,26 +637,24 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
             uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
             s->recv_deadline = now + timeo;
         }
-        thread_t *t = thread_current();
         for (;;) {
-            __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
+            DEFINE_WAIT(wait);
+            prepare_to_wait(&s->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
             uint8_t kbuf[4096];
             int want = (int)len > 4096 ? 4096 : (int)len;
             int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
             if (r != -11) {
-                s->tcp.wait_thread = 0;
+                finish_wait(&s->tcp.wait_wq, &wait);
                 s->recv_deadline = 0;
                 if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
                 if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 return r;
             }
-            if (nonblock) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            if (timer_ms() >= s->recv_deadline) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            int remain = (int)(s->recv_deadline - timer_ms());
-            if (remain <= 0) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            event_t ev;
-            int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
+            if (nonblock) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            if (timer_ms() >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            if (signal_deliverable()) { finish_wait(&s->tcp.wait_wq, &wait); return -ERESTARTSYS; }
+            schedule();
+            finish_wait(&s->tcp.wait_wq, &wait);
         }
     }
 }
@@ -680,30 +680,30 @@ long socket_read(int fd, void *buf, long count) {
             uint64_t timeo = s->tcp.rcv_timeo_ms ? s->tcp.rcv_timeo_ms : NET_TCP_TIMEOUT_MS;
             s->recv_deadline = now + timeo;
         }
-        thread_t *t = thread_current();
         for (;;) {
-            /* prepare_to_wait pattern: publish waiter BEFORE readiness check.
-             * tcp_input sees wait_thread and posts event; double-check finds
-             * the data pushed between publish and check. */
-            __atomic_store_n(&s->tcp.wait_thread, t, __ATOMIC_RELEASE);
+            DEFINE_WAIT(wait);
+            /* prepare_to_wait serialises state-transition with tcp_input's
+             * wake_up: state=BLOCKED is set under wait_wq->lock before the
+             * recv-readiness recheck; tcp_input must take the same lock to
+             * wake us, so the wakeup cannot be lost between check and
+             * schedule(). */
+            prepare_to_wait(&s->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
 
             uint8_t kbuf[4096];
             int want = (int)count > 4096 ? 4096 : (int)count;
             int r = net_tcp_recv(&s->tcp, kbuf, want, 0);
             if (r != -11) {
-                s->tcp.wait_thread = 0;
+                finish_wait(&s->tcp.wait_wq, &wait);
                 s->recv_deadline = 0;
                 if (r < 0) return s->tcp.got_rst ? -ECONNRESET : -EIO;
                 if (r > 0) { int cr = copy_to_user(buf, kbuf, (size_t)r); if (cr) return cr; }
                 return r;
             }
-            if (nonblock) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            if (timer_ms() >= s->recv_deadline) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            int remain = (int)(s->recv_deadline - timer_ms());
-            if (remain <= 0) { s->tcp.wait_thread = 0; s->recv_deadline = 0; return -EAGAIN; }
-            event_t ev;
-            int wr = event_wait(&t->eq, &ev, remain);
-            if (wr == -4) { s->tcp.wait_thread = 0; return -ERESTARTSYS; }
+            if (nonblock) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            if (timer_ms() >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            if (signal_deliverable()) { finish_wait(&s->tcp.wait_wq, &wait); return -ERESTARTSYS; }
+            schedule();
+            finish_wait(&s->tcp.wait_wq, &wait);
         }
     }
 }
@@ -1017,12 +1017,11 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 
     /* Linux accept() blocks until a completed handshake lands in the
      * listener's accept_queue. Honor SO_RCVTIMEO or block indefinitely.
-     * Per-listener wait_thread avoids the dangling-pointer hazard of a
-     * global slot. The new half-open queue is managed by tcp_input; we
+     * Per-listener wait_wq lets multiple acceptors park (dup'd listener fd
+     * across threads). The half-open queue is managed by tcp_input; we
      * only probe accept_queue here and materialise a child on pop. */
     uint64_t timeo_ms = ls->tcp.rcv_timeo_ms;
     uint64_t accept_deadline = timeo_ms ? (timer_ms() + timeo_ms) : 0;
-    thread_t *at = thread_current();
 
     /* Allocate child up-front so pop→populate is a single atomic step
      * from the hash's perspective: tcp_register happens inside
@@ -1040,31 +1039,29 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 
     int rc;
     for (;;) {
-        __atomic_store_n(&ls->tcp.wait_thread, at, __ATOMIC_RELEASE);
+        DEFINE_WAIT(wait);
+        prepare_to_wait(&ls->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
         rc = net_tcp_accept_child(&ls->tcp, &ns->tcp);
-        if (rc == 0) break;
-        if (rc == -12) { ls->tcp.wait_thread = 0; sock_free(ns); return -ENOMEM; }
-        /* rc == -11: empty queue */
-        int remain;
-        if (accept_deadline) {
-            if (timer_ms() >= accept_deadline) {
-                ls->tcp.wait_thread = 0;
-                sock_free(ns);
-                return -EAGAIN;
-            }
-            remain = (int)(accept_deadline - timer_ms());
-        } else {
-            remain = -1;
+        if (rc == 0) { finish_wait(&ls->tcp.wait_wq, &wait); break; }
+        if (rc == -12) {
+            finish_wait(&ls->tcp.wait_wq, &wait);
+            sock_free(ns);
+            return -ENOMEM;
         }
-        event_t ev;
-        int wr = event_wait(&at->eq, &ev, remain);
-        if (wr == -4) {
-            ls->tcp.wait_thread = 0;
+        /* rc == -11: empty queue */
+        if (accept_deadline && timer_ms() >= accept_deadline) {
+            finish_wait(&ls->tcp.wait_wq, &wait);
+            sock_free(ns);
+            return -EAGAIN;
+        }
+        if (signal_deliverable()) {
+            finish_wait(&ls->tcp.wait_wq, &wait);
             sock_free(ns);
             return -ERESTARTSYS;
         }
+        schedule();
+        finish_wait(&ls->tcp.wait_wq, &wait);
     }
-    ls->tcp.wait_thread = 0;
 
     ns->state = SOCK_CONNECTED;
     ns->local_port = ls->local_port;
@@ -1281,7 +1278,6 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
                     val = 0;
                     s->state = SOCK_CONNECTED;
                     s->sockflags &= ~(uint32_t)SOCKF_CONNECTING;
-                    s->tcp.wait_thread = 0;
                 } else {
                     val = EINPROGRESS;
                 }
