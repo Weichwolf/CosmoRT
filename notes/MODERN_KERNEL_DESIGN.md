@@ -26,8 +26,8 @@ Stand-Tracking: ✅ erledigt, ◐ teilweise, ☐ offen.
 |---|------------|--------|-------|
 | 1 | `sched_wake` darf NICHT ueber `wait_head` routen. State-CAS auf `task->state` macht den Wake. Waitqueue ist nur Callback-Liste, kein Routing-Target. | ✅ | Phase 10.2 Blockade aufgeloest. Signal/Timer/IO-Wakeups orthogonal. |
 | 2 | Eine Wake-Funktion: `try_to_wake_up(task, state_mask)`. Alle anderen (`sched_wake`, `event_post`, `wake_up`, `signal_wake_up`) sind Wrapper. | ✅ | Public `try_to_wake_up(t, mask)` mit CAS-Loop. `wait_queue_entry.func`-Dispatch via `wq_call`. `signal_wake_up` als Wrapper. `sched_wake` -> `try_to_wake_up(t, TASK_NORMAL)`. |
-| 3 | `event_queue` aus `thread_t` entfernen. Per-Subsystem-Waitqueue + `prepare_to_wait` ist die einzige Block-Mechanik. `event_post` wird Wrapper. | ☐ | ~280 Zeilen `event_queue.c` weg. Race-Klasse "stale events" verschwindet. 9 Subsysteme noch zu migrieren. |
-| 4 | Signal-Wake ist ein State-Bit (`TIF_SIGPENDING`-Aequivalent), kein Wakeup. Wake setzt zusaetzlich Run-State, Routing entfaellt. | ☐ | `kill_one` verteilt heute auf `event_post` + `sched_wake` (Doppelpfad). `signal_wake_up()` als Wrapper fehlt. |
+| 3 | `event_queue` aus `thread_t` entfernen. Per-Subsystem-Waitqueue + `prepare_to_wait` ist die einzige Block-Mechanik. `event_post` wird Wrapper. | ✅ | event_queue.c/.h ersatzlos entfernt (Commit 99928b0). 9 Subsysteme migriert: eventfd, pipe, sockets×3, epoll, futex, wait4, sigtimedwait, pty/sys_file/sys_proc. -542 LOC netto. |
+| 4 | Signal-Wake ist ein State-Bit (`TIF_SIGPENDING`-Aequivalent), kein Wakeup. Wake setzt zusaetzlich Run-State, Routing entfaellt. | ✅ | `signal_wake_up(t)` Wrapper, kill_one Doppelpfad weg. signal_wake_up = `try_to_wake_up(t, TASK_INTERRUPTIBLE \| TASK_KILLABLE)`. |
 | 5 | Interne Audio-API auf io_uring-aehnlichem Completion-Modell statt epoll. epoll bleibt fuer ABI. UMWAIT fuer Sub-µs-Wakeups in Phase 19. | ☐ | Sub-ms-Latenz erreichbar; epoll als ABI-Wrapper bleibt korrekt. Phase 19. |
 
 ---
