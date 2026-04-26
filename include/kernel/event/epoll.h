@@ -17,14 +17,14 @@
 /* ── eventfd_t — exposed so syscall.c can check .counter for readiness ── */
 
 typedef struct {
-    uint64_t   counter;
-    int        flags;
-    int        refcount;
-    spinlock_t lock;
-    /* Blocked waiters: one reader + one writer at a time (Linux: wait_queue,
-     * but eventfd is so simple that two slots suffice for all callers we have). */
-    struct thread *blocked_reader;
-    struct thread *blocked_writer;
+    uint64_t          counter;
+    int               flags;
+    int               refcount;
+    spinlock_t        lock;
+    /* Per-fd waitqueues: Reader parken auf read_wq bis counter > 0, Writer
+     * auf write_wq bis Platz vorhanden. Multiple Waiter pro Seite. */
+    wait_queue_head_t read_wq;
+    wait_queue_head_t write_wq;
 } eventfd_t;
 
 /* ── timerfd_t — exposed so syscall.c can check expiration for readiness ── */
