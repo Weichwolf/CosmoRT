@@ -531,11 +531,9 @@ long usock_connect(int fd, const struct k_sockaddr_un *addr, int addrlen) {
     listener->backlog_count++;
     spin_unlock_irq(&usock_lock, flags);
     /* Wake any acceptor blocked on the listener; multiple acceptors are
-     * legal (e.g. dup'd listener fd in two threads). */
+     * legal (e.g. dup'd listener fd in two threads). Acceptor's wq wake
+     * propagates to ep->wq via ep_poll_callback for any registered epitem. */
     wake_up_all(&listener->accept_wq);
-    /* Wake select/poll waiters too */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
 
     /* Block until accept() completes the handshake (transitions us to
      * USOCK_CONNECTED). Without this, write() after connect() can race
@@ -580,11 +578,6 @@ long usock_read(int fd, void *buf, long count) {
     /* Drained s->buf → wake any writer blocked because peer's buf (== s) was
      * full. Writer parks on its own write_wq; peer is the writer side. */
     if (peer) wake_up(&peer->write_wq);
-
-    /* Wake epoll/poll */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
-
     return (long)n;
 }
 
@@ -639,13 +632,9 @@ long usock_write(int fd, const void *buf, long count) {
     if (n == 0) { spin_unlock_irq(&usock_lock, irqf); return -EAGAIN; }
     spin_unlock_irq(&usock_lock, irqf);
 
-    /* Wake reader(s) blocked on peer's read_wq — data just landed in peer->buf. */
+    /* Wake reader(s) blocked on peer's read_wq — data just landed in peer->buf.
+     * Registered ep_poll_callback fires from read_wq into ep->wq. */
     wake_up(&peer->read_wq);
-
-    /* Wake epoll/poll */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
-
     return (long)n;
 }
 
@@ -672,8 +661,6 @@ long usock_write_blocking(unix_socket_t *s, const void *buf, long count) {
         if (n > 0) {
             spin_unlock_irq(&usock_lock, irqf);
             wake_up(&peer->read_wq);
-            extern void epoll_wake_all(void);
-            epoll_wake_all();
             rc = (long)n;
             break;
         }
@@ -695,12 +682,8 @@ long usock_close(int fd) {
     process_t *p = proc_current();
     if (p) fd_close(&p->fds, fd);
 
+    /* usock_decref will wake peer's read_wq/write_wq for HUP propagation. */
     usock_decref(s);
-
-    /* Wake epoll/poll — peer may need POLLHUP */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
-
     return 0;
 }
 
@@ -775,8 +758,6 @@ done:
     if (total > 0) {
         /* Wake reader(s) blocked on peer's read_wq — data just landed. */
         wake_up(&peer->read_wq);
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
     }
     return total;
 }
@@ -845,8 +826,6 @@ recvdone:
         /* Drained s->buf → peer-side writer may have room now. */
         unix_socket_t *peer = s->peer;
         if (peer) wake_up(&peer->write_wq);
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
     }
     return total;
 }
@@ -878,8 +857,6 @@ long usock_send(int fd, const void *buf, long len, int flags) {
         peer->oob_present = 1;
         spin_unlock_irq(&usock_lock, irqf);
         wake_up(&peer->read_wq);
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
         return 1;
     }
 

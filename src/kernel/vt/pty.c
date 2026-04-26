@@ -298,13 +298,8 @@ int pty_master_write(int id, const char *buf, int len) {
     }
 
     spin_unlock_irq(&p->lock, flags);
-
-    /* Wake poll/epoll sleepers — they check fd_poll_readiness on re-scan */
-    if (ring_count(p->input_head, p->input_tail) > 0) {
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
-    }
-
+    /* PTY has no per-fd wq yet; epoll falls back to readiness re-scan on
+     * each epoll_wait iteration (level-trigger only). */
     return len;
 }
 
@@ -376,10 +371,6 @@ int pty_input_direct(int id, const char *buf, int len) {
         event_post(reader, 4, 0);
     }
     spin_unlock_irq(&p->lock, flags);
-    if (written > 0) {
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
-    }
     return written;
 }
 

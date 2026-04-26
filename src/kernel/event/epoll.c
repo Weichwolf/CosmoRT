@@ -1,12 +1,23 @@
 /* CosmoRT epoll — event multiplexing (Linux-compatible)
  *
- * Blocking: hlt-loop with IRQ wakeup, same pattern as do_poll in socket.c.
+ * Each epitem registers its own wait_queue_entry (poll_entry) on the source
+ * fd's wq with func = ep_poll_callback. When the source fires wake_up, it
+ * iterates its wq and calls each entry's func — for an epitem entry that
+ * means: append epi to ep->rdllist (under ep->lock) and wake_up(&ep->wq).
+ * epoll_wait blocks on ep->wq via DEFINE_WAIT and re-scans the entry list
+ * (level-trigger semantics + ET edge tracking unchanged).
+ *
+ * Sources without a wq (FD_PTY_*, FD_INOTIFY, FD_SERIAL, FD_FILE) get no
+ * push-wakeup; level-triggered epoll_wait still works because every wait
+ * iteration re-scans fd_poll_readiness. Edge-trigger on those sources will
+ * miss spontaneous events — wire them up with their own wq in later phases.
  */
+
+#include <stddef.h>
 
 #include "event/epoll.h"
 #include "sys/syscall.h"
 #include "proc/process.h"
-#include "core/percpu.h"
 #include "hw/serial.h"
 #include "mm/slab.h"
 #include "spinlock.h"
@@ -14,33 +25,39 @@
 #include "event/fd.h"
 #include "config.h"
 #include "memops.h"
-#include "net/net.h"
-#include "core/event_queue.h"
-#include "core/smp.h"
-#include "core/tick.h"
+#include "core/waitqueue.h"
 
 /* User-pointer validation + copy helpers */
 #include "uaccess.h"
-#include "arch/arch.h"
 
 /* ── Epoll internals ─────────────────────────────── */
 
-/* Per-watch entry: intrusive singly-linked. No systemwide cap; growth via
- * dynamic slab, bounded per-process by RLIMIT_NOFILE (target fds must exist). */
+/* epitem — per-watch entry. Lives in epoll_entry_slab.
+ * poll_entry hooks into source-fd wq with func=ep_poll_callback.
+ * rdl_next chains epitems already on ep->rdllist. */
 typedef struct epoll_entry {
-    struct epoll_entry *next;
-    int      fd;
-    uint32_t events;     /* requested events (including EPOLLET flag) */
-    uint64_t data;
-    uint32_t et_armed;   /* edge-triggered: 1 = report next ready, 0 = already reported */
-    uint32_t et_last;    /* last reported readiness bits (for true edge detection) */
+    struct epoll_entry *next;       /* in ep->entries (registered watches) */
+    struct epoll_entry *rdl_next;   /* in ep->rdllist (ready), 0 = not ready */
+    int                rdl_on;      /* 1 = currently on rdllist */
+    int                fd;
+    int                src_type;    /* FD_*: cached for incref/decref symmetry */
+    void              *src_obj;
+    int                src_flags;
+    uint32_t           events;      /* requested events incl EPOLLET/EPOLLONESHOT */
+    uint64_t           data;
+    uint32_t           et_last;     /* last reported readiness for edge detection */
+    wait_queue_head_t *src_wq;      /* registered wq, NULL if source has none */
+    wait_queue_entry_t poll_entry;  /* hook into src_wq */
+    struct eventpoll  *ep;          /* back-pointer for ep_poll_callback */
 } epoll_entry_t;
 
-typedef struct {
-    epoll_entry_t *entries;    /* head of watch list */
-    int            count;
-    int            refcount;
-    spinlock_t     lock;
+typedef struct eventpoll {
+    epoll_entry_t    *entries;      /* head of watch list */
+    epoll_entry_t    *rdllist;      /* head of ready list */
+    int               count;
+    int               refcount;
+    spinlock_t        lock;         /* protects entries, rdllist */
+    wait_queue_head_t wq;           /* epoll_wait sleepers */
 } epoll_t;
 
 static slab_t epoll_slab;
@@ -51,16 +68,60 @@ static slab_t epoll_entry_slab;
 
 /* ── Init ────────────────────────────────────────── */
 
-static struct tick_callback epoll_timeout_cb;
-
 void epoll_init(void) {
     slab_init_dynamic(&epoll_slab,       (int)sizeof(epoll_t),       EPOLL_SLAB_INITIAL);
     slab_init_dynamic(&epoll_entry_slab, (int)sizeof(epoll_entry_t), EPOLL_ENTRY_SLAB_INITIAL);
     eventfd_init();
     timerfd_init();
     inotify_init_slab();
-    tick_register(&epoll_timeout_cb, epoll_check_timeouts, TICK_EVERY);
     serial_puts("epoll: init\n");
+}
+
+/* hrtimer fn for epoll_wait timeout: wake the parking thread directly via
+ * sched_wake (state CAS BLOCKED→RUNNABLE + sched_add). The waiter then
+ * detects timeout via hrtimer_now_ns() in its post-schedule check. */
+extern void sched_wake(struct thread *t);
+static void ep_wait_timeout_fn(hrtimer_t *t) {
+    struct thread *th = (struct thread *)t->data;
+    if (th) sched_wake(th);
+}
+
+/* ── ep_poll_callback ────────────────────────────── */
+
+#define ep_entry_from_poll(e)                                         \
+    ((epoll_entry_t *)((char *)(e) - offsetof(epoll_entry_t, poll_entry)))
+
+/* Source-fd wq fires (e.g. eventfd_write -> wake_up(&efd->read_wq)).
+ * Wake any thread blocked in epoll_wait on ep->wq. The actual readiness
+ * scan happens in ep_scan_entries on the wake-side; ep_poll_callback's
+ * job is only to signal "something on this ep changed". rdllist is an
+ * accelerator: callback adds the firing epi to it so ep_scan_entries
+ * can poll just the fired entries first, falling back to a full scan
+ * for sources without wq. */
+static int ep_poll_callback(wait_queue_entry_t *e, unsigned int mask) {
+    epoll_entry_t *epi = ep_entry_from_poll(e);
+    if (!epi || !epi->ep) return 0;
+    epoll_t *ep = epi->ep;
+
+    uint64_t irqf;
+    spin_lock_irq(&ep->lock, &irqf);
+    if (!epi->rdl_on) {
+        epi->rdl_next = ep->rdllist;
+        ep->rdllist = epi;
+        epi->rdl_on = 1;
+    }
+    spin_unlock_irq(&ep->lock, irqf);
+
+    wake_up(&ep->wq);
+    (void)mask;
+    return 1;
+}
+
+/* ── epoll_obj_wq — accessor for fd_get_poll_wq (nested epoll) ── */
+
+wait_queue_head_t *epoll_obj_wq(void *obj) {
+    if (!obj) return 0;
+    return &((epoll_t *)obj)->wq;
 }
 
 /* ── SYS_EPOLL_CREATE1 (291) ────────────────────── */
@@ -73,9 +134,12 @@ long do_epoll_create1(int flags) {
     epoll_t *ep = (epoll_t *)slab_alloc(&epoll_slab);
     if (!ep) return -ENOMEM;
 
+    ep->entries = 0;
+    ep->rdllist = 0;
     ep->count = 0;
     ep->refcount = 1;
     ep->lock = (spinlock_t)SPINLOCK_INIT;
+    init_waitqueue_head(&ep->wq);
 
     int fd_flags = O_RDWR;
     if (flags & EPOLL_CLOEXEC) fd_flags |= O_CLOEXEC;
@@ -85,6 +149,41 @@ long do_epoll_create1(int flags) {
         return -EMFILE;
     }
     return fd;
+}
+
+/* ── EPOLL_CTL_ADD plumbing ──────────────────────── */
+
+/* Subscribe epi->poll_entry on source-fd wq. Caller must NOT hold ep->lock
+ * (add_wait_queue takes wq->lock; nested with ep->lock would invert order
+ * versus the wake path which takes wq->lock first then ep->lock). */
+static void ep_attach_source(epoll_entry_t *epi) {
+    epi->poll_entry.task  = 0;   /* unused for ep_poll_callback */
+    epi->poll_entry.flags = 0;
+    epi->poll_entry.func  = ep_poll_callback;
+    epi->poll_entry.next  = 0;
+    epi->poll_entry.prev  = 0;
+    if (epi->src_wq) add_wait_queue(epi->src_wq, &epi->poll_entry);
+}
+
+/* Reverse of ep_attach_source. Idempotent. */
+static void ep_detach_source(epoll_entry_t *epi) {
+    if (epi->src_wq) remove_wait_queue(epi->src_wq, &epi->poll_entry);
+}
+
+/* Take ep->lock + remove epi from rdllist if present. */
+static void ep_rdl_remove(epoll_t *ep, epoll_entry_t *target) {
+    uint64_t irqf;
+    spin_lock_irq(&ep->lock, &irqf);
+    if (target->rdl_on) {
+        epoll_entry_t **pp = &ep->rdllist;
+        while (*pp) {
+            if (*pp == target) { *pp = target->rdl_next; break; }
+            pp = &(*pp)->rdl_next;
+        }
+        target->rdl_on = 0;
+        target->rdl_next = 0;
+    }
+    spin_unlock_irq(&ep->lock, irqf);
 }
 
 /* ── SYS_EPOLL_CTL (233) ────────────────────────── */
@@ -101,6 +200,10 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     /* Cannot add epoll to itself */
     if (fd == epfd) return -EINVAL;
 
+    int tgt_type = FD_NONE;
+    void *tgt_obj = 0;
+    int tgt_flags = 0;
+
     /* Validate target fd exists (except for DEL, target may already be closed) */
     if (op != EPOLL_CTL_DEL) {
         fd_entry_t *tgt = fd_get(&p->fds, fd);
@@ -109,17 +212,17 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         /* Regular files and directories do not implement poll → EPERM (Linux) */
         if (tgt->type == FD_FILE) return -EPERM;
 
+        tgt_type  = tgt->type;
+        tgt_obj   = tgt->obj;
+        tgt_flags = tgt->flags;
+
         /* Check epoll nesting depth + circular reference (ADD only) */
         if (op == EPOLL_CTL_ADD && tgt->type == FD_EPOLL) {
-            /* Walk the chain: fd→ep2, check all entries of ep2 for epoll fds,
-             * count depth. Linux max nesting = 5 (EP_MAX_NESTS). */
             #define EP_MAX_NESTS 5
             int depth = 0;
             epoll_t *walk = (epoll_t *)tgt->obj;
-            /* BFS would be correct; simplified DFS chain check */
             while (walk && depth < EP_MAX_NESTS + 1) {
                 depth++;
-                /* Check if walk contains epfd → circular */
                 epoll_t *next = 0;
                 for (epoll_entry_t *it = walk->entries; it; it = it->next) {
                     if (it->fd == epfd) return -ELOOP;
@@ -133,226 +236,184 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         }
     }
 
-    uint64_t irqf;
-    spin_lock_irq(&ep->lock, &irqf);
-
     switch (op) {
     case EPOLL_CTL_ADD: {
-        if (!event) {
-            spin_unlock_irq(&ep->lock, irqf);
-            return -EFAULT;
-        }
+        if (!event) return -EFAULT;
         struct epoll_event kev;
-        { int r = copy_from_user(&kev, event, sizeof(kev));
-          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
+        { int r = copy_from_user(&kev, event, sizeof(kev)); if (r) return r; }
+
+        uint64_t irqf;
+        spin_lock_irq(&ep->lock, &irqf);
         for (epoll_entry_t *it = ep->entries; it; it = it->next) {
-            if (it->fd == fd) {
-                spin_unlock_irq(&ep->lock, irqf);
-                return -EEXIST;
-            }
+            if (it->fd == fd) { spin_unlock_irq(&ep->lock, irqf); return -EEXIST; }
         }
-        /* Allocate outside lock to avoid holding spinlock across page_alloc
-         * growth path. Re-check duplicate after re-acquire. */
         spin_unlock_irq(&ep->lock, irqf);
+
         epoll_entry_t *ne = (epoll_entry_t *)slab_alloc(&epoll_entry_slab);
         if (!ne) return -ENOMEM;
+        ne->fd        = fd;
+        ne->src_type  = tgt_type;
+        ne->src_obj   = tgt_obj;
+        ne->src_flags = tgt_flags;
+        ne->events    = kev.events;
+        ne->data      = kev.data;
+        ne->rdl_on    = 0;
+        ne->rdl_next  = 0;
+        ne->et_last   = 0;
+        ne->ep        = ep;
+        ne->src_wq    = fd_get_poll_wq(fd, kev.events);
+
+        /* Attach BEFORE chaining so ep_poll_callback never sees a partial
+         * epitem (priv/func set by ep_attach_source). */
+        ep_attach_source(ne);
+
         spin_lock_irq(&ep->lock, &irqf);
         for (epoll_entry_t *it = ep->entries; it; it = it->next) {
             if (it->fd == fd) {
                 spin_unlock_irq(&ep->lock, irqf);
+                ep_detach_source(ne);
                 slab_free(&epoll_entry_slab, ne);
                 return -EEXIST;
             }
         }
-        ne->fd        = fd;
-        ne->events    = kev.events;
-        ne->data      = kev.data;
-        ne->et_armed  = 1;
-        ne->et_last   = 0;
-        ne->next      = ep->entries;
-        ep->entries   = ne;
+        ne->next    = ep->entries;
+        ep->entries = ne;
         ep->count++;
-        break;
+        spin_unlock_irq(&ep->lock, irqf);
+
+        /* Bump source-object refcount so a close() of the source fd cannot
+         * free the wq while our poll_entry is still hooked in. */
+        fd_obj_incref(ne->src_type, ne->src_obj, ne->src_flags);
+
+        /* Linux behaviour: if source is already ready at ADD time, queue
+         * a wake so the next epoll_wait sees it without waiting for an edge. */
+        if (fd_poll_readiness(fd, kev.events) & kev.events) {
+            spin_lock_irq(&ep->lock, &irqf);
+            if (!ne->rdl_on) {
+                ne->rdl_next = ep->rdllist;
+                ep->rdllist  = ne;
+                ne->rdl_on   = 1;
+            }
+            spin_unlock_irq(&ep->lock, irqf);
+            wake_up(&ep->wq);
+        }
+        return 0;
     }
     case EPOLL_CTL_MOD: {
-        if (!event) {
-            spin_unlock_irq(&ep->lock, irqf);
-            return -EFAULT;
-        }
+        if (!event) return -EFAULT;
         struct epoll_event kev;
-        { int r = copy_from_user(&kev, event, sizeof(kev));
-          if (r) { spin_unlock_irq(&ep->lock, irqf); return r; } }
+        { int r = copy_from_user(&kev, event, sizeof(kev)); if (r) return r; }
+
+        uint64_t irqf;
+        spin_lock_irq(&ep->lock, &irqf);
         epoll_entry_t *found = 0;
         for (epoll_entry_t *it = ep->entries; it; it = it->next) {
             if (it->fd == fd) { found = it; break; }
         }
-        if (!found) {
-            spin_unlock_irq(&ep->lock, irqf);
-            return -ENOENT;
+        if (!found) { spin_unlock_irq(&ep->lock, irqf); return -ENOENT; }
+        found->events  = kev.events;
+        found->data    = kev.data;
+        found->et_last = 0;
+        spin_unlock_irq(&ep->lock, irqf);
+
+        /* MOD may flip the side (EPOLLIN <-> EPOLLOUT) which changes the
+         * source wq for split-wq sources (eventfd, pipe). Re-subscribe. */
+        wait_queue_head_t *new_wq = fd_get_poll_wq(fd, kev.events);
+        if (new_wq != found->src_wq) {
+            ep_detach_source(found);
+            found->src_wq = new_wq;
+            ep_attach_source(found);
         }
-        found->events   = kev.events;
-        found->data     = kev.data;
-        found->et_armed = 1;
-        found->et_last  = 0;
-        break;
+        return 0;
     }
     case EPOLL_CTL_DEL: {
+        uint64_t irqf;
+        spin_lock_irq(&ep->lock, &irqf);
         epoll_entry_t **pp = &ep->entries;
         epoll_entry_t *victim = 0;
         while (*pp) {
             if ((*pp)->fd == fd) { victim = *pp; *pp = victim->next; break; }
             pp = &(*pp)->next;
         }
-        if (!victim) {
-            spin_unlock_irq(&ep->lock, irqf);
-            return -ENOENT;
-        }
+        if (!victim) { spin_unlock_irq(&ep->lock, irqf); return -ENOENT; }
         ep->count--;
         spin_unlock_irq(&ep->lock, irqf);
+
+        ep_rdl_remove(ep, victim);
+        ep_detach_source(victim);
+        fd_cleanup_entry(victim->src_type, victim->src_obj, victim->src_flags);
         slab_free(&epoll_entry_slab, victim);
         return 0;
     }
     default:
-        spin_unlock_irq(&ep->lock, irqf);
         return -EINVAL;
+    }
+}
+
+/* ── ep_send_events: scan all registered entries, copy ready ones to
+ * user. Linux's fast-path scans only rdllist; we scan entries always
+ * because not all our sources have a wq (FD_PTY_*, FD_INOTIFY,
+ * FD_SERIAL, FD_FILE) and thus can't fire ep_poll_callback to populate
+ * rdllist. The full scan is the level-trigger fallback. rdllist still
+ * exists as a hint for ep_poll_callback to set "something changed" but
+ * we don't depend on it being populated. ── */
+
+static int ep_send_events(epoll_t *ep, struct epoll_event *uevents, int maxevents) {
+    int nready = 0;
+
+    uint64_t irqf;
+    spin_lock_irq(&ep->lock, &irqf);
+
+    for (epoll_entry_t *epi = ep->entries; epi && nready < maxevents; epi = epi->next) {
+        uint32_t interest = epi->events & ~(EPOLLET | EPOLLONESHOT);
+        if (!interest) continue;
+
+        spin_unlock_irq(&ep->lock, irqf);
+        uint32_t r = fd_poll_readiness(epi->fd, interest | EPOLLHUP | EPOLLERR | EPOLLRDHUP);
+        spin_lock_irq(&ep->lock, &irqf);
+
+        uint32_t evbits = (r & interest) | (r & (EPOLLHUP | EPOLLERR | EPOLLRDHUP));
+        if (!evbits) {
+            if (epi->events & EPOLLET) epi->et_last = 0;
+            continue;
+        }
+
+        if (epi->events & EPOLLET) {
+            uint32_t new_bits = evbits & ~epi->et_last;
+            if (!new_bits) continue;
+            evbits = new_bits;
+            epi->et_last |= evbits;
+        }
+
+        struct epoll_event ev;
+        ev.events = evbits;
+        ev.data   = epi->data;
+        spin_unlock_irq(&ep->lock, irqf);
+        int cferr = copy_to_user(&uevents[nready], &ev, sizeof(ev));
+        spin_lock_irq(&ep->lock, &irqf);
+        if (cferr != 0) {
+            spin_unlock_irq(&ep->lock, irqf);
+            return nready > 0 ? nready : -EFAULT;
+        }
+        nready++;
+
+        if (epi->events & EPOLLONESHOT)
+            epi->events &= ~(EPOLLIN | EPOLLOUT | EPOLLRDHUP);
+
+        /* rdllist hint cleared; ep_poll_callback re-adds on next source wake. */
+        if (epi->rdl_on) {
+            epoll_entry_t **pp = &ep->rdllist;
+            while (*pp) {
+                if (*pp == epi) { *pp = epi->rdl_next; break; }
+                pp = &(*pp)->rdl_next;
+            }
+            epi->rdl_on   = 0;
+            epi->rdl_next = 0;
+        }
     }
 
     spin_unlock_irq(&ep->lock, irqf);
-    return 0;
-}
-
-/* ── Per-core sleeper lists ──────────────────────── */
-/* Each core has its own sleeper list + spinlock. No cross-core contention.
- * RT-Core (core 0) never acquires a Compute-Core's lock and vice versa.
- * When a thread migrates, its sleeper entry stays on the original core —
- * the timeout fires there and wakes via event_post/sched_wake (IPI-safe). */
-
-#define EPOLL_SLEEPER_MAX 32
-
-static struct {
-    thread_t  *threads[EPOLL_SLEEPER_MAX];
-    int        count;
-    spinlock_t lock;
-} core_sleepers[SMP_MAX_CORES] = {
-    [0 ... SMP_MAX_CORES-1] = { .lock = SPINLOCK_INIT }
-};
-
-static void epoll_sleeper_add(thread_t *t) {
-    int cpu = percpu_self()->core_id;
-    uint64_t irqf;
-    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
-    for (int i = 0; i < core_sleepers[cpu].count; i++) {
-        if (core_sleepers[cpu].threads[i] == t) {
-            spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-            return;
-        }
-    }
-    if (core_sleepers[cpu].count < EPOLL_SLEEPER_MAX)
-        core_sleepers[cpu].threads[core_sleepers[cpu].count++] = t;
-    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-}
-
-static void epoll_sleeper_remove(thread_t *t) {
-    int ncores = smp_num_cores();
-    for (int cpu = 0; cpu < ncores; cpu++) {
-        uint64_t irqf;
-        spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
-        for (int i = 0; i < core_sleepers[cpu].count; i++) {
-            if (core_sleepers[cpu].threads[i] == t) {
-                core_sleepers[cpu].threads[i] =
-                    core_sleepers[cpu].threads[--core_sleepers[cpu].count];
-                i--;
-            }
-        }
-        spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-    }
-}
-
-void epoll_sleeper_add_ext(thread_t *t) { epoll_sleeper_add(t); }
-void epoll_sleeper_remove_ext(thread_t *t) { epoll_sleeper_remove(t); }
-
-/* Wake all blocked epoll/poll sleepers across ALL cores. IRQ-safe.
- * Rare path: called from IRQ handlers (NIC rx, pty write, eventfd, etc). */
-void epoll_wake_all(void) {
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    int ncores = smp_num_cores();
-
-    for (int c = 0; c < ncores; c++) {
-        uint64_t irqf;
-        spin_lock_irq(&core_sleepers[c].lock, &irqf);
-        int n = core_sleepers[c].count;
-        thread_t *wake[EPOLL_SLEEPER_MAX];
-        for (int i = 0; i < n; i++) {
-            wake[i] = core_sleepers[c].threads[i];
-            core_sleepers[c].threads[i] = 0;
-        }
-        core_sleepers[c].count = 0;
-        spin_unlock_irq(&core_sleepers[c].lock, irqf);
-
-        for (int i = 0; i < n; i++)
-            event_post(wake[i], EQ_EPOLL_READY, 0);
-    }
-}
-
-/* Check timed-out sleepers on CURRENT core only.
- * Called from timer IRQ (sched_preempt) on each core — each core
- * checks its own list, no shared lock across partitions.
- * timerfd expiry check runs only on BSP (core 0) since timerfd state is global. */
-void epoll_check_timeouts(void) {
-    uint64_t now_tsc = timer_tsc_now();
-    int cpu = percpu_self()->core_id;
-
-    /* timerfd wakeup: only BSP checks (global timerfd slab, avoids cross-core) */
-    if (cpu == 0) {
-        int need_wake = 0;
-        if (timerfd_any_expired()) need_wake = 1;
-        if (need_wake) epoll_wake_all();
-    }
-
-    uint64_t irqf;
-    spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
-
-    extern void event_post(thread_t *target, uint32_t type, uint64_t data);
-    for (int i = 0; i < core_sleepers[cpu].count; ) {
-        thread_t *t = core_sleepers[cpu].threads[i];
-        if (!t) {
-            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
-            continue;
-        }
-        /* TSC-based deadline comparison (sub-µs precision).
-         * wake_at_tsc is authoritative; wake_at (ms) is legacy fallback. */
-        uint64_t deadline = t->wake_at_tsc;
-        if (!deadline && t->wake_at)
-            deadline = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
-        if (deadline && now_tsc >= deadline) {
-            core_sleepers[cpu].threads[i] = core_sleepers[cpu].threads[--core_sleepers[cpu].count];
-            spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-            event_post(t, EQ_TIMEOUT, 0);
-            spin_lock_irq(&core_sleepers[cpu].lock, &irqf);
-        } else {
-            i++;
-        }
-    }
-    spin_unlock_irq(&core_sleepers[cpu].lock, irqf);
-}
-
-/* Return nearest TSC deadline among sleepers on the given core. 0 = none. */
-uint64_t epoll_nearest_deadline_tsc(int core_id) {
-    if (core_id < 0 || core_id >= SMP_MAX_CORES) return 0;
-    uint64_t nearest = 0;
-    uint64_t irqf;
-    spin_lock_irq(&core_sleepers[core_id].lock, &irqf);
-    for (int i = 0; i < core_sleepers[core_id].count; i++) {
-        thread_t *t = core_sleepers[core_id].threads[i];
-        if (!t) continue;
-        uint64_t dl = t->wake_at_tsc;
-        if (!dl && t->wake_at)
-            dl = timer_boot_tsc + t->wake_at * timer_tsc_per_ms;
-        if (dl && (!nearest || dl < nearest))
-            nearest = dl;
-    }
-    spin_unlock_irq(&core_sleepers[core_id].lock, irqf);
-    return nearest;
+    return nready;
 }
 
 /* ── SYS_EPOLL_WAIT (232) ───────────────────────── */
@@ -372,69 +433,56 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     if (!events || !user_ok((uint64_t)events, (size_t)maxevents * sizeof(*events)))
         return -EFAULT;
 
-    thread_t *ct = thread_current();
-    if (ct) ct->wake_at = 0;
     uint64_t deadline = (timeout <= 0) ? 0 : (timer_ms() + (uint64_t)timeout);
     int infinite = (timeout < 0);
 
-    for (;;) {
-        /* Scan entries under lock. EPOLLET state must be updated atomically. */
-        uint64_t irqf;
-        spin_lock_irq(&ep->lock, &irqf);
+    int n = ep_send_events(ep, events, maxevents);
+    if (n != 0) return n;             /* >0: events delivered, <0: -EFAULT */
+    if (timeout == 0) return 0;
 
-        int nready = 0;
-        for (epoll_entry_t *ent = ep->entries; ent && nready < maxevents; ent = ent->next) {
-            uint32_t interest = ent->events & ~(EPOLLET | EPOLLONESHOT);
-            if (!interest) continue;
-            /* Linux: HUP/ERR/RDHUP werden immer geliefert, auch wenn
-             * nicht explizit in interest. Query maskiert also nur IN/OUT. */
-            uint32_t r = fd_poll_readiness(ent->fd, interest | EPOLLHUP | EPOLLERR | EPOLLRDHUP);
-            if (r) {
-                struct epoll_event ev;
-                ev.events = r & interest;
-                ev.events |= r & (EPOLLHUP | EPOLLERR | EPOLLRDHUP);
-                if (ev.events) {
-                    if (ent->events & EPOLLET) {
-                        uint32_t new_bits = ev.events & ~ent->et_last;
-                        if (!new_bits) continue;
-                        ev.events = new_bits;
-                        ent->et_last = ev.events | ent->et_last;
-                    }
-                    ev.data = ent->data;
-                    if (copy_to_user(&events[nready], &ev, sizeof(ev)) != 0) {
-                        spin_unlock_irq(&ep->lock, irqf);
-                        return nready > 0 ? nready : -EFAULT;
-                    }
-                    nready++;
-                    if (ent->events & EPOLLONESHOT)
-                        ent->events &= ~(EPOLLIN | EPOLLOUT | EPOLLRDHUP);
-                }
-            } else {
-                if (ent->events & EPOLLET)
-                    ent->et_last = 0;
-            }
+    /* Block on ep->wq until ep_poll_callback adds something to rdllist
+     * or signal arrives or deadline expires. We drive the loop ourselves
+     * (instead of schedule_timeout_interruptible) because we need to
+     * re-check rdllist on every wake — including non-timeout wakes from
+     * ep_poll_callback. */
+    DEFINE_WAIT(wait);
+    long rc = 0;
+    hrtimer_t timer;
+    int has_timer = 0;
+    uint64_t deadline_ns = 0;
+
+    if (!infinite) {
+        uint64_t now_ms = timer_ms();
+        if (now_ms >= deadline) {
+            return 0;
         }
-
-        spin_unlock_irq(&ep->lock, irqf);
-
-        if (nready > 0) return nready;
-        if (timeout == 0) return 0;
-        if (!infinite && timer_ms() >= deadline) return 0;
-
-        /* No events ready — block via event_wait. epoll_wake_all / timeouts
-         * event_post us. Add to sleeper list BEFORE final scan to avoid lost
-         * wake race (writer calls epoll_wake_all during our scan window). */
-        {
-            thread_t *t = thread_current();
-            if (!t) return -EFAULT;
-            epoll_sleeper_add(t);
-            int timeout_ms = infinite ? -1 : (int)(deadline - timer_ms());
-            if (timeout_ms <= 0 && !infinite) return 0;
-            event_t ev;
-            int _wr = event_wait(&t->eq, &ev, timeout_ms);
-            if (_wr == -4) return -EINTR;
-        }
+        deadline_ns = hrtimer_now_ns() + (deadline - now_ms) * 1000000ULL;
+        hrtimer_init(&timer, ep_wait_timeout_fn, thread_current());
+        has_timer = 1;
     }
+
+    for (;;) {
+        prepare_to_wait(&ep->wq, &wait, /*THREAD_BLOCKED*/ 3);
+
+        n = ep_send_events(ep, events, maxevents);
+        if (n != 0) { rc = n; break; }
+        if (signal_deliverable()) { rc = -EINTR; break; }
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) { rc = 0; break; }
+
+        if (has_timer) hrtimer_start(&timer, deadline_ns);
+        schedule();
+
+        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+            n = ep_send_events(ep, events, maxevents);
+            rc = n;
+            break;
+        }
+        if (signal_deliverable()) { rc = -EINTR; break; }
+        /* Wake from ep_poll_callback or spurious — re-loop, re-scan entries. */
+    }
+    finish_wait(&ep->wq, &wait);
+    if (has_timer) hrtimer_cancel(&timer);
+    return rc;
 }
 
 void epoll_incref(void *obj) {
@@ -447,13 +495,20 @@ void epoll_destroy(void *obj) {
     if (!obj) return;
     epoll_t *ep = (epoll_t *)obj;
     if (__sync_sub_and_fetch(&ep->refcount, 1) <= 0) {
+        /* Wake any blocked epoll_wait callers; they re-check signal/deadline
+         * and unwind. Then drop every epitem (detach + decref source). */
+        wake_up_all(&ep->wq);
+
         epoll_entry_t *it = ep->entries;
         while (it) {
             epoll_entry_t *n = it->next;
+            ep_detach_source(it);
+            fd_cleanup_entry(it->src_type, it->src_obj, it->src_flags);
             slab_free(&epoll_entry_slab, it);
             it = n;
         }
         ep->entries = 0;
+        ep->rdllist = 0;
         slab_free(&epoll_slab, obj);
     }
 }

@@ -121,9 +121,8 @@ static void admit_v6_syn(uint32_t ns_id, const ipv6_pkt_t *p,
 
     send_synack_req(r);
 
-    /* Wake epoll on the listener for accept(). */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
+    /* Listener wake propagates via ep_poll_callback to any registered ep->wq. */
+    wake_up(&ltcp->wait_wq);
 
     (void)in_doff; (void)dport;
 }
@@ -160,8 +159,6 @@ static void promote_v6_request(net_tcp_t *ltcp,
         ltcp->accept_qlen++;
 
         wake_up(&ltcp->wait_wq);
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
         return;
     }
     /* Not in syn_queue — search accept_queue for early data. */

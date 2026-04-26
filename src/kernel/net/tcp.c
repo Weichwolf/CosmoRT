@@ -1042,11 +1042,9 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
 
             send_synack_req(r);
 
-            /* Notify poll/epoll so edge-triggered listeners see the event
-             * (they may only care at ESTABLISHED, but notifying early is
-             * harmless — accept() will correctly EAGAIN on empty queue). */
-            extern void epoll_wake_all(void);
-            epoll_wake_all();
+            /* Listener wq wake propagates to ep->wq via ep_poll_callback
+             * for any registered epitem. */
+            wake_up(&ltcp->wait_wq);
             return;
         }
 
@@ -1079,8 +1077,6 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
                 ltcp->accept_qlen++;
 
                 wake_up(&ltcp->wait_wq);
-                extern void epoll_wake_all(void);
-                epoll_wake_all();
                 return;
             }
 

@@ -24,7 +24,6 @@
 #define EQ_PIPE_DATA       4
 #define EQ_PIPE_CLOSED     5
 #define EQ_FUTEX_WAKE      6
-#define EQ_EPOLL_READY     7
 #define EQ_SOCKET_DATA     8
 #define EQ_SOCKET_CONNECT  9
 #define EQ_TIMEOUT         10

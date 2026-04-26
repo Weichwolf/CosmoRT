@@ -28,10 +28,9 @@ static int net_rx_one(const nic_driver_t *n) {
     uint16_t etype = get16(pkt + 12);
     if (etype == 0x0806) { arp_input(pkt, len); return 1; }
     if (etype == 0x86DD) {
-        /* IPv6 entry point — queueing is internal to ipv6_input. */
+        /* IPv6 entry point — queueing is internal to ipv6_input. Per-socket
+         * wq wakes propagate to ep->wq via ep_poll_callback. */
         ipv6_input(init_net_ns.ns_id, pkt, len);
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
         return 1;
     }
     if (etype != 0x0800 || len < 34) return 0;
@@ -60,10 +59,7 @@ static int net_rx_one(const nic_driver_t *n) {
         queued = 1;
     }
 
-    if (queued) {
-        extern void epoll_wake_all(void);
-        epoll_wake_all();
-    }
+    (void)queued;
     return 1;
 }
 

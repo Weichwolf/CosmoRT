@@ -169,9 +169,6 @@ typedef struct thread {
     /* ── FPU/SSE/AVX state (XSAVE/XRSTOR, FXSAVE fallback) ── */
     uint8_t xsave_area[XSAVE_MAX_SIZE] __attribute__((aligned(64)));
 
-    /* ── TSC-based wakeup deadline (after fxsave to avoid offset shifts) ── */
-    uint64_t wake_at_tsc;  /* TSC deadline for sub-ms precision; 0 = use wake_at */
-
     /* ── Robust Mutex List (at end to avoid shifting fxsave alignment) ── */
     void *robust_list;     /* userspace robust_list_head pointer */
 

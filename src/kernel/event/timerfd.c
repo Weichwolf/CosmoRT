@@ -182,7 +182,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
     return 0;
 }
 
-/* Check if any timerfd has expired — used by epoll_check_timeouts */
+/* Check if any timerfd has expired — utility for readiness scans. */
 int timerfd_any_expired(void) {
     uint64_t now = timer_ms();
     for (int i = 0; i < TIMERFD_POOL_MAX; i++) {

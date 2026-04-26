@@ -57,11 +57,12 @@ extern int  udp_input(uint32_t ns_id, const uint8_t *pkt, int len);
 extern void ipv6_input(uint32_t ns_id, const uint8_t *frame, int len);
 extern void ipv6_attach_loopback_for_ns(struct net_ns *ns);
 extern void route6_attach_lo(struct net_ns *ns);
-extern void epoll_wake_all(void);
 
 #include "net/net.h"
 #include "net/net_util.h"
 
+/* Per-NS loopback. Protocol input drives per-socket wqs which forward
+ * into ep->wq for registered epitems via ep_poll_callback. */
 static void per_ns_lo_send(struct netif *nif, const uint8_t *data, uint16_t len) {
     uint32_t ns_id = nif->ns ? nif->ns->ns_id : init_net_ns.ns_id;
     uint8_t buf[1600];
@@ -71,7 +72,6 @@ static void per_ns_lo_send(struct netif *nif, const uint8_t *data, uint16_t len)
     /* IPv6 frame? */
     if (len >= 14 && buf[12] == 0x86 && buf[13] == 0xDD) {
         ipv6_input(ns_id, buf, len);
-        epoll_wake_all();
         return;
     }
 
@@ -87,7 +87,6 @@ static void per_ns_lo_send(struct netif *nif, const uint8_t *data, uint16_t len)
         else if (!udp_input(ns_id, buf, len))
             q_push(&q_udp_dns, buf, len);
     }
-    epoll_wake_all();
 }
 
 static void per_ns_lo_get_mac(struct netif *nif, uint8_t *out) {

@@ -52,7 +52,7 @@ void eventfd_init(void);
 void timerfd_init(void);
 void inotify_init_slab(void);
 
-/* Check if any timerfd has expired — used by epoll_check_timeouts */
+/* Check if any timerfd has expired — utility used by readiness scans. */
 int timerfd_any_expired(void);
 
 /* Syscall implementations */
@@ -82,7 +82,7 @@ void inotify_incref(void *obj);
 void inotify_destroy(void *obj);
 
 /* Read/write hooks for do_read/do_write.
- * nonblock=1 when the caller's fd has O_NONBLOCK; 0 blocks via event_wait. */
+ * nonblock=1 when the caller's fd has O_NONBLOCK; 0 blocks on per-fd wq. */
 long eventfd_read(void *obj, void *buf, long count, int nonblock);
 long eventfd_write(void *obj, const void *buf, long count, int nonblock);
 long timerfd_read(void *obj, void *buf, long count, int nonblock);
@@ -104,13 +104,26 @@ int  dnotify_queue_pop_fd(struct process *p, int sig);
 /* FD readiness check — implemented in syscall.c (has access to all FD types) */
 uint32_t fd_poll_readiness(int fd, uint32_t interest);
 
-/* Wake all threads blocked in epoll_wait/poll across ALL cores.
- * Called from eventfd_write, pipe_write, timerfd expire, socket recv.
- * Rare path. IRQ-safe (iterates per-core lists with spin_lock_irq). */
-void epoll_wake_all(void);
+/* Returns the eventpoll's wq (for nested epoll: ep1 watching ep2). */
+wait_queue_head_t *epoll_obj_wq(void *obj);
 
-/* Check timed-out sleepers on CURRENT core's per-core list.
- * Called from timer IRQ (sched_preempt) on every core. */
-void epoll_check_timeouts(void);
+/* Source-fd waitqueue lookup.
+ *
+ * For a watched fd and the requested events mask, returns the wait_queue_head_t
+ * the watcher (epoll_ctl ADD, poll(2)) should subscribe to. Linux's
+ * file_operations.poll feeds wait queues into a poll_table; we simplify by
+ * mapping fd type -> wq directly.
+ *
+ *   FD_EVENTFD     -> read_wq if EPOLLIN, else write_wq.
+ *   FD_PIPE        -> read end's read_wq for EPOLLIN, write end's write_wq for EPOLLOUT.
+ *   FD_TIMERFD     -> wq.
+ *   FD_SOCKET      -> tcp.wait_wq (TCP) or udp_sock_t.recv_wq (UDP).
+ *   FD_UNIX_SOCK   -> read_wq for EPOLLIN, write_wq for EPOLLOUT, accept_wq for listening.
+ *   FD_PIPE/PTY/INOTIFY/SERIAL/FILE: NULL — readiness re-scan on every wait covers them
+ *                                   (no edge-trigger, but level works since epoll_wait
+ *                                   re-scans the entry list under ep->lock).
+ *
+ * Returns NULL when the source has no wq for the requested side. */
+wait_queue_head_t *fd_get_poll_wq(int fd, uint32_t events);
 
 #endif

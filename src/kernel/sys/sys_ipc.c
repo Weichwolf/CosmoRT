@@ -212,12 +212,10 @@ long pipe_read(struct pipe *pp, void *buf, size_t count) {
     /* Snapshot writer-end owner fuer SIGIO nach Lock-Release */
     struct pipe_owner notify_w = pp->owner[1];
     spin_unlock_irq(&pp->lock, flags);
-    /* Space freed → wake any blocked writer (multi-writer correct). */
+    /* Space freed → wake any blocked writer (multi-writer correct).
+     * Registered ep_poll_callback fires from write_wq into ep->wq. */
     wake_up(&pp->write_wq);
     pipe_notify_end(&notify_w);
-    /* Wake epoll/poll sleepers — pipe now writable */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
     return (long)n;
 }
 
@@ -244,12 +242,10 @@ long pipe_write(struct pipe *pp, const void *buf, size_t count) {
     /* Snapshot reader-end owner fuer SIGIO nach Lock-Release */
     struct pipe_owner notify_r = pp->owner[0];
     spin_unlock_irq(&pp->lock, flags);
-    /* Data available → wake any blocked reader (multi-reader correct). */
+    /* Data available → wake any blocked reader (multi-reader correct).
+     * Registered ep_poll_callback fires from read_wq into ep->wq. */
     wake_up(&pp->read_wq);
     pipe_notify_end(&notify_r);
-    /* Wake epoll/poll sleepers — pipe now readable */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
     return (long)n;
 }
 
@@ -429,9 +425,6 @@ long pipe_close(fd_entry_t *fde) {
         pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
     }
-    /* Wake epoll/poll sleepers — pipe state changed (HUP/ERR) */
-    extern void epoll_wake_all(void);
-    epoll_wake_all();
     return 0;
 }
 
@@ -674,4 +667,49 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     }
 
     return ready;
+}
+
+/* ── fd_get_poll_wq — source-fd waitqueue for epoll/poll subscribe ── */
+
+wait_queue_head_t *fd_get_poll_wq(int fd, uint32_t events) {
+    process_t *p = proc_current();
+    if (!p) return 0;
+    fd_entry_t *fde = fd_get(&p->fds, fd);
+    if (!fde || fde->type == FD_NONE || !fde->obj) return 0;
+
+    int want_out = (events & EPOLLOUT) != 0;
+
+    switch (fde->type) {
+    case FD_EVENTFD: {
+        eventfd_t *efd = (eventfd_t *)fde->obj;
+        return want_out ? &efd->write_wq : &efd->read_wq;
+    }
+    case FD_TIMERFD:
+        return &((timerfd_t *)fde->obj)->wq;
+    case FD_PIPE: {
+        struct pipe *pp = (struct pipe *)fde->obj;
+        int is_write = (fde->flags & O_WRONLY) ? 1 : 0;
+        return is_write ? &pp->write_wq : &pp->read_wq;
+    }
+    case FD_SOCKET: {
+        socket_t *s = (socket_t *)fde->obj;
+        if (s->is_dgram) {
+            udp_sock_t *us = udp_find_ns(s->ns_id, s->udp_local_port);
+            return us ? &us->recv_wq : 0;
+        }
+        return &s->tcp.wait_wq;
+    }
+    case FD_UNIX_SOCK: {
+        unix_socket_t *us = (unix_socket_t *)fde->obj;
+        if (us->state == USOCK_LISTENING) return &us->accept_wq;
+        return want_out ? &us->write_wq : &us->read_wq;
+    }
+    case FD_EPOLL:
+        /* Nested epoll: ep1 watching ep2. Forward to ep2's wq. */
+        return epoll_obj_wq(fde->obj);
+    default:
+        /* FD_PTY_*, FD_INOTIFY, FD_SERIAL, FD_FILE, FD_PROCFS, FD_DEVICE,
+         * FD_NSFS — no per-fd wq; epoll falls back to readiness re-scan. */
+        return 0;
+    }
 }

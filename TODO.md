@@ -30,7 +30,7 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3108/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+ktest **3152/0**, musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
 15, 16, 17 erledigt. Phase 10.2 zentrale Migration fertig (Schritt 1-3):
 event_queue intern auf wq, sched_wake auf state-CAS (try_to_wake_up),
 thread->wait_head/wait_entry entfernt, kill_one's Doppelpfad fuer
@@ -217,8 +217,15 @@ Queue-Insertion fehlt. Sched_wake's CAS hat Race-Window vor state=BLOCKED.
       (~500 LOC). LTP installiert keine signalfd-Tests, kein Blocker.
 - [x] socket recv/accept → waitqueue pro socket (Phase 10.2b-3 + 10.2b-4
       jeweils AF_UNIX bzw. AF_INET/AF_INET6 abgeschlossen).
-- [ ] epoll_wait → eigene waitqueue + ep_poll_callback pro registriertem
-      fd (heute event_wait-getragen, indirekter Fix via 10.2c)
+- [x] epoll_wait → eigene waitqueue + ep_poll_callback pro registriertem
+      fd (Phase 10.2b-5). epitem registriert wait_queue_entry mit
+      func=ep_poll_callback auf der Source-fd's wq; Source-Wake fuegt
+      epi in ep->rdllist (Hint) und wake_up(&ep->wq). do_epoll_wait
+      blockt mit DEFINE_WAIT auf ep->wq, scannt ep->entries via
+      ep_send_events. Per-Core-Sleeper-Array, epoll_wake_all,
+      epoll_check_timeouts, epoll_nearest_deadline_tsc, wake_at_tsc-Hack
+      ersatzlos weg. poll(2)/select(2) ebenfalls migriert: pro fd
+      wait_queue_entry mit func=default_wake_function. ktest 3136 -> 3152.
 - [ ] `process_wait`/`wait4` → waitqueue pro process fuer SIGCHLD
 
 Hinweis 10.2c: wait4-Migration wurde angefangen (child_wait_wq auf

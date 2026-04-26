@@ -140,12 +140,10 @@ long eventfd_write(void *obj, const void *buf, long count, int nonblock) {
     copy_from_user(&val, buf, sizeof(val));
     if (val == (uint64_t)-1) return -EINVAL;
 
-    /* Fast path: room available. */
+    /* Fast path: room available. eventfd_try_write wakes read_wq;
+     * registered ep_poll_callback fires from there to ep->wq. */
     long r = eventfd_try_write(efd, val);
-    if (r > 0) {
-        epoll_wake_all();
-        return r;
-    }
+    if (r > 0) return r;
     if (nonblock) return -EAGAIN;
 
     DEFINE_WAIT(wait);
@@ -161,8 +159,6 @@ long eventfd_write(void *obj, const void *buf, long count, int nonblock) {
         schedule();
     }
     finish_wait(&efd->write_wq, &wait);
-
-    if (rc > 0) epoll_wake_all();
     return rc;
 }
 

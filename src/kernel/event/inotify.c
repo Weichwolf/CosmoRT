@@ -300,8 +300,8 @@ long do_inotify_rm_watch(int fd, int wd) {
     }
 
     spin_unlock_irq(&ino->lock, irqf);
-
-    if (found) epoll_wake_all();
+    /* inotify has no per-fd wq yet; epoll_wait re-scans inotify_has_events
+     * on each iteration (level-trigger only). */
     return found ? 0 : -EINVAL;
 }
 
@@ -428,7 +428,7 @@ void inotify_event(const char *path, uint32_t mask) {
         spin_unlock_irq(&ino->lock, irqf);
     }
 
-    if (woke) epoll_wake_all();
+    (void)woke;
 }
 
 /* ── Refcount management ──────────────────────────── */
