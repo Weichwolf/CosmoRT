@@ -55,7 +55,7 @@ FILTER=""
 if [ -f /opt/ltp_filter ]; then
     FILTER=$(cat /opt/ltp_filter)
 fi
-LTP_SKIP="epoll_wait05 execve04 execve05 clone301"
+LTP_SKIP="epoll_wait05 execve04 execve05"
 while read t; do
     [ -z "$t" ] && continue
     if [ -n "$FILTER" ]; then
