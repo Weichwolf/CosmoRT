@@ -32,7 +32,8 @@ KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/random.o \
             $(BUILD)/kernel/mm/page_cache.o \
             $(BUILD)/kernel/mm/extable.o \
-            $(BUILD)/kernel/mm/oom.o
+            $(BUILD)/kernel/mm/oom.o \
+            $(BUILD)/kernel/mm/gup.o
 
 KERN_PROC = $(BUILD)/kernel/proc/process.o \
             $(BUILD)/kernel/proc/process_lazy.o \

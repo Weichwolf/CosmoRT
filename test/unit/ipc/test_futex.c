@@ -113,7 +113,48 @@ static void test_futex_timeout(void) {
     check("timeout elapsed < 200ms", elapsed_ms < 200);
 }
 
+/* Cross-process FUTEX_WAIT (no PRIVATE flag) on MAP_SHARED page.
+ * Mirrors LTP's tst_checkpoint_wait/wake pattern: parent waits, child wakes
+ * a page the child has never read. Without GUP-style demand-fault inside
+ * futex_key, child's PA-lookup returns 0 and WAKE goes into a private-key
+ * bucket the parent's waiter is not in. */
+static void test_futex_shared_cross_process(void) {
+    puts("\n[futex/shared-cross-process]\n");
+
+    long page = sc6(SYS_MMAP, 0, 4096, PROT_RW,
+                    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    check("mmap shared", page > 0);
+    if (page <= 0) return;
+
+    volatile uint32_t *fx = (volatile uint32_t *)page;
+    *fx = 0;
+
+    long pid = sc0(SYS_FORK);
+    check("fork", pid >= 0);
+    if (pid < 0) { sc2(SYS_MUNMAP, page, 4096); return; }
+
+    if (pid == 0) {
+        struct k_timespec ts = { .tv_sec = 0, .tv_nsec = 50000000 };
+        sc2(SYS_NANOSLEEP, (long)&ts, 0);
+        long woken = sc6(SYS_FUTEX, (long)fx, FUTEX_WAKE, 1, 0, 0, 0);
+        sc1(SYS_EXIT, woken == 1 ? 0 : 1);
+        __builtin_unreachable();
+    }
+
+    struct k_timespec to = { .tv_sec = 2, .tv_nsec = 0 };
+    long r = sc6(SYS_FUTEX, (long)fx, FUTEX_WAIT, 0, (long)&to, 0, 0);
+    check("parent FUTEX_WAIT returns 0 or -EINTR", r == 0 || r == -EINTR);
+
+    int wstatus = 0;
+    sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+    check("child exited cleanly", (wstatus & 0x7F) == 0);
+    check_val("child WAKE saw exactly 1 waiter", (wstatus >> 8) & 0xFF, 0);
+
+    sc2(SYS_MUNMAP, page, 4096);
+}
+
 TEST("futex", test_futex_eagain);
 TEST("futex_wake_none", test_futex_wake_none);
 TEST("futex_wait_wake", test_futex_wait_wake);
 TEST("futex_timeout", test_futex_timeout);
+TEST("futex/shared-cross-process", test_futex_shared_cross_process);

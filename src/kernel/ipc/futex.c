@@ -20,6 +20,7 @@
 #include "core/percpu.h"
 #include "core/waitqueue.h"
 #include "core/hrtimer.h"
+#include "mm/gup.h"
 #include "spinlock.h"
 #include "hw/serial.h"
 #include "config.h"
@@ -86,7 +87,10 @@ static uint64_t futex_va_to_pa(uint64_t va) {
 }
 
 /* Resolve key from raw uaddr. shared=1 → PA-key (cross-process via PA, pid=0).
- * shared=0 → private (vaddr, pid). */
+ * shared=0 → private (vaddr, pid). For shared, FUTEX_WAKE never reads *uaddr
+ * (only WAIT does), so a child that only WAKEs on a MAP_SHARED page parent
+ * already faulted has nothing to demand-fault the page in. Linux uses
+ * get_user_pages here; we use mm_gup_one as the slow-path fallback. */
 static void futex_key(uint32_t *uaddr, int shared,
                       uint64_t *out_addr, uint32_t *out_pid) {
     process_t *p = proc_current();
@@ -94,6 +98,8 @@ static void futex_key(uint32_t *uaddr, int shared,
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
     if (shared) {
         uint64_t pa = futex_va_to_pa(addr);
+        if (!pa && p)
+            pa = mm_gup_one(p, addr, 0);
         if (pa) { addr = pa; pid = 0; }
     }
     *out_addr = addr;
@@ -218,28 +224,24 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
         if (has_timer) hrtimer_start(&timer, deadline_ns);
         schedule();
 
+        /* Directed wake from FUTEX_WAKE/REQUEUE: try_to_wake_up sets
+         * WQ_FLAG_AUTOREMOVE on our entry and removes it from the bucket.
+         * Linux's futex_wait_queue_me classifies this as plain success
+         * (return 0) without re-checking *uaddr — the waker is responsible
+         * for whatever userspace state changes the WAITer cares about. */
+        if (fw.entry.flags & WQ_FLAG_AUTOREMOVE) {
+            rc = 0; break;
+        }
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             rc = -ETIMEDOUT; break;
         }
         if (signal_deliverable()) {
             rc = -EINTR; break;
         }
-        /* Spurious or directed wake: re-check uaddr next iter — if the waker
-         * changed it (FUTEX_WAKE pattern), we exit with rc=0 via the
-         * EAGAIN/value-changed branch. If not, we sleep again. */
+        /* Spurious wake (cross-subsystem) — re-evaluate, sleep again. */
     }
     finish_wait(wq, &fw.entry);
     if (has_timer) hrtimer_cancel(&timer);
-
-    /* "wake_up_nr saw us" path: wake set state to RUNNABLE; cond is true
-     * because the waker changed *uaddr before waking. We map that to 0. */
-    if (rc == -EAGAIN) {
-        /* If the value changed AFTER we were queued (which is the FUTEX_WAKE
-         * common case), Linux returns 0. We do the same when we observe a
-         * matching wake_up_nr-driven wakeup: the entry's autoremove flag
-         * marks that try_to_wake_up succeeded against us. */
-        if (fw.entry.flags & WQ_FLAG_AUTOREMOVE) rc = 0;
-    }
     return rc;
 }
 
