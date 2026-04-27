@@ -159,7 +159,18 @@ int autoremove_wake_function(wait_queue_entry_t *e, unsigned int mask) {
 }
 
 void signal_wake_up(thread_t *t) {
-    try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE);
+    if (try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE)) {
+        /* Cross-CPU signal wake: ensure target CPU exits HLT promptly so
+         * the woken thread observes sig_pending in its sleep loop's signal
+         * check. Without the IPI it waits up to 1ms for next timer tick,
+         * which compounds into apparent hangs under signal-storm patterns
+         * (pthread_cancel during pthread_cond_wait, SIGCHLD during
+         * futex_wait, etc.). Other wake paths (FUTEX_WAKE, pipe-write,
+         * socket-data) don't need the IPI: their normal wakeup signals
+         * specific blocked threads and the 1ms latency is in the noise. */
+        extern void smp_resched_others(void);
+        smp_resched_others();
+    }
 }
 
 /* Dispatch via e->func — Subsysteme registrieren eigene Callbacks (epoll).
