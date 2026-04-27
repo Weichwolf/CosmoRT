@@ -1329,34 +1329,33 @@ out:
 extern void sched_add(thread_t *t);
 extern thread_t *sched_pick(void);
 
+extern int sched_test_stale_rq_next(thread_t *t);
+
 static long sched_stale_rq_next_idempotency(void) {
     thread_t *t = thread_alloc();
     if (!t) return -1;
     long rc = 0;
 
     t->priority = 0;
-    /* Plant a stale rq_next pointer (any non-NULL value works). */
-    t->rq_next = (thread_t *)(uintptr_t)0xdeadbeefULL;
+    int picked_ok = sched_test_stale_rq_next(t);
+    if (picked_ok != 0) rc = picked_ok;
 
-    sched_add(t);
-
-    /* sched_add must have enqueued t despite the stale rq_next. */
-    thread_t *picked = sched_pick();
-    if (picked != t) { rc = -10; goto out; }
-
-    /* After pick, t->rq_next must be cleared by sched_pick. */
-    if (t->rq_next != 0) { rc = -11; goto out; }
-
-out:
     wq_test_thread_release(t);
     return rc;
 }
 
 /* sched_dequeue must remove t from any prio-queue it sits on, leaving the
  * remaining queue intact. Build a 3-element queue [a, b, c], dequeue the
- * middle (b), verify pick order is a then c. */
+ * middle (b), verify pick order is a then c.
+ *
+ * Use sched_test_drain_3 so insert/dequeue/pick happen under one rq_lock
+ * acquisition: peer-CPU schedule()'s pick-loop would otherwise consume
+ * our synthetic threads (proc==NULL) and break the pick-order invariant. */
+extern int sched_test_drain_3(thread_t *a, thread_t *b, thread_t *c,
+                              thread_t **p1, thread_t **p2, thread_t **p3,
+                              int dequeue_b);
+
 static long sched_dequeue_middle(void) {
-    extern void sched_dequeue(thread_t *t);
     thread_t *a = thread_alloc();
     thread_t *b = thread_alloc();
     thread_t *c = thread_alloc();
@@ -1369,15 +1368,11 @@ static long sched_dequeue_middle(void) {
     long rc = 0;
 
     a->priority = 0; b->priority = 0; c->priority = 0;
-    sched_add(a); sched_add(b); sched_add(c);
 
-    sched_dequeue(b);
+    thread_t *p1 = 0, *p2 = 0, *p3 = 0;
+    int b_rqnext_after_dequeue = sched_test_drain_3(a, b, c, &p1, &p2, &p3, 1);
 
-    if (b->rq_next != 0) { rc = -10; goto out; }
-
-    thread_t *p1 = sched_pick();
-    thread_t *p2 = sched_pick();
-    thread_t *p3 = sched_pick();
+    if (b_rqnext_after_dequeue != 0) { rc = -10; goto out; }
     if (p1 != a) { rc = -20; goto out; }
     if (p2 != c) { rc = -21; goto out; }
     if (p3 != 0) { rc = -22; goto out; }

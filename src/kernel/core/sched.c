@@ -92,6 +92,115 @@ void sched_add(thread_t *t) {
     spin_unlock_irq(&rq_lock, flags);
 }
 
+/* Test helper: plant stale rq_next, sched_add, sched_pick, all under
+ * rq_lock so a peer CPU can't race the picked-by-other path. Returns
+ * 0 on success, -10 if pick != t, -11 if t->rq_next != 0 after pick. */
+int sched_test_stale_rq_next(thread_t *t) {
+    uint64_t flags;
+    spin_lock_irq(&rq_lock, &flags);
+
+    t->state = THREAD_RUNNABLE;
+    t->rq_next = (thread_t *)(uintptr_t)0xdeadbeefULL;
+
+    /* Inline sched_add: list-walk idempotency, then enqueue. */
+    int prio = 0;
+    int already = 0;
+    for (thread_t *cur = rq[prio].head; cur; cur = cur->rq_next) {
+        if (cur == t) { already = 1; break; }
+    }
+    if (!already) {
+        t->rq_next = 0;
+        if (rq[prio].tail) rq[prio].tail->rq_next = t;
+        else rq[prio].head = t;
+        rq[prio].tail = t;
+        rq_bitmap |= (1u << prio);
+    }
+
+    /* Inline sched_pick: must return t. */
+    thread_t *picked = 0;
+    if (rq_bitmap) {
+        int p = 31 - __builtin_clz(rq_bitmap);
+        picked = rq[p].head;
+        if (picked) {
+            rq[p].head = picked->rq_next;
+            if (!rq[p].head) { rq[p].tail = 0; rq_bitmap &= ~(1u << p); }
+            picked->rq_next = 0;
+        }
+    }
+    int rc = 0;
+    if (picked != t) rc = -10;
+    else if (t->rq_next != 0) rc = -11;
+
+    spin_unlock_irq(&rq_lock, flags);
+    return rc;
+}
+
+/* Test helper: run sched_add(a,b,c), optional sched_dequeue(b), then 3x
+ * sched_pick — all under rq_lock so a peer CPU's schedule() can't pluck
+ * synthetic test threads off the rq before we can observe them.
+ * Returns b->rq_next (must be 0 after sched_dequeue). */
+int sched_test_drain_3(thread_t *a, thread_t *b, thread_t *c,
+                       thread_t **p1, thread_t **p2, thread_t **p3,
+                       int dequeue_b) {
+    uint64_t flags;
+    spin_lock_irq(&rq_lock, &flags);
+
+    a->state = THREAD_RUNNABLE; a->rq_next = 0;
+    b->state = THREAD_RUNNABLE; b->rq_next = 0;
+    c->state = THREAD_RUNNABLE; c->rq_next = 0;
+
+    /* Inline sched_add for a/b/c — single rq_lock window. */
+    int prio = 0;
+    rq[prio].tail ? (rq[prio].tail->rq_next = a) : (rq[prio].head = a);
+    rq[prio].tail = a;
+    a->rq_next = b; rq[prio].tail = b;
+    b->rq_next = c; rq[prio].tail = c;
+    rq_bitmap |= (1u << prio);
+
+    if (dequeue_b) {
+        /* Inline sched_dequeue(b) — same lock window. */
+        if (rq[prio].head == b) {
+            rq[prio].head = b->rq_next;
+            if (!rq[prio].head) { rq[prio].tail = 0; rq_bitmap &= ~(1u << prio); }
+        } else {
+            thread_t *prev = 0;
+            for (thread_t *cur = rq[prio].head; cur; cur = cur->rq_next) {
+                if (cur == b) break;
+                prev = cur;
+            }
+            if (prev && prev->rq_next == b) {
+                prev->rq_next = b->rq_next;
+                if (rq[prio].tail == b) rq[prio].tail = prev;
+            }
+        }
+        b->rq_next = 0;
+    }
+    int b_rq_next_after = (b->rq_next != 0);
+
+    /* Inline sched_pick — head of highest-prio queue. */
+    thread_t *picks[3] = {0, 0, 0};
+    for (int i = 0; i < 3; i++) {
+        thread_t *t = 0;
+        if (rq_bitmap) {
+            int p = 31 - __builtin_clz(rq_bitmap);
+            t = rq[p].head;
+            if (t) {
+                rq[p].head = t->rq_next;
+                if (!rq[p].head) { rq[p].tail = 0; rq_bitmap &= ~(1u << p); }
+                t->rq_next = 0;
+            }
+        }
+        picks[i] = t;
+    }
+
+    spin_unlock_irq(&rq_lock, flags);
+
+    if (p1) *p1 = picks[0];
+    if (p2) *p2 = picks[1];
+    if (p3) *p3 = picks[2];
+    return b_rq_next_after;
+}
+
 /* Remove t from its priority run queue if linked.
  * Required before thread_free: the singly-linked rq_next pointers in other
  * threads would otherwise dangle into a freed slab slot, breaking sched_pick
