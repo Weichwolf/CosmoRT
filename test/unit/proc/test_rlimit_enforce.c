@@ -204,7 +204,42 @@ static void test_rlimit_cpu_soft_xcpu(void) {
     }
 }
 
+/* RLIMIT_NPROC=0 must forbid fork (Linux ABI). Earlier the kernel mapped
+ * literal 0 to "unlimited" so fork still succeeded. Regression: fork must
+ * return -EAGAIN and prlimit64 readback must mirror the literal 0. */
+static void test_rlimit_nproc_zero(void) {
+    puts("\n[RLIMIT_NPROC_ZERO_FORBIDS_FORK]\n");
+
+    long pid = sc0(SYS_FORK);
+    check("fork probe", pid >= 0);
+    if (pid < 0) return;
+    if (pid == 0) {
+        long r = set_rlim(T_RLIMIT_NPROC, 0, RLIM_INF);
+        if (r != 0) sc1(SYS_EXIT_GROUP, 10);
+
+        struct t_rlim got = { 1, 1 };
+        get_rlim(T_RLIMIT_NPROC, &got);
+        if (got.cur != 0) sc1(SYS_EXIT_GROUP, 11);
+
+        long c = sc0(SYS_FORK);
+        if (c >= 0) {
+            if (c == 0) sc1(SYS_EXIT_GROUP, 0);
+            sc4(SYS_WAIT4, c, 0, 0, 0);
+            sc1(SYS_EXIT_GROUP, 12);
+        }
+        if (c != -EAGAIN) sc1(SYS_EXIT_GROUP, 13);
+        sc1(SYS_EXIT_GROUP, 0);
+        __builtin_unreachable();
+    }
+
+    int status = 0;
+    sc4(SYS_WAIT4, pid, (long)&status, 0, 0);
+    check("child exited", WIFEXITED(status));
+    check_val("NPROC=0 forbids fork", (long)WEXITSTATUS(status), 0);
+}
+
 TEST("rlimit/nproc",            test_rlimit_nproc_enforced);
+TEST("rlimit/nproc_zero",       test_rlimit_nproc_zero);
 TEST("rlimit/fsize_efbig",      test_rlimit_fsize_efbig);
 TEST("rlimit/fsize_sigxfsz",    test_rlimit_fsize_sigxfsz);
 TEST("rlimit/nofile_inherit",   test_rlimit_nofile_fork_inherit);

@@ -178,16 +178,17 @@ static void check_cpu_limits(void) {
     uint64_t ticks = ++p->cpu_time_ticks;
     unsigned long soft = p->rlim_cpu_soft;
     unsigned long hard = p->rlim_cpu_hard;
-    if (!soft && !hard) return;
+    unsigned long inf = (unsigned long)~0UL;
+    if (soft == inf && hard == inf) return;
 
     uint64_t secs = ticks / TICKS_PER_SECOND;
 
-    if (hard && secs >= hard) {
+    if (hard != inf && secs >= hard) {
         /* SIGKILL cannot be blocked/ignored — delivery happens on return. */
         __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGKILL));
         return;
     }
-    if (soft && secs >= soft && secs > p->xcpu_last_sec) {
+    if (soft != inf && secs >= soft && secs > p->xcpu_last_sec) {
         p->xcpu_last_sec = secs;
         __sync_fetch_and_or(&p->sig_pending, SIG_BIT(SIGXCPU));
     }

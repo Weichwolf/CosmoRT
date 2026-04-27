@@ -298,8 +298,9 @@ long do_brk(unsigned long addr) {
     if (addr == 0) return (long)p->brk_current;
     if (addr < p->brk_base) return (long)p->brk_current;
     if (addr >= 0x800000000000ULL) return (long)p->brk_current;
-    /* RLIMIT_DATA: cap brk growth (0 = unlimited, like Linux default) */
-    if (p->rlim_data && addr > p->brk_base + p->rlim_data)
+    /* RLIMIT_DATA: cap brk growth (RLIM_INFINITY = unlimited). */
+    if (p->rlim_data != (unsigned long)~0UL &&
+        addr > p->brk_base + p->rlim_data)
         return (long)p->brk_current;
     /* OOM guard: refuse brk growth when memory is critically low */
     if (addr > p->brk_current) {

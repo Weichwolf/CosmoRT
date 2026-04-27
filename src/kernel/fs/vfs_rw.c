@@ -15,7 +15,7 @@ static long fsize_clamp_write(size_t *count_inout, uint64_t offset) {
     process_t *p = proc_current();
     if (!p) return 0;
     unsigned long lim = p->rlim_fsize;
-    if (!lim) return 0;
+    if (lim == (unsigned long)~0UL) return 0;
     if (offset >= lim) {
         extern long kill_one(process_t *target, int sig);
         kill_one(p, SIGXFSZ);

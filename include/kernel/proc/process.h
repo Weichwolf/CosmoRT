@@ -124,11 +124,11 @@ typedef struct process {
     /* Resource limits (at end to avoid offset shifts) */
     unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_DEFAULT_NOFILE) */
     unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
-    unsigned long rlim_data;     /* RLIMIT_DATA cur (0 = unlimited, like Linux) */
-    unsigned long rlim_nproc;    /* RLIMIT_NPROC cur (0 = unlimited) */
-    unsigned long rlim_fsize;    /* RLIMIT_FSIZE cur (0 = unlimited) */
-    unsigned long rlim_cpu_soft; /* RLIMIT_CPU cur seconds (0 = unlimited) */
-    unsigned long rlim_cpu_hard; /* RLIMIT_CPU max seconds (0 = unlimited) */
+    unsigned long rlim_data;     /* RLIMIT_DATA cur (~0UL = unlimited; literal 0 = no growth) */
+    unsigned long rlim_nproc;    /* RLIMIT_NPROC cur (~0UL = unlimited; literal 0 = no fork) */
+    unsigned long rlim_fsize;    /* RLIMIT_FSIZE cur (~0UL = unlimited; literal 0 = no write) */
+    unsigned long rlim_cpu_soft; /* RLIMIT_CPU cur seconds (~0UL = unlimited) */
+    unsigned long rlim_cpu_hard; /* RLIMIT_CPU max seconds (~0UL = unlimited) */
 
     /* CPU accounting (updated by scheduler tick preemption).
      * cpu_time_ticks: accumulated ticks (1 tick = PERIODIC_TICKS_NS).

@@ -270,8 +270,9 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child = parent;
     } else {
         /* RLIMIT_NPROC enforcement — single-user: per-process cap applies globally.
-         * EAGAIN is the Linux errno for exceeding this limit. */
-        if (parent->rlim_nproc &&
+         * EAGAIN is the Linux errno for exceeding this limit. RLIM_INFINITY
+         * (~0UL) means unlimited; literal 0 forbids fork (Linux ABI). */
+        if (parent->rlim_nproc != (unsigned long)~0UL &&
             (unsigned long)proc_count_alive() >= parent->rlim_nproc)
             return -EAGAIN;
         child = proc_alloc();

@@ -201,6 +201,13 @@ process_t *proc_alloc(void) {
         p->net_ns = net_ns_get(&init_net_ns);
 
         init_waitqueue_head(&p->children_wq);
+
+        /* RLIMIT defaults: unlimited via RLIM_INFINITY sentinel. */
+        p->rlim_data     = (unsigned long)~0UL;
+        p->rlim_nproc    = (unsigned long)~0UL;
+        p->rlim_fsize    = (unsigned long)~0UL;
+        p->rlim_cpu_soft = (unsigned long)~0UL;
+        p->rlim_cpu_hard = (unsigned long)~0UL;
     }
     return p;
 }

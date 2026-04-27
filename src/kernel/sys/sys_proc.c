@@ -176,7 +176,10 @@ void do_exit(int status) {
                     uint32_t fval = 0;
                     if (!copy_from_user(&fval, futex_addr, 4) &&
                         (fval & FUTEX_TID_MASK) == tid) {
-                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
+                        /* Linux exit_robust_list: clear TID, preserve WAITERS,
+                         * set OWNER_DIED. musl trylock_owner detects own==0 +
+                         * old & 0x40000000 to return EOWNERDEAD. */
+                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
                         __sync_val_compare_and_swap(futex_addr, fval, nval);
                         /* robust_list mutex-cleanup: wake kann gemischt
                          * private/shared sein. Wir triggern BEIDE Keys:
@@ -198,7 +201,10 @@ void do_exit(int status) {
                     uint32_t fval = 0;
                     if (!copy_from_user(&fval, pf, 4) &&
                         (fval & FUTEX_TID_MASK) == tid) {
-                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED | tid;
+                        /* Linux exit_robust_list: clear TID, preserve WAITERS,
+                         * set OWNER_DIED. musl trylock_owner detects own==0 +
+                         * old & 0x40000000 to return EOWNERDEAD. */
+                        uint32_t nval = (fval & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
                         __sync_val_compare_and_swap(pf, fval, nval);
                         do_futex(pf, 1 | FUTEX_PRIVATE_FLAG, 0x7FFFFFFF, 0, 0, 0);
                         do_futex(pf, 1, 0x7FFFFFFF, 0, 0, 0);
@@ -667,19 +673,18 @@ long do_prlimit64(int pid, int resource,
             p->rlim_stack = knew.rlim_cur;
             stack_cur = knew.rlim_cur;
         }
-        if (resource == RLIMIT_DATA && p) {
-            /* 0 or RLIM_INFINITY = unlimited (Linux default) */
-            p->rlim_data = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
-        }
-        if (resource == RLIMIT_NPROC && p) {
-            p->rlim_nproc = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
-        }
-        if (resource == RLIMIT_FSIZE && p) {
-            p->rlim_fsize = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
-        }
+        /* RLIMIT_* sentinel: RLIM_INFINITY (~0UL) = unlimited.
+         * Linux ABI distinguishes literal 0 (e.g. NPROC=0 forbids fork) from
+         * unlimited; storing knew.rlim_cur directly preserves that. */
+        if (resource == RLIMIT_DATA && p)
+            p->rlim_data = knew.rlim_cur;
+        if (resource == RLIMIT_NPROC && p)
+            p->rlim_nproc = knew.rlim_cur;
+        if (resource == RLIMIT_FSIZE && p)
+            p->rlim_fsize = knew.rlim_cur;
         if (resource == RLIMIT_CPU && p) {
-            p->rlim_cpu_soft = (knew.rlim_cur == RLIM_INFINITY) ? 0 : knew.rlim_cur;
-            p->rlim_cpu_hard = (knew.rlim_max == RLIM_INFINITY) ? 0 : knew.rlim_max;
+            p->rlim_cpu_soft = knew.rlim_cur;
+            p->rlim_cpu_hard = knew.rlim_max;
         }
     }
 
@@ -687,7 +692,7 @@ long do_prlimit64(int pid, int resource,
         struct k_rlimit krl;
         switch (resource) {
         case RLIMIT_DATA:
-            krl.rlim_cur = (p && p->rlim_data) ? p->rlim_data : RLIM_INFINITY;
+            krl.rlim_cur = p ? p->rlim_data : RLIM_INFINITY;
             krl.rlim_max = RLIM_INFINITY;
             break;
         case RLIMIT_STACK:
@@ -703,16 +708,16 @@ long do_prlimit64(int pid, int resource,
             krl.rlim_max = RLIM_INFINITY;
             break;
         case RLIMIT_NPROC:
-            krl.rlim_cur = (p && p->rlim_nproc) ? p->rlim_nproc : RLIM_INFINITY;
+            krl.rlim_cur = p ? p->rlim_nproc : RLIM_INFINITY;
             krl.rlim_max = RLIM_INFINITY;
             break;
         case RLIMIT_FSIZE:
-            krl.rlim_cur = (p && p->rlim_fsize) ? p->rlim_fsize : RLIM_INFINITY;
+            krl.rlim_cur = p ? p->rlim_fsize : RLIM_INFINITY;
             krl.rlim_max = RLIM_INFINITY;
             break;
         case RLIMIT_CPU:
-            krl.rlim_cur = (p && p->rlim_cpu_soft) ? p->rlim_cpu_soft : RLIM_INFINITY;
-            krl.rlim_max = (p && p->rlim_cpu_hard) ? p->rlim_cpu_hard : RLIM_INFINITY;
+            krl.rlim_cur = p ? p->rlim_cpu_soft : RLIM_INFINITY;
+            krl.rlim_max = p ? p->rlim_cpu_hard : RLIM_INFINITY;
             break;
         default:
             krl.rlim_cur = RLIM_INFINITY;

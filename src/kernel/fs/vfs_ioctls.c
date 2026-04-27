@@ -263,7 +263,7 @@ static int fsize_check_truncate(int64_t length) {
     process_t *p = proc_current();
     if (!p) return 0;
     unsigned long lim = p->rlim_fsize;
-    if (!lim) return 0;
+    if (lim == (unsigned long)~0UL) return 0;
     if ((uint64_t)length > lim) {
         extern long kill_one(process_t *target, int sig);
         kill_one(p, SIGXFSZ);
