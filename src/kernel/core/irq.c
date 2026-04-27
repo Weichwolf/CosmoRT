@@ -802,6 +802,17 @@ static void resched_ipi_handler(int vector) {
     percpu_self()->need_resched = 1;
 }
 
+/* Send resched IPI to all other cores. Used after a wake_up that may have
+ * set a thread's state to RUNNABLE on another idle CPU's horizon — this
+ * forces the idle CPU out of HLT so it picks up the runnable thread.
+ *
+ * ICR low layout: bit 14 (level=assert), bits 18-19 (shorthand=11
+ * all-excluding-self), bits 0-7 vector. */
+void smp_resched_others(void) {
+    volatile uint32_t *icr_lo = (volatile uint32_t *)(LAPIC_BASE + 0x300);
+    *icr_lo = 0x000C4000u | 0xFDu;  /* all-excluding-self, level=assert, vector 0xFD */
+}
+
 /* ── Init ──────────────────────────────────────────── */
 
 __attribute__((cold))

@@ -139,6 +139,15 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
             for (thread_t *pt = parent->threads; pt; pt = pt->proc_next) {
                 if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
             }
+            /* Cross-CPU resched IPI: parent thread may be RUNNABLE on rq
+             * with another CPU sleeping in HLT. Without this IPI the idle
+             * CPU only wakes at the next 1ms timer tick, racing with the
+             * wait4 loop in LTP clock_nanosleep01's heartbeat-restart
+             * pattern (where the parent receives a SIGUSR1, exits wait4
+             * via -ERESTARTSYS, restarts via SA_RESTART, and races to
+             * re-enter prepare_to_wait while the test child exits). */
+            extern void smp_resched_others(void);
+            smp_resched_others();
         }
     }
 }

@@ -483,6 +483,42 @@ static void test_wq_25_signal_burst_during_sleep(void) {
     check_ge("burst sleep: >=5 EINTR returns", eintrs, 5);
 }
 
+/* LTP clock_nanosleep01 reproducer: parent waitpid()s a test child that
+ * sends SIGUSR1 heartbeats then exits. Without the cross-CPU resched IPI
+ * in exit_kill_process, parent could be RUNNABLE on rq with no waiter on
+ * children_wq when child exits — wake reaches nobody, parent waits for
+ * the 1ms timer tick to be picked, racing with the wait4 loop. */
+static void test_wq_28_heartbeat_wait4_race(void) {
+    install_handler(SIGUSR1, wq_sig_handler);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        long parent = sc0(SYS_GETPPID);
+        for (int i = 0; i < 8; i++) {
+            struct k_timespec d = { .tv_sec = 0, .tv_nsec = 5000000 };
+            sc2(SYS_NANOSLEEP, (long)&d, 0);
+            sc2(SYS_KILL, parent, SIGUSR1);
+        }
+        sc1(SYS_EXIT, 42);
+        __builtin_unreachable();
+    }
+    if (pid < 0) { fail("fork", 0); return; }
+    /* SIGUSR1 lacks SA_RESTART here, so wait4 may return -EINTR;
+     * restart manually until child reaped. With the IPI fix the wait4
+     * eventually returns pid even with this heartbeat-restart pattern. */
+    int ws = 0;
+    long r;
+    int loops = 0;
+    do {
+        r = sc4(SYS_WAIT4, pid, (long)&ws, 0, 0);
+        loops++;
+    } while (r == -EINTR && loops < 100);
+    check("heartbeat wait4 returns child pid", r == pid);
+    int code = (ws >> 8) & 0xFF;
+    check("heartbeat wait4 sees exit 42", code == 42);
+}
+
+TEST("waitqueue/28_heartbeat_wait4_race", test_wq_28_heartbeat_wait4_race);
+
 TEST("waitqueue/01_short_sleep",         test_wq_01_short_sleep);
 TEST("waitqueue/02_zero_sleep",          test_wq_02_zero_sleep);
 TEST("waitqueue/03_repeated_sleeps",     test_wq_03_repeated_sleeps);
