@@ -43,10 +43,14 @@ Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
   unter p->lock, Page-I/O ohne lock, finale map_user_page wieder unter lock.
 - `ipc/futex.futex_key`: shared-Pfad ruft mm_gup_one wenn fast-path
   futex_va_to_pa 0 returnt. Linux-aequivalent zu futex_get_key + GUP_FAST.
-- `ipc/futex.futex_wait`: Klassifikation nach schedule() korrekt — wenn
-  WQ_FLAG_AUTOREMOVE gesetzt, return 0 direkt (Linux-Verhalten);
-  vorher re-queued der Loop und schlief bis Timeout wenn der Waker
-  *uaddr nicht aenderte (LTP TST_CHECKPOINT_WAKE-Pattern).
+- `ipc/futex.futex_wait`: Klassifikation nach schedule() korrekt — pruefe
+  `fw.entry.next == 0` (entry off-list) als wake-Indikator. Linux's
+  futex_wait_queue_me kehrt nach futex_wake/REQUEUE direkt mit 0 zurueck
+  ohne *uaddr zu re-lesen — der Waker ist verantwortlich. Erste Iteration
+  pruefte WQ_FLAG_AUTOREMOVE, das war sticky beim re-queue durch
+  prepare_to_wait und triggerte falsche return 0 nach Spurious-Wake-Loops.
+  Vorher re-queued der Loop bis Timeout wenn der Waker *uaddr nicht
+  aenderte (LTP TST_CHECKPOINT_WAKE-Pattern).
 - `tools/boot-test.sh`: LTP_SKIP von "epoll_wait05 execve04 execve05"
   auf nur noch "epoll_wait05" reduziert. clone301 5/5, execve04 PASS,
   execve05 PASS, fcntl15 PASS, fcntl15_64 PASS — alle hatten dieselbe

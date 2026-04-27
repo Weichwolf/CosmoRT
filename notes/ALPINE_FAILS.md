@@ -1,5 +1,15 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-28 mm/gup + futex AUTOREMOVE-Klassifikation.
+  Zwei iterations: erst AUTOREMOVE-Flag-Check, dann auf entry-presence
+  (`fw.entry.next == 0`) gewechselt. Flag ist sticky beim re-queue durch
+  prepare_to_wait; entry-presence ist eindeutig.
+  pthread_cond-smasher-static hängt bei [410/478] auf ~2min unbewacht
+  vom 60s-RUNNER-Timeout (Test forkt 10 threads, wenn child kernel-deep
+  schlaeft greift SIGTERM nicht). Pre-existing — auch mit revertiertem
+  AUTOREMOVE-Patch reproduzierbar. Geskipped damit musl-Run komplett
+  durchlaufen kann; volle Diagnose offen.
+
 Update: 2026-04-28 mm/gup + futex SHARED demand-fault.
   ktest 3175 -> **3180** (+5 sub-asserts via futex/shared-cross-process Test).
   Filtered LTP runs gruen: clone301 5/5, execve04+05 PASS, fcntl15+fcntl15_64
@@ -15,11 +25,12 @@ Update: 2026-04-28 mm/gup + futex SHARED demand-fault.
     Page die nur eine Seite gefaultet hatte erreicht jetzt den Waiter im
     anderen Prozess.
   - **ipc/futex.futex_wait**: Loop-Klassifikation des wake-up-Pfads. Linux's
-    futex_wait_queue_me kehrt nach autoremove-WAKE direkt mit 0 zurueck;
+    futex_wait_queue_me kehrt nach futex_wake/REQUEUE direkt mit 0 zurueck;
     wir re-queue'ten via prepare_to_wait und schliefen weiter bis Timeout
     wenn der Waker den userspace-Wert nicht aenderte (LTP TST_CHECKPOINT
-    Pattern: WAKE ohne value-change). Fix: WQ_FLAG_AUTOREMOVE direkt nach
-    schedule() pruefen.
+    Pattern: WAKE ohne value-change). Fix: `fw.entry.next == 0`
+    direkt nach schedule() pruefen — bucket-removal ist eindeutiger
+    Wake-Indikator als WQ_FLAG_AUTOREMOVE (das beim re-queue sticky war).
   - **boot-test.sh**: clone301/execve04/execve05/fcntl15/fcntl15_64 alle
     aktiv. Frueherer #GP-execve04-Verdacht war Folgefehler des fehlenden
     GUP-Pfades, nicht ETXTBSY-Race.

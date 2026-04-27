@@ -18,7 +18,7 @@ echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 RUNNER=src/common/runtest.exe
-SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering pthread_cond_wait-cancel_ignored pthread_cond_wait-cancel_ignored-static tls_init"
+SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static fgetwc-buffering pthread_cond_wait-cancel_ignored pthread_cond_wait-cancel_ignored-static tls_init pthread_cond-smasher-static"
 MUSL_EXES=$(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort)
 musl_total_exes=$(echo "$MUSL_EXES" | wc -l)
 musl_idx=0

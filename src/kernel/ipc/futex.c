@@ -224,12 +224,11 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
         if (has_timer) hrtimer_start(&timer, deadline_ns);
         schedule();
 
-        /* Directed wake from FUTEX_WAKE/REQUEUE: try_to_wake_up sets
-         * WQ_FLAG_AUTOREMOVE on our entry and removes it from the bucket.
-         * Linux's futex_wait_queue_me classifies this as plain success
-         * (return 0) without re-checking *uaddr — the waker is responsible
-         * for whatever userspace state changes the WAITer cares about. */
-        if (fw.entry.flags & WQ_FLAG_AUTOREMOVE) {
+        /* Linux's futex_wait_queue_me classifies wake by entry-presence:
+         * if futex_wake removed us from the bucket, return 0 without
+         * re-reading *uaddr. We use the same indicator: bucket entry
+         * absent (next == NULL) means a directed wake removed us. */
+        if (!fw.entry.next) {
             rc = 0; break;
         }
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
