@@ -21,11 +21,14 @@ void save_user_state_for_block(thread_t *t, long return_value) {
     t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
 
-    /* Read current FS/GS_BASE from MSR — may differ from t->fs_base/gs_base
-     * if arch_prctl(SET_FS/SET_GS) was called since last context switch.
-     * (User GS lives in IA32_KERNEL_GS_BASE while CPU is in kernel mode.) */
+    /* Read current FS_BASE from MSR — may differ from t->fs_base if
+     * arch_prctl(SET_FS) was called since last context switch.
+     * GS-base: skip the readback. KERNEL_GS_BASE is shared with the percpu-
+     * base init at boot, and a thread that never set GS keeps gs_base == 0.
+     * Only ARCH_SET_GS / sigreturn write to gs_base, both also write the MSR;
+     * a snapshot here would clobber gs_base with the percpu base on the
+     * first syscall before any user-side gs-write has happened. */
     t->fs_base = hal_cpu_get_tls();
-    t->gs_base = hal_cpu_get_user_gs();
 
     /* Save FPU/SSE/AVX state so fork/clone get a consistent snapshot */
     hal_cpu_fpu_save(t->xsave_area);

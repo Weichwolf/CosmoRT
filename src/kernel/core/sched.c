@@ -322,11 +322,21 @@ void schedule(void) {
         return;
     }
 
-    /* Save prev per-thread state (skip idle and dead threads) */
+    /* Save prev per-thread state (skip idle and dead threads).
+     *
+     * GS-base note: KERNEL_GS_BASE holds the user GS while CPU is in kernel
+     * mode (swapped in by syscall/IRQ entry's swapgs). On x86_64 the same
+     * MSR is also primed at boot to the per-CPU base for the *first* swapgs.
+     * After that, only ARCH_SET_GS or wrgsbase from userspace ever changes
+     * it. CosmoRT today: zero callers use GS for user TLS, so we keep the
+     * MSR untouched in the hot context-switch path and update it only when
+     * a thread has explicitly opted in (gs_base != 0). This preserves the
+     * percpu-base invariant for fresh threads (gs_base == 0) without losing
+     * round-trip semantics for any thread that sets a real GS. */
     if (prev && prev != &idle_thread && prev->state != THREAD_DEAD) {
         prev->saved_user_rsp = cpu->user_rsp;
         prev->fs_base = hal_cpu_get_tls();
-        prev->gs_base = hal_cpu_get_user_gs();
+        if (prev->gs_base) prev->gs_base = hal_cpu_get_user_gs();
         hal_cpu_fpu_save(prev->xsave_area);
     }
 
@@ -339,7 +349,7 @@ void schedule(void) {
         cpu->user_rsp = next->saved_user_rsp;
         cpu->syscall_frame = next->kstack_top - 15 * 8;
         hal_cpu_set_tls(next->fs_base);
-        hal_cpu_set_user_gs(next->gs_base);
+        if (next->gs_base) hal_cpu_set_user_gs(next->gs_base);
         hal_cpu_fpu_restore(next->xsave_area);
     } else {
         uint64_t idle_top = (uint64_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
@@ -378,11 +388,11 @@ void sched_preempt(irq_frame_t *f) {
         if (deliverable || alarm_due) {
             cpu->in_preempt = 1;
             irq_frame_to_thread(f, cur);
-            /* Snapshot FS/GS_BASE so deliver_signal's sigframe captures the
-             * right TLS pointers. Not restored here: deliver_signal may set
-             * a fresh FS_BASE via sigframe, sigreturn restores original. */
+            /* Snapshot FS_BASE so deliver_signal's sigframe captures the
+             * right TLS pointer. Not restored here: deliver_signal may set
+             * a fresh FS_BASE via sigframe, sigreturn restores original.
+             * GS-base: skip — KERNEL_GS_BASE shares boot percpu init. */
             cur->fs_base = hal_cpu_get_tls();
-            cur->gs_base = hal_cpu_get_user_gs();
             check_pending_signals();
             thread_to_irq_frame(cur, f);
             cpu->in_preempt = 0;
@@ -407,7 +417,6 @@ void sched_preempt(irq_frame_t *f) {
     /* Save current thread context from interrupt frame */
     irq_frame_to_thread(f, cur);
     cur->fs_base = hal_cpu_get_tls();
-    cur->gs_base = hal_cpu_get_user_gs();
 
     /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
     lapic_eoi();
