@@ -1316,6 +1316,79 @@ out:
     return rc;
 }
 
+/* sched_add idempotency must hold even when t->rq_next is a stale non-NULL
+ * pointer (use-after-free of a predecessor in the singly-linked queue). The
+ * old check `if (rq[prio].tail == t || t->rq_next) return;` mistook stale
+ * pointers for membership and refused to enqueue, dropping wakeups silently.
+ *
+ * Reproduce: arrange t with state=RUNNABLE and rq_next pointing into an
+ * unrelated address (any non-NULL value), call sched_add(t), then verify a
+ * subsequent sched_pick returns t. With the old check sched_pick returns 0
+ * (because t was never enqueued); with the list-walk check sched_pick
+ * returns t. */
+extern void sched_add(thread_t *t);
+extern thread_t *sched_pick(void);
+
+static long sched_stale_rq_next_idempotency(void) {
+    thread_t *t = thread_alloc();
+    if (!t) return -1;
+    long rc = 0;
+
+    t->priority = 0;
+    /* Plant a stale rq_next pointer (any non-NULL value works). */
+    t->rq_next = (thread_t *)(uintptr_t)0xdeadbeefULL;
+
+    sched_add(t);
+
+    /* sched_add must have enqueued t despite the stale rq_next. */
+    thread_t *picked = sched_pick();
+    if (picked != t) { rc = -10; goto out; }
+
+    /* After pick, t->rq_next must be cleared by sched_pick. */
+    if (t->rq_next != 0) { rc = -11; goto out; }
+
+out:
+    wq_test_thread_release(t);
+    return rc;
+}
+
+/* sched_dequeue must remove t from any prio-queue it sits on, leaving the
+ * remaining queue intact. Build a 3-element queue [a, b, c], dequeue the
+ * middle (b), verify pick order is a then c. */
+static long sched_dequeue_middle(void) {
+    extern void sched_dequeue(thread_t *t);
+    thread_t *a = thread_alloc();
+    thread_t *b = thread_alloc();
+    thread_t *c = thread_alloc();
+    if (!a || !b || !c) {
+        if (a) wq_test_thread_release(a);
+        if (b) wq_test_thread_release(b);
+        if (c) wq_test_thread_release(c);
+        return -1;
+    }
+    long rc = 0;
+
+    a->priority = 0; b->priority = 0; c->priority = 0;
+    sched_add(a); sched_add(b); sched_add(c);
+
+    sched_dequeue(b);
+
+    if (b->rq_next != 0) { rc = -10; goto out; }
+
+    thread_t *p1 = sched_pick();
+    thread_t *p2 = sched_pick();
+    thread_t *p3 = sched_pick();
+    if (p1 != a) { rc = -20; goto out; }
+    if (p2 != c) { rc = -21; goto out; }
+    if (p3 != 0) { rc = -22; goto out; }
+
+out:
+    wq_test_thread_release(a);
+    wq_test_thread_release(b);
+    wq_test_thread_release(c);
+    return rc;
+}
+
 static long wq_autoremove_test(void) {
     thread_t *t = thread_alloc();
     if (!t) return -1;
@@ -1427,6 +1500,8 @@ static long do_cosmo_rt_query(long a1, long a2, long a3, long a4) {
     case 201: return wq_func_called_test();
     case 202: return wq_signal_wake_up_test();
     case 203: return wq_autoremove_test();
+    case 204: return sched_stale_rq_next_idempotency();
+    case 205: return sched_dequeue_middle();
     default: return -EINVAL;
     }
 }

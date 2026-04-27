@@ -866,3 +866,74 @@ static void test_wq_34_pause_blocks_until_signal(void) {
 
 TEST("waitqueue/33_pause_kill_wakeup",   test_wq_33_pause_kill_wakeup);
 TEST("waitqueue/34_pause_no_spurious",   test_wq_34_pause_blocks_until_signal);
+
+/* ── 35: LTP fork_testrun multi-layer pattern ─────────
+ *
+ * Reproduziert exakt LTP's tst_test fork_testrun + create_sig_proc:
+ *   master_pid forkt test_pid (test_pid macht setpgid(0,0))
+ *   test_pid forkt sig_sender (LTP create_sig_proc)
+ *   sig_sender: usleep, kill(test_pid, SIGINT), exit
+ *   test_pid: clock_nanosleep(10s) → erwartet -EINTR
+ *   master_pid: waitpid(test_pid)
+ *
+ * In Alpine LTP haengt das, in ktest 28/29 (ohne Master+setpgid-Layer)
+ * gruen. Wenn dieser Test auch haengt, ist der Bug in CosmoRT lokal
+ * reproduzierbar. */
+static void test_wq_35_ltp_fork_testrun_pattern(void) {
+    install_handler(SIGINT, wq_sig_handler);
+    long master_pid = sc0(SYS_GETPID);
+
+    long test_pid = sc0(SYS_FORK);
+    if (test_pid == 0) {
+        /* Sub-test process — LTP testrun() context */
+        sc2(SYS_SETPGID, 0, 0);             /* eigene PGID */
+        install_handler(SIGINT, wq_sig_handler);
+
+        long sig_sender = sc0(SYS_FORK);
+        if (sig_sender == 0) {
+            /* LTP create_sig_proc child — but kill goes to PARENT (test_pid),
+             * not master. We use getppid to be exact. */
+            long target = sc0(SYS_GETPPID);
+            for (int i = 0; i < 40; i++) {
+                struct k_timespec u = { .tv_sec = 0, .tv_nsec = 500000 };
+                sc2(SYS_NANOSLEEP, (long)&u, 0);
+                if (sc2(SYS_KILL, target, SIGINT) < 0) break;
+            }
+            sc1(SYS_EXIT, 0);
+            __builtin_unreachable();
+        }
+
+        /* test_pid: do_test() — clock_nanosleep with SEND_SIGINT */
+        struct k_timespec rq = { .tv_sec = 10, .tv_nsec = 0 };
+        struct k_timespec rm = { .tv_sec = 0, .tv_nsec = 0 };
+        struct k_timespec t0, t1;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t0);
+        long r = sc4(SYS_CLOCK_NANOSLEEP, CLOCK_REALTIME, 0,
+                     (long)&rq, (long)&rm);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&t1);
+        long elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+
+        /* Cleanup sig_sender, then exit with encoded result */
+        sc2(SYS_KILL, sig_sender, SIGTERM);
+        int s_ws = 0;
+        sc4(SYS_WAIT4, sig_sender, (long)&s_ws, 0, 0);
+
+        int code = 0;
+        if (r == -EINTR) code |= 1;
+        if (elapsed_ms < 2000) code |= 2;
+        sc1(SYS_EXIT, code);
+        __builtin_unreachable();
+    }
+    if (test_pid < 0) { check("fork test_pid", 0); (void)master_pid; return; }
+
+    /* master: waitpid auf test_pid (mit Heuristik fuer Hang-Detection) */
+    int ws = 0;
+    long r = sc4(SYS_WAIT4, test_pid, (long)&ws, 0, 0);
+    check("ltp_fork_testrun: waitpid returned test_pid", r == test_pid);
+    int code = (ws >> 8) & 0x3;
+    check("ltp_fork_testrun: clock_nanosleep returns -EINTR", (code & 1) != 0);
+    check("ltp_fork_testrun: woke <2s",                       (code & 2) != 0);
+}
+
+TEST("waitqueue/35_ltp_fork_testrun",    test_wq_35_ltp_fork_testrun_pattern);

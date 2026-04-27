@@ -150,6 +150,13 @@ thread_t *thread_alloc(void) {
 
 void thread_free(thread_t *t) {
     if (!t) return;
+    /* Drop t out of any run queue first so other threads' rq_next pointers
+     * stop dangling into the freed slab slot. Without this the singly-linked
+     * predecessor keeps a pointer past the (about to be reused) slot, and
+     * sched_add's idempotency check on that predecessor returns spuriously
+     * true after the slot reuses. */
+    extern void sched_dequeue(thread_t *t);
+    sched_dequeue(t);
     extern int hrtimer_cancel_by_data(void *);
     hrtimer_cancel_by_data(t);
     if (t->tid > 0 && t->tid < tid_capacity)

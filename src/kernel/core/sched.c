@@ -58,13 +58,25 @@ void sched_add(thread_t *t) {
     uint64_t flags;
     spin_lock_irq(&rq_lock, &flags);
 
-    /* Idempotency: if t is already in this rq (rq_next set, or t is the
-     * tail), skip enqueue. SIGSTOP+SIGCONT on a still-runnable thread or
-     * any double-wake would otherwise produce a self-loop (tail->rq_next = t
-     * with tail == t) and corrupt the run queue. */
-    if (rq[prio].tail == t || t->rq_next) {
-        spin_unlock_irq(&rq_lock, flags);
-        return;
+    /* Idempotency: walk the priority queue to detect membership.
+     *
+     * The earlier rq_next-based check was unsound: t->rq_next can be a stale
+     * non-NULL pointer pointing into a freed slab slot if t was once enqueued
+     * after some thread Y, Y was later picked (clears Y->rq_next but leaves
+     * t->rq_next == &Y), Y was thread_free'd, and t was then dequeued via
+     * sched_pick which only clears t->rq_next on the picked thread, not on
+     * predecessors that already point past the (now reused) slot. After such
+     * a sequence t->rq_next is non-NULL but t is not on any queue, so the
+     * old check would refuse to enqueue and the wakeup would be lost.
+     *
+     * Walking the singly-linked list is O(n_in_queue); typical depth is
+     * single-digit and the walk happens behind rq_lock, so this is cheap.
+     * In return we get a structurally correct membership predicate. */
+    for (thread_t *cur = rq[prio].head; cur; cur = cur->rq_next) {
+        if (cur == t) {
+            spin_unlock_irq(&rq_lock, flags);
+            return;
+        }
     }
 
     t->rq_next = 0;
@@ -77,6 +89,44 @@ void sched_add(thread_t *t) {
     rq[prio].tail = t;
     rq_bitmap |= (1u << prio);
 
+    spin_unlock_irq(&rq_lock, flags);
+}
+
+/* Remove t from its priority run queue if linked.
+ * Required before thread_free: the singly-linked rq_next pointers in other
+ * threads would otherwise dangle into a freed slab slot, breaking sched_pick
+ * once the slot gets reused. Caller must own a reference on t (no concurrent
+ * sched_pick can race because t->state != RUNNING is a precondition for
+ * thread_free). */
+void sched_dequeue(thread_t *t) {
+    if (!t) return;
+
+    int prio = t->priority;
+    if (prio < 0) prio = 0;
+    if (prio >= PRIO_LEVELS) prio = PRIO_LEVELS - 1;
+
+    uint64_t flags;
+    spin_lock_irq(&rq_lock, &flags);
+
+    if (rq[prio].head == t) {
+        rq[prio].head = t->rq_next;
+        if (!rq[prio].head) {
+            rq[prio].tail = 0;
+            rq_bitmap &= ~(1u << prio);
+        }
+    } else {
+        thread_t *prev = 0;
+        for (thread_t *cur = rq[prio].head; cur; cur = cur->rq_next) {
+            if (cur == t) { break; }
+            prev = cur;
+        }
+        if (prev && prev->rq_next == t) {
+            prev->rq_next = t->rq_next;
+            if (rq[prio].tail == t) rq[prio].tail = prev;
+        }
+    }
+
+    t->rq_next = 0;
     spin_unlock_irq(&rq_lock, flags);
 }
 

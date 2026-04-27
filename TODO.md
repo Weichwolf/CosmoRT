@@ -30,13 +30,23 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3191/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
+ktest **3163/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
 15, 16, 17 erledigt. Phase 10.2 fast komplett: 10.2a (try_to_wake_up,
 entry.func) ✓, 10.2b-1..9 (eventfd, pipe, unix_socket, tcp/udp, epoll,
 futex, wait4, sigtimedwait, pty/pause) ✓ — keine event_post/event_wait
 Caller mehr ausser event_queue.c selbst. 10.2c (event_queue.c +
 thread_t.eq loeschen) als naechster Schritt. Branch: `ltp`. Architektur-
 Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+
+**Scheduler-Hardening (clock_nanosleep01-Hang)**: sched_add hatte einen
+unsoundalten Idempotency-Check (`tail==t || t->rq_next`), der stale
+rq_next-Pointer (use-after-free durch thread_free ohne RQ-Removal) als
+Membership las und Wakeups verlor. Master-Thread blieb mit state=RUNNABLE
+ausserhalb der RQ, System idled, `kill -9` erforderlich. Fix:
+list-walk-basierte Idempotency in sched_add + neuer sched_dequeue-Call
+in thread_free, der den Slot vor slab_free aus seiner Prio-Queue zieht.
+LTP clock_nanosleep01: Hang → PASS (3 reproducible runs). ktest 3161 → 3163
+(+2 Regression-Tests: stale-rq_next, dequeue-middle).
 
 **Strukturelle Blocker entfernt** (Phase 10.2-FINAL):
 - `thread->wait_head`-Routing weg → reiner state-CAS
