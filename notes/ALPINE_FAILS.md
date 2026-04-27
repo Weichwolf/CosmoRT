@@ -1,5 +1,29 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-28 mm/gup + futex SHARED demand-fault.
+  ktest 3175 -> **3180** (+5 sub-asserts via futex/shared-cross-process Test).
+  Filtered LTP runs gruen: clone301 5/5, execve04+05 PASS, fcntl15+fcntl15_64
+  PASS. tools/boot-test.sh: LTP_SKIP nur noch epoll_wait05.
+
+  Behoben (alle vier ehemals separat-vermutete Bugs hatten dieselbe Wurzel):
+  - **mm/gup.c** neu: get_user_pages-aequivalente mm_gup_one. Slow-Path
+    fuer futex_key-SHARED wenn die Seite in p->pml4 noch nicht demand-paged.
+    File-backed via page_cache_lookup oder vfs_pread_by_ino, anonymous via
+    alloc_page. p->lock korrekt via Snapshot-then-map Pattern.
+  - **ipc/futex**: futex_key fragt mm_gup_one ab, wenn fast-path
+    futex_va_to_pa 0 returnt. Cross-process WAKE auf MAP_SHARED|MAP_ANONYMOUS
+    Page die nur eine Seite gefaultet hatte erreicht jetzt den Waiter im
+    anderen Prozess.
+  - **ipc/futex.futex_wait**: Loop-Klassifikation des wake-up-Pfads. Linux's
+    futex_wait_queue_me kehrt nach autoremove-WAKE direkt mit 0 zurueck;
+    wir re-queue'ten via prepare_to_wait und schliefen weiter bis Timeout
+    wenn der Waker den userspace-Wert nicht aenderte (LTP TST_CHECKPOINT
+    Pattern: WAKE ohne value-change). Fix: WQ_FLAG_AUTOREMOVE direkt nach
+    schedule() pruefen.
+  - **boot-test.sh**: clone301/execve04/execve05/fcntl15/fcntl15_64 alle
+    aktiv. Frueherer #GP-execve04-Verdacht war Folgefehler des fehlenden
+    GUP-Pfades, nicht ETXTBSY-Race.
+
 Update: 2026-04-27 sys_proc HAL-Refactor + clone301-Diagnose.
   ktest 3163 -> **3175** (+12 sub-asserts via 5 neue arch_prctl Tests +
   ltp/arch_prctl-gs reaktiviert).

@@ -30,11 +30,31 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3175/0**, musl **458/10/10** (3 SKIPs cancel_ignored {,-static}+tls_init,
-execve04+05+epoll_wait05 LTP-skip). LTP-Run partiell, hung bei fcntl15_64 nach
-fcntl15 SIGSEGV TBROK — Lock-Race vermutet. Phasen 10.1, 11, 13.1, 14,
-15, 16, 17 erledigt. Phase 10.2 fast komplett.
+ktest **3180/0**, LTP-skip nur noch epoll_wait05 (KERNEL PF beim
+EPOLLRDHUP nach shutdown(SHUT_RD)). clone301, execve04, execve05,
+fcntl15, fcntl15_64 alle PASS via mm/gup-Fix. Phasen 10.1, 11, 13.1,
+14, 15, 16, 17 erledigt. Phase 10.2 fast komplett.
 Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+
+**Track 1 — mm/gup + futex SHARED demand-fault (ERLEDIGT)**:
+- `mm/gup.c` neu: `mm_gup_one(p, va, write)` Linux-aequivalentes
+  get_user_pages_fast-Slow-Path. File-backed via page_cache_lookup +
+  vfs_pread_by_ino, anonymous via alloc_page. Lock-Disziplin: VMA-Snapshot
+  unter p->lock, Page-I/O ohne lock, finale map_user_page wieder unter lock.
+- `ipc/futex.futex_key`: shared-Pfad ruft mm_gup_one wenn fast-path
+  futex_va_to_pa 0 returnt. Linux-aequivalent zu futex_get_key + GUP_FAST.
+- `ipc/futex.futex_wait`: Klassifikation nach schedule() korrekt — wenn
+  WQ_FLAG_AUTOREMOVE gesetzt, return 0 direkt (Linux-Verhalten);
+  vorher re-queued der Loop und schlief bis Timeout wenn der Waker
+  *uaddr nicht aenderte (LTP TST_CHECKPOINT_WAKE-Pattern).
+- `tools/boot-test.sh`: LTP_SKIP von "epoll_wait05 execve04 execve05"
+  auf nur noch "epoll_wait05" reduziert. clone301 5/5, execve04 PASS,
+  execve05 PASS, fcntl15 PASS, fcntl15_64 PASS — alle hatten dieselbe
+  Wurzel (TST_CHECKPOINT-Sync via FUTEX SHARED).
+- ktest 3175 -> 3180 (+5: futex/shared-cross-process Regression-Test).
+- ec30978 (revertiert in 58f13a1) hatte den Demand-Fault-Probe ohne
+  die parallele AUTOREMOVE-Loop-Korrektur. Beide Haelften zusammen
+  loesen das Pattern.
 
 **Track A — sys_proc.c Architektur-Refactor (ERLEDIGT)**:
 - HAL bekommt `hal_cpu_canonical_user_addr`, `hal_cpu_arch_name`,
