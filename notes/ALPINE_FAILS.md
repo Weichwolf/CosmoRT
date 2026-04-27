@@ -31,9 +31,11 @@ Update: 2026-04-28 mm/gup + futex SHARED demand-fault.
     Pattern: WAKE ohne value-change). Fix: `fw.entry.next == 0`
     direkt nach schedule() pruefen — bucket-removal ist eindeutiger
     Wake-Indikator als WQ_FLAG_AUTOREMOVE (das beim re-queue sticky war).
-  - **boot-test.sh**: clone301/execve04/execve05/fcntl15/fcntl15_64 alle
-    aktiv. Frueherer #GP-execve04-Verdacht war Folgefehler des fehlenden
-    GUP-Pfades, nicht ETXTBSY-Race.
+  - **boot-test.sh**: clone301, execve04, execve05 alle aktiv. fcntl15
+    PASSt 8/9 sub-tests, der fork-tcase TBROKt mit SIGPIPE (file-lock
+    fork-Inheritance Race, separater Bug). fcntl15_64 hangt im selben
+    Pfad — vorerst LTP-skip. Frueherer #GP-execve04-Verdacht war
+    Folgefehler des fehlenden GUP-Pfades, nicht ETXTBSY-Race.
 
 Update: 2026-04-27 sys_proc HAL-Refactor + clone301-Diagnose.
   ktest 3163 -> **3175** (+12 sub-asserts via 5 neue arch_prctl Tests +
