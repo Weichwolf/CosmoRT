@@ -121,6 +121,7 @@ typedef struct thread {
     int      priority;           /* 0 = normal, 1-31 = RT */
     int      saved_priority;     /* original priority before PI boost, -1 = not boosted */
     uint64_t fs_base;            /* per-thread FS base for TLS */
+    uint64_t gs_base;            /* per-thread user GS base (arch_prctl SET_GS) */
     int      cpu_affinity;       /* -1 = any core, 0..SMP_MAX_CORES-1 = pinned */
     uint64_t timeslice;          /* remaining ticks for SCHED_RR */
 

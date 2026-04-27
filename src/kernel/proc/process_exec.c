@@ -767,6 +767,7 @@ shebang_retry:;
     cur->r11 = 0; cur->r12 = 0; cur->r13 = 0;
     cur->r14 = 0; cur->r15 = 0;
     cur->fs_base = 0;
+    cur->gs_base = 0;
 
     /* Reset FPU/SSE/AVX state for new executable.
      * FCW=0x037F: extended precision, all exceptions masked.

@@ -58,7 +58,5 @@ static void test_arch_prctl_invalid(void) {
 }
 
 TEST("ltp/arch_prctl-fs",      test_arch_prctl_fs);
-/* DISABLED: ARCH_SET_GS hangs kernel — needs investigation
 TEST("ltp/arch_prctl-gs",      test_arch_prctl_gs);
-*/
 TEST("ltp/arch_prctl-invalid", test_arch_prctl_invalid);

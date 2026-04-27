@@ -6,32 +6,29 @@
 
 /* ── SYS_arch_prctl (158) ────────────────────────── */
 
-/* Canonical form on x86_64: bits 48-63 must equal bit 47 (sign-extended).
- * wrmsr to IA32_FS_BASE/GS_BASE with non-canonical addr triggers #GP in
- * the kernel — must be rejected at the syscall boundary. Linux ABI:
- * ARCH_SET_FS with non-canonical addr returns -EPERM. */
-static int is_canonical_addr(unsigned long addr) {
-    unsigned long high = addr >> 47;
-    return high == 0 || high == 0x1FFFFUL; /* lower 47 zero, or upper 17 set */
-}
+/* Per-thread FS/GS bases live in thread_t and are switched on every context
+ * switch. The kernel uses GS for percpu (via swapgs) — user GS lives in
+ * IA32_KERNEL_GS_BASE while the CPU is in kernel mode and is restored to
+ * GS_BASE on sysretq. The HAL hides the MSR / canonical-form rules. */
 
 long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_FS) {
-        if (!is_canonical_addr(addr)) return -EPERM;
+        if (!hal_cpu_canonical_user_addr(addr)) return -EPERM;
         thread_t *t = thread_current();
         if (t) t->fs_base = addr;
         hal_cpu_set_tls(addr);
         return 0;
     }
     if (code == ARCH_SET_GS) {
-        /* TODO: store user GS in thread context, restore on sysret.
-         * Can't use KERNEL_GS_BASE - that holds percpu after swapgs. */
-        return -EINVAL;
+        if (!hal_cpu_canonical_user_addr(addr)) return -EPERM;
+        thread_t *t = thread_current();
+        if (t) t->gs_base = addr;
+        hal_cpu_set_user_gs(addr);
+        return 0;
     }
     if (code == ARCH_GET_GS) {
-        /* TODO: return saved user GS-base from thread context.
-         * Currently returns 0 (unset) - callers like glibc probe this. */
-        uint64_t val = 0;
+        thread_t *t = thread_current();
+        uint64_t val = t ? t->gs_base : 0;
         int r = copy_to_user((void *)addr, &val, 8);
         if (r) return r;
         return 0;
@@ -480,7 +477,7 @@ long do_uname(void *buf_) {
     kstrcpy(kbuf.nodename, "cosmo", 65);
     kstrcpy(kbuf.release, "0.1.0", 65);
     kstrcpy(kbuf.version, "CosmoRT 0.1", 65);
-    kstrcpy(kbuf.machine, "x86_64", 65);
+    kstrcpy(kbuf.machine, hal_cpu_arch_name(), 65);
     kstrcpy(kbuf.domainname, "", 65);
     int r = copy_to_user(buf, &kbuf, sizeof(struct utsname));
     if (r) return r;

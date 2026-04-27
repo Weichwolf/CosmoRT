@@ -213,8 +213,9 @@ void deliver_signal(thread_t *t, int signo) {
     uc.uc_mcontext.gregs.rip = t->rip; uc.uc_mcontext.gregs.eflags = t->rflags;
     uc.uc_mcontext.gregs.csgsfs = 0x33 | ((uint64_t)0 << 16) | ((uint64_t)0 << 32);
 
-    /* Save FS_BASE in _reserved[0] for restoration in rt_sigreturn */
+    /* Save FS/GS_BASE in _reserved[0..1] for restoration in rt_sigreturn */
     uc.uc_mcontext._reserved[0] = t->fs_base;
+    uc.uc_mcontext._reserved[1] = t->gs_base;
 
     /* fpstate pointer → separate area on stack (full XSAVE image) */
     uc.uc_mcontext.fpstate = fpstate_user_addr;
@@ -369,7 +370,7 @@ long do_rt_sigreturn(void) {
     frame->rcx = new_rip;
     cpu->user_rsp = new_rsp;
 
-    /* Restore FS_BASE from _reserved[0] (saved in deliver_signal).
+    /* Restore FS/GS_BASE from _reserved[0..1] (saved in deliver_signal).
      * Validate: must be user-space address, kernel addresses rejected. */
     {
         uint64_t fs = uc.uc_mcontext._reserved[0];
@@ -377,6 +378,12 @@ long do_rt_sigreturn(void) {
         if (fs) {
             t->fs_base = fs;
             hal_cpu_set_tls(fs);
+        }
+        uint64_t gs = uc.uc_mcontext._reserved[1];
+        if (gs >= 0x800000000000ULL) gs = 0;
+        if (gs) {
+            t->gs_base = gs;
+            hal_cpu_set_user_gs(gs);
         }
     }
 

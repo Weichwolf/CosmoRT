@@ -21,9 +21,11 @@ void save_user_state_for_block(thread_t *t, long return_value) {
     t->r11 = frame->r11; t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
 
-    /* Read current FS_BASE from MSR - may differ from t->fs_base
-     * if arch_prctl(SET_FS) was called since last context switch */
+    /* Read current FS/GS_BASE from MSR — may differ from t->fs_base/gs_base
+     * if arch_prctl(SET_FS/SET_GS) was called since last context switch.
+     * (User GS lives in IA32_KERNEL_GS_BASE while CPU is in kernel mode.) */
     t->fs_base = hal_cpu_get_tls();
+    t->gs_base = hal_cpu_get_user_gs();
 
     /* Save FPU/SSE/AVX state so fork/clone get a consistent snapshot */
     hal_cpu_fpu_save(t->xsave_area);

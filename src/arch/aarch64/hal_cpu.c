@@ -32,6 +32,10 @@ uint64_t hal_cpu_timestamp(void)                     { AARCH64_STUB(timestamp); 
 uint64_t hal_cpu_stack_ptr(void)                     { AARCH64_STUB(stack_ptr); return 0; }
 void hal_cpu_set_tls(uint64_t b)                     { (void)b; AARCH64_STUB(set_tls); }
 uint64_t hal_cpu_get_tls(void)                       { AARCH64_STUB(get_tls); return 0; }
+void hal_cpu_set_user_gs(uint64_t b)                 { (void)b; AARCH64_STUB(set_user_gs); }
+uint64_t hal_cpu_get_user_gs(void)                   { AARCH64_STUB(get_user_gs); return 0; }
+int hal_cpu_canonical_user_addr(uint64_t addr)       { (void)addr; return 1; }
+const char *hal_cpu_arch_name(void)                  { return "aarch64"; }
 void hal_cpu_fpu_save(void *a)                       { (void)a; AARCH64_STUB(fpu_save); }
 void hal_cpu_fpu_restore(const void *a)              { (void)a; AARCH64_STUB(fpu_restore); }
 void hal_cpu_set_percpu_base(uint64_t b)             { (void)b; AARCH64_STUB(set_percpu_base); }

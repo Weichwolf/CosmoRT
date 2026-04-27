@@ -7,7 +7,7 @@
 .text
 
 /* thread_t.kstack_rsp offset (verified by _Static_assert in sched.c) */
-#define THREAD_KSTACK_RSP 232
+#define THREAD_KSTACK_RSP 240
 
 /* ── context_switch(prev, next) ───────────────────────
  * Saves prev's callee-saved regs + RFLAGS + RSP, restores next's.

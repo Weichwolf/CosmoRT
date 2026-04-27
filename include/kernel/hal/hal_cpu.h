@@ -45,6 +45,21 @@ uint64_t hal_cpu_stack_ptr(void);
 void     hal_cpu_set_tls(uint64_t base);
 uint64_t hal_cpu_get_tls(void);
 
+/* Per-thread user GS base.
+ * x86: IA32_KERNEL_GS_BASE while in kernel — swapgs makes it active in user mode.
+ * aarch64: TPIDRRO_EL0. Save/restore on context switch. */
+void     hal_cpu_set_user_gs(uint64_t base);
+uint64_t hal_cpu_get_user_gs(void);
+
+/* Validate an address is acceptable for TLS-base writes (FS_BASE / GS_BASE).
+ * x86: bits 48-63 must equal bit 47 (canonical form); wrmsr with non-canonical
+ * triggers #GP. aarch64: any 64-bit value. Returns nonzero if the address is
+ * acceptable, 0 if it must be rejected at the syscall boundary. */
+int      hal_cpu_canonical_user_addr(uint64_t addr);
+
+/* Architecture name for uname.machine ("x86_64", "aarch64", ...). */
+const char *hal_cpu_arch_name(void);
+
 /* FPU/SIMD state */
 void hal_cpu_fpu_save(void *area);
 void hal_cpu_fpu_restore(const void *area);

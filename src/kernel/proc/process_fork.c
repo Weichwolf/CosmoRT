@@ -450,8 +450,7 @@ long kernel_clone(unsigned long flags, void *child_stack,
     /* Canonical-form check on user-supplied TLS: wrmsr to IA32_FS_BASE with
      * non-canonical addr would #GP in the kernel on next context switch. */
     if (flags & CLONE_SETTLS) {
-        unsigned long high = (unsigned long)tls >> 47;
-        if (high != 0 && high != 0x1FFFFUL) {
+        if (!hal_cpu_canonical_user_addr((uint64_t)tls)) {
             free_address_space(child->pml4); child->pml4 = 0;
             thread_free(ct);
             proc_cleanup(child);
@@ -461,6 +460,7 @@ long kernel_clone(unsigned long flags, void *child_stack,
     } else {
         ct->fs_base = cur->fs_base;
     }
+    ct->gs_base = cur->gs_base;
     kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
 
     ct->sched_policy = cur->sched_policy;

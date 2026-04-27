@@ -78,6 +78,10 @@ static inline void arch_set_kernel_gs_base(uint64_t val) {
     arch_wrmsr(0xC0000102, val);   /* IA32_KERNEL_GS_BASE */
 }
 
+static inline uint64_t arch_get_kernel_gs_base(void) {
+    return arch_rdmsr(0xC0000102); /* IA32_KERNEL_GS_BASE */
+}
+
 /* --- FPU / SSE / AVX state (XSAVE) -------------------------------- */
 
 /* XCR0 component bits */

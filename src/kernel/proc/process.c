@@ -689,6 +689,7 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     t->priority = PRIO_MIN;
     t->saved_priority = -1;
     t->fs_base = 0;
+    t->gs_base = 0;
     t->cpu_affinity = -1;
     t->timeslice = RR_TIMESLICE;
     t->proc = p;

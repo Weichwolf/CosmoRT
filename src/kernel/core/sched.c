@@ -22,7 +22,7 @@
 #include "core/timer.h"
 #include "hal/hal.h"
 
-_Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 232,
+_Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 240,
                "kstack_rsp offset mismatch with context.asm THREAD_KSTACK_RSP");
 
 /* Assembly: saves prev callee-saved+RFLAGS+RSP, loads next's */
@@ -326,6 +326,7 @@ void schedule(void) {
     if (prev && prev != &idle_thread && prev->state != THREAD_DEAD) {
         prev->saved_user_rsp = cpu->user_rsp;
         prev->fs_base = hal_cpu_get_tls();
+        prev->gs_base = hal_cpu_get_user_gs();
         hal_cpu_fpu_save(prev->xsave_area);
     }
 
@@ -338,6 +339,7 @@ void schedule(void) {
         cpu->user_rsp = next->saved_user_rsp;
         cpu->syscall_frame = next->kstack_top - 15 * 8;
         hal_cpu_set_tls(next->fs_base);
+        hal_cpu_set_user_gs(next->gs_base);
         hal_cpu_fpu_restore(next->xsave_area);
     } else {
         uint64_t idle_top = (uint64_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
@@ -376,10 +378,11 @@ void sched_preempt(irq_frame_t *f) {
         if (deliverable || alarm_due) {
             cpu->in_preempt = 1;
             irq_frame_to_thread(f, cur);
-            /* Snapshot FS_BASE so deliver_signal's sigframe captures the
-             * right TLS pointer. Not restored here: deliver_signal may set
+            /* Snapshot FS/GS_BASE so deliver_signal's sigframe captures the
+             * right TLS pointers. Not restored here: deliver_signal may set
              * a fresh FS_BASE via sigframe, sigreturn restores original. */
             cur->fs_base = hal_cpu_get_tls();
+            cur->gs_base = hal_cpu_get_user_gs();
             check_pending_signals();
             thread_to_irq_frame(cur, f);
             cpu->in_preempt = 0;
@@ -404,6 +407,7 @@ void sched_preempt(irq_frame_t *f) {
     /* Save current thread context from interrupt frame */
     irq_frame_to_thread(f, cur);
     cur->fs_base = hal_cpu_get_tls();
+    cur->gs_base = hal_cpu_get_user_gs();
 
     /* cur->state stays THREAD_RUNNING — schedule() re-enqueues */
     lapic_eoi();

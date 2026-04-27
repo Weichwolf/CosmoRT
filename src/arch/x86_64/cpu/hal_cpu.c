@@ -43,6 +43,23 @@ uint64_t hal_cpu_stack_ptr(void) { return arch_get_rsp(); }
 void     hal_cpu_set_tls(uint64_t base) { arch_set_fs_base(base); }
 uint64_t hal_cpu_get_tls(void)          { return arch_get_fs_base(); }
 
+/* User GS-base lives in IA32_KERNEL_GS_BASE while the CPU is in kernel mode —
+ * swapgs swaps it with the active GS_BASE on user/kernel transitions. The
+ * percpu base also goes through KERNEL_GS_BASE at boot, but is overwritten
+ * by the first swapgs after a userspace gs-base write (arch_prctl/wrgsbase),
+ * so the per-thread save/restore on context switch is mandatory. */
+void     hal_cpu_set_user_gs(uint64_t base) { arch_set_kernel_gs_base(base); }
+uint64_t hal_cpu_get_user_gs(void)          { return arch_get_kernel_gs_base(); }
+
+/* x86_64 canonical form: bits 48-63 must equal bit 47 (sign-extended).
+ * Non-canonical FS_BASE/GS_BASE writes (wrmsr / wrfsbase / wrgsbase) #GP. */
+int hal_cpu_canonical_user_addr(uint64_t addr) {
+    uint64_t high = addr >> 47;
+    return high == 0 || high == 0x1FFFFUL;
+}
+
+const char *hal_cpu_arch_name(void) { return "x86_64"; }
+
 void hal_cpu_fpu_save(void *area)           { arch_fpstate_save(area); }
 void hal_cpu_fpu_restore(const void *area)  { arch_fpstate_restore(area); }
 

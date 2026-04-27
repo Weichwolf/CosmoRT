@@ -345,8 +345,9 @@ void check_signals_syscall_path(long *result_ptr, long num) {
     t->r8  = frame->r8;  t->r9  = frame->r9;  t->r10 = frame->r10;
     t->r12 = frame->r12; t->r13 = frame->r13;
     t->r14 = frame->r14; t->r15 = frame->r15;
-    /* Save live FS_BASE so deliver_signal stores correct TLS in ucontext */
+    /* Save live FS/GS_BASE so deliver_signal stores correct TLS in ucontext */
     t->fs_base = hal_cpu_get_tls();
+    t->gs_base = hal_cpu_get_user_gs();
 
     /* ERESTART_* arbitration. apply_restart returns the new RAX value
      * (either the restart syscall NR or -EINTR). On restart we rewind
