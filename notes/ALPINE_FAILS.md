@@ -1,5 +1,38 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-27 sys_proc HAL-Refactor + clone301-Diagnose.
+  ktest 3163 -> **3175** (+12 sub-asserts via 5 neue arch_prctl Tests +
+  ltp/arch_prctl-gs reaktiviert).
+  musl 460/8 -> **458/10/10** (sem_init + pthread_cond-smasher Wieder-
+  flake; zwei vorherige PASSes retournieren in dieser Test-Sitzung,
+  race-empfindlich).
+  LTP-Run unterbrochen bei fcntl15_64 (Hang nach fcntl15 SIGSEGV TBROK).
+
+  Behoben:
+  - **sys_proc HAL-Refactor**: bits-47-Maske + hardcoded "x86_64" raus,
+    via `hal_cpu_canonical_user_addr` / `hal_cpu_arch_name`. Kernel-
+    Layer hat keinen x86_64-spezifischen Code mehr.
+  - **ARCH_SET_GS / ARCH_GET_GS**: aus dem TODO. thread_t.gs_base mit
+    KERNEL_GS_BASE-Synchronisation in arch_prctl. Context-switch gated
+    auf nicht-null gs_base, damit der percpu-Init-Wert in
+    KERNEL_GS_BASE fuer fresh threads erhalten bleibt — sonst hangt
+    alpine init nach erstem sysret weil percpu_self() kaputtes
+    Pointer-Material liest.
+
+  Neue Diagnose:
+  - **LTP clone301**: 4/5 tcases PASS, tcase 4 (CLONE_PIDFD) TBROK
+    `tst_checkpoint_wait(0, 10000) failed: ETIMEDOUT (110)`. Parent
+    blockt 10s in FUTEX_WAIT auf shared-mmap, child's FUTEX_WAKE
+    wird vom kernel nicht zugestellt. Hypothese: child's
+    `futex_va_to_pa()` returnt 0 weil die Seite in child's pml4
+    noch nicht demand-paged ist (FUTEX_WAKE liest *uaddr nicht).
+    Linux loest das via get_user_pages mit GUP_FAST + FOLL_WRITE.
+    Versuch eines `copy_from_user`-probe in futex_key hat accept02
+    zerschossen (selbe TBROK-Klasse) — revertiert. Fix muss in
+    Phase 10.2c-Analog mit echtem GUP-aequivalent.
+  - **LTP fcntl15_64**: hangt nach fcntl15 SIGSEGV TBROK. fcntl byte-
+    range-locking, Lock-Race oder File-Descriptor-Cleanup.
+
 Update: 2026-04-27 musl-Rettungsrunde.
   ktest 3163 -> **3166** (+3 sub-asserts via rlimit/nproc_zero +
   sched-test-helpers).
