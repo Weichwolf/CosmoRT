@@ -447,7 +447,20 @@ long kernel_clone(unsigned long flags, void *child_stack,
     ct->r14 = cur->r14; ct->r15 = cur->r15;
 
     ct->rsp = child_stack ? (uint64_t)child_stack : cur->rsp;
-    ct->fs_base = (flags & CLONE_SETTLS) ? tls : cur->fs_base;
+    /* Canonical-form check on user-supplied TLS: wrmsr to IA32_FS_BASE with
+     * non-canonical addr would #GP in the kernel on next context switch. */
+    if (flags & CLONE_SETTLS) {
+        unsigned long high = (unsigned long)tls >> 47;
+        if (high != 0 && high != 0x1FFFFUL) {
+            free_address_space(child->pml4); child->pml4 = 0;
+            thread_free(ct);
+            proc_cleanup(child);
+            return -EINVAL;
+        }
+        ct->fs_base = tls;
+    } else {
+        ct->fs_base = cur->fs_base;
+    }
     kmemcpy(ct->xsave_area, cur->xsave_area, xsave_size);
 
     ct->sched_policy = cur->sched_policy;

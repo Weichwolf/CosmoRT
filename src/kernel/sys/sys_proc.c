@@ -6,8 +6,18 @@
 
 /* ── SYS_arch_prctl (158) ────────────────────────── */
 
+/* Canonical form on x86_64: bits 48-63 must equal bit 47 (sign-extended).
+ * wrmsr to IA32_FS_BASE/GS_BASE with non-canonical addr triggers #GP in
+ * the kernel — must be rejected at the syscall boundary. Linux ABI:
+ * ARCH_SET_FS with non-canonical addr returns -EPERM. */
+static int is_canonical_addr(unsigned long addr) {
+    unsigned long high = addr >> 47;
+    return high == 0 || high == 0x1FFFFUL; /* lower 47 zero, or upper 17 set */
+}
+
 long do_arch_prctl(int code, unsigned long addr) {
     if (code == ARCH_SET_FS) {
+        if (!is_canonical_addr(addr)) return -EPERM;
         thread_t *t = thread_current();
         if (t) t->fs_base = addr;
         hal_cpu_set_tls(addr);
