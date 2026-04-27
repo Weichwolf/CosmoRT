@@ -304,6 +304,23 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     if ((old & FUTEX_TID_MASK) == tid)
         return -EDEADLK;
 
+    /* OWNER_DIED on robust PI mutex: previous owner died holding the lock.
+     * Linux: acquire with our TID + preserve OWNER_DIED, return 0; userspace
+     * (musl trylock_owner) detects via old & 0x40000000 and returns EOWNERDEAD. */
+    if ((old & FUTEX_OWNER_DIED) && (old & FUTEX_TID_MASK) == 0) {
+        uint32_t nval = tid | FUTEX_OWNER_DIED | (old & FUTEX_WAITERS);
+        if (__sync_val_compare_and_swap(uaddr, old, nval) == old)
+            return 0;
+        /* CAS lost: someone else changed value, fall through to retry path. */
+        old = __atomic_load_n(uaddr, __ATOMIC_ACQUIRE);
+        if ((old & FUTEX_TID_MASK) == 0) {
+            /* No owner, retry direct acquire. */
+            uint32_t nv = tid | (old & (FUTEX_OWNER_DIED | FUTEX_WAITERS));
+            if (__sync_val_compare_and_swap(uaddr, old, nv) == old)
+                return 0;
+        }
+    }
+
     /* Mark contended */
     __sync_fetch_and_or(uaddr, FUTEX_WAITERS);
 
@@ -355,6 +372,15 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
         if (old == 0) { rc = 0; break; }
         old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
         if (old == FUTEX_WAITERS) { rc = 0; break; }
+
+        /* OWNER_DIED arrived (robust PI): acquire preserving the bit. */
+        old = __atomic_load_n(uaddr, __ATOMIC_ACQUIRE);
+        if ((old & FUTEX_OWNER_DIED) && (old & FUTEX_TID_MASK) == 0) {
+            uint32_t nval = tid | FUTEX_OWNER_DIED | (old & FUTEX_WAITERS);
+            if (__sync_val_compare_and_swap(uaddr, old, nval) == old) {
+                rc = 0; break;
+            }
+        }
 
         if (signal_deliverable()) {
             rc = -EINTR; break;
