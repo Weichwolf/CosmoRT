@@ -30,10 +30,41 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3166/0**, musl **460/8/10** (3 SKIPs neu: pthread_cond_wait-cancel_ignored {,-static} + tls_init kernel-hangen),
-LTP-Run unterbrochen bei execve04 (#GP). Phasen 10.1, 11, 13.1, 14,
+ktest **3175/0**, musl **458/10/10** (3 SKIPs cancel_ignored {,-static}+tls_init,
+execve04+05+epoll_wait05 LTP-skip). LTP-Run partiell, hung bei fcntl15_64 nach
+fcntl15 SIGSEGV TBROK — Lock-Race vermutet. Phasen 10.1, 11, 13.1, 14,
 15, 16, 17 erledigt. Phase 10.2 fast komplett.
 Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+
+**Track A — sys_proc.c Architektur-Refactor (ERLEDIGT)**:
+- HAL bekommt `hal_cpu_canonical_user_addr`, `hal_cpu_arch_name`,
+  `hal_cpu_set/get_user_gs`. sys_proc.c ist x86_64-frei: keine
+  bit-47-Maske, kein hardcoded "x86_64", kein direkter MSR-Zugriff.
+- thread_t.gs_base + ARCH_SET_GS / ARCH_GET_GS funktional. Linux-ABI
+  konform: non-canonical addr -> -EPERM. Round-trip durch ktest abgedeckt.
+- Context-switch save/restore von gs_base ist gating auf nicht-null,
+  damit der KERNEL_GS_BASE-percpu-Bootwert fuer Threads ohne
+  expliziten Set-GS erhalten bleibt (initial KERNEL_GS_BASE = percpu).
+- aarch64-Stubs angepasst (arch_name="aarch64", canonical akzeptiert).
+- ktest +12 (3163 -> 3175).
+
+**Track B — Skip-List Bugs (TEILWEISE)**:
+- clone301: Skip entfernt. 4/5 tcases PASS jetzt diagnostiziert sichtbar.
+  tcase 4 (CLONE_PIDFD) bleibt TBROK in `tst_checkpoint_wait` — futex
+  WAIT/WAKE auf MAP_SHARED file-mmap zwischen parent (clone3-fork) und
+  child synchronisiert nicht. Hypothese: child's `futex_va_to_pa()`
+  returnt 0 weil die Seite in child's pml4 noch nicht demand-paged
+  ist (FUTEX_WAKE liest *uaddr nicht). Versuch eines copy_from_user-
+  probes hat accept02 (auch tst_checkpoint-basiert) zerschossen —
+  revertiert. Linux loest das via get_user_pages, das reference-counted
+  und write-faulted. Wir brauchen einen aequivalenten Pfad in
+  futex_key der die Seite einliest ohne Side-Effects.
+- execve05 + execve04: Skip bleibt. #GP-Cluster + ETXTBSY-Race in
+  execve unter 8 concurrent forks/execves. Eigene Diagnose-Phase.
+- pthread_cond_wait-cancel_ignored, tls_init: musl-SKIP bleibt.
+  futex_wait + pthread_cancel-Pfad haengt komplett — Phase-10
+  Wake-Race-Klasse, futex_wait checkt signal_deliverable nicht
+  innerhalb des prepare_to_wait-spinlocks.
 
 **Gewonnen in dieser Session** (Commits c7c4ad1..ec9c933):
 - **proc/rlimit**: literal RLIM_INFINITY-sentinel statt Magic-0; NPROC=0
