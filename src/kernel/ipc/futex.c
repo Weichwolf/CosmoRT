@@ -86,21 +86,13 @@ static uint64_t futex_va_to_pa(uint64_t va) {
 }
 
 /* Resolve key from raw uaddr. shared=1 → PA-key (cross-process via PA, pid=0).
- * shared=0 → private (vaddr, pid). For shared lookups the page must be
- * present so futex_va_to_pa returns a real PA — Linux's get_user_pages
- * faults it in. For us, FUTEX_WAKE doesn't read *uaddr (unlike WAIT), so
- * a child that only WAKEs on a MAP_SHARED page never demand-faults it
- * and falls back to (vaddr, pid) — wakes never reach the WAITer in the
- * other process. Touch the page with copy_from_user to drive the demand-
- * fault path before resolving. */
+ * shared=0 → private (vaddr, pid). */
 static void futex_key(uint32_t *uaddr, int shared,
                       uint64_t *out_addr, uint32_t *out_pid) {
     process_t *p = proc_current();
     uint32_t pid = p ? p->pid : 0;
     uint64_t addr = (uint64_t)(uintptr_t)uaddr;
     if (shared) {
-        uint32_t probe;
-        (void)copy_from_user(&probe, uaddr, sizeof(probe));
         uint64_t pa = futex_va_to_pa(addr);
         if (pa) { addr = pa; pid = 0; }
     }
