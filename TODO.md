@@ -30,13 +30,49 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3163/0** (jitter-flake aussen vor), musl 460/11, LTP **248/7/43**. Phasen 10.1, 11, 13.1, 14,
-15, 16, 17 erledigt. Phase 10.2 fast komplett: 10.2a (try_to_wake_up,
-entry.func) ✓, 10.2b-1..9 (eventfd, pipe, unix_socket, tcp/udp, epoll,
-futex, wait4, sigtimedwait, pty/pause) ✓ — keine event_post/event_wait
-Caller mehr ausser event_queue.c selbst. 10.2c (event_queue.c +
-thread_t.eq loeschen) als naechster Schritt. Branch: `ltp`. Architektur-
-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+ktest **3166/0**, musl **460/8/10** (3 SKIPs neu: pthread_cond_wait-cancel_ignored {,-static} + tls_init kernel-hangen),
+LTP-Run unterbrochen bei execve04 (#GP). Phasen 10.1, 11, 13.1, 14,
+15, 16, 17 erledigt. Phase 10.2 fast komplett.
+Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+
+**Gewonnen in dieser Session** (Commits c7c4ad1..ec9c933):
+- **proc/rlimit**: literal RLIM_INFINITY-sentinel statt Magic-0; NPROC=0
+  erzwingt fork-Verbot (vorher Bypass). pthread_atfork-errno-clobber
+  PASS, +1 ktest (rlimit/nproc_zero).
+- **ipc/futex**: FUTEX_LOCK_PI handhabt OWNER_DIED (vorher endless loop
+  bei robust-PI-Mutex nach Owner-Crash). pthread_robust PI-Subcases PASS.
+- **proc/exit**: robust_list-cleanup setzt OWNER_DIED + clear-TID
+  (Linux-konform, war OR-mit-tid → musl trylock_owner liest EBUSY).
+- **core/waitqueue**: signal_wake_up sendet broadcast resched-IPI.
+  pthread_cancel/SIGCHLD-during-futex_wait wache CPU1 sofort statt
+  1ms-Tick zu warten — eliminiert apparent Hangs in pthread_cond-smasher,
+  sem_init, tls_init etc.
+- **proc/rlimit**: rlim_nofile_max separat tracked. rlimit-open-files
+  PASS (vorher max=FD_CEILING hardcoded ignored user-set 42).
+- **test/sched**: rq-lock-held drain helpers eliminieren peer-CPU race
+  bei sched-Tests (sched_dequeue_middle/stale_rq_next).
+- **tools/boot-test**: dump FAIL-Output, skip kernel-Hangers.
+
+**Bekannte Bugs (nicht-fix, siehe Skip-Liste in tools/boot-test.sh)**:
+- pthread_cond_wait-cancel_ignored {,-static}: futex_wait + pthread_cancel-
+  Kette haengt Kernel komplett (timeout 60 in qemu greift nicht).
+- tls_init: derselbe Hang-Cluster.
+- pthread-robust-detach {,-static}: timed out (45s) bei
+  pthread_mutex_timedlock auf orphan robust mutex. Static und dynamic
+  zeigen die Race-Empfindlichkeit; in einem von zwei Runs PASSt static.
+- malloc-brk-fail-static: Kernel sollte malloc OOM, erlaubt aber 10kB
+  alloc nach vmfill. brk wird nicht gecapped; OOM-guard zu locker.
+- tls_get_new-dtv: dlopen "tls_get_new-dtv_dso.so" failed mit SIGSEGV.
+  Dynamic-Link / dlopen-Pfad bleibt fragil.
+- LTP epoll_wait05: KERNEL PF cr2=0x62c bei EPOLLRDHUP nach
+  shutdown(SHUT_RD). NULL-Pointer-Deref im epoll-poll-Pfad.
+- LTP execve04: #GP rip=0xffff8000bcae2b69 in execve mit ETXTBSY-Pfad.
+  Kernel-Adresse unknown ohne Symbols; vermutlich vfs_open Race.
+- 4x musl Math-Praezision (fma, fmal, powf, remquol): qemu64 hat keine
+  FMA/Soft-FP-Exception-Hardware. Linux gleichermassen betroffen, akzeptiert.
+
+**Phase 10.2c offen**: event_queue.c + thread_t.eq loeschen (siehe alte
+Notiz unten).
 
 **Scheduler-Hardening (clock_nanosleep01-Hang)**: sched_add hatte einen
 unsoundalten Idempotency-Check (`tail==t || t->rq_next`), der stale
