@@ -665,7 +665,9 @@ long do_prlimit64(int pid, int resource,
         if (r) return r;
         if (resource == RLIMIT_NOFILE && p) {
             if (knew.rlim_cur > (unsigned long)FD_CEILING) knew.rlim_cur = FD_CEILING;
-            p->rlim_nofile = knew.rlim_cur;
+            if (knew.rlim_max > (unsigned long)FD_CEILING) knew.rlim_max = FD_CEILING;
+            p->rlim_nofile     = knew.rlim_cur;
+            p->rlim_nofile_max = knew.rlim_max;
             nofile_cur = knew.rlim_cur;
         }
         if (resource == RLIMIT_STACK && p) {
@@ -701,7 +703,7 @@ long do_prlimit64(int pid, int resource,
             break;
         case RLIMIT_NOFILE:
             krl.rlim_cur = nofile_cur;
-            krl.rlim_max = FD_CEILING;
+            krl.rlim_max = (p && p->rlim_nofile_max) ? p->rlim_nofile_max : FD_CEILING;
             break;
         case RLIMIT_AS:
             krl.rlim_cur = RLIM_INFINITY;

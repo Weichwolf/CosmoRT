@@ -359,7 +359,8 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->brk_current = parent->brk_current;
         child->mmap_next = parent->mmap_next;
         child->mlockall_flags = parent->mlockall_flags;
-        child->rlim_nofile = parent->rlim_nofile;
+        child->rlim_nofile     = parent->rlim_nofile;
+        child->rlim_nofile_max = parent->rlim_nofile_max;
         child->rlim_stack = parent->rlim_stack;
         child->rlim_data = parent->rlim_data;
         child->rlim_nproc = parent->rlim_nproc;

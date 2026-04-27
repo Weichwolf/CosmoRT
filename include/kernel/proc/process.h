@@ -122,8 +122,9 @@ typedef struct process {
     wait_queue_head_t children_wq;
 
     /* Resource limits (at end to avoid offset shifts) */
-    unsigned long rlim_nofile;   /* RLIMIT_NOFILE cur (0 = FD_DEFAULT_NOFILE) */
-    unsigned long rlim_stack;    /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
+    unsigned long rlim_nofile;     /* RLIMIT_NOFILE cur (0 = FD_DEFAULT_NOFILE) */
+    unsigned long rlim_nofile_max; /* RLIMIT_NOFILE max (0 = FD_CEILING) */
+    unsigned long rlim_stack;      /* RLIMIT_STACK cur (0 = RLIM_STACK_DEFAULT) */
     unsigned long rlim_data;     /* RLIMIT_DATA cur (~0UL = unlimited; literal 0 = no growth) */
     unsigned long rlim_nproc;    /* RLIMIT_NPROC cur (~0UL = unlimited; literal 0 = no fork) */
     unsigned long rlim_fsize;    /* RLIMIT_FSIZE cur (~0UL = unlimited; literal 0 = no write) */
