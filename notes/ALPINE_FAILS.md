@@ -1,5 +1,29 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-26 sys/time clock_gettime auf hrtimer_now_ns vereinheitlicht.
+  ktest 3202 -> **3203** (+1 sub-assert: vdso/syscall interleave monotonic
+  ueber 5000 pairs).
+  musl 461/7/10 (unveraendert).
+  LTP 243/10/45 -> **246/7/45** (+3 PASS: clock_gettime04 +
+  clock_nanosleep02 + clock_gettime03 alle gruen).
+  FAILs nun: connect02-TBROK, epoll-ltp, epoll_wait02, fcntl14/14_64,
+  fcntl36/36_64 — alle pre-existing.
+
+  Behoben:
+  - **sys_time.do_clock_gettime**: identische Math wie vDSO. Vorher
+    rechnete der Syscall ms-Split via Division (`ms = delta/tpms; sub_ns =
+    (sub_tsc*1e6)/tpms`) waehrend die vDSO `(delta*mult)>>shift` benutzt.
+    Bei jeder Iteration ergab das ~90us Drift; LTP clock_gettime04
+    interleaved beide Pfade 60k mal und meldete "Time travelled
+    backwards (vdso_gettime)". Fix: do_clock_gettime() ruft jetzt
+    hrtimer_now_ns(), das die gleiche `(delta*mult)>>shift` Hot-Path-
+    Formel verwendet — bit-exakt zur vDSO scale_tsc_to_ns() unter
+    600s Uptime.
+  - **test/unit/sys/test_vdso.c**: neue Subassertion "vdso/syscall
+    interleave monotonic over 5000 pairs". Reproduziert das LTP-Pattern
+    deterministisch im ktest-Run. Faengt Drift sofort, ohne 60k-Iteration
+    Aufwand.
+
 Update: 2026-04-28 SIGKILL/SIGSTOP unmaskable in signal_deliverable.
   ktest 3180 -> **3198** (+18 sub-asserts via 4 neue Tests in
   test/unit/signal/test_sigkill_unmaskable.c: sigkill_unmaskable,

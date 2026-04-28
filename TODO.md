@@ -30,10 +30,12 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3198/0** (+18 sub-asserts via signal/sigkill_unmaskable +
-sigkill_in_nanosleep + sigkill_in_sigsuspend + sigkill_in_futex),
-musl **461 PASS / 7 FAIL / 10 SKIP** (vorher 457/7/14: +4 PASS,
--4 SKIP via Track 1 SIGKILL-bypass), LTP 243/10/45.
+ktest **3203/0** (+1 sub-assert via vdso/syscall interleave monotonic
+ueber 5000 pairs in test/unit/sys/test_vdso.c, +18 davor via
+signal/sigkill_unmaskable + sigkill_in_nanosleep + sigkill_in_sigsuspend
++ sigkill_in_futex), musl **461 PASS / 7 FAIL / 10 SKIP**, LTP
+**246/7/45** (+3 PASS via clock_gettime03/04 + clock_nanosleep02
+fixe Drift+Precision).
 Phasen 10.1, 11, 13.1,
 14, 15, 16, 17 erledigt. Phase 10.2 fast komplett.
 Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
@@ -482,7 +484,7 @@ das pthread_cond/pthread-robust-detach via timing-races
 ### Erfolgskriterien
 
 - LTP epoll_wait02 PASS (ausstehend, braucht ns-event_wait)
-- LTP clock_gettime04 PASS (ausstehend, vDSO-syscall Overhead)
+- LTP clock_gettime04 PASS (erledigt 2026-04-26 via vDSO-Math-Vereinheitlichung)
 - musl nanosleep-precision-Tests durchlaufen <2% jitter (ausstehend)
 
 ---
@@ -542,10 +544,12 @@ via dynsym. ktest 2939 -> 2951 (+12), musl 461/10 (+1 PASS).
 
 - ktest 2951 (+12 vDSO sub-asserts), test-hw clean (1 pre-existing FAIL)
 - musl libc-test 461 PASS (+1) / 10 FAIL / 7 SKIP
-- LTP clock_gettime04: bleibt FAIL — TSC granularity in QEMU + 5ms test
-  budget bei 6 clk_ids * 10000 iterations * 5 variants (300k Aufrufe).
-  vDSO senkt per-call Latency von ~150ns (syscall) auf ~88ns (vDSO),
-  reicht im qemu-Setup nicht ueber den Threshold.
+- LTP clock_gettime04: PASS (Update 2026-04-26). Fix:
+  do_clock_gettime ruft hrtimer_now_ns(), das die gleiche
+  `(delta*mult)>>shift` Formel wie die vDSO scale_tsc_to_ns benutzt —
+  bit-exakt, keine Drift mehr. Vorher: ms-Split via Division
+  produzierte ~90us Drift pro Iteration, LTP meldete "Time travelled
+  backwards (vdso_gettime)".
 - LTP clock_nanosleep01: pre-existing hang (kein Phase-14 Regression)
 
 ### Time-namespace-Integration (offen, dependency Phase 15)

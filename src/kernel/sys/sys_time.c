@@ -70,14 +70,14 @@ static uint64_t thread_cpu_time_ns(void) {
 long do_clock_gettime(int clk_id, struct k_timespec *tp) {
     if (!tp) return -EFAULT;
     struct k_timespec kts;
-    /* ns = (tsc - boot_tsc) * 1e6 / tsc_per_ms, same origin wie timer_ms.
-     * Splitten um Overflow bei langer Uptime zu vermeiden. */
-    uint64_t tsc_delta = timer_tsc_now() - timer_boot_tsc;
-    uint64_t tpms = timer_tsc_per_ms ? timer_tsc_per_ms : 1;
-    uint64_t ms = tsc_delta / tpms;
-    uint64_t sub_tsc = tsc_delta - ms * tpms;
-    uint64_t sub_ns = (sub_tsc * (uint64_t)NSEC_PER_MSEC) / tpms;
-    int64_t raw_ns = (int64_t)ms * NSEC_PER_MSEC + (int64_t)sub_ns;
+    /* Single source of truth: hrtimer_now_ns() uses the same (delta * mult)
+     * >> shift formula that the vDSO data page exports — both paths must
+     * converge to the bit so a syscall reading at TSC t1 and a vDSO call
+     * reading at TSC t2 > t1 always yield ns(t2) >= ns(t1). LTP
+     * clock_gettime04 interleaves both 60k times and rejects any backward
+     * step, so even sub-µs rounding mismatches between two formulas surface
+     * as "Time travelled backwards (vdso_gettime)". */
+    int64_t raw_ns = (int64_t)hrtimer_now_ns();
     switch (clk_id) {
     case CLOCK_REALTIME:
     case CLOCK_REALTIME_COARSE: {

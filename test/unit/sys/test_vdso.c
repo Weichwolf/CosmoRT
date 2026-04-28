@@ -148,6 +148,31 @@ static void test_vdso(void) {
     puts("  1000 vdso calls: "); put_int(elapsed_ns / 1000); puts(" us\n");
     /* Generous bound (10ms) — passes anywhere except heavily-instrumented QEMU. */
     check("1000 vdso calls < 10ms", elapsed_ns < 10000000L);
+
+    /* 9. LTP clock_gettime04 regression: interleave vDSO and syscall paths
+     * over many iterations and reject any backward step. The two paths must
+     * use bit-identical math; otherwise a syscall reading at TSC t1 followed
+     * by a vDSO reading at TSC t2 > t1 can produce ns(t2) < ns(t1) due to
+     * rounding divergence between (delta * mult) >> shift vs ms-split. */
+    long prev_total_ns = 0;
+    int interleave_ok = 1;
+    for (int i = 0; i < 5000; i++) {
+        struct { long sec; long nsec; } a, b;
+        /* vDSO read */
+        fn(CLOCK_MONOTONIC, &a);
+        long ns_a = a.sec * 1000000000L + a.nsec;
+        if (prev_total_ns && ns_a < prev_total_ns) { interleave_ok = 0; break; }
+        prev_total_ns = ns_a;
+        /* syscall read */
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&b);
+        long ns_b = b.sec * 1000000000L + b.nsec;
+        if (ns_b < prev_total_ns) { interleave_ok = 0; break; }
+        prev_total_ns = ns_b;
+    }
+    check("vdso/syscall interleave monotonic over 5000 pairs", interleave_ok);
+    if (!interleave_ok) {
+        puts("  failed at total_ns="); put_int(prev_total_ns); puts("\n");
+    }
 }
 
 TEST("vdso", test_vdso);
