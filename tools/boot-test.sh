@@ -20,35 +20,59 @@ echo "  CosmoRT Boot Test"
 echo "  $(uname -a)"
 echo "========================================"
 
+# Optionale RUN-Listen fuer gezielte Debug-Sessions: glob-Pattern in /opt/{musl,ltp}_run.
+# Inhalt nicht leer -> Filter (sh-glob) reduziert die Liste + voller Debug-Output.
+# Datei fehlt oder leer -> alle Tests, kein Debug-Output.
+MUSL_RUN=""
+LTP_RUN=""
+[ -f /opt/musl_run ] && MUSL_RUN=$(cat /opt/musl_run)
+[ -f /opt/ltp_run  ] && LTP_RUN=$(cat /opt/ltp_run)
+DEBUG=0
+[ -n "$MUSL_RUN" ] && DEBUG=1
+[ -n "$LTP_RUN" ]  && DEBUG=1
+
+dump() {
+    echo "--- OUTPUT ($1) ---"
+    cat "$2"
+    echo "--- END ($1) ---"
+}
+
 musl_pass=0; musl_fail=0; musl_skip=0
 if [ "$COSMO_SKIP_MUSL" != "1" ] && [ ! -f /opt/skip-musl ]; then
 echo ""
 echo "=== MUSL LIBC-TEST ==="
 cd /opt/libc-test
 RUNNER=src/common/runtest.exe
-SKIP="mntent mntent-static strptime strptime-static raise-race raise-race-static tls_init"
 MUSL_EXES=$(find src -name '*.exe' ! -name 'runtest.exe' ! -name 'libtest.a' | sort)
-musl_total_exes=$(echo "$MUSL_EXES" | wc -l)
+if [ -n "$MUSL_RUN" ]; then
+    filtered=""
+    for exe in $MUSL_EXES; do
+        name=${exe##*/}; name=${name%.exe}
+        eval "case \"\$name\" in $MUSL_RUN) filtered=\"\$filtered \$exe\" ;; esac"
+    done
+    MUSL_EXES=$filtered
+fi
+musl_total_exes=$(echo $MUSL_EXES | wc -w)
 musl_idx=0
 for exe in $MUSL_EXES; do
     musl_idx=$((musl_idx + 1))
-    name=$(basename "$exe" .exe)
-    skip=0; for s in $SKIP; do [ "$name" = "$s" ] && skip=1; done
-    if [ $skip -eq 1 ]; then
-        echo "[$musl_idx/$musl_total_exes] $name SKIP"
-        musl_skip=$((musl_skip + 1)); continue
-    fi
+    name=${exe##*/}; name=${name%.exe}
     echo "[$musl_idx/$musl_total_exes] $name RUN"
     timeout -k 5 60 "$RUNNER" -t 45 -w '' "$exe" > /tmp/musl_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
         echo "[$musl_idx/$musl_total_exes] $name PASS"
+        [ $DEBUG -eq 1 ] && dump "$name" /tmp/musl_out.txt
         musl_pass=$((musl_pass + 1))
     else
         echo "[$musl_idx/$musl_total_exes] $name FAIL rc=$rc"
-        echo "--- OUTPUT ($name) ---"
-        head -30 /tmp/musl_out.txt
-        echo "--- END ($name) ---"
+        if [ $DEBUG -eq 1 ]; then
+            dump "$name" /tmp/musl_out.txt
+        else
+            echo "--- OUTPUT ($name) ---"
+            head -30 /tmp/musl_out.txt
+            echo "--- END ($name) ---"
+        fi
         musl_fail=$((musl_fail + 1))
     fi
 done
@@ -56,36 +80,29 @@ echo "musl libc-test: $musl_pass PASS, $musl_fail FAIL, $musl_skip SKIP"
 fi
 
 echo ""
-echo "=== LTP REQUIRED TESTS ==="
+echo "=== LTP TESTS ==="
 LTP_BIN=/opt/ltp/install/testcases/bin
 ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
-FILTER=""
-if [ -f /opt/ltp_filter ]; then
-    FILTER=$(cat /opt/ltp_filter)
+LTP_TESTS=$(ls "$LTP_BIN" | grep -v '_helper$' | sort)
+if [ -n "$LTP_RUN" ]; then
+    filtered=""
+    for t in $LTP_TESTS; do
+        eval "case \"\$t\" in $LTP_RUN) filtered=\"\$filtered \$t\" ;; esac"
+    done
+    LTP_TESTS=$filtered
 fi
-LTP_SKIP="epoll_wait05 fcntl15_64"
-while read t; do
-    [ -z "$t" ] && continue
-    if [ -n "$FILTER" ]; then
-        eval "case \"\$t\" in $FILTER) : ;; *) continue ;; esac"
-    fi
-    skip=0; for s in $LTP_SKIP; do [ "$t" = "$s" ] && skip=1; done
-    if [ $skip -eq 1 ]; then
-        ltp_total=$((ltp_total + 1))
-        echo "[$ltp_total/313] $t SKIP (kernel-PF, see TODO)"
-        ltp_skipped=$((ltp_skipped + 1))
-        continue
-    fi
+ltp_total_count=$(echo $LTP_TESTS | wc -w)
+for t in $LTP_TESTS; do
     ltp_total=$((ltp_total + 1))
     if [ ! -x "$LTP_BIN/$t" ]; then
         ltp_skipped=$((ltp_skipped + 1))
         continue
     fi
-    echo "[$ltp_total/313] $t RUN"
+    echo "[$ltp_total/$ltp_total_count] $t RUN"
     cd /tmp
-    # Timing-basierte Tests brauchen mehr als die Default-10s. clock_nanosleep02
-    # macht 1463 sleeps mit Iteration-Stichproben (~9s LTP-Runtime, plus Slack).
-    # Andere LTP-timer-Tests folgen demselben Muster.
+    # Timing-basierte Tests brauchen mehr als Default. clock_nanosleep02 macht 1463
+    # sleeps mit Iteration-Stichproben (~9s LTP-Runtime + Slack). LTP-timer-Tests
+    # folgen demselben Muster.
     case "$t" in
         clock_nanosleep02) tlim=180 ;;
         clock_gettime04)   tlim=60  ;;
@@ -99,19 +116,25 @@ while read t; do
     timeout "$tlim" "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
     rc=$?
     if [ $rc -eq 0 ]; then
-        echo "[$ltp_total/313] $t PASS"
+        echo "[$ltp_total/$ltp_total_count] $t PASS"
+        [ $DEBUG -eq 1 ] && dump "$t" /tmp/ltp_out.txt
         ltp_passed=$((ltp_passed + 1))
     elif [ $rc -eq 32 ] || [ $rc -eq 36 ]; then
-        echo "[$ltp_total/313] $t SKIP"
+        echo "[$ltp_total/$ltp_total_count] $t SKIP"
+        [ $DEBUG -eq 1 ] && dump "$t" /tmp/ltp_out.txt
         ltp_skipped=$((ltp_skipped + 1))
     else
-        echo "[$ltp_total/313] $t FAIL rc=$rc"
-        echo "--- OUTPUT ($t) ---"
-        head -80 /tmp/ltp_out.txt
-        echo "--- END ($t) ---"
+        echo "[$ltp_total/$ltp_total_count] $t FAIL rc=$rc"
+        if [ $DEBUG -eq 1 ]; then
+            dump "$t" /tmp/ltp_out.txt
+        else
+            echo "--- OUTPUT ($t) ---"
+            head -80 /tmp/ltp_out.txt
+            echo "--- END ($t) ---"
+        fi
         ltp_failed=$((ltp_failed + 1))
     fi
-done < /opt/ltp_required.txt
+done
 
 echo ""
 echo "========================================"
