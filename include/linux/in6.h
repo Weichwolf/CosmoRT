@@ -44,6 +44,7 @@ struct sockaddr_in6 {
 
 /* Socket-level options (RFC 3493) */
 #define IPPROTO_IPV6        41
+#define IPV6_ADDRFORM       1
 #define IPV6_V6ONLY         26
 #define IPV6_UNICAST_HOPS   16
 #define IPV6_MULTICAST_HOPS 18

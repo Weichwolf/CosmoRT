@@ -99,14 +99,19 @@ socket_t *sock_find_listener(uint32_t ns_id, uint16_t local_port_host) {
     uint16_t be = bswap16(local_port_host);
     uint64_t flags;
     socket_t *found = 0;
+    socket_t *dualstack = 0;
     spin_lock_irq(&sock_lock, &flags);
     for (socket_t *o = sock_active_head; o; o = o->next_active) {
-        if (o->state == SOCK_LISTENING && o->local_port == be &&
-            o->ns_id == ns_id && !o->is_v6) {
-            found = o;
-            break;
-        }
+        if (o->state != SOCK_LISTENING || o->local_port != be ||
+            o->ns_id != ns_id) continue;
+        if (!o->is_v6) { found = o; break; }
+        /* Dual-stack fallback: v6-listener bound to :: with !v6only accepts
+         * IPv4 connections (Linux net.ipv6.bindv6only=0). v4-listener still
+         * wins if both exist on same port. */
+        if (!o->v6only && in6_is_any(&o->local_ip6) && !dualstack)
+            dualstack = o;
     }
+    if (!found) found = dualstack;
     spin_unlock_irq(&sock_lock, flags);
     return found;
 }
@@ -189,7 +194,10 @@ long do_socket(int domain, int type, int protocol) {
     s->refcount = 1;
     s->is_dgram = (base_type == 2); /* SOCK_DGRAM */
     s->is_v6    = (domain == 10);
-    s->v6only   = 1; /* Linux default for AF_INET6 sockets */
+    /* Linux default: net.ipv6.bindv6only=0 — AF_INET6 sockets bound to ::any
+     * accept IPv4 traffic via v4-mapped addresses. Override per-socket via
+     * setsockopt(IPV6_V6ONLY). Distros (Debian, Alpine) keep this 0. */
+    s->v6only   = 0;
 
     process_t *p = proc_current();
     if (!p) { sock_free(s); return -EFAULT; }
@@ -220,6 +228,45 @@ long do_connect(int fd, const void *addr, int addrlen) {
 
     socket_t *s = sock_from_fd(fd);
     if (!s) return -EBADF;
+
+    /* Linux: connect(AF_UNSPEC) on a connected DGRAM socket disassociates
+     * the peer; on TCP it returns EAFNOSUPPORT in <5.x and historically also
+     * served as the "convert-to-listener via IPV6_ADDRFORM" reset path
+     * (CVE-2018-9568). For TCP we treat AF_UNSPEC as a state-reset to allow
+     * the post-IPV6_ADDRFORM bind+listen sequence in connect02 to succeed. */
+    if (addr && addrlen >= 2) {
+        uint16_t fam;
+        { int r = copy_from_user(&fam, addr, 2); if (r) return r; }
+        if (fam == 0 /* AF_UNSPEC */) {
+            if (s->is_dgram) {
+                s->remote_ip = 0;
+                s->remote_port = 0;
+                if (s->is_v6) {
+                    for (int i = 0; i < 16; i++) s->remote_ip6.s6_addr[i] = 0;
+                }
+                return 0;
+            }
+            /* TCP: reset connection state so bind+listen can re-purpose
+             * the fd. Drop any TCP hash registration; close existing conn. */
+            if (s->state == SOCK_CONNECTED) net_tcp_close(&s->tcp);
+            uint32_t saved_ns = s->ns_id;
+            uint8_t  saved_v6 = s->tcp.is_v6;
+            for (int i = 0; i < (int)sizeof(net_tcp_t); i++)
+                ((uint8_t *)&s->tcp)[i] = 0;
+            s->tcp.ns_id = saved_ns;
+            s->tcp.is_v6 = saved_v6;
+            s->state = SOCK_CREATED;
+            s->local_port = 0;
+            s->local_ip   = 0;
+            s->remote_ip  = 0;
+            s->remote_port = 0;
+            for (int i = 0; i < 16; i++) s->local_ip6.s6_addr[i] = 0;
+            for (int i = 0; i < 16; i++) s->remote_ip6.s6_addr[i] = 0;
+            s->sockflags &= ~(uint32_t)(SOCKF_CONNECTING);
+            return 0;
+        }
+    }
+
     if (s->state == SOCK_CONNECTED && !s->is_dgram) return -EISCONN;
     if (s->state == SOCK_LISTENING) return -EISCONN;
 
@@ -1042,7 +1089,14 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
         DEFINE_WAIT(wait);
         prepare_to_wait(&ls->tcp.wait_wq, &wait, /*THREAD_BLOCKED*/ 3);
         rc = net_tcp_accept_child(&ls->tcp, &ns->tcp);
-        if (rc == 0) { finish_wait(&ls->tcp.wait_wq, &wait); break; }
+        /* Dual-stack: net_tcp_accept_child may have set child->is_v6 based on
+         * request->is_v6 (v4 SYN to v6-dualstack listener → v4 child). Sync
+         * the socket-level family from the actually-materialised TCP state. */
+        if (rc == 0) {
+            ns->is_v6 = ns->tcp.is_v6;
+            finish_wait(&ls->tcp.wait_wq, &wait);
+            break;
+        }
         if (rc == -12) {
             finish_wait(&ls->tcp.wait_wq, &wait);
             sock_free(ns);
@@ -1215,6 +1269,23 @@ long do_setsockopt(int fd, int level, int optname, const void *optval, int optle
         switch (optname) {
         case IPV6_V6ONLY:
             s->v6only = val ? 1 : 0;
+            return 0;
+        case IPV6_ADDRFORM:
+            /* Linux fs/ipv6/ipv6_sockglue.c: convert AF_INET6 socket back to
+             * AF_INET. Only valid for TCP sockets connected via v4-mapped
+             * addresses or already-AF_INET. AF_INET6 is rejected (no-op).
+             * AF_INET requires TCP + v4-mapped peer (or our case: dual-stack
+             * v4 child of v6-listener that came in via v4 SYN, where
+             * tcp.is_v6 is already 0). */
+            if (val == AF_INET6) return 0;
+            if (val != AF_INET) return -EINVAL;
+            if (s->is_dgram) return -ENOPROTOOPT;
+            if (!s->is_v6) return 0; /* already v4 */
+            /* Only convert if underlying TCP path is already v4 (dual-stack
+             * v4 child) — otherwise we'd lie about the family. */
+            if (s->tcp.is_v6) return -EINVAL;
+            s->is_v6 = 0;
+            s->v6only = 0;
             return 0;
         case IPV6_UNICAST_HOPS:
         case IPV6_MULTICAST_HOPS:

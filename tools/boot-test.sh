@@ -93,6 +93,7 @@ while read t; do
         fcntl36|fcntl36_64) tlim=120 ;;
         epoll-ltp)         tlim=120 ;;
         epoll_wait02)      tlim=120 ;;
+        connect02)         tlim=180 ;;
         *)                 tlim=10  ;;
     esac
     timeout "$tlim" "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1

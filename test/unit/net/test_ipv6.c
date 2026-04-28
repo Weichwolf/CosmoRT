@@ -185,7 +185,7 @@ static void test_inet6_bind_wrong_family(void) {
     sc1(SYS_CLOSE, fd);
 }
 
-/* 8: IPV6_V6ONLY default (1) — getsockopt confirms. */
+/* 8: IPV6_V6ONLY default (0 — Linux net.ipv6.bindv6only=0). */
 static void test_inet6_v6only_default(void) {
     puts("\n[ipv6: IPV6_V6ONLY default]\n");
     long fd = sc3(SYS_SOCKET, AF_INET6, SOCK_STREAM, 0);
@@ -194,14 +194,14 @@ static void test_inet6_v6only_default(void) {
     long r = sc5(SYS_GETSOCKOPT, fd, IPPROTO_IPV6, IPV6_V6ONLY,
                  (long)&val, (long)&slen);
     check_val("getsockopt rc", r, 0);
-    check_val("default V6ONLY=1", val, 1);
+    check_val("default V6ONLY=0", val, 0);
 
-    /* Toggle off, read back. */
-    int zero = 0;
-    sc5(SYS_SETSOCKOPT, fd, IPPROTO_IPV6, IPV6_V6ONLY, (long)&zero, sizeof(int));
+    /* Toggle on, read back. */
+    int one = 1;
+    sc5(SYS_SETSOCKOPT, fd, IPPROTO_IPV6, IPV6_V6ONLY, (long)&one, sizeof(int));
     val = -1;
     sc5(SYS_GETSOCKOPT, fd, IPPROTO_IPV6, IPV6_V6ONLY, (long)&val, (long)&slen);
-    check_val("after clear V6ONLY=0", val, 0);
+    check_val("after set V6ONLY=1", val, 1);
     sc1(SYS_CLOSE, fd);
 }
 
@@ -253,6 +253,76 @@ static void test_ipv6_send_routes_to_default(void) {
     sc1(SYS_CLOSE, fd);
 }
 
+/* 11: Dual-stack — AF_INET6 listener on :: with !v6only accepts IPv4
+ * SYN to 127.0.0.1. Child socket reports as AF_INET (is_v6=0 after accept). */
+#define AF_INET 2
+#define IPV6_ADDRFORM 1
+static void test_dualstack_v4_to_v6(void) {
+    puts("\n[ipv6: dualstack v4 -> v6 listener]\n");
+    int lfd = (int)sc3(SYS_SOCKET, AF_INET6, SOCK_STREAM, 0);
+    if (lfd < 0) { check("listen socket", 0); return; }
+
+    /* default v6only=0 → dual-stack */
+    struct sockaddr_in6 la = {0};
+    la.sin6_family = AF_INET6;
+    la.sin6_port   = bswap16(45240);
+    /* sin6_addr already :: */
+    long br = sc3(SYS_BIND, lfd, (long)&la, sizeof(la));
+    check_val("v6 listener bind ::", br, 0);
+    long lr = sc2(SYS_LISTEN, lfd, 4);
+    check_val("listen", lr, 0);
+
+    /* IPv4 client connects to 127.0.0.1:45240 */
+    struct k_sockaddr_in {
+        uint16_t sin_family;
+        uint16_t sin_port;
+        uint32_t sin_addr;
+        uint8_t  sin_zero[8];
+    } ca = {0};
+    ca.sin_family = AF_INET;
+    ca.sin_port   = bswap16(45240);
+    ca.sin_addr   = (127u) | (0u << 8) | (0u << 16) | (1u << 24); /* 127.0.0.1 */
+
+    int pipefd[2] = {-1,-1};
+    sc1(SYS_PIPE, (long)pipefd);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        int cfd = (int)sc3(SYS_SOCKET, AF_INET, SOCK_STREAM, 0);
+        long cr = sc3(SYS_CONNECT, cfd, (long)&ca, sizeof(ca));
+        sc3(SYS_WRITE, pipefd[1], (long)&cr, sizeof(cr));
+        if (cr == 0) {
+            const char m[] = "v4";
+            sc3(SYS_WRITE, cfd, (long)m, 2);
+        }
+        sc1(SYS_CLOSE, cfd);
+        sc1(SYS_EXIT_GROUP, 0);
+    }
+    sc1(SYS_CLOSE, pipefd[1]);
+    long crc = -99;
+    sc3(SYS_READ, pipefd[0], (long)&crc, sizeof(crc));
+    sc1(SYS_CLOSE, pipefd[0]);
+    check_val("v4 client connect rc", crc, 0);
+
+    int newfd = (int)sc4(SYS_ACCEPT4, lfd, 0, 0, 0);
+    check_ge("accept (dualstack)", newfd, 0);
+    if (newfd >= 0) {
+        char buf[8] = {0};
+        long n = sc3(SYS_READ, newfd, (long)buf, sizeof(buf));
+        check_val("recv 2 bytes", n, 2);
+        check("payload v4",
+              n == 2 && buf[0]=='v' && buf[1]=='4');
+        /* IPV6_ADDRFORM AF_INET → flip is_v6 to 0. Linux requires connection
+         * via v4-mapped, our child is already AF_INET-routed so it works. */
+        int four = AF_INET;
+        long sopt = sc5(SYS_SETSOCKOPT, newfd, IPPROTO_IPV6, IPV6_ADDRFORM,
+                       (long)&four, sizeof(int));
+        check_val("IPV6_ADDRFORM AF_INET", sopt, 0);
+        sc1(SYS_CLOSE, newfd);
+    }
+    sc4(SYS_WAIT4, pid, 0, 0, 0);
+    sc1(SYS_CLOSE, lfd);
+}
+
 TEST("ipv6/socket-create",         test_inet6_socket_create);
 TEST("ipv6/bind-loopback",         test_inet6_bind_loopback);
 TEST("ipv6/bind-any-ephemeral",    test_inet6_bind_any_ephemeral);
@@ -263,3 +333,4 @@ TEST("ipv6/bind-wrong-family",     test_inet6_bind_wrong_family);
 TEST("ipv6/v6only-default",        test_inet6_v6only_default);
 TEST("ipv6/bind-conflict",         test_inet6_bind_conflict);
 TEST("ipv6/non-loopback-send",     test_ipv6_send_routes_to_default);
+TEST("ipv6/dualstack-v4-listener", test_dualstack_v4_to_v6);
