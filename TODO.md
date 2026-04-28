@@ -31,12 +31,64 @@ Multimedia-Apps?
 ## Stand (Session-Ende)
 
 ktest **3221/0** (+7 sub-asserts via dualstack-v4-listener Test),
-musl **463 PASS / 8 FAIL / 7 SKIP** (unveraendert), LTP
-**253/0/45** (+7 PASS: connect02, fcntl14, fcntl14_64, fcntl36,
-fcntl36_64, epoll-ltp, epoll_wait02). Alle 7 ehemaligen FAILs
-geschlossen — 5 davon nur tlim-erhoeht (timing-Tests in QEMU
-brauchen >10s), connect02 Voll-Fix via Dual-Stack-TCP +
-IPV6_ADDRFORM + connect(AF_UNSPEC).
+musl **463 PASS / 8 FAIL / 7 SKIP** (unveraendert; race-cluster in
+voll-Run nicht durchgaengig stabil — Verifikation nur via skip-musl
+abgeschlossen), LTP **252/1/45** (full-run, connect02 + fcntl14{,_64}
++ fcntl36{,_64} + epoll-ltp PASS, epoll_wait02 1 outlier-fail in
+voll-Run). In isolierten LTP-Filter-Runs alle 6 ehemaligen FAILs
+PASS.
+
+**Track 1 (NEU 2026-04-30) — Dual-Stack TCP + IPV6_ADDRFORM (ERLEDIGT)**:
+- Default `v6only=0` (Linux net.ipv6.bindv6only=0 ist seit ~2.6
+  Default in allen Distros). AF_INET6 sockets bound to ::any
+  akzeptieren ab jetzt IPv4-Connects.
+- `sock_find_listener` (v4-Pfad) faellt zurueck auf v6-listener mit
+  !v6only und local_ip6=:: wenn kein v4-listener auf Port existiert.
+- `accept4` synct `socket.is_v6` aus `tcp.is_v6` nach erfolgreichem
+  `net_tcp_accept_child` — dual-stack v4-child eines v6-listeners
+  ist ab jetzt korrekt AF_INET.
+- `setsockopt(IPV6_ADDRFORM, AF_INET)`: konvertiert v6-socket zu
+  AF_INET wenn TCP + tcp.is_v6==0 (dual-stack v4-mapped). Linux-
+  konformes ipv6_sockglue.c-Aequivalent.
+- `connect(AF_UNSPEC)`: state-reset auf SOCK_CREATED + tcp_close +
+  zero(net_tcp_t) (preserve ns_id/is_v6). Erlaubt bind+listen auf
+  fd nach accept+ADDRFORM (Linux CVE-2018-9568 Fix-Pfad).
+- Konstanten: IPV6_ADDRFORM=1 (linux/in6.h), ENOPROTOOPT=92
+  (linux/errno.h).
+- Regression-Test: `test/unit/net/test_ipv6.c::dualstack-v4-listener`
+  (5 sub-asserts: v6-listener bind ::, v4-client-connect rc==0,
+  accept produziert v4-child, recv 'v4', IPV6_ADDRFORM AF_INET).
+- ktest 3214 -> 3221 (+7).
+- LTP connect02 PASS (1000 iterationen 3WHS+accept+ADDRFORM+bind+listen).
+  tlim 10s -> 180s (timing-test).
+
+**Track 2-5 (NEU 2026-04-30) — LTP tlim-Erhoehung (ERLEDIGT)**:
+Fuenf timing-empfindliche Tests die bisher mit "Test killed
+(timeout?)" terminierten haben tlim != 10s erhalten:
+- fcntl14, fcntl14_64: tlim=240 (5000 fork-Iterationen pro Variant).
+- fcntl34, fcntl34_64: tlim=240 (3 pthread-Threads + OFD-locks,
+  full-run-contamination macht 10s zu wenig).
+- fcntl36, fcntl36_64: tlim=240 (7 testcases x 9s pthread-loops).
+- epoll-ltp: tlim=120 (60s+ stress).
+- epoll_wait02: tlim=120 (tst_timer_test 500x sleep-Iterationen).
+- connect02: tlim=180 (Track 1).
+Tests sind funktional korrekt; LTP_TIMEOUT_MUL=5 und tst_test
+inneres timeout greifen, aber der aeussere `timeout 10`-Wrapper
+des Runners killte vorher. boot-test.sh FAIL-Output 40 -> 80
+Zeilen fuer bessere Diagnose.
+
+**Tracks 6-8 nicht abgeschlossen** (musl): tls_get_new-dtv
+(dlopen-DTV-race, komplexer Pfad), malloc-brk-fail-static
+(VMA-bytes-Tracking benoetigt), pthread_cond-smasher dynamic
+(dlopen+cond_wait-race). Alle drei sind dokumentiert in
+ALPINE_FAILS.md mit Linux-konformen Fix-Plaenen.
+
+**Race-Cluster Restbug** (pre-existing, dokumentiert): Math-FAILs
+(fma, fmal, powf, remquol — qemu64-FMA-Hardware fehlt) loesen
+einen process-cleanup Race aus, der den naechsten musl-Test
+hangt. Wurzel im exit_kill_process-Pfad (slab-recycled Code-Page
+nach do_exit). Voll-Run mit musl ist daher race-empfindlich;
+LTP-only voll-Run klappt durchgaengig.
 
 **Track 1 (NEU 2026-04-30) — Dual-Stack TCP + IPV6_ADDRFORM (ERLEDIGT)**:
 - Default `v6only=0` (Linux net.ipv6.bindv6only=0 ist seit ~2.6
