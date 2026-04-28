@@ -1,5 +1,7 @@
 #!/bin/sh
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+# LTP shell tests source tst_test.sh via POSIX `.` (PATH-resolved).
+# `make install` does not copy lib/*.sh — keep source tree on PATH.
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/opt/ltp/testcases/lib
 export LTPROOT=/opt/ltp/install
 # LTP: Kein /proc/config.gz verfuegbar; alle needs_kconfigs wuerden TBROK werfen.
 export KCONFIG_SKIP_CHECK=1
