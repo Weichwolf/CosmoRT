@@ -1,5 +1,35 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-30 LTP komplett gruen (alle 7 ehemals FAIL → PASS).
+  ktest 3214 -> **3221** (+7 sub-asserts via dualstack-v4-listener Test).
+  LTP 246/7/45 -> **253/0/45** — alle 7 verbleibenden FAILs geschlossen.
+
+  - **Track 1 — connect02 (CVE-2018-9568)**: Vier Linux-konforme Fixes:
+    Default `v6only=0`, dual-stack v4→v6 listener fallback in
+    `sock_find_listener`, `accept4` synct `socket.is_v6 = tcp.is_v6`
+    nach `net_tcp_accept_child`, `setsockopt(IPV6_ADDRFORM, AF_INET)`
+    flippt v6-socket nach v4 wenn TCP v4-mapped, `connect(AF_UNSPEC)`
+    macht state-reset auf SOCK_CREATED + tcp_close + zero(net_tcp_t).
+    `IPV6_ADDRFORM=1` und `ENOPROTOOPT=92` als neue Konstanten.
+    1000 iterationen 3WHS+accept+ADDRFORM+bind+listen jetzt sauber.
+
+  - **Track 2-5 — tlim-Erhoehung in tools/boot-test.sh**: Fuenf
+    timing-empfindliche Tests die mit "Test killed (timeout?)"
+    terminierten haben tlim != 10s erhalten:
+    * fcntl14, fcntl14_64: 240s (5000 fork-Iterationen je Variant)
+    * fcntl36, fcntl36_64: 120s (7 testcases mit pthread-loops)
+    * epoll-ltp: 120s (60s+ stress)
+    * epoll_wait02: 120s (tst_timer_test 500x sleep)
+    * connect02: 180s (Track 1)
+    Tests sind funktional korrekt — `LTP_TIMEOUT_MUL=5` und tst_test-
+    inneres timeout greifen, aber der aeussere `timeout 10`-Wrapper
+    des Runners killte vorher.
+
+  Verbleibende musl-FAILs (8) sind alle pre-existing dokumentiert:
+  4x math (qemu64 ohne FMA-Hardware), tls_get_new-dtv (dlopen-DTV-
+  Race), malloc-brk-fail-static (VMA-bytes-Tracking fehlt),
+  pthread_cond-smasher (dlopen-cond_wait-Race).
+
 Update: 2026-04-29 futex_requeue stale-bucket race FIXED.
   Symptom war reproduzierbar via `pthread_cond-smasher-static`:
   KERNEL PF rip=0xffff8000bcb05350 cr2=0x18 → addr2line: file-offset
