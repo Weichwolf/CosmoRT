@@ -222,10 +222,11 @@ $(TBUILD)/fuzz/cosmo-rt.img: $(TBUILD)/fuzz/BOOTX64.EFI
 
 # ── QEMU ──
 QEMU = qemu-system-x86_64
+QEMU_ACCEL = -machine accel=kvm:tcg
 
 define run_qemu
 	@rm -f /tmp/cosmo-serial.log
-	timeout 180 $(QEMU) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+	timeout 180 $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(1),format=raw \
 	  -serial file:/tmp/cosmo-serial.log \
