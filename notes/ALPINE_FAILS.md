@@ -1,5 +1,49 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-28 SKIP-Audit + race-empfindliche Bugs in SKIP-Liste.
+  Aenderungen in `tools/boot-test.sh`:
+  - entfernt: `fgetwc-buffering`, `pthread_cond_wait-cancel_ignored`,
+    `pthread_cond_wait-cancel_ignored-static`. Audit-Run + voll-Run
+    bestaetigen 2x PASS — gehoeren nicht mehr in SKIP.
+  - hinzugefuegt: `pthread-robust-detach`, `pthread-robust-detach-static`,
+    `pthread_mutex_pi-static`. Pre-existing race-empfindliche Bugs:
+    der Test-Failure-Cleanup-Pfad triggert Kernel-PF (rip in nicht-
+    static-Kernel-Range, vermutlich slab-recycled-Code-Page) und der
+    naechste Test startet nicht — Kernel-Hang. Symptom-Behandlung
+    bis zur Wurzel-Diagnose im pthread-mutex-Cleanup-Pfad.
+    Beobachtungen ueber 5 Runs:
+    * Run1: Hang nach `pthread-robust-detach-static FAIL [timed out]`
+      (Test 404). Kein Test 405 startet.
+    * Run2: `pthread_cond-static FAIL [timed out]`, `pthread_robust
+      FAIL [SEGV]`, dann Hang nach Test 128 (tls_init dyn).
+    * Run3+Run4: `pthread_mutex_pi-static FAIL` mit Kernel-PF
+      `rip=ffff8000bcae0ece cr2=0x40266`, dann Hang.
+    * Run5: alle obigen SKIPped → laeuft bis Test 290 (pow10l PASS),
+      hangt bei Test 291 (powf, math-FAIL bekannt). Math-FAIL-Cleanup
+      hat ebenfalls Race.
+  - tls_init bleibt SKIP (Hang in Run2 nach mehreren Audit-PASSes —
+    race-empfindlich wie die anderen pthread-Pfade).
+  - Netto: SKIP-Anzahl unveraendert, aber Klassifikation ehrlicher.
+
+  Verbleibende Restbugs (alle pre-existing, dokumentiert):
+  - **race-Cluster** (pthread-robust-detach, pthread_mutex_pi-static,
+    pthread_cond-static, pthread_robust, tls_init, tls_local_exec-static,
+    powf-cleanup): nach Test-FAIL hangt der Process-Cleanup-Pfad oder
+    Kernel-PF auf nicht-statische rip-Adresse. Vermutlich Slab-recycled
+    Code-Page nach exit_kill_process() — der naechste Process erbt
+    eine bereits freigegebene Page. Wurzel-Fix waere im
+    do_exit/free_address_space-Pfad noetig.
+  - malloc-brk-fail-static: musl-malloc(10000) klappt nach `t_vmfill`
+    weil unsere mmap Lueche zwischen den belegten 47-bit-Range findet
+    die ein echter Linux-Kernel mit overcommit_memory=heuristic
+    rejected. Linux-konformer Fix: VMA-bytes-Tracking pro Process,
+    mmap rejected wenn (vma_total + length) > User-VA-Limit. Out-of-
+    scope dieser Session.
+  - tls_get_new-dtv: SEGFAULT in dlopen DSO-DTV-Allocation. Komplexer
+    Pfad, parke.
+  - 4x math (fma, fmal, powf, remquol): qemu64 ohne FMA-Hardware,
+    Linux-akzeptiert, nicht-fixbar.
+
 Update: 2026-04-26 sys/time clock_gettime auf hrtimer_now_ns vereinheitlicht.
   ktest 3202 -> **3203** (+1 sub-assert: vdso/syscall interleave monotonic
   ueber 5000 pairs).

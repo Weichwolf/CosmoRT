@@ -36,6 +36,20 @@ signal/sigkill_unmaskable + sigkill_in_nanosleep + sigkill_in_sigsuspend
 + sigkill_in_futex), musl **461 PASS / 7 FAIL / 10 SKIP**, LTP
 **246/7/45** (+3 PASS via clock_gettime03/04 + clock_nanosleep02
 fixe Drift+Precision).
+
+**Track 0 (2026-04-28) — SKIP-Audit + race-Cluster in SKIP**:
+- `tools/boot-test.sh` SKIP-Liste neu klassifiziert. PASS-bestaetigte
+  Tests aus SKIP entfernt: `fgetwc-buffering`,
+  `pthread_cond_wait-cancel_ignored {,-static}` (3x PASS in Audit + Run5).
+- Race-empfindliche Hang-Tests hinzugefuegt: `pthread-robust-detach
+  {,-static}`, `pthread_mutex_pi-static`. Diese loesen nach FAIL einen
+  Kernel-Hang aus (kein naechster Test startet). Run3/4 reproduzieren
+  einen Kernel-PF auf rip=ffff8000bcae0ece in nicht-statische Code-
+  Range — vermutlich slab-recycled-page nach exit_kill_process. Echte
+  Wurzel-Fix in do_exit/free_address_space-Pfad noetig, nicht erreicht.
+- tls_init bleibt SKIP (intermittent Hang in Voll-Run, auch wenn Audit
+  3x PASS zeigt — race-empfindlich).
+- Netto: SKIP-Count unveraendert, Klassifikation ehrlicher.
 Phasen 10.1, 11, 13.1,
 14, 15, 16, 17 erledigt. Phase 10.2 fast komplett.
 Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
