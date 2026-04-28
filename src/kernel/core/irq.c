@@ -299,6 +299,12 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     serial_hex64(kft2->proc->pid);
                     serial_puts(" cr2="); serial_hex64(cr2);
                     serial_puts(" rip="); serial_hex64(frame->rip);
+                    {
+                        extern void do_exit(int);
+                        serial_puts(" do_exit="); serial_hex64((uint64_t)(uintptr_t)do_exit);
+                    }
+                    serial_puts(" rdi="); serial_hex64(frame->rdi);
+                    serial_puts(" rdx="); serial_hex64(frame->rdx);
                     serial_putchar('\n');
                     extern void do_exit_group(int status);
                     extern uint64_t pml4[];
@@ -652,10 +658,21 @@ static void default_exception_with_frame(int vector, irq_frame_t *frame) {
     serial_putchar('0' + vector % 10);
     serial_puts(" rip=");
     serial_hex64(frame->rip);
+    serial_puts(" cs=");
+    serial_hex64(frame->cs);
     serial_puts(" err=");
     serial_hex64(frame->error);
     serial_puts(" rsp=");
     serial_hex64(frame->rsp);
+    /* Kernel-base reference: print do_exit's runtime address.
+     * Caller subtracts symbol's file-offset (nm) from this to recover
+     * the load-time kernel base, then maps any kernel-mode rip back to
+     * a source line. */
+    {
+        extern void do_exit(int status);
+        serial_puts(" do_exit=");
+        serial_hex64((uint64_t)(uintptr_t)do_exit);
+    }
 
     if (vector == 14) {
         uint64_t cr2 = hal_mmu_fault_address();
