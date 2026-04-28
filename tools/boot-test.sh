@@ -90,7 +90,7 @@ while read t; do
         clock_nanosleep02) tlim=180 ;;
         clock_gettime04)   tlim=60  ;;
         fcntl14|fcntl14_64) tlim=240 ;;
-        fcntl36|fcntl36_64) tlim=120 ;;
+        fcntl34|fcntl34_64|fcntl36|fcntl36_64) tlim=240 ;;
         epoll-ltp)         tlim=120 ;;
         epoll_wait02)      tlim=120 ;;
         connect02)         tlim=180 ;;
