@@ -87,10 +87,19 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     /* Kill other threads.
      * Sibling threads may be in the scheduler's run queue (no way to dequeue
      * in O(1)). Set state=DEAD AND proc=NULL so sched_loop can detect and
-     * skip them without dereferencing the soon-to-be-freed process struct. */
+     * skip them without dereferencing the soon-to-be-freed process struct.
+     * Also unlink any futex_waiter and pending hrtimer on the sibling's
+     * kstack while it is still valid — both subsystems index into the
+     * sibling's stack frame, and the kstack will be freed when the
+     * scheduler reaps the sibling. Without these calls the bucket /
+     * rb-tree retain a dangling pointer that the next reader walks into. */
+    extern void futex_thread_exit(thread_t *);
+    extern int  hrtimer_cancel_by_data(void *);
     thread_t *scan = p->threads;
     while (scan) {
         if (scan != t) {
+            futex_thread_exit(scan);
+            hrtimer_cancel_by_data(scan);
             scan->state = THREAD_DEAD;
             scan->proc = 0;
         }
@@ -164,6 +173,13 @@ void do_exit(int status) {
     if (!t) { hal_cpu_halt_noirq(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
+
+    /* Unlink any active stack-allocated futex_waiter from its bucket BEFORE
+     * the kstack is reused/freed. Without this, the bucket keeps a dangling
+     * pointer into the dead thread's kstack — next prepare_to_wait derefs
+     * `bk->head->prev` into garbage and #GPs. */
+    extern void futex_thread_exit(thread_t *);
+    futex_thread_exit(t);
 
     /* Robust Mutex Cleanup: walk userspace robust_list, mark dead-owner futexes */
     if (t->robust_list && p) {
@@ -259,6 +275,8 @@ void do_exit_group(int status) {
     if (!t) { hal_cpu_halt_noirq(); return; }
     process_t *p = t->proc;
     t->state = THREAD_DEAD;
+    extern void futex_thread_exit(thread_t *);
+    futex_thread_exit(t);
     if (p) exit_kill_process(t, p, status);
 
     extern uint64_t pml4[];

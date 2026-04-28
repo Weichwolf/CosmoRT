@@ -121,6 +121,46 @@ static void futex_key(uint32_t *uaddr, int shared,
  * empty. We do NOT call wake_up_nr because futex needs key-filtered wake:
  * the bucket holds waiters for many addresses sharing the same hash. */
 
+/* Forward declarations for the thread-exit cleanup path. */
+static wait_queue_head_t *futex_lock_current_bucket(futex_waiter_t *fw,
+                                                    uint64_t *flags_out);
+static void futex_wq_remove(wait_queue_head_t *wq, wait_queue_entry_t *e);
+
+/* On thread death: unlink any active futex waiter from its bucket while
+ * the kstack still holds the futex_waiter_t. Without this, the bucket
+ * keeps a dangling pointer into the soon-to-be-freed kstack page, and
+ * the next prepare_to_wait dereferences `bk->head->prev` into garbage
+ * (#GP / page fault). Idempotent: NULL futex_waiter is the common case.
+ * Caller: do_exit/do_exit_group BEFORE schedule()/thread_free. */
+void futex_thread_exit(thread_t *t) {
+    if (!t) return;
+    futex_waiter_t *fw = (futex_waiter_t *)__atomic_exchange_n(
+        (void **)&t->futex_waiter, (void *)0, __ATOMIC_ACQ_REL);
+    if (!fw) return;
+    /* If the entry is not linked (e.g. published-but-not-yet-inserted, or
+     * already removed by finish_wait), no list mutation needed. The check
+     * is racy but cheap; a true linked entry forces us into the lock path. */
+    if (!fw->entry.next) return;
+    /* Race against do_exit reentrancy: the dying thread may already hold
+     * the bucket lock (kernel-mode exception inside futex_prepare_to_wait
+     * with the lock held). In that case spin_lock would self-deadlock.
+     * Use trylock with a bounded retry loop and bail out on persistent
+     * failure — leaking the entry is preferable to a hard hang, and the
+     * larger fail-stop will surface the original kernel fault. */
+    for (int retry = 0; retry < 1024; retry++) {
+        wait_queue_head_t *bk = __atomic_load_n(&fw->bucket, __ATOMIC_ACQUIRE);
+        uint64_t flags;
+        if (!spin_trylock_irq(&bk->lock, &flags)) continue;
+        if (__atomic_load_n(&fw->bucket, __ATOMIC_ACQUIRE) != bk) {
+            spin_unlock_irq(&bk->lock, flags);
+            continue;
+        }
+        if (fw->entry.next) futex_wq_remove(bk, &fw->entry);
+        spin_unlock_irq(&bk->lock, flags);
+        return;
+    }
+}
+
 /* Caller holds bucket->lock. Removes `e` from the list, sets next/prev=0. */
 static void futex_wq_remove(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     if (!e->next) return; /* already off */
@@ -250,6 +290,10 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
     fw.pid   = pid;
     fw.bucket = &futex_bucket[bucket_idx];
 
+    /* Publish for thread-exit cleanup: do_exit_group calls futex_thread_exit
+     * which unlinks the entry before the kstack is freed. */
+    __atomic_store_n((void **)&t->futex_waiter, &fw, __ATOMIC_RELEASE);
+
     hrtimer_t timer;
     int has_timer = 0;
     uint64_t deadline_ns = 0;
@@ -301,6 +345,8 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
         /* Spurious wake (cross-subsystem) — re-evaluate, sleep again. */
     }
     futex_finish_wait(&fw);
+    /* Clear the cleanup-on-exit hook before fw goes out of scope. */
+    __atomic_store_n((void **)&t->futex_waiter, (void *)0, __ATOMIC_RELEASE);
     if (has_timer) hrtimer_cancel(&timer);
     return rc;
 }
@@ -400,6 +446,9 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     fw.pid   = pid;
     fw.bucket = &futex_bucket[bucket_idx];
 
+    /* Publish for thread-exit cleanup. */
+    __atomic_store_n((void **)&self->futex_waiter, &fw, __ATOMIC_RELEASE);
+
     /* Boost owner under bucket->lock so it can't be freed between find
      * and boost — bucket->lock serializes against pi_unboost in unlock_pi. */
     uint64_t flags;
@@ -414,11 +463,13 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     old = __sync_val_compare_and_swap(uaddr, 0, tid);
     if (old == 0) {
         spin_unlock_irq(&fw.bucket->lock, flags);
+        __atomic_store_n((void **)&self->futex_waiter, (void *)0, __ATOMIC_RELEASE);
         return 0;
     }
     old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
     if (old == FUTEX_WAITERS) {
         spin_unlock_irq(&fw.bucket->lock, flags);
+        __atomic_store_n((void **)&self->futex_waiter, (void *)0, __ATOMIC_RELEASE);
         return 0;
     }
 
@@ -450,6 +501,7 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
         schedule();
     }
     futex_finish_wait(&fw);
+    __atomic_store_n((void **)&self->futex_waiter, (void *)0, __ATOMIC_RELEASE);
     return rc;
 }
 

@@ -170,6 +170,13 @@ typedef struct thread {
     /* ── Robust Mutex List (at end to avoid shifting fxsave alignment) ── */
     void *robust_list;     /* userspace robust_list_head pointer */
 
+    /* ── Active futex waiter (kernel-stack futex_waiter_t) ──
+     * Non-NULL while inside futex_wait/futex_lock_pi between prepare_to_wait
+     * and finish_wait. On thread death the cleanup path must unlink this
+     * entry from its bucket; otherwise the bucket points into the freed
+     * kstack page and the next prepare_to_wait dereferences garbage. */
+    void *futex_waiter;
+
     /* ── RCU (Preemptible) — read-side critical section tracking ── */
     int             rcu_read_nesting;  /* >0 = inside rcu_read_lock section */
     void           *rcu_blocked_node;  /* rcu_node_t* if preempted during CS, else NULL */

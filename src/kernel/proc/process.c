@@ -157,6 +157,13 @@ void thread_free(thread_t *t) {
      * true after the slot reuses. */
     extern void sched_dequeue(thread_t *t);
     sched_dequeue(t);
+    /* Defence in depth: futex_thread_exit is also called from do_exit, but
+     * threads killed via signal/group-exit may reach thread_free without
+     * having executed do_exit. Unlinking a stale stack-allocated waiter
+     * before the kstack is freed is mandatory to prevent UAF in the bucket
+     * doubly-linked list. Idempotent (NULL t->futex_waiter is the no-op). */
+    extern void futex_thread_exit(thread_t *t);
+    futex_thread_exit(t);
     extern int hrtimer_cancel_by_data(void *);
     hrtimer_cancel_by_data(t);
     if (t->tid > 0 && t->tid < tid_capacity)

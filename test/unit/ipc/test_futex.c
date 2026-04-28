@@ -153,8 +153,61 @@ static void test_futex_shared_cross_process(void) {
     sc2(SYS_MUNMAP, page, 4096);
 }
 
+/* Regression: thread killed mid-FUTEX_WAIT must not leave a dangling
+ * stack-allocated wait_queue_entry in the bucket. Without futex_thread_exit,
+ * the bucket->head->prev points into the freed kstack page; the next
+ * prepare_to_wait deref's it (#GP / page fault).
+ *
+ * Repro: fork a child whose only thread blocks indefinitely in FUTEX_WAIT
+ * on a chosen address, then SIGKILL the child. After reaping, run a
+ * fresh FUTEX_WAIT with timeout on the same address (likely-same bucket)
+ * and a FUTEX_WAKE → must complete without #GP. */
+static volatile uint32_t kill_addr;
+
+static void test_futex_kill_blocked_no_uaf(void) {
+    puts("\n[futex/kill-blocked-no-uaf]\n");
+
+    kill_addr = 0xCAFEBABE;
+    long pid = sc0(SYS_FORK);
+    check("fork", pid >= 0);
+    if (pid < 0) return;
+    if (pid == 0) {
+        /* Block forever on kill_addr — parent kills us. */
+        sc6(SYS_FUTEX, (long)&kill_addr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+            0xCAFEBABE, 0, 0, 0);
+        sc1(SYS_EXIT, 0);
+        __builtin_unreachable();
+    }
+
+    /* Let child enter futex_wait. */
+    struct k_timespec ts = { .tv_sec = 0, .tv_nsec = 50000000 }; /* 50ms */
+    sc2(SYS_NANOSLEEP, (long)&ts, 0);
+
+    /* Hit it with SIGKILL — process exits without finish_wait running. */
+    long krc = sc2(SYS_KILL, pid, 9 /* SIGKILL */);
+    check_val("kill SIGKILL ok", krc, 0);
+
+    int wstatus = 0;
+    long wrc = sc4(SYS_WAIT4, pid, (long)&wstatus, 0, 0);
+    check_val("wait4 reaped killed child", wrc, pid);
+
+    /* Now reuse the futex bucket — a corrupted bucket would #GP here. */
+    struct k_timespec to = { .tv_sec = 0, .tv_nsec = 5000000 }; /* 5ms */
+    long wr = sc6(SYS_FUTEX, (long)&kill_addr,
+                  FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 0xCAFEBABE,
+                  (long)&to, 0, 0);
+    check("post-kill FUTEX_WAIT survives (timeout or eagain)",
+          wr == -ETIMEDOUT || wr == -EAGAIN);
+
+    /* WAKE on the same address — also exercises the bucket walk. */
+    long ww = sc6(SYS_FUTEX, (long)&kill_addr,
+                  FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, 0, 0, 0);
+    check_val("post-kill FUTEX_WAKE returns 0 (no waiters)", ww, 0);
+}
+
 TEST("futex", test_futex_eagain);
 TEST("futex_wake_none", test_futex_wake_none);
 TEST("futex_wait_wake", test_futex_wait_wake);
 TEST("futex_timeout", test_futex_timeout);
 TEST("futex/shared-cross-process", test_futex_shared_cross_process);
+TEST("futex/kill-blocked-no-uaf", test_futex_kill_blocked_no_uaf);
