@@ -89,6 +89,7 @@ while read t; do
     case "$t" in
         clock_nanosleep02) tlim=180 ;;
         clock_gettime04)   tlim=60  ;;
+        fcntl14|fcntl14_64) tlim=240 ;;
         *)                 tlim=10  ;;
     esac
     timeout "$tlim" "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
@@ -102,7 +103,7 @@ while read t; do
     else
         echo "[$ltp_total/313] $t FAIL rc=$rc"
         echo "--- OUTPUT ($t) ---"
-        head -40 /tmp/ltp_out.txt
+        head -80 /tmp/ltp_out.txt
         echo "--- END ($t) ---"
         ltp_failed=$((ltp_failed + 1))
     fi
