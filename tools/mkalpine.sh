@@ -11,6 +11,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Debian/Ubuntu put mkfs.*, sgdisk, debugfs in /usr/sbin (not in non-root PATH)
+export PATH="$PATH:/usr/sbin:/sbin"
+
 ALPINE_ROOT="${1:-build/alpine-root}"
 IMG=build/disk.img
 ESP_MB=64
