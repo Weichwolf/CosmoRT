@@ -310,10 +310,17 @@ int wake_up_interruptible(wait_queue_head_t *wq) {
  * sig_pending; the next syscall that calls signal_deliverable() loops. */
 #define SIG_DFL_IGNORE_MASK ((1ULL << 16) | (1ULL << 22) | (1ULL << 27) | (1ULL << 28))
 
+/* SIGKILL (9) + SIGSTOP (19) bypass sig_blocked. POSIX: not maskable.
+ * Linux: __fatal_signal_pending checks sigismember unfiltered. We must
+ * deliver these even if a buggy path put them in sig_blocked, so a
+ * KILLABLE sleeper always wakes. */
+#define SIG_UNMASKABLE (SIG_BIT(9) | SIG_BIT(19))
+
 int signal_deliverable(void) {
     thread_t *t = thread_current();
     if (!t || !t->proc) return 0;
-    uint64_t pend = (t->proc->sig_pending | t->sig_thread_pending) & ~t->sig_blocked;
+    uint64_t raw  = t->proc->sig_pending | t->sig_thread_pending;
+    uint64_t pend = (raw & ~t->sig_blocked) | (raw & SIG_UNMASKABLE);
     if (!pend) return 0;
     /* Filter out SIG_DFL_IGNORE signals whose handler is still SIG_DFL. */
     uint64_t mask_to_check = pend & SIG_DFL_IGNORE_MASK;

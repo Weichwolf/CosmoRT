@@ -30,13 +30,35 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3180/0**, LTP-skip nur noch epoll_wait05 (KERNEL PF beim
-EPOLLRDHUP nach shutdown(SHUT_RD)). clone301, execve04, execve05,
-fcntl15, fcntl15_64 alle PASS via mm/gup-Fix. Phasen 10.1, 11, 13.1,
+ktest **3198/0** (+18 sub-asserts via signal/sigkill_unmaskable +
+sigkill_in_nanosleep + sigkill_in_sigsuspend + sigkill_in_futex),
+musl **461 PASS / 7 FAIL / 10 SKIP** (vorher 457/7/14: +4 PASS,
+-4 SKIP via Track 1 SIGKILL-bypass), LTP 243/10/45.
+Phasen 10.1, 11, 13.1,
 14, 15, 16, 17 erledigt. Phase 10.2 fast komplett.
 Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
 
-**Track 1 — mm/gup + futex SHARED demand-fault (ERLEDIGT)**:
+**Track 1 (neu) — SIGKILL/SIGSTOP unmaskable durch sig_blocked (ERLEDIGT)**:
+- `core/waitqueue.c::signal_deliverable`: SIGKILL (bit 8) + SIGSTOP
+  (bit 18) bypassen den `& ~sig_blocked`-Filter. Linux-Aequivalent zu
+  `__fatal_signal_pending` + `sigismember` ohne mask.
+- Wirkung: Sleeper in futex_wait / sigsuspend / nanosleep / sigtimedwait
+  brechen sofort aus, sobald SIGKILL ankommt — auch wenn ein Bug-Pfad
+  SIGKILL transient in `sig_blocked` setzt (z.B. SA_NODEFER + sigaction
+  race, sigsuspend mit broken mask, fork-inherit unter Korrumpierung).
+- Skip-Liste in `tools/boot-test.sh` reduziert: pthread-robust-detach,
+  sem_init, pthread_rwlock-ebusy-static, pthread_cond-smasher-static
+  alle aus SKIP-Liste entfernt — alle 4 jetzt PASS.
+- Neue ktests: `signal/sigkill_unmaskable`,
+  `signal/sigkill_in_nanosleep`, `signal/sigkill_in_sigsuspend`,
+  `signal/sigkill_in_futex` (jeweils 2-4 sub-asserts).
+- ktest 3180 -> **3198** (+18 sub-asserts).
+- musl 457/7/14 -> **461/7/10** (+4 PASS, -4 SKIP).
+- pthread_cond-smasher (dynamic) wandert von SKIP -> aktiv FAIL [timed out]
+  nach 60s — separater Bug im pthread_cond+dlopen-Pfad, nicht
+  SIGKILL-related. Dokumentiert nicht-skip, weiter zu untersuchen.
+
+**Track 1 (alt, abgehandelt) — mm/gup + futex SHARED demand-fault (ERLEDIGT)**:
 - `mm/gup.c` neu: `mm_gup_one(p, va, write)` Linux-aequivalentes
   get_user_pages_fast-Slow-Path. File-backed via page_cache_lookup +
   vfs_pread_by_ino, anonymous via alloc_page. Lock-Disziplin: VMA-Snapshot

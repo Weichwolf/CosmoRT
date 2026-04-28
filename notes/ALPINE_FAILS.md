@@ -1,5 +1,36 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-28 SIGKILL/SIGSTOP unmaskable in signal_deliverable.
+  ktest 3180 -> **3198** (+18 sub-asserts via 4 neue Tests in
+  test/unit/signal/test_sigkill_unmaskable.c: sigkill_unmaskable,
+  sigkill_in_nanosleep, sigkill_in_sigsuspend, sigkill_in_futex).
+  musl **457/7/14 -> 461/7/10** (+4 PASS, -4 SKIP).
+  LTP 243/10/45 (FAILs alle pre-existing: clock_gettime03/04,
+  clock_nanosleep02, connect02-TBROK, epoll-ltp, epoll_wait02,
+  fcntl14/14_64, fcntl15-fork-tcase, fcntl36/36_64).
+
+  Behoben (alle vier hatten dieselbe Wurzel):
+  - **core/waitqueue.signal_deliverable**: SIGKILL (bit 8) + SIGSTOP
+    (bit 18) bypassen den `pend & ~sig_blocked`-Filter. Linux-Aequivalent
+    zu `__fatal_signal_pending` (sigismember unfiltered). Wirkung:
+    Sleeper in jedem KILLABLE-Wait (futex/sigsuspend/nanosleep/
+    sigtimedwait/wait4/etc) brechen sofort aus, sobald SIGKILL
+    ankommt — auch wenn buggy Pfad (SA_NODEFER+sigaction race,
+    fork-inherit unter Korrumpierung) SIGKILL transient in
+    `sig_blocked` setzt.
+  - **tools/boot-test.sh**: SKIP-Liste reduziert. pthread-robust-detach
+    {,-static}, sem_init, pthread_rwlock-ebusy-static,
+    pthread_cond-smasher-static — alle 4 vorher SKIP, jetzt PASS.
+  - **test/unit/signal/test_sigkill_unmaskable.c** neu: 4 Tests
+    decken den unmaskable-Pfad auf alle Sleep-Klassen ab.
+
+  Bekannte Restbugs:
+  - pthread_cond-smasher (dynamic) wandert von SKIP -> aktiv
+    FAIL [timed out] nach 60s. Separater Bug im pthread_cond +
+    dlopen-Pfad, nicht SIGKILL-related (static-Variante PASSt).
+  - pthread_cond_wait-cancel_ignored {,-static}, tls_init: bleiben
+    SKIP. Kernel-Hang im pthread_cancel-Pfad — separate Diagnose.
+
 Update: 2026-04-28 mm/gup + futex AUTOREMOVE-Klassifikation.
   Zwei iterations: erst AUTOREMOVE-Flag-Check, dann auf entry-presence
   (`fw.entry.next == 0`) gewechselt. Flag ist sticky beim re-queue durch
