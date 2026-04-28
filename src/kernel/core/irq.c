@@ -854,8 +854,8 @@ void irq_init(void) {
     irq_register(32, timer_handler);
     lapic_write(LAPIC_TIMER_DIV, 0x03);
     lapic_write(LAPIC_TIMER, 0x20020);    /* periodic, vector 32 */
-    lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) — RT-Core */
-    serial_puts("IRQ: Timer 1000Hz (RT-Core)\n");
+    lapic_write(LAPIC_TIMER_INIT, 100000); /* 1000Hz (1ms) per-CPU LAPIC tick */
+    serial_puts("IRQ: LAPIC Timer 1000Hz\n");
 
     hal_cpu_sti();
 }

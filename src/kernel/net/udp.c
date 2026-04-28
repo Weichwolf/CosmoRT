@@ -32,7 +32,7 @@ void udp_init(void) {
 static udp_sock_t *udp_hash[UDP_HASH_SIZE];
 static spinlock_t  udp_table_lock = SPINLOCK_INIT;
 
-/* ── Lookup (lock-free, called from RT-Core hot path) ── */
+/* ── Lookup (lock-free, called from RT-safe hot path) ── */
 
 udp_sock_t *udp_find_ns(uint32_t ns_id, uint16_t port) {
     uint32_t idx = (port ^ ns_id) & (UDP_HASH_SIZE - 1);

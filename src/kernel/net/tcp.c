@@ -1535,7 +1535,7 @@ void net_tcp_close(net_tcp_t *c) {
     c->state = TCP_CLOSED;
 }
 
-/* ── TCP Retransmit (called from Timer Wheel on RT-Core) ── */
+/* ── TCP Retransmit (called from Timer Wheel, IRQ-context) ── */
 
 void net_tcp_retransmit(void *conn) {
     net_tcp_t *c = (net_tcp_t *)conn;
@@ -1546,7 +1546,7 @@ void net_tcp_retransmit(void *conn) {
     send_tcp(c, 0x10, 0, 0);
 }
 
-/* ── TCP Keepalive Probe (called from Timer Wheel on RT-Core) ── */
+/* ── TCP Keepalive Probe (called from Timer Wheel, IRQ-context) ── */
 
 void net_tcp_keepalive_probe(void *conn) {
     net_tcp_t *c = (net_tcp_t *)conn;
