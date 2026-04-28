@@ -72,13 +72,18 @@ void serial_bridge_poll(void) {
     }
 }
 
-/* ── TX: PTY output → serial ─────────────────────────── */
+/* ── TX: PTY output → serial ───────────────────────────
+ *
+ * Userspace stdout geht NICHT in den dmesg-Ring (Linux-Semantik: dmesg
+ * enthaelt nur Kernel-printk, kein User-IO). Sonst ueberschreibt langer
+ * Test-Output (oder ein chatty Programm) den Boot-Banner und macht
+ * /proc/dmesg fuer Diagnose unbrauchbar. */
 
 void serial_bridge_tx(int vt_id, const char *buf, int len) {
     if (vt_id != serial_vt) return;
     for (int i = 0; i < len; i++) {
         if (buf[i] == '\n')
-            serial_putchar('\r');
-        serial_putchar(buf[i]);
+            serial_putchar_raw('\r');
+        serial_putchar_raw(buf[i]);
     }
 }
