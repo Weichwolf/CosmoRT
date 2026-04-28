@@ -36,11 +36,21 @@ extern void sched_wake(thread_t *t);
 
 /* futex_waiter_t.entry MUST be first member: futex_wake casts
  * wait_queue_entry_t* back to futex_waiter_t* via container-of-by-offset-0.
- * Keep `entry` at offset 0 to make this trivially safe. */
+ * Keep `entry` at offset 0 to make this trivially safe.
+ *
+ * `bucket` tracks the wait_queue_head_t this waiter is currently linked into.
+ * FUTEX_REQUEUE physically re-threads the stack-allocated entry between
+ * buckets; the sleeping thread's prepare_to_wait/finish_wait callsites
+ * cache the bucket pointer at sleep-entry, but after a requeue that pointer
+ * is stale and would lock the wrong bucket — corrupting the new bucket's
+ * doubly-linked list. The waiter loop re-derives the live bucket from
+ * fw.bucket on every iteration, futex_requeue updates it under both
+ * source and target locks. */
 typedef struct futex_waiter {
     wait_queue_entry_t entry;
     uint64_t           uaddr;   /* virtual address (private) or PA (shared) */
     uint32_t           pid;     /* owning pid (private) or 0 (shared) */
+    wait_queue_head_t *bucket;  /* current bucket — updated by requeue */
 } futex_waiter_t;
 
 static wait_queue_head_t futex_bucket[FUTEX_HASH_SIZE];
@@ -125,6 +135,57 @@ static void futex_wq_remove(wait_queue_head_t *wq, wait_queue_entry_t *e) {
     e->prev = 0;
 }
 
+/* Lock the bucket the waiter is currently linked in, tolerating concurrent
+ * FUTEX_REQUEUE that moves the entry between buckets. Requeue updates
+ * fw->bucket under both source and target locks; the waiter must observe
+ * the post-requeue value so finish_wait modifies the correct list. */
+static wait_queue_head_t *futex_lock_current_bucket(futex_waiter_t *fw,
+                                                    uint64_t *flags_out) {
+    for (;;) {
+        wait_queue_head_t *bk = __atomic_load_n(&fw->bucket, __ATOMIC_ACQUIRE);
+        spin_lock_irq(&bk->lock, flags_out);
+        if (__atomic_load_n(&fw->bucket, __ATOMIC_ACQUIRE) == bk)
+            return bk;
+        spin_unlock_irq(&bk->lock, *flags_out);
+    }
+}
+
+/* Drop fw from its current bucket. Race-safe against concurrent requeue. */
+static void futex_finish_wait(futex_waiter_t *fw) {
+    thread_t *t = fw->entry.task;
+    if (t) __atomic_store_n(&t->state, THREAD_RUNNING, __ATOMIC_RELEASE);
+
+    uint64_t flags;
+    wait_queue_head_t *bk = futex_lock_current_bucket(fw, &flags);
+    if (fw->entry.next) futex_wq_remove(bk, &fw->entry);
+    spin_unlock_irq(&bk->lock, flags);
+}
+
+/* Set thread state and (re-)queue fw onto its current bucket. Race-safe
+ * against requeue: re-derives the bucket if it changed under us. */
+static void futex_prepare_to_wait(futex_waiter_t *fw, int state) {
+    uint64_t flags;
+    wait_queue_head_t *bk = futex_lock_current_bucket(fw, &flags);
+    if (!fw->entry.next) {
+        /* Insert at head — wq_insert_head equivalent. */
+        if (!bk->head) {
+            bk->head = &fw->entry;
+            fw->entry.next = &fw->entry;
+            fw->entry.prev = &fw->entry;
+        } else {
+            wait_queue_entry_t *tail = bk->head->prev;
+            fw->entry.prev = tail;
+            fw->entry.next = bk->head;
+            tail->next = &fw->entry;
+            bk->head->prev = &fw->entry;
+            bk->head = &fw->entry;
+        }
+    }
+    if (fw->entry.task)
+        __atomic_store_n(&fw->entry.task->state, state, __ATOMIC_RELEASE);
+    spin_unlock_irq(&bk->lock, flags);
+}
+
 /* ── PI helpers ────────────────────────────────── */
 
 /* Boost owner's priority to at least `prio`. Caller holds bucket->lock so
@@ -177,8 +238,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
     if (__atomic_load_n(uaddr, __ATOMIC_ACQUIRE) != val)
         return -EAGAIN;
 
-    int bucket = hash_uaddr(addr, pid);
-    wait_queue_head_t *wq = &futex_bucket[bucket];
+    int bucket_idx = hash_uaddr(addr, pid);
 
     futex_waiter_t fw;
     fw.entry.task  = t;
@@ -188,6 +248,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
     fw.entry.prev  = 0;
     fw.uaddr = addr;
     fw.pid   = pid;
+    fw.bucket = &futex_bucket[bucket_idx];
 
     hrtimer_t timer;
     int has_timer = 0;
@@ -205,7 +266,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
 
     long rc = 0;
     for (;;) {
-        prepare_to_wait(wq, &fw.entry, THREAD_BLOCKED);
+        futex_prepare_to_wait(&fw, THREAD_BLOCKED);
 
         /* Re-check the value under wq->lock-style serialization: any waker
          * that already changed *uaddr races with us correctly because the
@@ -239,7 +300,7 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, int timeout_ms, int shared
         }
         /* Spurious wake (cross-subsystem) — re-evaluate, sleep again. */
     }
-    finish_wait(wq, &fw.entry);
+    futex_finish_wait(&fw);
     if (has_timer) hrtimer_cancel(&timer);
     return rc;
 }
@@ -327,8 +388,7 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
 
     uint64_t addr; uint32_t pid;
     futex_key(uaddr, shared, &addr, &pid);
-    int bucket = hash_uaddr(addr, pid);
-    wait_queue_head_t *wq = &futex_bucket[bucket];
+    int bucket_idx = hash_uaddr(addr, pid);
 
     futex_waiter_t fw;
     fw.entry.task  = self;
@@ -338,11 +398,12 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     fw.entry.prev  = 0;
     fw.uaddr = addr;
     fw.pid   = pid;
+    fw.bucket = &futex_bucket[bucket_idx];
 
     /* Boost owner under bucket->lock so it can't be freed between find
      * and boost — bucket->lock serializes against pi_unboost in unlock_pi. */
     uint64_t flags;
-    spin_lock_irq(&wq->lock, &flags);
+    spin_lock_irq(&fw.bucket->lock, &flags);
 
     uint32_t owner_tid = old & FUTEX_TID_MASK;
     thread_t *owner = thread_find_by_tid((int)owner_tid);
@@ -352,21 +413,21 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
     /* Re-check before blocking — lock may have been released */
     old = __sync_val_compare_and_swap(uaddr, 0, tid);
     if (old == 0) {
-        spin_unlock_irq(&wq->lock, flags);
+        spin_unlock_irq(&fw.bucket->lock, flags);
         return 0;
     }
     old = __sync_val_compare_and_swap(uaddr, FUTEX_WAITERS, tid | FUTEX_WAITERS);
     if (old == FUTEX_WAITERS) {
-        spin_unlock_irq(&wq->lock, flags);
+        spin_unlock_irq(&fw.bucket->lock, flags);
         return 0;
     }
 
-    spin_unlock_irq(&wq->lock, flags);
+    spin_unlock_irq(&fw.bucket->lock, flags);
 
     /* Block via wait_event-style loop (no timeout for LOCK_PI) */
     long rc = 0;
     for (;;) {
-        prepare_to_wait(wq, &fw.entry, THREAD_BLOCKED);
+        futex_prepare_to_wait(&fw, THREAD_BLOCKED);
 
         /* Try acquire — owner may have released */
         old = __sync_val_compare_and_swap(uaddr, 0, tid);
@@ -388,7 +449,7 @@ static long futex_lock_pi(uint32_t *uaddr, int shared) {
         }
         schedule();
     }
-    finish_wait(wq, &fw.entry);
+    futex_finish_wait(&fw);
     return rc;
 }
 
@@ -509,8 +570,14 @@ static long futex_requeue(uint32_t *uaddr1, uint32_t wake_max,
         if (w->uaddr == addr1 && w->pid == pid) {
             /* Detach from wq1 */
             futex_wq_remove(wq1, cur);
-            /* Update key */
+            /* Update key + bucket pointer so the sleeper's finish_wait
+             * locks the right bucket on wake. Without this update, the
+             * sleeper would re-enter prepare_to_wait/finish_wait against
+             * the source bucket while the entry physically lives in the
+             * target bucket — corrupting the target's doubly-linked list
+             * (e.g. tail->next dereferenced as NULL+0x18). */
             w->uaddr = addr2;
+            __atomic_store_n(&w->bucket, wq2, __ATOMIC_RELEASE);
             /* Insert at tail of wq2 — keeps relative order */
             cur->next = 0;
             cur->prev = 0;

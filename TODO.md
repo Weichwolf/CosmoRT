@@ -30,12 +30,40 @@ Multimedia-Apps?
 
 ## Stand (Session-Ende)
 
-ktest **3203/0** (+1 sub-assert via vdso/syscall interleave monotonic
-ueber 5000 pairs in test/unit/sys/test_vdso.c, +18 davor via
-signal/sigkill_unmaskable + sigkill_in_nanosleep + sigkill_in_sigsuspend
-+ sigkill_in_futex), musl **461 PASS / 7 FAIL / 10 SKIP**, LTP
-**246/7/45** (+3 PASS via clock_gettime03/04 + clock_nanosleep02
-fixe Drift+Precision).
+ktest **3214/0** (+11 sub-asserts via futex_requeue_smash regression),
+musl **463 PASS / 8 FAIL / 7 SKIP** (+2 PASS, -3 SKIP — pi-static,
+robust-detach{,-static}, cond-smasher-static jetzt aktiv PASS), LTP
+**246/7/45** (unveraendert vor fcntl15-Hang).
+
+**Track 1 (NEU 2026-04-29) — futex_requeue stale-bucket race (ERLEDIGT)**:
+- Wurzel-Bug: FUTEX_REQUEUE migriert die Stack-allokierte
+  `futex_waiter_t` zwischen Buckets, aber der Sleeper cached den
+  Bucket-Pointer am Sleep-Entry. Nach Requeue locked
+  `prepare_to_wait` / `finish_wait` den FALSCHEN bucket und
+  modifiziert die Liste des neuen Buckets ohne dessen Lock —
+  `wq_remove`'s `e->next->prev = e->prev` bricht die zirkulaere
+  Liste, hinterlaesst einen Head-Eintrag mit `prev = NULL`. Naechstes
+  `futex_requeue` Phase-2 INSERT triggert dann KERNEL PF cr2=0x18
+  beim Schreiben von `tail->next` (offset 0x18 in
+  `wait_queue_entry_t`). Reproduziert deterministisch via
+  `pthread_cond-smasher-static` (musl regression).
+- Fix: `futex_waiter_t.bucket`-Feld trackt den live-Bucket. Helper
+  `futex_lock_current_bucket` macht Lock-and-Recheck (lock,
+  re-load bucket, unlock+retry on mismatch). `futex_prepare_to_wait`
+  und `futex_finish_wait` operieren immer auf dem aktuellen Bucket.
+  `futex_requeue` aktualisiert `w->bucket` atomar unter beiden
+  Locks.
+- addr2line-Beweis: `do_exit` runtime 0xffff8000bcaf9960, file-offset
+  0x7e960 → kernel-base 0xffff8000bca7b000. Crash rip 0xffff8000bcb05350
+  → offset 0x8a350, Disasm `mov %r11, 0x18(%rdi)` in
+  `futex_requeue+0x300` mit `rdi = wq2->head->prev = NULL`. Fix
+  bestaetigt: alpine-Run mit gleichem Test passiert ohne PF.
+- SKIP-Liste in `tools/boot-test.sh` reduziert: `pthread-robust-detach`,
+  `pthread-robust-detach-static`, `pthread_mutex_pi-static` raus —
+  alle 3 jetzt aktiv PASS in voller alpine-test.
+- Regression-Test: `test/unit/ipc/test_futex_requeue.c::futex_requeue_smash`
+  (4 Threads, REQUEUE-all + sequentielle WAKEs). Triggert exakt
+  den UAF-Pfad ohne Fix. ktest 3203 -> **3214**.
 
 **Track 0 (2026-04-28) — SKIP-Audit + race-Cluster in SKIP**:
 - `tools/boot-test.sh` SKIP-Liste neu klassifiziert. PASS-bestaetigte

@@ -1,5 +1,25 @@
 # Alpine Test — Bestandsaufnahme
 
+Update: 2026-04-29 futex_requeue stale-bucket race FIXED.
+  Symptom war reproduzierbar via `pthread_cond-smasher-static`:
+  KERNEL PF rip=0xffff8000bcb05350 cr2=0x18 → addr2line: file-offset
+  0x8a350 = `futex_requeue+0x300`, Disasm `mov %r11, 0x18(%rdi)`,
+  `rdi = wq2->head->prev = NULL`. Wurzelursache: Sleeper cacht
+  ursprünglichen Bucket-Pointer am Sleep-Entry; nach FUTEX_REQUEUE
+  ist der Eintrag im neuen Bucket, aber finish_wait greift den
+  alten Bucket-Lock und modifiziert die Liste des neuen Buckets
+  ohne Lock. Linux-Aequivalent: futex.c::queue_unlock vermeidet das
+  via plist + hb-pointer im futex_q.
+  Fix: `futex_waiter_t.bucket` trackt live-Bucket, atomic-store in
+  `futex_requeue`, lock-and-recheck in `futex_lock_current_bucket`
+  via Helpers `futex_prepare_to_wait` / `futex_finish_wait`.
+  SKIP-Liste reduziert: `pthread-robust-detach{,-static}` und
+  `pthread_mutex_pi-static` raus. musl 461/7/10 -> **463/8/7** (+2
+  PASS, -3 SKIP, +1 FAIL via `pthread_cond-smasher` dynamic — der
+  hat einen separaten dlopen-Bug, dokumentiert).
+  Regression-Test: `test/unit/ipc/test_futex_requeue.c::futex_requeue_smash`.
+  ktest 3203 -> **3214**.
+
 Update: 2026-04-28 SKIP-Audit + race-empfindliche Bugs in SKIP-Liste.
   Aenderungen in `tools/boot-test.sh`:
   - entfernt: `fgetwc-buffering`, `pthread_cond_wait-cancel_ignored`,
