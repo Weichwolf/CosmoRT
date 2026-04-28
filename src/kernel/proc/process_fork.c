@@ -147,9 +147,14 @@ int copy_address_space(process_t *child, process_t *parent) {
     /* vDSO mapping is owned by the kernel — re-install the canonical PTEs
      * + VMAs into the child. The fork-walk skips MAP_VDSO entries so we
      * don't COW the kernel-owned pages. free_address_space() calls
-     * vdso_unmap() so the leaf PTEs aren't freed when the child exits. */
-    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root);
-    vdso_map(child->pml4, &child->vma_root);
+     * vdso_unmap() so the leaf PTEs aren't freed when the child exits.
+     *
+     * Pass child->time_ns (set by kernel_clone before this call) so the
+     * mapping is refused for non-init namespaces — otherwise the child
+     * would observe stale offset-free clock_gettime via vDSO. */
+    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root,
+                        struct time_namespace *target_ns);
+    vdso_map(child->pml4, &child->vma_root, child->time_ns);
 
     struct copy_ctx ctx = {
         .src_pml4 = parent->pml4,

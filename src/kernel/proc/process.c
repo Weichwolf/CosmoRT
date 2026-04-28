@@ -602,9 +602,12 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     if (!p->pml4) goto fail_slab;
     p->vma_root = 0;
 
-    /* vDSO: must be mapped before build_user_stack writes AT_SYSINFO_EHDR. */
-    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root);
-    vdso_map(p->pml4, &p->vma_root);
+    /* vDSO: must be mapped before build_user_stack writes AT_SYSINFO_EHDR.
+     * Pass the target process' time_ns (here always init at proc_alloc time)
+     * so vdso_map honours per-NS offsets uniformly across exec/fork callers. */
+    extern int vdso_map(uint64_t *user_pml4, vma_t **vma_root,
+                        struct time_namespace *target_ns);
+    vdso_map(p->pml4, &p->vma_root, p->time_ns);
 
     /* ASLR: randomize stack and mmap base */
     uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */

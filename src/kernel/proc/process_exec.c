@@ -571,7 +571,7 @@ shebang_retry:;
      * so __vdso_clock_gettime can run without a syscall. The AT_SYSINFO_EHDR
      * auxv entry below tells musl where to find them. VMA registration
      * keeps mm_mmap from allocating over the canonical address. */
-    vdso_map(p->pml4, &p->vma_root);
+    vdso_map(p->pml4, &p->vma_root, p->time_ns);
 
     /* ASLR */
     uint64_t stack_rand = aslr_rand() & 0x3FFFFF000ULL; /* 22-bit, 4KB aligned */

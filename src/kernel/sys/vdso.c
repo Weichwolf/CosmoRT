@@ -14,8 +14,15 @@
 #include "core/time_ns.h"
 #include "gen/vdso_bin.h"
 
-/* Physical-page direct-map pointers. Allocated once at boot, never freed. */
+/* Physical-page direct-map pointers. Allocated once at boot, never freed.
+ *
+ * g_vdso_data: live calibration page used by processes in init_time_ns.
+ * g_vdso_data_timens: permanently-zeroed sentinel page used by processes in
+ *   a non-init time_namespace. The vDSO code returns -ENOSYS when mult==0,
+ *   which forces musl onto the syscall path that honours per-NS offsets.
+ *   Linux uses a separate VVAR_TIMENS clock_mode for the same purpose. */
 static struct vdso_data *g_vdso_data;
+static struct vdso_data *g_vdso_data_timens;
 static uint8_t           *g_vdso_code;
 
 /* Atomic-store helpers (avoid pulling in core/atomic.h dependency chain) */
@@ -78,16 +85,19 @@ void vdso_data_update(void) {
 
 __attribute__((cold))
 void vdso_init(void) {
-    g_vdso_data = (struct vdso_data *)page_alloc();
-    g_vdso_code = (uint8_t *)page_alloc();
-    if (!g_vdso_data || !g_vdso_code) {
+    g_vdso_data        = (struct vdso_data *)page_alloc();
+    g_vdso_data_timens = (struct vdso_data *)page_alloc();
+    g_vdso_code        = (uint8_t *)page_alloc();
+    if (!g_vdso_data || !g_vdso_data_timens || !g_vdso_code) {
         serial_puts("vdso: page_alloc failed\n");
-        g_vdso_data = 0; g_vdso_code = 0;
+        g_vdso_data = 0; g_vdso_data_timens = 0; g_vdso_code = 0;
         return;
     }
 
-    /* Zero data page so initial seq=0 (even, stable) */
+    /* Zero data page so initial seq=0 (even, stable). The timens sentinel
+     * is permanently zero (mult==0) so the vDSO returns -ENOSYS to musl. */
     kmemset(g_vdso_data, 0, 4096);
+    kmemset(g_vdso_data_timens, 0, 4096);
 
     /* Copy the embedded ELF DSO into the code page. vdso_bin_size is the
      * full file length; we only have one page. Build-time check guards the
@@ -111,20 +121,25 @@ void vdso_init(void) {
 
 /* ── Per-process mapping ──────────────────────────── */
 
-int vdso_map(uint64_t *user_pml4, struct vma **vma_root) {
-    if (!g_vdso_data || !g_vdso_code || !user_pml4) return -1;
+int vdso_map(uint64_t *user_pml4, struct vma **vma_root,
+             struct time_namespace *target_ns) {
+    if (!g_vdso_data || !g_vdso_data_timens || !g_vdso_code || !user_pml4)
+        return -1;
 
     /* Per-process time_namespace offsets (CLONE_NEWTIME) shift CLOCK_MONOTONIC
      * etc. The vDSO data page is global — it can't honour per-process offsets.
-     * Until per-NS vDSO data pages are implemented, refuse the mapping for
-     * non-init namespaces so musl falls back to the syscall path that does
-     * apply the offset. */
-    {
-        process_t *p = proc_current();
-        if (p && p->time_ns && p->time_ns != &init_time_ns) return -1;
-    }
-
-    uint64_t data_pa = virt_to_phys(g_vdso_data);
+     *
+     * Strategy: keep the code page mapped unconditionally (musl's __vdso_*
+     * pointer cache survives fork, and unmapping causes SIGSEGV the next
+     * time it dispatches). Swap the data page to the timens-sentinel
+     * (permanently mult=0) so the vDSO returns -ENOSYS to musl, which
+     * falls back to the syscall path that honours per-NS offsets. Linux
+     * does the same with VVAR_TIMENS clock_mode.
+     *
+     * NB: target_ns is the child's namespace at fork-time (passed in) —
+     * proc_current() points at the parent and would map the wrong page. */
+    int use_timens = (target_ns && target_ns != &init_time_ns);
+    uint64_t data_pa = virt_to_phys(use_timens ? g_vdso_data_timens : g_vdso_data);
     uint64_t code_pa = virt_to_phys(g_vdso_code);
 
     /* Data: read-only, NX. Code: read+execute, NX off. Both shared across

@@ -50,12 +50,20 @@ void vdso_data_update(void);
 
 /* Map vDSO pages into a user PML4 at the canonical VAs and register
  * matching VMAs so mm_mmap won't allocate over them. Called from exec()
- * and fork(). Returns 0 on success. */
+ * and fork(). Returns 0 on success.
+ *
+ * `target_ns` is the time_namespace of the *target* process (the one whose
+ * pml4 receives the mapping). Non-init namespaces are refused so musl falls
+ * back to the syscall path which honours per-NS offsets. fork-time callers
+ * MUST pass the child's namespace, not proc_current()'s — they differ when
+ * the parent ran unshare(CLONE_NEWTIME) before fork. */
 /* vma_t fully declared in mm/vma.h; forward-declare to avoid pulling kernel
  * mm headers into userspace-shared paths. */
 struct vma;
+struct time_namespace;
 typedef struct vma vma_t_fwd;
-int  vdso_map(uint64_t *user_pml4, struct vma **vma_root);
+int  vdso_map(uint64_t *user_pml4, struct vma **vma_root,
+              struct time_namespace *target_ns);
 
 /* Clear vDSO PTEs from a user PML4 without freeing the underlying kernel-
  * owned pages. MUST be called before free_address_space() — otherwise the

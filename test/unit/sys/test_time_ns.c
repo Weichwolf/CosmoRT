@@ -149,4 +149,59 @@ static void test_time_ns(void) {
 }
 
 TEST("time_ns", test_time_ns);
+
+/* vDSO must remain reachable in non-init time_ns processes (musl caches the
+ * __vdso_clock_gettime pointer at startup and would SIGSEGV if we unmapped
+ * the code page after fork). The data page is swapped to a permanently
+ * mult==0 sentinel so __vdso_clock_gettime returns -ENOSYS, forcing musl
+ * onto the syscall path that honours per-NS offsets. Linux uses the same
+ * trick via VVAR_TIMENS clock_mode. Regression for clock_gettime03
+ * SIGSEGV at VDSO_CODE_VA + 0x320 in fork-after-unshare. */
+static void test_vdso_timens_fallback(void) {
+    puts("\n[vdso/time_ns]\n");
+
+    /* Apply a +200s offset in time_ns_for_children. Parent observes the old
+     * (init) namespace until fork. */
+    long r = sc1(SYS_UNSHARE, CLONE_NEWTIME);
+    check_val("unshare for vdso fallback -> 0", r, 0);
+    long fd = sc4(SYS_OPENAT, -100, (long)"/proc/self/timens_offsets", 1, 0);
+    check_ge("open timens_offsets", fd, 0);
+    if (fd >= 0) {
+        const char *off = "1 200 0\n";
+        sc3(SYS_WRITE, fd, (long)off, 8);
+        sc1(SYS_CLOSE, fd);
+    }
+
+    int pfd[2] = {0, 0};
+    sc1(SYS_PIPE, (long)pfd);
+    long pid = sc0(SYS_FORK);
+    if (pid == 0) {
+        /* Child inherits time_ns_for_children. Two consecutive
+         * clock_gettime() calls — first via libc (vDSO if mapped), second
+         * via direct syscall. Both should return the same offset-shifted
+         * value (delta < 100ms). If vDSO returned without applying the
+         * offset, the delta would be ≈ 200s. */
+        struct k_timespec libc_ts, sys_ts;
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&libc_ts);
+        sc2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&sys_ts);
+        sc3(SYS_WRITE, pfd[1], (long)&libc_ts, sizeof(libc_ts));
+        sc3(SYS_WRITE, pfd[1], (long)&sys_ts,  sizeof(sys_ts));
+        sc1(SYS_EXIT_GROUP, 0);
+    }
+    sc1(SYS_CLOSE, pfd[1]);
+    struct k_timespec libc_ts = {-1, 0}, sys_ts = {-1, 0};
+    sc3(SYS_READ, pfd[0], (long)&libc_ts, sizeof(libc_ts));
+    sc3(SYS_READ, pfd[0], (long)&sys_ts,  sizeof(sys_ts));
+    sc1(SYS_CLOSE, pfd[0]);
+    sc4(SYS_WAIT4, pid, 0, 0, 0);
+
+    long delta_ns = (sys_ts.tv_sec - libc_ts.tv_sec) * 1000000000L +
+                    (sys_ts.tv_nsec - libc_ts.tv_nsec);
+    check("child vDSO and syscall agree (no SIGSEGV)",
+          delta_ns >= 0 && delta_ns < 100000000L);
+    check("child observes 200s offset via syscall path",
+          libc_ts.tv_sec >= 200);
+}
+
+TEST("vdso/time_ns_fallback", test_vdso_timens_fallback);
 /* CLONE_NEWNET acceptance moved to test/unit/net/test_net_ns.c (Phase 15). */
