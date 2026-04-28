@@ -84,12 +84,24 @@ long do_cosmo_kexec(long a1, long a2) {
 /* ── clocksource selftests (subcases 10-19) ─────────
  * In-kernel helpers exercising the clocksource/clock_event core. Each returns
  * 0 on success, negative on failure. Invoked from test/unit/sched/test_clocksource.c
- * via SYS_COSMO_RT_QUERY. Fake clocksources register with ratings above TSC
- * and are always unregistered before return so the live TSC stays current. */
+ * via SYS_COSMO_RT_QUERY. Fake clocksources register with ratings above every
+ * real clocksource (KVM_PVCLOCK/HYPERV_TSC = 400) and are always unregistered
+ * before return so the live TSC stays current.
+ *
+ * Test ratings must be strictly above 400 to keep the rating-sort invariant
+ * stable when kvmclock/hyperv_tsc are present (rating 400). They must also
+ * stay <= CLOCKSOURCE_RATING_MAX = 499. */
 
-#define CS_TEST_RATING_HIGH (CLOCKSOURCE_RATING_MAX + 1 - 50)
-#define CS_TEST_RATING_MID  (CLOCKSOURCE_RATING_MAX + 1 - 100)
-#define CS_TEST_RATING_LOW  (CLOCKSOURCE_RATING_MAX + 1 - 150)
+#define CS_TEST_RATING_HIGH (CLOCKSOURCE_RATING_MAX)         /* 499 */
+#define CS_TEST_RATING_MID  (CLOCKSOURCE_RATING_MAX - 25)    /* 474 */
+#define CS_TEST_RATING_LOW  (CLOCKSOURCE_RATING_MAX - 50)    /* 449 */
+_Static_assert(CS_TEST_RATING_LOW > CLOCKSOURCE_RATING_KVM_PVCLOCK,
+               "test ratings must exceed every real clocksource rating");
+_Static_assert(CS_TEST_RATING_HIGH <= CLOCKSOURCE_RATING_MAX,
+               "test ratings must respect CLOCKSOURCE_RATING_MAX cap");
+_Static_assert(CS_TEST_RATING_HIGH > CS_TEST_RATING_MID
+               && CS_TEST_RATING_MID > CS_TEST_RATING_LOW,
+               "test ratings must be strictly ordered for sort test");
 #define CS_TEST_FREQ_PM     3579545ULL
 #define CS_TEST_FREQ_TSC    2400000000ULL
 #define CS_TEST_NS_PER_SEC  1000000000ULL
