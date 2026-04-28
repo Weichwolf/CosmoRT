@@ -318,10 +318,24 @@ long do_brk(unsigned long addr) {
     uint64_t old_end = (p->brk_current + 0xFFF) & ~0xFFFULL;
     uint64_t new_end = (addr + 0xFFF) & ~0xFFFULL;
 
-    /* Check for overlap with existing VMAs when growing */
+    /* Check for overlap with existing VMAs when growing.
+     *
+     * Special case: ld-musl creates a small PROT_NONE gap at the end of ELF
+     * segments, which can land on brk_base. The trim/replace logic below
+     * absorbs that gap into the heap. But for an arbitrary mmap'd VMA at
+     * brk_base (e.g. vmfill in malloc-brk-fail test), we must NOT absorb it.
+     * Distinguish by size: ld-musl gap is at most a few pages; large VMAs
+     * are real mmap allocations and must block brk growth. */
     if (new_end > old_end) {
         vma_t *overlap = vma_find_overlap(p->vma_root, old_end, new_end);
-        if (overlap && !(overlap->start == p->brk_base)) {
+        int absorb_at_base = 0;
+        if (overlap && overlap->start == p->brk_base) {
+            /* Only absorb small (≤ 4 pages) PROT_NONE gaps left by ld-musl. */
+            uint64_t ov_size = overlap->end - overlap->start;
+            if (overlap->prot == 0 && ov_size <= 4 * 0x1000ULL)
+                absorb_at_base = 1;
+        }
+        if (overlap && !absorb_at_base) {
             /* brk would collide with an mmap'd region — refuse.
              * Cache the collision point so future calls return instantly. */
             p->brk_ceiling = overlap->start;
