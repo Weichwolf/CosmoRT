@@ -78,7 +78,13 @@ typedef struct {
 #define AT_PAGESZ        6
 #define AT_BASE          7
 #define AT_ENTRY         9
+#define AT_UID          11   /* real UID — required: musl gates LD_LIBRARY_PATH + $ORIGIN expansion on uid==euid */
+#define AT_EUID         12   /* effective UID */
+#define AT_GID          13   /* real GID */
+#define AT_EGID         14   /* effective GID */
+#define AT_SECURE       23   /* 1 if execve crossed a suid/sgid boundary; 0 otherwise */
 #define AT_RANDOM       25
+#define AT_EXECFN       31   /* pointer to filename of executable (Linux ABI) */
 #define AT_SYSINFO_EHDR 33   /* Linux: vDSO ELF base — required for musl __vdso_* lookup */
 
 /* Extended ELF load result — carries info needed for PT_INTERP / auxv */

@@ -96,11 +96,23 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
 
     str_off &= ~7ULL;
 
-    /* argc(1) + argv(argc+1) + envp(envc+1) + auxv(naux*2+2 incl. AT_NULL).
+    /* AT_EXECFN: pointer to program path string on stack.
+     * musl uses it for app.name when not /proc/-prefixed. Some programs
+     * inspect it directly. argv[0] is acceptable per Linux ABI when no
+     * better path is known — kernel uses kpath via argv[0] for scripts. */
+    uint64_t at_execfn_addr = argv_addrs[0];
+
+    /* argc(1) + argv(argc+1) + envp(envc+1) + auxv(naux*2 incl. AT_NULL).
      * AT_SYSINFO_EHDR only emitted if the new pml4 actually has the vDSO
-     * mapped (vdso_map skips non-init time_namespaces). */
+     * mapped (vdso_map skips non-init time_namespaces).
+     * naux counts auxv pairs including the trailing AT_NULL terminator:
+     *   fixed PHDR PHENT PHNUM BASE ENTRY PAGESZ RANDOM EXECFN UID EUID
+     *         GID EGID SECURE  -> 13
+     *   + optional AT_SYSINFO_EHDR (when vDSO mapped)
+     *   + AT_NULL terminator
+     *   = 14 or 15 pairs total. */
     uint64_t vdso_base = vdso_user_base_for(user_pml4);
-    int naux = vdso_base ? 9 : 8;
+    int naux = vdso_base ? 15 : 14;
     int nqwords = 1 + (argc + 1) + (envc + 1) + (naux * 2);
     str_off -= (uint64_t)nqwords * 8;
     str_off &= ~0xFULL; /* 16-byte align RSP am Entry */
@@ -117,6 +129,19 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     STK_QWORD(wp, 0); wp += 8;
     for (int i = 0; i < envc; i++) { STK_QWORD(wp, envp_addrs[i]); wp += 8; }
     STK_QWORD(wp, 0); wp += 8;
+    /* Credentials: musl gates LD_LIBRARY_PATH and $ORIGIN expansion on
+     *   (aux[0] & 0x7800) == 0x7800 && uid==euid && gid==egid && !AT_SECURE
+     * Without AT_UID/AT_EUID/AT_GID/AT_EGID/AT_SECURE present, musl
+     * conservatively treats every binary as suid → no $ORIGIN expansion,
+     * dlopen("foo.so") falls through to /lib:/usr/local/lib:/usr/lib only. */
+    process_t *cur_proc = proc_current();
+    uint64_t auxv_uid  = cur_proc ? (uint64_t)cur_proc->ruid : 0;
+    uint64_t auxv_euid = cur_proc ? (uint64_t)cur_proc->euid : 0;
+    uint64_t auxv_gid  = cur_proc ? (uint64_t)cur_proc->rgid : 0;
+    uint64_t auxv_egid = cur_proc ? (uint64_t)cur_proc->egid : 0;
+    uint64_t auxv_secure =
+        (auxv_uid != auxv_euid || auxv_gid != auxv_egid) ? 1 : 0;
+
     STK_QWORD(wp, AT_PHDR);          wp += 8; STK_QWORD(wp, elf_info->prog_phdr);          wp += 8;
     STK_QWORD(wp, AT_PHENT);         wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phent); wp += 8;
     STK_QWORD(wp, AT_PHNUM);         wp += 8; STK_QWORD(wp, (uint64_t)elf_info->prog_phnum); wp += 8;
@@ -124,6 +149,12 @@ uint64_t build_user_stack(uint64_t *user_pml4, uint64_t stack_top,
     STK_QWORD(wp, AT_ENTRY);         wp += 8; STK_QWORD(wp, elf_info->prog_entry);          wp += 8;
     STK_QWORD(wp, AT_PAGESZ);        wp += 8; STK_QWORD(wp, 4096);                          wp += 8;
     STK_QWORD(wp, AT_RANDOM);        wp += 8; STK_QWORD(wp, at_random_addr);                wp += 8;
+    STK_QWORD(wp, AT_EXECFN);        wp += 8; STK_QWORD(wp, at_execfn_addr);                wp += 8;
+    STK_QWORD(wp, AT_UID);           wp += 8; STK_QWORD(wp, auxv_uid);                      wp += 8;
+    STK_QWORD(wp, AT_EUID);          wp += 8; STK_QWORD(wp, auxv_euid);                     wp += 8;
+    STK_QWORD(wp, AT_GID);           wp += 8; STK_QWORD(wp, auxv_gid);                      wp += 8;
+    STK_QWORD(wp, AT_EGID);          wp += 8; STK_QWORD(wp, auxv_egid);                     wp += 8;
+    STK_QWORD(wp, AT_SECURE);        wp += 8; STK_QWORD(wp, auxv_secure);                   wp += 8;
     if (vdso_base) {
         STK_QWORD(wp, AT_SYSINFO_EHDR); wp += 8; STK_QWORD(wp, vdso_base);                  wp += 8;
     }
