@@ -28,15 +28,57 @@ Multimedia-Apps?
 
 ---
 
-## Stand (Session-Ende)
+## Stand (Session 2026-04-29)
 
-ktest **3221/0** (+7 sub-asserts via dualstack-v4-listener Test),
-musl **463 PASS / 8 FAIL / 7 SKIP** (unveraendert; race-cluster in
-voll-Run nicht durchgaengig stabil — Verifikation nur via skip-musl
-abgeschlossen), LTP **252/1/45** (full-run, connect02 + fcntl14{,_64}
-+ fcntl36{,_64} + epoll-ltp PASS, epoll_wait02 1 outlier-fail in
-voll-Run). In isolierten LTP-Filter-Runs alle 6 ehemaligen FAILs
-PASS.
+ktest **3227/0** (+6 via clocksource-rating-Fix), musl **467/11** (+4
+PASS via tls_get_new-dtv + malloc-brk-fail{,-static}; popen{,-static}
+nicht mehr in FAIL bei aktivem KVM). LTP nicht voll baseline'd
+(make alpine-test wird vom System nach 4-28 min ge-killed, Ursache
+unklar — kein OOM, kein Timeout).
+
+### Erledigt 2026-04-29
+
+- `serial_bridge` PTY-TX umgeht dmesg-Ring (Linux-Semantik, fixt
+  test_procfs `dmesg contains CosmoRT`).
+- `clocksource` Selftest-Ratings auf {499,474,449} statt {450,400,350}
+  — kvmclock (Rating 400) kollidierte unter KVM mit MID.
+- `do_brk` absorbiert nur kleine PROT_NONE-Gaps (≤4 Pages) bei brk_base
+  — vorher schluckte er beliebige mmap-VMAs am brk_base und liess brk
+  unbegrenzt wachsen. Fixt malloc-brk-fail{,-static}.
+- `auxv` mit AT_UID/EUID/GID/EGID/SECURE/EXECFN — musl ldso 1.2.5
+  setzte ohne diese Eintraege `libc.secure=1` und ueberging
+  $ORIGIN-Expansion in DT_RUNPATH. Fixt tls_get_new-dtv.
+
+### Verbleibende musl-FAILs (10) — Buckets
+
+**Bucket A: musl 1.2.5 upstream-Bugs (8 Tests, NICHT im Kernel fixbar)**
+Tests durchgaengig FAIL auch auf nativem Linux mit Alpine-musl-loader
+(via `ld-musl-x86_64.so.1 --library-path build/alpine-root/lib`):
+
+- `mntent`, `mntent-static` — getmntent 4-Felder-Parsing, fixed in
+  musl >= 1.2.6 (commit b4b1e10).
+- `strptime`, `strptime-static` — `%F`/`%s`/`%z` parsing broken in 1.2.5.
+- `fma`, `fmal`, `powf`, `remquol` — libm Genauigkeit/FP-Exceptions.
+  Dekker-fma verliert sign-of-product bei Underflow; long-double
+  UNDERFLOW-Exception fehlt; powf liefert spurious INEXACT|OVERFLOW.
+
+Aufloesung erfordert musl-Update (Alpine 3.21 → 3.22+) im Image.
+Nicht via Kernel-Patch behebbar.
+
+**Bucket B: CosmoRT-Bugs (2 Tests, offen)**
+
+- `raise-race`, `raise-race-static` — fork() im Signal-Handler + RT-Signals.
+  Diagnose (vorheriger Agent): zwei Bugs.
+  - **Bug 1**: RT-Signal-Queue fehlt. Naive Implementation (sig_*_rt_count
+    Arrays in process/thread structs) verursacht test-hw Regression
+    (page1/page2 Tests + sched_add_enqueues) — minimaler invasiver Fix
+    noch ausstehend.
+  - **Bug 2**: CoW-Page im Signal-Handler-Context. Worker (Parent) und
+    Child auf unterschiedlichen Cores; Parent's CoW-Page wird nicht
+    TLB-shootdown'ed, gemeinsamer phys-frame ueberschreibt Child-Write
+    via `child=1`-Schreibvorgang. Tieftauchen ausstehend.
+
+
 
 **Track 1 (NEU 2026-04-30) — Dual-Stack TCP + IPV6_ADDRFORM (ERLEDIGT)**:
 - Default `v6only=0` (Linux net.ipv6.bindv6only=0 ist seit ~2.6
