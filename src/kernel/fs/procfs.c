@@ -952,6 +952,33 @@ static long procfs_sys_net_ip_forward_write(const char *buf, int size,
     return size;
 }
 
+/* ── /proc/sys/net/ipv4/icmp_msgs_{burst,per_sec} ─────
+ * LTP icmp_rate_limit01 (CVE-2020-25705) schreibt diese Werte. CosmoRT
+ * implementiert kein ICMP-Rate-Limiting; Stub akzeptiert writes (no-op)
+ * und liefert defaults beim Read (Linux defaults: burst=50, per_sec=1000). */
+
+static int procfs_sys_icmp_msgs_burst(char *buf, int size, int offset, void *ctx) {
+    (void)ctx; char tmp[8];
+    int pos = itoa_buf(tmp, 8, 50L); tmp[pos++] = '\n';
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+static long procfs_sys_icmp_msgs_burst_w(const char *buf, int size, int offset, void *ctx) {
+    (void)buf; (void)offset; (void)ctx; return size;
+}
+
+static int procfs_sys_icmp_msgs_per_sec(char *buf, int size, int offset, void *ctx) {
+    (void)ctx; char tmp[8];
+    int pos = itoa_buf(tmp, 8, 1000L); tmp[pos++] = '\n';
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+static long procfs_sys_icmp_msgs_per_sec_w(const char *buf, int size, int offset, void *ctx) {
+    (void)buf; (void)offset; (void)ctx; return size;
+}
+
 /* ── /proc/sys/fs/lease-break-time ────────────────── */
 
 static int procfs_sys_lease_break_time(char *buf, int size, int offset, void *ctx) {
@@ -1439,6 +1466,12 @@ void procfs_init(void) {
     procfs_register_rw("sys/net/ipv4/ip_forward",
                        procfs_sys_net_ip_forward,
                        procfs_sys_net_ip_forward_write, 0);
+    procfs_register_rw("sys/net/ipv4/icmp_msgs_burst",
+                       procfs_sys_icmp_msgs_burst,
+                       procfs_sys_icmp_msgs_burst_w, 0);
+    procfs_register_rw("sys/net/ipv4/icmp_msgs_per_sec",
+                       procfs_sys_icmp_msgs_per_sec,
+                       procfs_sys_icmp_msgs_per_sec_w, 0);
     procfs_register("sys/fs/lease-break-time", procfs_sys_lease_break_time, 0);
     procfs_register("self/cwd", procfs_pid_cwd, 0);
     procfs_register("self/environ", procfs_pid_environ, 0);
