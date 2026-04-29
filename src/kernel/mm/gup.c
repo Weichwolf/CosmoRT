@@ -79,31 +79,24 @@ uint64_t mm_gup_one(process_t *p, uint64_t va, int write) {
     int shared = vma->flags & VMA_SHARED;
     spin_unlock_irq(&p->lock, flags);
 
+    /* Writable VMAs always map RO at install time — MAP_SHARED for dirty
+     * tracking, MAP_PRIVATE for COW. */
     int map_prot = prot;
-    if (shared && (prot & PROT_WRITE))
-        map_prot = prot & ~PROT_WRITE;
+    if (prot & PROT_WRITE) map_prot = prot & ~PROT_WRITE;
 
     uint64_t phys = 0;
     if (file_ino) {
-        if (shared) phys = page_cache_lookup(file_ino, file_offset + (page_va - vma_start));
-        if (phys) {
-            page_incref(phys);
-            spin_lock_irq(&p->lock, &flags);
-            int rc = map_user_page(p->pml4, page_va, phys, map_prot);
-            spin_unlock_irq(&p->lock, flags);
-            if (rc != 0) { page_free(phys_to_virt(phys)); return 0; }
-            return pt_va_to_pa(p->pml4, va);
-        }
-        uint64_t *pg = alloc_page();
-        if (!pg) return 0;
         uint64_t foff = file_offset + (page_va - vma_start);
-        vfs_pread_by_ino(file_backend, file_ino, pg, (size_t)foff, 4096);
-        phys = virt_to_phys(pg);
-        if (shared) page_cache_insert(file_ino, foff, phys);
+        phys = page_cache_get_or_load(file_backend, file_ino, foff);
+        if (!phys) return 0;
         spin_lock_irq(&p->lock, &flags);
         int rc = map_user_page(p->pml4, page_va, phys, map_prot);
+        if (rc == 0 && !shared && (prot & PROT_WRITE)) {
+            extern void pte_or_inplace(uint64_t *pml4, uint64_t va, uint64_t bits);
+            pte_or_inplace(p->pml4, page_va, (1ULL << 9) /* PTE_COW */);
+        }
         spin_unlock_irq(&p->lock, flags);
-        if (rc != 0) { page_free(pg); return 0; }
+        if (rc != 0) { page_free(phys_to_virt(phys)); return 0; }
         return pt_va_to_pa(p->pml4, va);
     }
 

@@ -299,6 +299,26 @@ int map_user_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) 
     return 0;
 }
 
+/* OR additional bits into an existing leaf PTE.
+ * Used by demand paging to set PTE_COW after map_user_page installs the
+ * base PTE — keeps map_user_page's prot→PTE translation as the single
+ * source of truth without duplicating the level walk. No-op if the leaf
+ * is missing or huge. */
+void pte_or_inplace(uint64_t *user_pml4, uint64_t vaddr, uint64_t bits) {
+    if (vaddr >= 0x800000000000ULL) return;
+    int pml4i = (vaddr >> 39) & 0x1FF;
+    if (!(user_pml4[pml4i] & PTE_PRESENT)) return;
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(user_pml4[pml4i] & PTE_ADDR_MASK);
+    int pdpti = (vaddr >> 30) & 0x1FF;
+    if (!(pdpt[pdpti] & PTE_PRESENT)) return;
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpti] & PTE_ADDR_MASK);
+    int pdi = (vaddr >> 21) & 0x1FF;
+    if (!(pd[pdi] & PTE_PRESENT) || (pd[pdi] & PTE_PS)) return;
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pdi] & PTE_ADDR_MASK);
+    int pti = (vaddr >> 12) & 0x1FF;
+    pt[pti] |= bits;
+}
+
 int map_user_huge_page(uint64_t *user_pml4, uint64_t vaddr, uint64_t phys, int prot) {
     if (vaddr >= 0x800000000000ULL) return -1;
     if (vaddr & (0x200000ULL - 1)) return -1;  /* must be 2MB-aligned */

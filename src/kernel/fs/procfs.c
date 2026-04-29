@@ -725,6 +725,27 @@ static int procfs_tlb_flush(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/cosmort/page_cache ──────────────────
+ * Format: "hit=<n> miss=<n> readahead=<n>\n" */
+static int procfs_page_cache(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    extern volatile uint64_t pc_stat_hit, pc_stat_miss, pc_stat_ra, pc_stat_anon;
+    char tmp[192];
+    int pos = 0;
+    pos = append_str(tmp, pos, 192, "hit=");
+    pos = append_int(tmp, pos, 192, (long)pc_stat_hit);
+    pos = append_str(tmp, pos, 192, " miss=");
+    pos = append_int(tmp, pos, 192, (long)pc_stat_miss);
+    pos = append_str(tmp, pos, 192, " readahead=");
+    pos = append_int(tmp, pos, 192, (long)pc_stat_ra);
+    pos = append_str(tmp, pos, 192, " anon=");
+    pos = append_int(tmp, pos, 192, (long)pc_stat_anon);
+    pos = append_str(tmp, pos, 192, "\n");
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
 /* ── /proc/loadavg ─────────────────────────────────── */
 
 static int procfs_loadavg(char *buf, int size, int offset, void *ctx) {
@@ -1465,6 +1486,7 @@ void procfs_init(void) {
     procfs_register("stat", procfs_global_stat, 0);
     procfs_register("uptime", procfs_uptime, 0);
     procfs_register("cosmort/tlb_flush", procfs_tlb_flush, 0);
+    procfs_register("cosmort/page_cache", procfs_page_cache, 0);
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
     procfs_register("bus/pci/devices", procfs_pci_devices, 0);

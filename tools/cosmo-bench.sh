@@ -55,6 +55,8 @@ echo "================================"
 # Diagnostic: TLB flush fast vs. slow path counters (per-syscall conditional shootdown).
 echo "--- TLB flush stats ---"
 cat /proc/cosmort/tlb_flush 2>/dev/null || echo "no /proc/cosmort/tlb_flush"
+echo "--- Page cache stats ---"
+cat /proc/cosmort/page_cache 2>/dev/null || echo "no /proc/cosmort/page_cache"
 
 sync
 poweroff -f

@@ -209,32 +209,28 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                         if (knp) {
                             uint64_t kpage_addr = cr2 & ~0xFFFULL;
                             if (k_file_ino) {
-                                /* File-backed demand page in kernel access path */
+                                /* File-backed demand page in kernel access path.
+                                 * Page-cache shares one phys across all consumers
+                                 * (MAP_SHARED + MAP_PRIVATE). MAP_PRIVATE writers
+                                 * trip the COW path on first store. */
                                 uint64_t foff = k_file_offset + (kpage_addr - k_vma_start);
-                                uint64_t phys = 0;
-                                if (k_shared)
-                                    phys = page_cache_lookup(k_file_ino, foff);
-                                /* Shared writable: map read-only for dirty tracking */
-                                int kmap_prot = kprot;
-                                if (k_shared && (kprot & PROT_WRITE))
-                                    kmap_prot = kprot & ~PROT_WRITE;
+                                uint64_t phys = page_cache_get_or_load(k_file_backend,
+                                                                        k_file_ino, foff);
                                 if (phys) {
-                                    page_incref(phys);
-                                    if (map_user_page(kp->pml4, kpage_addr, phys, kmap_prot) == 0)
+                                    /* MAP_SHARED writable → drop WRITE for dirty tracking.
+                                     * MAP_PRIVATE writable → drop WRITE + set COW so first
+                                     * store forks a private copy. */
+                                    int kmap_prot = kprot;
+                                    if (kprot & PROT_WRITE) kmap_prot = kprot & ~PROT_WRITE;
+                                    if (map_user_page(kp->pml4, kpage_addr, phys, kmap_prot) == 0) {
+                                        if (!k_shared && (kprot & PROT_WRITE)) {
+                                            /* Mark PTE_COW for private writable */
+                                            extern void pte_or_inplace(uint64_t *pml4, uint64_t va, uint64_t bits);
+                                            pte_or_inplace(kp->pml4, kpage_addr, (1ULL << 9));
+                                        }
                                         return;
-                                    page_free(phys_to_virt(phys));
-                                } else {
-                                    uint64_t *kpg = alloc_page();
-                                    if (kpg) {
-                                        extern long vfs_pread_by_ino(int, uint64_t, void *, size_t, size_t);
-                                        vfs_pread_by_ino(k_file_backend, k_file_ino, kpg, (size_t)foff, 4096);
-                                        phys = virt_to_phys(kpg);
-                                        if (k_shared)
-                                            page_cache_insert(k_file_ino, foff, phys);
-                                        if (map_user_page(kp->pml4, kpage_addr, phys, kmap_prot) == 0)
-                                            return;
-                                        page_free(kpg);
                                     }
+                                    page_free(phys_to_virt(phys));
                                 }
                             } else {
                                 uint64_t *kpage = alloc_page();
@@ -423,37 +419,52 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     spin_unlock_irq(&p->lock, vma_flags);
                     uint64_t page_addr = cr2 & ~0xFFFULL;
 
-                    /* File-backed demand paging */
+                    /* File-backed demand paging — page cache shared across
+                     * processes for both MAP_SHARED and MAP_PRIVATE.
+                     * MAP_PRIVATE writers go through COW on first store. */
                     if (__builtin_expect(dp_file_ino != 0, 0)) {
+                        extern void pte_or_inplace(uint64_t *pml4, uint64_t va, uint64_t bits);
                         uint64_t foff = dp_file_offset + (page_addr - vma_start);
-                        uint64_t phys = 0;
-                        /* MAP_SHARED: check page cache first */
-                        if (dp_shared)
-                            phys = page_cache_lookup(dp_file_ino, foff);
-                        /* MAP_SHARED + writable: map read-only for dirty tracking.
-                         * Write faults will enable PTE_WRITE; CPU sets PTE_DIRTY. */
+                        uint64_t phys = page_cache_get_or_load(dp_file_backend,
+                                                                dp_file_ino, foff);
+                        if (!phys) goto kill_process;
+                        /* Writable VMA → drop WRITE bit. MAP_SHARED:
+                         * dirty-tracking via second fault. MAP_PRIVATE:
+                         * COW via second fault (PTE_COW set after install). */
                         int map_prot = dp_prot;
-                        if (dp_shared && (dp_prot & PROT_WRITE))
-                            map_prot = dp_prot & ~PROT_WRITE;
-                        if (phys) {
-                            page_incref(phys);
-                            if (map_user_page(p->pml4, page_addr, phys, map_prot) == 0)
-                                return;
+                        if (dp_prot & PROT_WRITE) map_prot = dp_prot & ~PROT_WRITE;
+                        if (map_user_page(p->pml4, page_addr, phys, map_prot) != 0) {
                             page_free(phys_to_virt(phys));
-                        } else {
-                            uint64_t *pg = alloc_page();
-                            if (pg) {
-                                extern long vfs_pread_by_ino(int, uint64_t, void *, size_t, size_t);
-                                vfs_pread_by_ino(dp_file_backend, dp_file_ino, pg, (size_t)foff, 4096);
-                                phys = virt_to_phys(pg);
-                                if (dp_shared)
-                                    page_cache_insert(dp_file_ino, foff, phys);
-                                if (map_user_page(p->pml4, page_addr, phys, map_prot) == 0)
-                                    return;
-                                page_free(pg);
-                            }
+                            goto kill_process;
                         }
-                        goto kill_process;
+                        if (!dp_shared && (dp_prot & PROT_WRITE))
+                            pte_or_inplace(p->pml4, page_addr, (1ULL << 9));
+                        /* Read-ahead: synchronously load + map up to RA_WINDOW
+                         * additional pages forward. Bounded by VMA end. Each
+                         * extra page is a cache hit (page_cache_get_or_load
+                         * keeps deduping) so this only pays the cost of
+                         * walking page tables and incref. Skips PTEs already
+                         * present (e.g. earlier readahead from a sibling). */
+                        #define RA_WINDOW 16
+                        extern uint64_t read_pte_pub(uint64_t *pml4, uint64_t va);
+                        for (int ra = 1; ra < RA_WINDOW; ra++) {
+                            uint64_t ra_va = page_addr + (uint64_t)ra * 4096;
+                            if (ra_va >= vma_end) break;
+                            if (read_pte_pub(p->pml4, ra_va) & 1) continue;
+                            uint64_t ra_off = foff + (uint64_t)ra * 4096;
+                            uint64_t ra_phys = page_cache_get_or_load(dp_file_backend,
+                                                                       dp_file_ino, ra_off);
+                            if (!ra_phys) break; /* OOM / I/O — stop, fault will retry */
+                            if (map_user_page(p->pml4, ra_va, ra_phys, map_prot) != 0) {
+                                page_free(phys_to_virt(ra_phys));
+                                break;
+                            }
+                            if (!dp_shared && (dp_prot & PROT_WRITE))
+                                pte_or_inplace(p->pml4, ra_va, (1ULL << 9));
+                            extern volatile uint64_t pc_stat_ra;
+                            __atomic_fetch_add(&pc_stat_ra, 1, __ATOMIC_RELAXED);
+                        }
+                        return;
                     }
 
                     /* Anonymous: try 2MB huge page if VMA is eligible and aligned */
@@ -477,6 +488,8 @@ void irq_dispatch(int vector, irq_frame_t *frame) {
                     if (page) {
                         if (map_user_page(p->pml4, page_addr,
                                           virt_to_phys(page), dp_prot) == 0) {
+                            extern volatile uint64_t pc_stat_anon;
+                            __atomic_fetch_add(&pc_stat_anon, 1, __ATOMIC_RELAXED);
                             return; /* resume execution */
                         }
                         page_free(page);
