@@ -87,11 +87,14 @@ echo ""
 echo "=== LTP TESTS ==="
 LTP_BIN=/opt/ltp/install/testcases/bin
 
-# LTP shell helpers: tst_sleep + tst_timeout_kill werden von tst_test.sh
-# gerufen, sind aber self-contained C-Quellen die `make install` nicht
-# ins install-Tree kopiert. Beim Boot kompilieren wenn fehlend.
+# LTP shell helpers: tst_sleep, tst_timeout_kill, tst_rod, ... werden von
+# tst_test.sh als externe Programme aufgerufen, sind aber self-contained
+# C-Quellen die `make install` nicht ins install-Tree kopiert. Beim Boot
+# kompilieren wenn fehlend. tst_rod ist Pflicht fuer ROD-Wrapper, sonst
+# brechen alle shell-LTP-Tests die mkdir/touch ueber ROD aufrufen.
 LTP_LIB=/opt/ltp/testcases/lib
-for helper in tst_sleep tst_timeout_kill; do
+for helper in tst_sleep tst_timeout_kill tst_rod tst_random tst_get_median \
+              tst_getconf tst_hexdump; do
     if [ ! -x "$LTP_BIN/$helper" ] && [ -f "$LTP_LIB/$helper.c" ]; then
         echo "boot-test: compiling LTP helper $helper..."
         gcc -O2 -o "$LTP_BIN/$helper" "$LTP_LIB/$helper.c" 2>&1 | head -5
@@ -128,6 +131,10 @@ for t in $LTP_TESTS; do
         epoll-ltp)         tlim=120 ;;
         epoll_wait02)      tlim=120 ;;
         connect02)         tlim=180 ;;
+        # Shell-Tests: jede ROD-Aktion ist fork+exec von tst_rod plus Zielprozess.
+        # cp_tests baut 10x10 = 100 Files via Shell-Loop, das sind ~200 forks.
+        # Default 10s reicht nicht; 60s deckt cp/ln/gzip/mkdir-Setup ab.
+        cp_tests.sh|ln_tests.sh|gzip_tests.sh|mkdir_tests.sh|mv_tests.sh|tar_tests.sh|cpio_tests.sh) tlim=120 ;;
         *)                 tlim=10  ;;
     esac
     timeout "$tlim" "$LTP_BIN/$t" > /tmp/ltp_out.txt 2>&1
