@@ -1,7 +1,9 @@
 #!/bin/sh
-# LTP shell tests source tst_test.sh via POSIX `.` (PATH-resolved).
-# `make install` does not copy lib/*.sh — keep source tree on PATH.
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/opt/ltp/testcases/lib
+# LTP shell tests source tst_test.sh via POSIX `.` (PATH-resolved) und
+# rufen tst_sleep/tst_timeout_kill als commands. `make install` kopiert
+# weder lib/*.sh noch die kompilierten lib/tst_*-Helper ins install-Tree.
+# Source-Tree-Pfad PLUS install-bin (wo wir die Helper hin kompilieren).
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/opt/ltp/testcases/lib:/opt/ltp/install/testcases/bin
 export LTPROOT=/opt/ltp/install
 # LTP: Kein /proc/config.gz verfuegbar; alle needs_kconfigs wuerden TBROK werfen.
 export KCONFIG_SKIP_CHECK=1
@@ -84,6 +86,19 @@ fi
 echo ""
 echo "=== LTP TESTS ==="
 LTP_BIN=/opt/ltp/install/testcases/bin
+
+# LTP shell helpers: tst_sleep + tst_timeout_kill werden von tst_test.sh
+# gerufen, sind aber self-contained C-Quellen die `make install` nicht
+# ins install-Tree kopiert. Beim Boot kompilieren wenn fehlend.
+LTP_LIB=/opt/ltp/testcases/lib
+for helper in tst_sleep tst_timeout_kill; do
+    if [ ! -x "$LTP_BIN/$helper" ] && [ -f "$LTP_LIB/$helper.c" ]; then
+        echo "boot-test: compiling LTP helper $helper..."
+        gcc -O2 -o "$LTP_BIN/$helper" "$LTP_LIB/$helper.c" 2>&1 | head -5
+    fi
+done
+
+
 ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
 LTP_TESTS=$(ls "$LTP_BIN" | grep -v '_helper$' | sort)
 if [ -n "$LTP_RUN" ]; then
