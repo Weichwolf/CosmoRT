@@ -311,38 +311,31 @@ long kill_one(process_t *target, int sig) {
             }
         }
 
-        /* Signal is unblocked — terminate immediately.
-         * For proc_current(): direct exit (fast path).
-         * For remote: mark zombie + kill threads + notify parent. */
+        /* Signal is unblocked — terminate.
+         * Self-target (kill(getpid(), SIGKILL) etc.): direct do_exit_group fast path.
+         * Remote target: Linux-Modell — sig_pending setzen + signal_wake_up auf
+         * jeden Thread. Der Empfaenger-Thread sieht das Signal beim naechsten
+         * check_pending_signals (Syscall-Exit / Preempt-Tick / SMP-Resched-IPI)
+         * und ruft do_exit_group selbst auf, was den vollen exit_kill_process-
+         * Pfad durchlaeuft (FD-close, vfork-wake, robust_list, flock_release_pid,
+         * Reparenting, Address-Space-Teardown). Direktes ZOMBIE-Setzen aus
+         * remote-Kontext wuerde all das ueberspringen und blockierte Pipe-Reader
+         * auf der anderen Seite haengen lassen. */
         target->exit_signal = sig;
         if (target == proc_current()) {
             do_exit_group(128 + sig); /* doesn't return */
         }
-        target->state = PROC_ZOMBIE;
-        target->exit_code = 128 + sig;
+        __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
         {
             thread_t *t = target->threads;
             while (t) {
-                int old = t->state;
-                if (old == THREAD_BLOCKED) {
-                    signal_wake_up(t);
-                    t->state = THREAD_DEAD;
-                } else if (old == THREAD_RUNNING || old == THREAD_STOPPED ||
-                           old == THREAD_RUNNABLE) {
-                    t->state = THREAD_DEAD;
-                }
+                /* signal_wake_up: BLOCKED/STOPPED → RUNNABLE + sched_add +
+                 * cross-CPU IPI. RUNNING/RUNNABLE-Threads bleiben unberuehrt;
+                 * sie sehen sig_pending beim naechsten Preempt-Tick (wegen
+                 * smp_resched_others-IPI in signal_wake_up auch auf anderen
+                 * CPUs prompt) oder Syscall-Exit. */
+                signal_wake_up(t);
                 t = t->proc_next;
-            }
-        }
-        if (target->parent_pid) {
-            process_t *parent = proc_find(target->parent_pid);
-            if (parent) {
-                int nsig = target->notify_signal ? target->notify_signal : SIGCHLD;
-                __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
-                wake_up(&parent->children_wq);
-                for (thread_t *pt = parent->threads; pt; pt = pt->proc_next) {
-                    if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
-                }
             }
         }
         return 0;
