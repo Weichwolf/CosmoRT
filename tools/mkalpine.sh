@@ -119,6 +119,8 @@ sudo umount "$ALPINE_ROOT/proc" 2>/dev/null || true
 # ── Copy tools into rootfs ───────────────────────────
 cp tools/boot-test.sh "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
 chmod +x "$ALPINE_ROOT/opt/boot-test.sh" 2>/dev/null || true
+cp tools/cosmo-bench.sh "$ALPINE_ROOT/opt/cosmo-bench.sh" 2>/dev/null || true
+chmod +x "$ALPINE_ROOT/opt/cosmo-bench.sh" 2>/dev/null || true
 
 # ── Boot-config fuer LTP tst_kconfig_check() ─────────
 # LTP sucht /boot/config-$(uname -r); ohne file -> TBROK statt TCONF.

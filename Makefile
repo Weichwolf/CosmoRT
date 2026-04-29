@@ -317,6 +317,21 @@ alpine-test: $(ESP_IMG)
 	@echo "=== Serial output ==="
 	@tail -30 /tmp/cosmo-serial.log
 
+# make qemu-bench — gcc-compile benchmark inside CosmoRT VM
+# Runs tools/cosmo-bench.sh as sysinit; reports per-phase elapsed_ms.
+qemu-bench: $(ESP_IMG)
+	@cp $(ALPINE_ROOT)/etc/inittab $(ALPINE_ROOT)/etc/inittab.bak 2>/dev/null || true
+	@cp tools/cosmo-bench.sh $(ALPINE_ROOT)/opt/cosmo-bench.sh
+	@chmod +x $(ALPINE_ROOT)/opt/cosmo-bench.sh
+	@echo '::sysinit:/opt/cosmo-bench.sh' > $(ALPINE_ROOT)/etc/inittab
+	@sh tools/mkalpine.sh $(ALPINE_ROOT)
+	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
+	@rm -f /tmp/cosmo-bench.log
+	timeout 600 $(ALPINE_QEMU) -serial file:/tmp/cosmo-bench.log -display none -no-reboot || true
+	@echo "=== Bench Output ==="
+	@grep -E 'BENCH |COSMO-BENCH' /tmp/cosmo-bench.log | head -30
+	@echo ""
+
 qemu-disk: $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) \
 	        -drive file=build/root.ext2,format=raw,if=virtio
