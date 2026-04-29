@@ -17,6 +17,13 @@ struct virtio_blk_req {
 
 #define SECTORS_PER_BLOCK (BLK_SIZE / 512)
 
+/* Bulk-IO maximum: how many 4K blocks fit in one virtio request.
+ * 64KB = 16 × 4K blocks. virtio-blk in QEMU accepts requests up to several MB,
+ * but 64KB matches the typical Linux read-ahead window and avoids monopolising
+ * the (single-slot) DMA buffer for too long. */
+#define BLK_BULK_MAX 16
+#define BLK_BULK_BYTES (BLK_BULK_MAX * BLK_SIZE)
+
 /* ── Driver state ─────────────────────────────────── */
 
 static virtio_dev_t blk_dev;
@@ -30,7 +37,7 @@ static uint64_t blk_dma_phys;
 
 /* Per-request DMA buffers */
 static struct virtio_blk_req *req_hdr;
-static uint8_t *data_buf;      /* 4KB data buffer */
+static uint8_t *data_buf;      /* BLK_BULK_BYTES (64K) data buffer */
 static uint8_t *status_byte;
 
 static hw_spinlock_t blk_lock = HW_SPINLOCK_INIT;
@@ -59,20 +66,22 @@ int virtio_blk_init(void) {
         return -1;
     }
 
-    /* Allocate DMA buffers for request header + data + status */
+    /* Allocate DMA buffers: header (64B aligned) + bulk data (64K) + status.
+     * Total ~64K + 4K slack, page aligned. */
     void *dma_virt;
     uint64_t dma_phys;
-    if (cosmo_dma_alloc(8192, &dma_virt, &dma_phys) < 0) {
+    size_t dma_sz = BLK_BULK_BYTES + 8192;
+    if (cosmo_dma_alloc(dma_sz, &dma_virt, &dma_phys) < 0) {
         serial_puts("virtio-blk: DMA alloc failed\n");
         return -1;
     }
-    hw_memset(dma_virt, 0, 8192);
+    hw_memset(dma_virt, 0, dma_sz);
     blk_dma_virt = (uint8_t *)dma_virt;
     blk_dma_phys = dma_phys;
     uint8_t *p = blk_dma_virt;
     req_hdr     = (struct virtio_blk_req *)p;
-    data_buf    = p + 64;  /* aligned, 4KB for block data */
-    status_byte = data_buf + BLK_SIZE;
+    data_buf    = p + 64;                    /* aligned, BLK_BULK_BYTES for block data */
+    status_byte = data_buf + BLK_BULK_BYTES;
 
     /* Device ready */
     virtio_set_driver_ok(&blk_dev);
@@ -184,6 +193,23 @@ int blk_write(uint64_t block, const void *buf) {
     hw_spin_unlock_irq(&blk_lock, flags);
     return rc;
 }
+
+/* Bulk read: count contiguous 4KB blocks starting at start_block.
+ * Single virtio request — one descriptor chain, one IRQ, one memcpy out.
+ * Caller's buf must be ≥ count*BLK_SIZE bytes.
+ * count must be 1..BLK_BULK_MAX. Returns 0 on success. */
+int blk_read_bulk(uint64_t start_block, uint32_t count, void *buf) {
+    if (!initialized) return -1;
+    if (count == 0 || count > BLK_BULK_MAX) return -1;
+    uint64_t flags;
+    hw_spin_lock_irq(&blk_lock, &flags);
+    int rc = do_request(0, start_block * SECTORS_PER_BLOCK,
+                        buf, count * BLK_SIZE);
+    hw_spin_unlock_irq(&blk_lock, flags);
+    return rc;
+}
+
+uint32_t blk_bulk_max(void) { return BLK_BULK_MAX; }
 
 uint64_t blk_capacity(void) {
     if (!initialized) return 0;

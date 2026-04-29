@@ -26,6 +26,40 @@ static uint32_t sb_block;              /* block containing superblock */
 static int mounted;
 static spinlock_t fs_lock = SPINLOCK_INIT;
 
+/* ── Group descriptor cache ──────────────────────── */
+/* All group descs loaded into RAM at mount time. Saves a bcache_get + 32B
+ * memcpy on every inode_read / block_alloc / inode_alloc. For 2GB FS at
+ * 4K blocks: 64 groups × 32B = 2KB — trivial.
+ * Marked dirty when block_alloc/inode_alloc/free changes a group's counters
+ * so the corresponding on-disk block is written out on sync. */
+#define EXT4_MAX_GROUPS 4096   /* 4096 × 32B = 128KB max — fits 2TB FS at 4K */
+static struct ext4_group_desc gd_cache[EXT4_MAX_GROUPS];
+static uint8_t gd_dirty[EXT4_MAX_GROUPS];
+static int gd_cache_ready;
+
+/* ── Inode cache ─────────────────────────────────── */
+/* Hot inodes (e.g. directory traversal /a/b/c reads inodes for a, b, c)
+ * stay in this LRU. Saves a bcache_get + 256B memcpy per ext4_inode_read.
+ * 256 entries × ~270B = ~70KB. Sized to fit a typical compile working set. */
+#define ICACHE_SIZE 256
+#define ICACHE_HASH 256        /* power of 2, separate from ICACHE_SIZE */
+
+typedef struct icache_entry {
+    uint32_t ino;
+    uint8_t  valid;
+    uint8_t  dirty;            /* unused — writes go through bcache directly */
+    struct ext4_inode data;
+    struct icache_entry *hash_next;
+    struct icache_entry *lru_prev, *lru_next;
+} icache_entry_t;
+
+static icache_entry_t icache[ICACHE_SIZE];
+static icache_entry_t *icache_hash[ICACHE_HASH];
+static icache_entry_t  ic_lru_head;     /* sentinel */
+static icache_entry_t *ic_lru_tail;
+static spinlock_t icache_lock = SPINLOCK_INIT;
+static int icache_ready;
+
 /* ── Helpers ──────────────────────────────────────── */
 
 static uint32_t now_sec(void) {
@@ -84,30 +118,142 @@ static int write_block(uint32_t block, const void *buf) {
 
 /* ── Group descriptor access ─────────────────────── */
 
-static int read_group_desc(uint32_t group, struct ext4_group_desc *gd) {
-    /* Group descriptors start at the block after the superblock block.
-     * For block_size >= 2048, superblock is in block 0.
-     * For block_size == 1024, superblock is in block 1, descriptors in block 2+. */
-    uint32_t gd_block = sb.s_first_data_block + 1 + (group * sizeof(struct ext4_group_desc)) / block_size;
-    uint32_t gd_offset = (group * sizeof(struct ext4_group_desc)) % block_size;
+/* On-disk position of a group desc */
+static inline uint32_t gd_disk_block(uint32_t group) {
+    return sb.s_first_data_block + 1 + (group * sizeof(struct ext4_group_desc)) / block_size;
+}
+static inline uint32_t gd_disk_offset(uint32_t group) {
+    return (group * sizeof(struct ext4_group_desc)) % block_size;
+}
 
-    struct bcache_entry *be = ext4_get_block(gd_block);
+static int read_group_desc(uint32_t group, struct ext4_group_desc *gd) {
+    if (gd_cache_ready && group < group_count && group < EXT4_MAX_GROUPS) {
+        *gd = gd_cache[group];
+        return 0;
+    }
+    /* Pre-mount fallback: read from disk */
+    uint32_t blk = gd_disk_block(group);
+    uint32_t off = gd_disk_offset(group);
+    struct bcache_entry *be = ext4_get_block(blk);
     if (!be) return -EIO;
-    kmemcpy(gd, be->data + ext4_block_offset(gd_block) + gd_offset, sizeof(*gd));
+    kmemcpy(gd, be->data + ext4_block_offset(blk) + off, sizeof(*gd));
     bcache_put(be);
     return 0;
 }
 
 static int write_group_desc(uint32_t group, const struct ext4_group_desc *gd) {
-    uint32_t gd_block = sb.s_first_data_block + 1 + (group * sizeof(struct ext4_group_desc)) / block_size;
-    uint32_t gd_offset = (group * sizeof(struct ext4_group_desc)) % block_size;
-
-    struct bcache_entry *be = ext4_get_block(gd_block);
+    if (gd_cache_ready && group < group_count && group < EXT4_MAX_GROUPS) {
+        gd_cache[group] = *gd;
+        gd_dirty[group] = 1;
+        return 0;
+    }
+    uint32_t blk = gd_disk_block(group);
+    uint32_t off = gd_disk_offset(group);
+    struct bcache_entry *be = ext4_get_block(blk);
     if (!be) return -EIO;
-    kmemcpy(be->data + ext4_block_offset(gd_block) + gd_offset, gd, sizeof(*gd));
+    kmemcpy(be->data + ext4_block_offset(blk) + off, gd, sizeof(*gd));
     bcache_mark_dirty(be);
     bcache_put(be);
     return 0;
+}
+
+/* Flush dirty group descriptors back to bcache. Called from sync. */
+static void flush_group_descs(void) {
+    if (!gd_cache_ready) return;
+    for (uint32_t g = 0; g < group_count; g++) {
+        if (!gd_dirty[g]) continue;
+        uint32_t blk = gd_disk_block(g);
+        uint32_t off = gd_disk_offset(g);
+        struct bcache_entry *be = ext4_get_block(blk);
+        if (!be) continue;
+        kmemcpy(be->data + ext4_block_offset(blk) + off, &gd_cache[g], sizeof(gd_cache[g]));
+        bcache_mark_dirty(be);
+        bcache_put(be);
+        gd_dirty[g] = 0;
+    }
+}
+
+/* ── Inode cache helpers ─────────────────────────── */
+
+static inline uint32_t ic_hash_fn(uint32_t ino) {
+    return (ino * 2654435761u) & (ICACHE_HASH - 1);
+}
+
+static void ic_lru_remove(icache_entry_t *e) {
+    if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
+    if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
+    if (ic_lru_tail == e) ic_lru_tail = e->lru_prev;
+    if (ic_lru_tail == &ic_lru_head) ic_lru_tail = 0;
+    e->lru_prev = e->lru_next = 0;
+}
+
+static void ic_lru_push_front(icache_entry_t *e) {
+    e->lru_prev = &ic_lru_head;
+    e->lru_next = ic_lru_head.lru_next;
+    if (ic_lru_head.lru_next) ic_lru_head.lru_next->lru_prev = e;
+    else                      ic_lru_tail = e;
+    ic_lru_head.lru_next = e;
+}
+
+static void ic_hash_insert(icache_entry_t *e) {
+    uint32_t h = ic_hash_fn(e->ino);
+    e->hash_next = icache_hash[h];
+    icache_hash[h] = e;
+}
+
+static void ic_hash_remove(icache_entry_t *e) {
+    uint32_t h = ic_hash_fn(e->ino);
+    icache_entry_t **pp = &icache_hash[h];
+    while (*pp) {
+        if (*pp == e) { *pp = e->hash_next; e->hash_next = 0; return; }
+        pp = &(*pp)->hash_next;
+    }
+}
+
+static icache_entry_t *ic_hash_find(uint32_t ino) {
+    icache_entry_t *e = icache_hash[ic_hash_fn(ino)];
+    while (e) {
+        if (e->ino == ino && e->valid) return e;
+        e = e->hash_next;
+    }
+    return 0;
+}
+
+static void ic_init(void) {
+    if (icache_ready) return;
+    ic_lru_head.lru_next = 0;
+    ic_lru_head.lru_prev = 0;
+    ic_lru_tail = 0;
+    for (int i = 0; i < ICACHE_SIZE; i++) {
+        icache[i].ino = 0;
+        icache[i].valid = 0;
+        icache[i].hash_next = 0;
+        icache[i].lru_prev = icache[i].lru_next = 0;
+        ic_lru_push_front(&icache[i]);
+    }
+    for (int i = 0; i < ICACHE_HASH; i++) icache_hash[i] = 0;
+    icache_ready = 1;
+}
+
+/* Invalidate an inode in the cache (after on-disk write). */
+static void ic_invalidate(uint32_t ino) {
+    if (!icache_ready) return;
+    uint64_t flags;
+    spin_lock_irq(&icache_lock, &flags);
+    icache_entry_t *e = ic_hash_find(ino);
+    if (e) {
+        ic_hash_remove(e);
+        e->valid = 0;
+        e->ino = 0;
+        ic_lru_remove(e);
+        /* Push to tail (cold) */
+        e->lru_prev = ic_lru_tail ? ic_lru_tail : &ic_lru_head;
+        e->lru_next = 0;
+        if (ic_lru_tail) ic_lru_tail->lru_next = e;
+        else             ic_lru_head.lru_next = e;
+        ic_lru_tail = e;
+    }
+    spin_unlock_irq(&icache_lock, flags);
 }
 
 /* ── Superblock persistence ──────────────────────── */
@@ -162,6 +308,31 @@ int ext4_mount(void) {
     /* sb_block: the bcache block that contains the superblock (byte 1024) */
     sb_block = (block_size == 1024) ? 0 : 0; /* always bcache block 0 for 4KB pages */
 
+    /* Populate group descriptor cache: one bcache_get + one memcpy per
+     * group block (vs. per-call). Saves one bcache lookup on every inode
+     * read / block alloc thereafter. */
+    if (group_count > EXT4_MAX_GROUPS) {
+        serial_puts("ext4: group count exceeds cache, gd cache disabled\n");
+        gd_cache_ready = 0;
+    } else {
+        for (uint32_t g = 0; g < group_count; g++) {
+            uint32_t blk = gd_disk_block(g);
+            uint32_t off = gd_disk_offset(g);
+            struct bcache_entry *be = ext4_get_block(blk);
+            if (!be) {
+                serial_puts("ext4: gd cache load failed\n");
+                gd_cache_ready = 0;
+                break;
+            }
+            kmemcpy(&gd_cache[g], be->data + ext4_block_offset(blk) + off,
+                    sizeof(gd_cache[g]));
+            gd_dirty[g] = 0;
+            bcache_put(be);
+        }
+        gd_cache_ready = 1;
+    }
+
+    ic_init();
     mounted = 1;
 
     serial_puts("ext4: mounted (");
@@ -177,6 +348,7 @@ int ext4_mount(void) {
 
 int ext4_unmount(void) {
     if (!mounted) return 0;
+    flush_group_descs();
     write_superblock();
     bcache_sync();
     mounted = 0;
@@ -193,6 +365,21 @@ uint32_t ext4_block_size(void) { return block_size; }
 int ext4_inode_read(uint32_t ino, struct ext4_inode *out) {
     if (!mounted || ino == 0) return -EINVAL;
 
+    /* Inode cache lookup */
+    if (icache_ready) {
+        uint64_t flags;
+        spin_lock_irq(&icache_lock, &flags);
+        icache_entry_t *e = ic_hash_find(ino);
+        if (e) {
+            *out = e->data;
+            ic_lru_remove(e);
+            ic_lru_push_front(e);
+            spin_unlock_irq(&icache_lock, flags);
+            return 0;
+        }
+        spin_unlock_irq(&icache_lock, flags);
+    }
+
     uint32_t group = (ino - 1) / sb.s_inodes_per_group;
     uint32_t index = (ino - 1) % sb.s_inodes_per_group;
 
@@ -207,6 +394,27 @@ int ext4_inode_read(uint32_t ino, struct ext4_inode *out) {
     if (!be) return -EIO;
     kmemcpy(out, be->data + ext4_block_offset(inode_block) + inode_off, sizeof(*out));
     bcache_put(be);
+
+    /* Insert into inode cache (evict LRU). */
+    if (icache_ready) {
+        uint64_t flags;
+        spin_lock_irq(&icache_lock, &flags);
+        icache_entry_t *e = ic_hash_find(ino);
+        if (!e) {
+            /* Evict LRU */
+            e = ic_lru_tail;
+            if (e && e != &ic_lru_head) {
+                if (e->valid) ic_hash_remove(e);
+                e->ino = ino;
+                e->valid = 1;
+                e->data = *out;
+                ic_lru_remove(e);
+                ic_lru_push_front(e);
+                ic_hash_insert(e);
+            }
+        }
+        spin_unlock_irq(&icache_lock, flags);
+    }
     return 0;
 }
 
@@ -228,6 +436,19 @@ int ext4_inode_write(uint32_t ino, const struct ext4_inode *in) {
     kmemcpy(be->data + ext4_block_offset(inode_block) + inode_off, in, sizeof(*in));
     bcache_mark_dirty(be);
     bcache_put(be);
+
+    /* Update or invalidate inode cache to keep it consistent with disk. */
+    if (icache_ready) {
+        uint64_t flags;
+        spin_lock_irq(&icache_lock, &flags);
+        icache_entry_t *e = ic_hash_find(ino);
+        if (e) {
+            e->data = *in;
+            ic_lru_remove(e);
+            ic_lru_push_front(e);
+        }
+        spin_unlock_irq(&icache_lock, flags);
+    }
     return 0;
 }
 
@@ -384,6 +605,57 @@ static uint32_t resolve_block(struct ext4_inode *ip, uint32_t file_block, int al
 
 /* ── File I/O ─────────────────────────────────────── */
 
+/* Trigger read-ahead for a file: prefetch up to RA_WINDOW blocks starting
+ * at file_block, capped at file end. Walks the indirect-block chain to
+ * collect contiguous physical runs and submits each run via bcache_readahead.
+ *
+ * Heuristic: only triggers if the start block is not yet cached AND
+ * caller is reading a meaningful chunk (>= 8KB). Cheap probe — bcache_get
+ * isn't called from here. */
+#define RA_WINDOW 16   /* 16 × 4K = 64 KB read-ahead window */
+
+static void file_readahead(struct ext4_inode *ip, uint32_t start_fblk,
+                           uint64_t file_size) {
+    if (block_size == 0) return;
+    uint32_t total_fblk = (uint32_t)((file_size + block_size - 1) / block_size);
+    if (start_fblk >= total_fblk) return;
+
+    uint32_t end_fblk = start_fblk + RA_WINDOW;
+    if (end_fblk > total_fblk) end_fblk = total_fblk;
+
+    /* Resolve and group into contiguous physical runs. */
+    uint64_t run_start = 0;
+    uint32_t run = 0;
+    for (uint32_t fb = start_fblk; fb < end_fblk; fb++) {
+        uint32_t pb = resolve_block(ip, fb, 0);
+        if (pb == 0) {
+            /* Hole — flush current run, skip */
+            if (run > 0) bcache_readahead(run_start, run);
+            run = 0;
+            continue;
+        }
+        /* For non-4K block sizes, the physical "ext4 block" maps to a fraction
+         * of a 4K bcache block; not currently optimisable here. Skip RA in
+         * that case (the underlying single-block path stays correct). */
+        if (block_size != 4096) {
+            if (run > 0) bcache_readahead(run_start, run);
+            run = 0;
+            continue;
+        }
+        if (run == 0) {
+            run_start = pb;
+            run = 1;
+        } else if (pb == run_start + run) {
+            run++;
+        } else {
+            bcache_readahead(run_start, run);
+            run_start = pb;
+            run = 1;
+        }
+    }
+    if (run > 0) bcache_readahead(run_start, run);
+}
+
 int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len) {
     struct ext4_inode ip;
     int rc = ext4_inode_read(ino, &ip);
@@ -396,6 +668,13 @@ int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len) {
 
     if (offset >= file_size) return 0;
     if (offset + len > file_size) len = (size_t)(file_size - offset);
+
+    /* Read-ahead: if reading at least 8 KB, prefetch the next 64 KB.
+     * Cheap when blocks are already cached (bcache_readahead skips them). */
+    if (len >= 8192 && block_size == 4096) {
+        uint32_t start_fblk = (uint32_t)(offset / block_size);
+        file_readahead(&ip, start_fblk, file_size);
+    }
 
     uint8_t *dst = (uint8_t *)buf;
     size_t remaining = len;
@@ -778,11 +1057,12 @@ void ext4_inode_free(uint32_t ino) {
         sb.s_free_inodes_count++;
     }
 
-    /* Zero the inode on disk */
+    /* Zero the inode on disk + invalidate any cached copy */
     struct ext4_inode zi;
     kmemset(&zi, 0, sizeof(zi));
     zi.i_dtime = now_sec();
     ext4_inode_write(ino, &zi);
+    ic_invalidate(ino);
 
     spin_unlock_irq(&fs_lock, flags);
 }
@@ -1257,6 +1537,7 @@ int ext4_rename(uint32_t old_parent, const char *old_name,
 
 void ext4_sync(void) {
     if (!mounted) return;
+    flush_group_descs();
     write_superblock();
     bcache_sync();
 }

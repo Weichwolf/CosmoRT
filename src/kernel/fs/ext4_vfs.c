@@ -419,11 +419,15 @@ static int ext4_vfs_link(struct mount *mnt, const char *oldrel, const char *newr
 
 static long ext4_vfs_read(struct vfs_file *f, void *buf, size_t count) {
     if (f->type != VFS_FILE) return -EISDIR;
-    uint8_t kbuf[4096];
+    /* Use a larger landing buffer so ext4_read can run a single read-ahead
+     * decision per chunk and we make fewer inode_read lookups. 16 KB hits
+     * a sweet spot vs. KSTACK_SIZE (64 KB) — 64-KB read-ahead is now done
+     * by ext4_read directly; this buffer only batches the per-call work. */
+    uint8_t kbuf[16384];
     size_t total = 0;
     while (total < count) {
         size_t chunk = count - total;
-        if (chunk > 4096) chunk = 4096;
+        if (chunk > sizeof(kbuf)) chunk = sizeof(kbuf);
         int rc = ext4_read((uint32_t)f->disk_ino, kbuf,
                            (size_t)f->offset + total, chunk);
         if (rc < 0) return total > 0 ? (long)total : rc;

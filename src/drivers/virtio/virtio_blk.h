@@ -18,6 +18,12 @@ int blk_read(uint64_t block, void *buf);
 /* Write one 4KB block. */
 int blk_write(uint64_t block, const void *buf);
 
+/* Bulk read: count contiguous 4KB blocks. count must be 1..blk_bulk_max(). */
+int blk_read_bulk(uint64_t start_block, uint32_t count, void *buf);
+
+/* Maximum count for blk_read_bulk(). */
+uint32_t blk_bulk_max(void);
+
 /* Total 4KB blocks on device. */
 uint64_t blk_capacity(void);
 

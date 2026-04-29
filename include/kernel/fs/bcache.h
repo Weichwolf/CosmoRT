@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-#define BCACHE_SIZE    256   /* 256 × 4KB = 1MB cache */
+#define BCACHE_SIZE    1024  /* 1024 × 4KB = 4MB cache */
 #define BCACHE_INVALID ((uint64_t)-1)
 
 struct bcache_entry {
@@ -36,5 +36,13 @@ void bcache_sync(void);
 
 /* Write a block through cache (gets, copies, marks dirty, puts). */
 int bcache_write_block(uint64_t block, const void *data);
+
+/* Read-ahead: prefetch up to `count` contiguous 4KB blocks starting at `start`.
+ * Already-cached ranges are skipped; missing runs are fetched via virtio bulk
+ * I/O. Prefetched entries are unpinned (refcount=0); the caller must still
+ * bcache_get() the blocks it intends to read, getting cache hits afterwards.
+ *
+ * Synchronous — returns when all blocks are in cache (or unrecoverable). */
+void bcache_readahead(uint64_t start, uint32_t count);
 
 #endif
