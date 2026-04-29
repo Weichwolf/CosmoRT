@@ -311,39 +311,50 @@ long kill_one(process_t *target, int sig) {
             }
         }
 
-        /* Signal is unblocked — terminate immediately.
-         * For proc_current(): direct exit (fast path).
-         * For remote: mark zombie + kill threads + notify parent. */
+        /* Signal is unblocked — terminate.
+         * Self-target (kill(getpid(), SIGKILL) etc.): direct do_exit_group fast path.
+         * Remote target: Linux-Modell — sig_pending + signal_wake_up auf jeden
+         * Thread. Empfaenger sieht das Signal beim naechsten check_pending_signals
+         * (Syscall-Exit, Preempt-Tick, oder Resched-IPI-Pfad) und ruft
+         * do_exit_group SELBST auf — durchlaeuft den vollen exit_kill_process-
+         * Pfad mit allen Cleanups (FD-close, vfork-wake, robust_list, flock,
+         * Reparenting, Address-Space-Teardown).
+         *
+         * Direktes ZOMBIE-Setzen aus remote-Kontext wuerde all das ueberspringen
+         * und blockierte Pipe-Reader auf der anderen Seite haengen lassen.
+         *
+         * Cross-CPU-Latency: signal_wake_up sendet smp_resched_others NUR wenn
+         * mindestens ein Thread BLOCKED war (try_to_wake_up=1). Bei Prozessen
+         * mit ausschliesslich RUNNING-Workers (ebizzy: pthread-busyloop ohne
+         * Syscalls, Master in pthread_join-futex) muessen die Worker den
+         * naechsten 1ms-Timer-Tick auf ihrer CPU abwarten — bei volllast-
+         * akkumulierter Test-Sequenz koppelt das mit anderen Latenzen zu
+         * mehrsekuendigen Hangs. Daher: smp_resched_others UNBEDINGT feuern,
+         * damit der Resched-IPI-Pfad (irq.c:599) sched_preempt → check_pending_
+         * signals auf jeder anderen CPU triggert. */
         target->exit_signal = sig;
         if (target == proc_current()) {
             do_exit_group(128 + sig); /* doesn't return */
         }
-        target->state = PROC_ZOMBIE;
-        target->exit_code = 128 + sig;
+        __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
         {
             thread_t *t = target->threads;
             while (t) {
-                int old = t->state;
-                if (old == THREAD_BLOCKED) {
-                    signal_wake_up(t);
-                    t->state = THREAD_DEAD;
-                } else if (old == THREAD_RUNNING || old == THREAD_STOPPED ||
-                           old == THREAD_RUNNABLE) {
-                    t->state = THREAD_DEAD;
-                }
+                /* signal_wake_up: BLOCKED → RUNNABLE + sched_add. RUNNING/
+                 * RUNNABLE/STOPPED bleiben unberuehrt — sie sehen sig_pending
+                 * via Preempt-Tick / Syscall-Exit / Resched-IPI (siehe unten). */
+                signal_wake_up(t);
                 t = t->proc_next;
             }
         }
-        if (target->parent_pid) {
-            process_t *parent = proc_find(target->parent_pid);
-            if (parent) {
-                int nsig = target->notify_signal ? target->notify_signal : SIGCHLD;
-                __sync_fetch_and_or(&parent->sig_pending, SIG_BIT(nsig));
-                wake_up(&parent->children_wq);
-                for (thread_t *pt = parent->threads; pt; pt = pt->proc_next) {
-                    if (pt->state == THREAD_BLOCKED) signal_wake_up(pt);
-                }
-            }
+        /* Force IPI broadcast: garantiert dass JEDE andere CPU promptly aus
+         * HLT/Userspace zurueckkehrt und sched_preempt ausfuehrt — der Pfad
+         * triggert check_pending_signals auf user-mode-Threads. Ohne diesen
+         * unbedingten IPI sieht ein RUNNING-Thread auf einer anderen CPU
+         * sig_pending erst beim naechsten 1ms-Timer-Tick. */
+        {
+            extern void smp_resched_others(void);
+            smp_resched_others();
         }
         return 0;
     }
