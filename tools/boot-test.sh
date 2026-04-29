@@ -11,10 +11,9 @@ export KCONFIG_SKIP_CHECK=1
 # zurueck — wir reporten "CosmoRT vCPU". Override teilt LTP mit dass wir in einer VM
 # laufen, sodass timing-Tests den 10x delta-Multiplier anwenden.
 export LTP_VIRT_OVERRIDE=qemu
-# Scheduler/hrtimer 1000Hz periodic-tick: 1ms-sleep wird in der Praxis zu ~2-3ms.
-# clock_nanosleep02 + andere tst_timer_test-basierte Tests laufen daher ~3x linger
-# als ihre interne tst_set_runtime erwartet. Multiplier verlaengert das Fenster.
-export LTP_TIMEOUT_MUL=5
+# LTP_TIMEOUT_MUL bleibt Default (1). Mit KVM laufen wir bei native
+# Performance — Timeouts die schlagen sind echte CosmoRT-Bugs, nicht
+# TCG-Emulations-Lag. Maskieren via Multiplier verbirgt Wurzeln.
 mount -t proc none /proc 2>/dev/null || true
 mount -t sysfs none /sys 2>/dev/null || true
 mount -t tmpfs none /tmp 2>/dev/null || true
@@ -106,7 +105,12 @@ ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
 # `_helper` und `_child` sind Hilfsprogramme die von Parent-Tests via
 # fork+exec gerufen werden, KEINE eigenstaendigen Tests. Ohne Filter
 # laufen sie alle als Tests durch und produzieren False-Positive FAILs.
-LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$' | sort)
+# `tst_*` sind LTP-API-Wrapper-Helper (tst_brk, tst_resm, tst_rod, etc.)
+# die boot-test selbst nach LTP_BIN kompiliert — auch keine Tests.
+# `tpm*` sind alte LTP shell-Tests von 2005 die direkt tpm-tools Binaries
+# rufen. Ohne TPM-Hardware/tpm-tools-Paket nicht passable; ohne modernes
+# tst_test.sh-Framework auch kein TCONF/SKIP — sie failen unconditional.
+LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$|^tst_|^tpm[a-z_]*' | sort)
 if [ -n "$LTP_RUN" ]; then
     filtered=""
     for t in $LTP_TESTS; do
