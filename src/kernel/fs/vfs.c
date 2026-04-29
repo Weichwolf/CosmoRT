@@ -1,6 +1,7 @@
 /* CosmoRT VFS — core init, mount, alloc, routing helpers */
 
 #include "fs/vfs_internal.h"
+#include "fs/loop.h"
 
 /* ── Slab pools ──────────────────────────────────── */
 
@@ -618,6 +619,7 @@ void vfs_init(void) {
     vfs_mount("/proc",    0, &procfs_inode_ops, &procfs_file_ops, 0);
     vfs_mount("/dev",     0, &devfs_inode_ops,  &devfs_file_ops,  0);
     vfs_mount("/dev/shm", 0, &tmpfs_inode_ops,  &tmpfs_file_ops,  0);
+    loop_init();
     serial_puts("vfs: init\n");
 }
 
@@ -684,6 +686,29 @@ int vfs_open(const char *path, int flags, int mode) {
         return -ENOENT;
     }
 not_pts:
+    /* /dev/loop-control + /dev/loopN */
+    if (kstreq(path, "/dev/loop-control")) {
+        process_t *p = proc_current();
+        if (!p) return -EFAULT;
+        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)DEV_LOOP_CTL,
+                          (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
+        return fd < 0 ? -EMFILE : fd;
+    }
+    if (path[0]=='/' && path[1]=='d' && path[2]=='e' && path[3]=='v' &&
+        path[4]=='/' && path[5]=='l' && path[6]=='o' && path[7]=='o' &&
+        path[8]=='p' && path[9] >= '0' && path[9] <= '9') {
+        int loop_num = 0;
+        const char *d = path + 9;
+        while (*d >= '0' && *d <= '9') loop_num = loop_num * 10 + (*d++ - '0');
+        if (*d == '\0' && loop_num >= 0 && loop_num < 8) {
+            process_t *p = proc_current();
+            if (!p) return -EFAULT;
+            int fd = fd_alloc(&p->fds, FD_DEVICE,
+                              (void *)(uintptr_t)(DEV_LOOP_BASE + loop_num),
+                              (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
+            return fd < 0 ? -EMFILE : fd;
+        }
+    }
     if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||
         kstreq(path, "/dev/urandom") || kstreq(path, "/dev/random")) {
         int devid = 0;

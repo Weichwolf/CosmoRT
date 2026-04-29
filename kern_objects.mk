@@ -76,6 +76,7 @@ KERN_FS   = $(BUILD)/kernel/fs/vfs.o \
             $(BUILD)/kernel/fs/ext4_vfs.o \
             $(BUILD)/kernel/fs/tmpfs.o \
             $(BUILD)/kernel/fs/devfs.o \
+            $(BUILD)/kernel/fs/loop.o \
             $(BUILD)/kernel/fs/bcache.o \
             $(BUILD)/kernel/fs/procfs.o
 

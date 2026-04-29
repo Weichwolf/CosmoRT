@@ -5,6 +5,7 @@
  */
 
 #include "fs/vfs_internal.h"
+#include "fs/loop.h"
 #include "core/timer.h"
 #include "linux/signal.h"
 #include "linux/capability.h"
@@ -90,8 +91,23 @@ int vfs_fstat(int fd, struct k_stat *buf) {
 
     if (fde->type == FD_DEVICE) {
         kmemset(buf, 0, sizeof(struct k_stat));
-        buf->st_mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
         int devid = (int)(uintptr_t)fde->obj;
+        if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END) {
+            int idx = devid - DEV_LOOP_BASE;
+            buf->st_mode = S_IFBLK | 0660;
+            buf->st_rdev = (uint64_t)(0x0700 + idx);
+            buf->st_ino = (uint64_t)(60 + idx);
+            buf->st_blksize = 4096;
+            return 0;
+        }
+        if (devid == DEV_LOOP_CTL) {
+            buf->st_mode = S_IFCHR | 0660;
+            buf->st_rdev = 0x0AED;
+            buf->st_ino = 50;
+            buf->st_blksize = 4096;
+            return 0;
+        }
+        buf->st_mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
         if (devid == 1) { buf->st_rdev = 0x0103; buf->st_ino = 5; }
         if (devid == 2) { buf->st_rdev = 0x0105; buf->st_ino = 6; }
         if (devid == 3) { buf->st_rdev = 0x0109; buf->st_ino = 7; }

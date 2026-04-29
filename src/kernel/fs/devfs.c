@@ -66,6 +66,22 @@ static int devfs_op_stat(struct mount *mnt, const char *relpath, struct k_stat *
     if (kstreq(name, "console")) {
         buf->st_mode = S_IFCHR | 0600; buf->st_rdev = 0x0501; buf->st_ino = 9; return 0;
     }
+    /* /dev/loop-control — char dev, major=10 minor=237 (Linux) */
+    if (kstreq(name, "loop-control")) {
+        buf->st_mode = S_IFCHR | 0660; buf->st_rdev = 0x0AED; buf->st_ino = 50; return 0;
+    }
+    /* /dev/loopN — block dev, major=7 minor=N */
+    if (name[0]=='l' && name[1]=='o' && name[2]=='o' && name[3]=='p' &&
+        name[4] >= '0' && name[4] <= '9') {
+        const char *d = name + 4;
+        int loop_num = parse_int(&d);
+        if (*d == '\0' && loop_num >= 0 && loop_num < 8) {
+            buf->st_mode = S_IFBLK | 0660;
+            buf->st_rdev = (uint64_t)(0x0700 + loop_num); /* major=7 */
+            buf->st_ino = (uint64_t)(60 + loop_num);
+            return 0;
+        }
+    }
 
     /* /dev/ttyN */
     if (name[0]=='t' && name[1]=='t' && name[2]=='y' && name[3] >= '1' && name[3] <= '9') {
