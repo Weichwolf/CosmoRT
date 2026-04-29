@@ -59,9 +59,22 @@ struct vfs_node *vfs_lookup_nofollow(const char *path, int *err);
 struct vfs_node *lookup_parent(const char *path, const char **basename);
 struct vfs_node *ensure_dirs(const char *path);
 
-/* ── File growth (defined in vfs_rw.c) ── */
-
+/* ── File growth / page-list helpers (defined in vfs_rw.c) ──
+ *
+ * grow_file:   ensure inode has at least `needed` bytes capacity.
+ *              Pages are 4KB each, individually allocated.
+ *              Returns 0 on success, -ENOMEM on failure (no partial allocation).
+ * shrink_file: drop pages above `new_size`. Caller adjusts inode->size.
+ * ramfs_read / ramfs_write: flat r/w through the page-list.
+ *              Caller must hold inode->lock OR ensure no concurrent grow/shrink.
+ *              For locked variants see ramfs_read_locked / _write_locked. */
 int grow_file(struct vfs_inode *inode, size_t needed);
+void shrink_file(struct vfs_inode *inode, size_t new_size);
+void ramfs_read(struct vfs_inode *inode, void *dst, size_t off, size_t len);
+void ramfs_write(struct vfs_inode *inode, const void *src, size_t off, size_t len);
+void ramfs_zero(struct vfs_inode *inode, size_t off, size_t len);
+/* Convenience locked variants — for callers outside vfs_rw.c / tmpfs.c */
+size_t ramfs_read_locked(struct vfs_inode *inode, void *dst, size_t off, size_t len);
 
 /* ── Inotify helper (defined in vfs.c) ── */
 

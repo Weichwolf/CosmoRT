@@ -254,11 +254,27 @@ static int tmpfs_op_truncate(struct mount *mnt, const char *relpath, int64_t len
     struct vfs_inode *inode = node->inode;
     if (inode->type == VFS_DIR) return -EISDIR;
     size_t new_size = (size_t)length;
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
     if (new_size > inode->size) {
-        if (grow_file(inode, new_size) < 0) return -ENOMEM;
-        kmemset(inode->data + inode->size, 0, new_size - inode->size);
+        if (grow_file(inode, new_size) < 0) {
+            spin_unlock_irq(&inode->lock, irqf);
+            return -ENOMEM;
+        }
+        /* New pages from grow_file are already zeroed by alloc_page;
+         * zero only the tail of the previously-last page if it was reused. */
+        size_t old_size = inode->size;
+        size_t old_page_end = (old_size + 4095) & ~(size_t)0xFFF;
+        if (old_page_end > old_size) {
+            size_t z = old_page_end - old_size;
+            if (z > new_size - old_size) z = new_size - old_size;
+            ramfs_zero(inode, old_size, z);
+        }
+    } else if (new_size < inode->size) {
+        shrink_file(inode, new_size);
     }
     inode->size = new_size;
+    spin_unlock_irq(&inode->lock, irqf);
     return 0;
 }
 
@@ -295,24 +311,10 @@ static long tmpfs_op_read(struct vfs_file *f, void *buf, size_t count) {
     if (!f->inode) return -EBADF;
     struct vfs_inode *inode = f->inode;
     if (inode->type != VFS_FILE) return -EISDIR;
-    if (f->offset >= inode->size) return 0;
 
-    size_t avail = inode->size - (size_t)f->offset;
-    if (count > avail) count = avail;
-
-    if (inode->data) {
-        uint8_t kbuf[4096];
-        size_t done = 0;
-        while (done < count) {
-            size_t chunk = count - done;
-            if (chunk > 4096) chunk = 4096;
-            kmemcpy(kbuf, inode->data + f->offset + done, chunk);
-            kmemcpy((uint8_t *)buf + done, kbuf, chunk);
-            done += chunk;
-        }
-    }
-    f->offset += count;
-    return (long)count;
+    size_t got = ramfs_read_locked(inode, buf, (size_t)f->offset, count);
+    f->offset += got;
+    return (long)got;
 }
 
 static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
@@ -320,23 +322,19 @@ static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
     struct vfs_inode *inode = f->inode;
     if (inode->type != VFS_FILE) return -EISDIR;
 
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
+
     if (f->flags & O_APPEND)
         f->offset = inode->size;
 
-    size_t end = (size_t)f->offset + count;
-    if (end > inode->capacity) {
-        if (grow_file(inode, end) < 0) return -ENOMEM;
+    size_t off = (size_t)f->offset;
+    size_t end = off + count;
+    if (grow_file(inode, end) < 0) {
+        spin_unlock_irq(&inode->lock, irqf);
+        return -ENOMEM;
     }
-
-    uint8_t kbuf[4096];
-    size_t done = 0;
-    while (done < count) {
-        size_t chunk = count - done;
-        if (chunk > 4096) chunk = 4096;
-        kmemcpy(kbuf, (const uint8_t *)buf + done, chunk);
-        kmemcpy(inode->data + f->offset + done, kbuf, chunk);
-        done += chunk;
-    }
+    ramfs_write(inode, buf, off, count);
     f->offset = end;
     if (end > inode->size) inode->size = end;
 
@@ -344,6 +342,7 @@ static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
     uint32_t now = timer_epoch_sec();
     inode->mtime = now;
     inode->ctime = now;
+    spin_unlock_irq(&inode->lock, irqf);
 
     if (f->path[0])
         inotify_event(f->path, IN_MODIFY);
@@ -370,12 +369,7 @@ static long tmpfs_op_pread(struct vfs_file *f, void *buf, size_t count, uint64_t
     if (!f->inode) return -EBADF;
     struct vfs_inode *inode = f->inode;
     if (inode->type != VFS_FILE) return -EISDIR;
-    if (offset >= inode->size) return 0;
-    size_t avail = inode->size - (size_t)offset;
-    if (count > avail) count = avail;
-    if (inode->data)
-        kmemcpy(buf, inode->data + offset, count);
-    return (long)count;
+    return (long)ramfs_read_locked(inode, buf, (size_t)offset, count);
 }
 
 static long tmpfs_op_pwrite(struct vfs_file *f, const void *buf,
@@ -383,17 +377,21 @@ static long tmpfs_op_pwrite(struct vfs_file *f, const void *buf,
     if (!f->inode) return -EBADF;
     struct vfs_inode *inode = f->inode;
     if (inode->type != VFS_FILE) return -EISDIR;
-    size_t end = (size_t)offset + count;
-    if (end > inode->capacity) {
-        if (grow_file(inode, end) < 0) return -ENOMEM;
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
+    size_t off = (size_t)offset;
+    size_t end = off + count;
+    if (grow_file(inode, end) < 0) {
+        spin_unlock_irq(&inode->lock, irqf);
+        return -ENOMEM;
     }
-    if (inode->data)
-        kmemcpy(inode->data + offset, buf, count);
+    ramfs_write(inode, buf, off, count);
     if (end > inode->size) inode->size = end;
     extern uint32_t timer_epoch_sec(void);
     uint32_t now = timer_epoch_sec();
     inode->mtime = now;
     inode->ctime = now;
+    spin_unlock_irq(&inode->lock, irqf);
     if (f->path[0])
         inotify_event(f->path, IN_MODIFY);
     return (long)count;
@@ -418,11 +416,25 @@ static int tmpfs_op_ftruncate(struct vfs_file *f, int64_t length) {
     if (!f->inode) return -EBADF;
     struct vfs_inode *inode = f->inode;
     size_t new_size = (size_t)length;
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
     if (new_size > inode->size) {
-        if (grow_file(inode, new_size) < 0) return -ENOMEM;
-        kmemset(inode->data + inode->size, 0, new_size - inode->size);
+        if (grow_file(inode, new_size) < 0) {
+            spin_unlock_irq(&inode->lock, irqf);
+            return -ENOMEM;
+        }
+        size_t old_size = inode->size;
+        size_t old_page_end = (old_size + 4095) & ~(size_t)0xFFF;
+        if (old_page_end > old_size) {
+            size_t z = old_page_end - old_size;
+            if (z > new_size - old_size) z = new_size - old_size;
+            ramfs_zero(inode, old_size, z);
+        }
+    } else if (new_size < inode->size) {
+        shrink_file(inode, new_size);
     }
     inode->size = new_size;
+    spin_unlock_irq(&inode->lock, irqf);
     return 0;
 }
 

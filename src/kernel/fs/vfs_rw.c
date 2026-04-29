@@ -1,10 +1,20 @@
 /* CosmoRT VFS — read, write, lseek, pread, pwrite
  *
  * Dispatches through f->f_ops when set, falls back to legacy backend check.
- */
+ *
+ * tmpfs/ramfs storage is a per-inode array of independently-allocated 4KB
+ * pages (see struct vfs_inode { uint8_t **pages; ... }). No contiguous-page
+ * requirement, so file size is bounded by available memory + the pages-array
+ * container size (pages_alloc cap, currently 1GB → 256K entries × 8B = 2MB).
+ *
+ * grow_file/shrink_file mutate the page-list. ramfs_read/ramfs_write provide
+ * flat r/w by walking the page array. inode->lock serializes mutations and
+ * content access — held only across in-memory memcpy, never across I/O. */
 
 #include "fs/vfs_internal.h"
 #include "linux/signal.h"
+
+extern uint64_t *alloc_page(void);
 
 /* RLIMIT_FSIZE enforcement (Linux semantics, write(2)):
  *   offset >= limit       → -EFBIG + SIGXFSZ (nothing written)
@@ -26,24 +36,166 @@ static long fsize_clamp_write(size_t *count_inout, uint64_t offset) {
     return 0;
 }
 
+/* ── Page-list management ──────────────────────────
+ *
+ * Caller-side discipline:
+ *   - grow_file/shrink_file/ramfs_*: caller must hold inode->lock.
+ *     The exception: vfs_pread_by_ino / vfs_pwrite_by_ino take it themselves
+ *     (they are entry points called from page-fault / mmap writeback paths).
+ *   - For external callers (process_exec, vfs_kernel_append, vfs_add_file)
+ *     vfs_inode_read provides a self-locking read variant. Writers in those
+ *     contexts run before any concurrent open exists (single-threaded init
+ *     populating ramfs) and use the unlocked helpers directly.
+ */
+
+/* Ensure pages-array container has at least `need` entries.
+ * Grows by doubling, but capped at PAGES_ALLOC_MAX (2MB → 256K entries → 1GB).
+ * Returns 0 on success, -ENOMEM on failure (old array still valid). */
+static int pages_array_grow(struct vfs_inode *inode, size_t need) {
+    if (need <= inode->pages_cap) return 0;
+
+    size_t new_cap = inode->pages_cap ? inode->pages_cap : 16;
+    while (new_cap < need) new_cap *= 2;
+
+    /* Container size in 4KB pages, rounded up. */
+    size_t bytes = new_cap * sizeof(uint8_t *);
+    int n_container = (int)((bytes + 4095) / 4096);
+    if (n_container > PAGES_ALLOC_MAX) {
+        /* File would exceed 1GB hard cap — fail cleanly rather than truncate */
+        return -ENOMEM;
+    }
+    /* pages_alloc rounds to power of 2; recompute new_cap to match the
+     * actually-allocated container size so we don't waste. */
+    int n_round = 1;
+    while (n_round < n_container) n_round *= 2;
+    size_t new_bytes = (size_t)n_round * 4096;
+    new_cap = new_bytes / sizeof(uint8_t *);
+
+    uint8_t **new_arr = (uint8_t **)pages_alloc(n_round);
+    if (!new_arr) return -ENOMEM;
+
+    if (inode->pages) {
+        for (size_t i = 0; i < inode->npages; i++)
+            new_arr[i] = inode->pages[i];
+        size_t old_bytes = inode->pages_cap * sizeof(uint8_t *);
+        int old_n = (int)((old_bytes + 4095) / 4096);
+        int old_round = 1;
+        while (old_round < old_n) old_round *= 2;
+        if (old_round < 1) old_round = 1;
+        pages_free(inode->pages, old_round);
+    }
+    inode->pages = new_arr;
+    inode->pages_cap = new_cap;
+    return 0;
+}
+
 /* ── File growth (tmpfs) ────────────────────────── */
 
 int grow_file(struct vfs_inode *inode, size_t needed) {
-    if (needed <= inode->capacity) return 0;
-    size_t new_cap = (needed + 4095) & ~4095ULL;
-    int new_pages = (int)(new_cap / 4096);
-    if (new_pages <= 0) new_pages = 1;
-    uint8_t *new_data = (uint8_t *)pages_alloc(new_pages);
-    if (!new_data) return -ENOMEM;
-    if (inode->data && inode->size > 0)
-        kmemcpy(new_data, inode->data, inode->size);
-    if (inode->data) {
-        int old_pages = (int)((inode->capacity + 4095) / 4096);
-        if (old_pages > 0) pages_free(inode->data, old_pages);
+    size_t need_pages = (needed + 4095) / 4096;
+    if (need_pages <= inode->npages) return 0;
+
+    int rc = pages_array_grow(inode, need_pages);
+    if (rc < 0) return rc;
+
+    size_t i = inode->npages;
+    while (i < need_pages) {
+        uint64_t *pg = alloc_page();
+        if (!pg) {
+            /* Roll back: free the pages we just allocated in this call.
+             * Keep already-existing pages intact. */
+            for (size_t j = inode->npages; j < i; j++) {
+                page_free(inode->pages[j]);
+                inode->pages[j] = 0;
+            }
+            return -ENOMEM;
+        }
+        /* alloc_page already zeroes the page. */
+        inode->pages[i] = (uint8_t *)pg;
+        i++;
     }
-    inode->data = new_data;
-    inode->capacity = new_cap;
+    inode->npages = need_pages;
     return 0;
+}
+
+/* Free pages above `new_size`. Caller updates inode->size separately. */
+void shrink_file(struct vfs_inode *inode, size_t new_size) {
+    size_t keep_pages = (new_size + 4095) / 4096;
+    if (keep_pages >= inode->npages) return;
+    for (size_t i = keep_pages; i < inode->npages; i++) {
+        if (inode->pages[i]) {
+            page_free(inode->pages[i]);
+            inode->pages[i] = 0;
+        }
+    }
+    inode->npages = keep_pages;
+}
+
+/* Flat read from page-list. Out-of-range bytes are zeroed (sparse semantics
+ * inside [0, size); caller pre-clamped len so we don't run past npages). */
+void ramfs_read(struct vfs_inode *inode, void *dst, size_t off, size_t len) {
+    uint8_t *out = (uint8_t *)dst;
+    size_t copied = 0;
+    while (copied < len) {
+        size_t pi = (off + copied) >> 12;
+        size_t po = (off + copied) & 0xFFF;
+        size_t chunk = 4096 - po;
+        if (chunk > len - copied) chunk = len - copied;
+        if (pi < inode->npages && inode->pages[pi]) {
+            kmemcpy(out + copied, inode->pages[pi] + po, chunk);
+        } else {
+            kmemset(out + copied, 0, chunk);
+        }
+        copied += chunk;
+    }
+}
+
+void ramfs_write(struct vfs_inode *inode, const void *src, size_t off, size_t len) {
+    const uint8_t *in = (const uint8_t *)src;
+    size_t copied = 0;
+    while (copied < len) {
+        size_t pi = (off + copied) >> 12;
+        size_t po = (off + copied) & 0xFFF;
+        size_t chunk = 4096 - po;
+        if (chunk > len - copied) chunk = len - copied;
+        /* Caller must have grown the inode first; assert via skip on missing. */
+        if (pi < inode->npages && inode->pages[pi])
+            kmemcpy(inode->pages[pi] + po, in + copied, chunk);
+        copied += chunk;
+    }
+}
+
+void ramfs_zero(struct vfs_inode *inode, size_t off, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        size_t pi = (off + done) >> 12;
+        size_t po = (off + done) & 0xFFF;
+        size_t chunk = 4096 - po;
+        if (chunk > len - done) chunk = len - done;
+        if (pi < inode->npages && inode->pages[pi])
+            kmemset(inode->pages[pi] + po, 0, chunk);
+        done += chunk;
+    }
+}
+
+size_t ramfs_read_locked(struct vfs_inode *inode, void *dst, size_t off, size_t len) {
+    if (!inode || inode->type != VFS_FILE) return 0;
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
+    size_t got = 0;
+    if (off < inode->size) {
+        size_t avail = inode->size - off;
+        if (len > avail) len = avail;
+        ramfs_read(inode, dst, off, len);
+        got = len;
+    }
+    spin_unlock_irq(&inode->lock, irqf);
+    return got;
+}
+
+/* Public entry point — used by callers without vfs_internal.h access. */
+size_t vfs_inode_read(struct vfs_inode *inode, void *dst, size_t off, size_t len) {
+    return ramfs_read_locked(inode, dst, off, len);
 }
 
 /* ── Read/Write — dispatch via f_ops ────────────── */
@@ -133,15 +285,10 @@ static struct vfs_inode *ramfs_find_by_ino(struct vfs_node *node, uint64_t ino) 
 long vfs_pread_by_ino(int backend, uint64_t ino, void *buf, size_t offset, size_t len) {
     if (backend == VFS_BACKEND_EXT4)
         return (long)ext4_read((uint32_t)ino, buf, offset, len);
-    /* tmpfs: find inode, read from its data buffer */
+    /* tmpfs/ramfs: find inode, read from page-list (locked). */
     struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
     if (!inode || inode->type != VFS_FILE) return -ENOENT;
-    if (offset >= inode->size) return 0;
-    size_t avail = inode->size - offset;
-    if (len > avail) len = avail;
-    if (inode->data)
-        kmemcpy(buf, inode->data + offset, len);
-    return (long)len;
+    return (long)ramfs_read_locked(inode, buf, offset, len);
 }
 
 long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset, size_t len) {
@@ -149,12 +296,17 @@ long vfs_pwrite_by_ino(int backend, uint64_t ino, const void *buf, size_t offset
         return (long)ext4_write((uint32_t)ino, buf, offset, len);
     struct vfs_inode *inode = ramfs_find_by_ino(vfs_root_node, ino);
     if (!inode || inode->type != VFS_FILE) return -ENOENT;
+    uint64_t irqf;
+    spin_lock_irq(&inode->lock, &irqf);
     size_t end = offset + len;
-    if (end > inode->capacity) {
-        if (grow_file(inode, end) < 0) return -ENOMEM;
+    if (end > inode->size) {
+        if (grow_file(inode, end) < 0) {
+            spin_unlock_irq(&inode->lock, irqf);
+            return -ENOMEM;
+        }
     }
-    if (inode->data)
-        kmemcpy(inode->data + offset, buf, len);
+    ramfs_write(inode, buf, offset, len);
     if (end > inode->size) inode->size = end;
+    spin_unlock_irq(&inode->lock, irqf);
     return (long)len;
 }

@@ -183,14 +183,11 @@ static int elf_read_ext4(void *ctx, void *buf, size_t offset, size_t len) {
 }
 
 static int elf_read_ramfs(void *ctx, void *buf, size_t offset, size_t len) {
-    /* ctx points to {uint8_t *data, size_t size} packed as two uint64_t */
-    uint64_t *pair = (uint64_t *)ctx;
-    uint8_t *data = (uint8_t *)pair[0];
-    size_t size = (size_t)pair[1];
-    if (offset >= size) return 0;
-    if (offset + len > size) len = size - offset;
-    kmemcpy(buf, data + offset, len);
-    return (int)len;
+    /* ctx is a struct vfs_inode *; reader serializes against truncate via
+     * inode->lock inside vfs_inode_read. */
+    struct vfs_inode *inode = (struct vfs_inode *)ctx;
+    extern size_t vfs_inode_read(struct vfs_inode *, void *, size_t, size_t);
+    return (int)vfs_inode_read(inode, buf, offset, len);
 }
 
 /* Map PT_LOAD segments by reading page-by-page from a reader function.
@@ -392,10 +389,9 @@ int elf_load_ext4(uint32_t ino, size_t file_size, uint64_t *pml4,
                               file_size, pml4, base_hint, info);
 }
 
-int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
+int elf_load_ramfs(struct vfs_inode *inode, size_t size, uint64_t *pml4,
                    uint64_t base_hint, elf_info_t *info) {
-    uint64_t pair[2] = { (uint64_t)(uintptr_t)data, (uint64_t)size };
-    return elf_load_ex_stream(elf_read_ramfs, pair,
+    return elf_load_ex_stream(elf_read_ramfs, (void *)inode,
                               size, pml4, base_hint, info);
 }
 

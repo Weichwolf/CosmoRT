@@ -28,6 +28,7 @@
 
 #define __KERNEL__
 #include "linux/abi.h"
+#include "spinlock.h"
 
 /* ── Node types ─────────────────────────────────── */
 
@@ -51,9 +52,21 @@
 
 struct vfs_inode {
     int type;
-    uint8_t *data;          /* tmpfs: file content */
+    /* tmpfs/ramfs file content: array of 4KB pages.
+     * pages[i] points to a kernel-virtual 4KB page (alloc_page/page_alloc).
+     * Each entry is independently allocated; no contiguous-page requirement.
+     * pages_cap: capacity of the pages-array container (in entries).
+     * npages:    number of currently allocated pages (zeroed on alloc).
+     * size:      logical file size in bytes (<= npages * 4096).
+     * Cap: pages-array allocator (pages_alloc, MAX_ORDER=9 → 2MB) holds
+     *      at most 256K entries → 1GB max file size. */
+    uint8_t **pages;
+    size_t pages_cap;
+    size_t npages;
     size_t size;
-    size_t capacity;
+    /* Serializes mutations of the page-list (grow/shrink) and content
+     * access. Held only across in-memory memcpy — no I/O. */
+    spinlock_t lock;
     uint64_t ino;
     uint32_t mode;          /* permission bits (07777 + suid/sgid/sticky); type separate */
     uint32_t uid, gid;
@@ -232,6 +245,12 @@ int vfs_ftruncate(int fd, int64_t length);
 int vfs_utimensat(const char *path, const int64_t times[4], int flags);
 
 /* ── Utility ────────────────────────────────────── */
+
+/* Read `len` bytes from a tmpfs/ramfs inode starting at `off` into `dst`.
+ * Returns the number of bytes actually copied (clamped to inode->size).
+ * Takes inode->lock internally — safe for concurrent grow/shrink.
+ * For inode->type != VFS_FILE returns 0. */
+size_t vfs_inode_read(struct vfs_inode *inode, void *dst, size_t off, size_t len);
 
 int  vfs_add_file(const char *path, const void *data, size_t len);
 void vfs_mount_ext4(void);

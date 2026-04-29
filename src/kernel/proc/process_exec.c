@@ -350,7 +350,7 @@ shebang_retry:;
         if (!dentry || !dentry->inode) EXECVE_FAIL(-ENOENT);
         ramfs_node = dentry->inode;
         if (ramfs_node->type != VFS_FILE) EXECVE_FAIL(-EACCES);
-        if (!ramfs_node->data || ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
+        if (ramfs_node->size == 0) EXECVE_FAIL(-ENOEXEC);
         elf_len = ramfs_node->size;
     }
 
@@ -376,7 +376,7 @@ shebang_retry:;
             if (ext4_read((uint32_t)ext4_ino, shebang_buf, 0, peek_len) < (int)peek_len)
                 EXECVE_FAIL(-EIO);
         } else {
-            kmemcpy(shebang_buf, ramfs_node->data, peek_len);
+            vfs_inode_read(ramfs_node, shebang_buf, 0, peek_len);
         }
 
         if (peek_len >= 2 && shebang_buf[0] == '#' && shebang_buf[1] == '!') {
@@ -484,7 +484,7 @@ shebang_retry:;
         if (ext4_read((uint32_t)ext4_ino, hdr_buf, 0, hdr_read) < (int)hdr_read)
             EXECVE_FAIL(-EIO);
     } else {
-        kmemcpy(hdr_buf, ramfs_node->data, hdr_read);
+        vfs_inode_read(ramfs_node, hdr_buf, 0, hdr_read);
     }
     const Elf64_Ehdr *peek_eh = (const Elf64_Ehdr *)hdr_buf;
 
@@ -499,7 +499,7 @@ shebang_retry:;
             if (ext4_read((uint32_t)ext4_ino, hdr_buf + hdr_read, hdr_read, extra) < (int)extra)
                 EXECVE_FAIL(-EIO);
         } else {
-            kmemcpy(hdr_buf + hdr_read, ramfs_node->data + hdr_read, extra);
+            vfs_inode_read(ramfs_node, hdr_buf + hdr_read, hdr_read, extra);
         }
     }
 
@@ -527,7 +527,7 @@ shebang_retry:;
                     extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
                     ext4_read((uint32_t)ext4_ino, interp_path, (size_t)ph->p_offset, iplen);
                 } else {
-                    kmemcpy(interp_path, ramfs_node->data + ph->p_offset, iplen);
+                    vfs_inode_read(ramfs_node, interp_path, (size_t)ph->p_offset, iplen);
                 }
                 interp_path[iplen] = '\0';
                 while (iplen > 0 && interp_path[iplen - 1] == '\0') iplen--;
@@ -535,7 +535,7 @@ shebang_retry:;
                 /* Locate interpreter: try ramfs first, then ext4 */
                 struct vfs_node *interp_dentry = vfs_lookup(interp_path);
                 struct vfs_inode *interp_ino = interp_dentry ? interp_dentry->inode : 0;
-                if (interp_ino && interp_ino->type == VFS_FILE && interp_ino->data && interp_ino->size > 0) {
+                if (interp_ino && interp_ino->type == VFS_FILE && interp_ino->size > 0) {
                     interp_ramfs = interp_ino;
                     interp_len = interp_ino->size;
                 } else {
@@ -618,7 +618,7 @@ shebang_retry:;
     if (ext4_ino)
         load_rc = elf_load_ext4((uint32_t)ext4_ino, elf_len, p->pml4, 0, &info);
     else
-        load_rc = elf_load_ramfs(ramfs_node->data, elf_len, p->pml4, 0, &info);
+        load_rc = elf_load_ramfs(ramfs_node, elf_len, p->pml4, 0, &info);
 
     if (load_rc < 0) {
         pages_free(strbuf, EXECVE_BUF_PAGES);
@@ -641,7 +641,7 @@ shebang_retry:;
         elf_info_t interp_info;
         int irc;
         if (interp_ramfs)
-            irc = elf_load_ramfs(interp_ramfs->data, interp_len, p->pml4,
+            irc = elf_load_ramfs(interp_ramfs, interp_len, p->pml4,
                                  interp_base_hint, &interp_info);
         else
             irc = elf_load_ext4((uint32_t)interp_ext4_ino, interp_len, p->pml4,
@@ -658,7 +658,7 @@ shebang_retry:;
             size_t ihr = sizeof(Elf64_Ehdr) + 64 * sizeof(Elf64_Phdr);
             if (ihr > interp_len) ihr = interp_len;
             if (interp_ramfs) {
-                kmemcpy(ihdr, interp_ramfs->data, ihr);
+                vfs_inode_read(interp_ramfs, ihdr, 0, ihr);
             } else {
                 extern int ext4_read(uint32_t ino, void *buf, size_t offset, size_t len);
                 ext4_read((uint32_t)interp_ext4_ino, ihdr, 0, ihr);

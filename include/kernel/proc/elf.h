@@ -123,8 +123,12 @@ int elf_load_ex(const void *data, size_t len, uint64_t *pml4,
 int elf_load_ext4(uint32_t ino, size_t file_size, uint64_t *pml4,
                   uint64_t base_hint, elf_info_t *info);
 
-/* Streaming ELF load: reads from ramfs node page-by-page. */
-int elf_load_ramfs(uint8_t *data, size_t size, uint64_t *pml4,
+/* Streaming ELF load: reads from ramfs (tmpfs) inode page-by-page.
+ * `inode` points to a VFS_FILE inode whose content is stored in the
+ * page-list (struct vfs_inode { uint8_t **pages; ... }).
+ * Forward-declared here to avoid pulling fs/vfs.h into elf consumers. */
+struct vfs_inode;
+int elf_load_ramfs(struct vfs_inode *inode, size_t size, uint64_t *pml4,
                    uint64_t base_hint, elf_info_t *info);
 
 #endif

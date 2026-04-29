@@ -236,9 +236,11 @@ struct vfs_node *node_alloc(const char *name, int type) {
 
     /* Inode */
     ino->type = type;
-    ino->data = 0;
+    ino->pages = 0;
+    ino->pages_cap = 0;
+    ino->npages = 0;
     ino->size = 0;
-    ino->capacity = 0;
+    { spinlock_t fresh = SPINLOCK_INIT; ino->lock = fresh; }
     ino->ino = vfs_next_ino++;
     ino->mode = (type == VFS_DIR) ? 0755
               : (type == VFS_SYMLINK) ? 0777
@@ -261,13 +263,23 @@ struct vfs_node *node_alloc(const char *name, int type) {
     return n;
 }
 
-/* Destroy inode: free data pages + return to slab */
+/* Destroy inode: free per-page storage + pages-array container, return slab */
 void inode_destroy(struct vfs_inode *ino) {
     extern void page_cache_invalidate_ino(uint64_t ino);
     page_cache_invalidate_ino(ino->ino);
-    if (ino->data && ino->capacity > 0) {
-        int npages = (int)((ino->capacity + 4095) / 4096);
-        if (npages > 0) pages_free(ino->data, npages);
+    if (ino->pages) {
+        for (size_t i = 0; i < ino->npages; i++) {
+            if (ino->pages[i]) page_free(ino->pages[i]);
+        }
+        size_t bytes = ino->pages_cap * sizeof(uint8_t *);
+        int n_container = (int)((bytes + 4095) / 4096);
+        int n_round = 1;
+        while (n_round < n_container) n_round *= 2;
+        if (n_round < 1) n_round = 1;
+        pages_free(ino->pages, n_round);
+        ino->pages = 0;
+        ino->pages_cap = 0;
+        ino->npages = 0;
     }
     slab_free(&inode_slab, ino);
 }
@@ -1064,7 +1076,7 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
 
     if (len > 0) {
         if (grow_file(node->inode, len) < 0) return -ENOMEM;
-        kmemcpy(node->inode->data, data, len);
+        ramfs_write(node->inode, data, 0, len);
         node->inode->size = len;
     }
 
@@ -1094,11 +1106,10 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
             node = vfs_create(path, VFS_FILE);
             if (!node) return -ENOMEM;
         }
-        size_t end = node->inode->size + len;
-        if (end > node->inode->capacity) {
-            if (grow_file(node->inode, end) < 0) return -ENOMEM;
-        }
-        kmemcpy(node->inode->data + node->inode->size, buf, len);
+        size_t off = node->inode->size;
+        size_t end = off + len;
+        if (grow_file(node->inode, end) < 0) return -ENOMEM;
+        ramfs_write(node->inode, buf, off, len);
         node->inode->size = end;
         return (long)len;
     }
@@ -1150,12 +1161,16 @@ uint64_t vfs_ext4_lookup(const char *path) {
 int vfs_read_file(const char *path, uint8_t **out_data, size_t *out_size) {
     /* Try ramfs first (for embedded binaries like /lib/ld-musl-x86_64.so.1) */
     struct vfs_node *node = vfs_lookup(path);
-    if (node && node->inode->type == VFS_FILE && node->inode->data && node->inode->size > 0) {
+    if (node && node->inode->type == VFS_FILE && node->inode->size > 0) {
         size_t sz = node->inode->size;
         int npages = (int)((sz + 4095) / 4096);
         uint8_t *buf = (uint8_t *)pages_alloc(npages);
         if (!buf) return -ENOMEM;
-        kmemcpy(buf, node->inode->data, sz);
+        size_t got = vfs_inode_read(node->inode, buf, 0, sz);
+        if (got != sz) {
+            /* Inode mutated under us — return what we got, zero tail. */
+            kmemset(buf + got, 0, sz - got);
+        }
         *out_data = buf;
         *out_size = sz;
         return 0;
