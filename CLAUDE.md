@@ -466,6 +466,39 @@ make qemu-alpine        # Normaler Alpine Boot (OpenRC → getty → login)
 make qemu-alpine-gui    # Alpine mit GUI + Keyboard
 ```
 
+### KVM ist Pflicht
+
+Alle QEMU-Targets nutzen `-machine accel=kvm:tcg`. KVM = native Performance,
+TCG ist nur Fallback fuer wenn `/dev/kvm` nicht verfuegbar.
+
+`/dev/kvm`-ACL fuer den User permanent setzen, sonst Tests-Timing falsch:
+```sh
+sudo usermod -aG kvm $USER   # einmalig, danach relogin
+```
+
+`LTP_TIMEOUT_MUL=1` (default) bleibt — kein Multiplier mehr. Mit KVM-native
+Performance sind Test-Timeouts die schlagen ECHTE CosmoRT-Bugs, kein
+Emulations-Lag. Multiplier maskiert die Wurzeln.
+
+KVM-Verifikation pro Run:
+```sh
+ls -la /proc/$(pgrep -f "qemu-system.*alpine")/fd/ | grep kvm
+# muss /dev/kvm + kvm-vcpu fds zeigen
+```
+
+### Test-Iteration: fokussierter Run
+
+Vollauf alpine-test ist ~30-45 min. Fuer Fix-Iteration einzelne Tests/Cluster
+filtern via Marker-Files im Image-Tree (boot-test.sh liest sie):
+```sh
+echo 'test1|test2'      > build/alpine-root/opt/musl_run    # nur diese musl-Tests
+echo '__none__'         > build/alpine-root/opt/ltp_run     # keine LTP-Tests
+make alpine-test        # ~3 min KVM
+rm build/alpine-root/opt/musl_run build/alpine-root/opt/ltp_run
+```
+
+Marker-File gesetzt → DEBUG=1 (vollen Test-Output statt nur head).
+
 ## C in der Kernel-Entwicklung
 
 Ziel-Standard: `gnu11`.
