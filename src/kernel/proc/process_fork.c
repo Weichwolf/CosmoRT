@@ -282,10 +282,19 @@ long kernel_clone(unsigned long flags, void *child_stack,
             return -EAGAIN;
         child = proc_alloc();
         if (!child) return -ENOMEM;
-        child->parent_pid = parent->pid;
+        /* CLONE_PARENT: child's parent is OUR parent (Linux: real_parent =
+         * current->real_parent). The child becomes a sibling of the caller.
+         * exit_signal goes to that grandparent, so override notify_signal
+         * with parent's notify_signal (Linux copy_process). */
+        if (flags & CLONE_PARENT) {
+            child->parent_pid = parent->parent_pid;
+            child->notify_signal = parent->notify_signal;
+        } else {
+            child->parent_pid = parent->pid;
+            child->notify_signal = exit_sig;
+        }
         child->pgid = parent->pgid;
         child->sid  = parent->sid;
-        child->notify_signal = exit_sig;
         child->vma_root = 0;
         child->mm_shared = 0;
 
@@ -486,11 +495,18 @@ long kernel_clone(unsigned long flags, void *child_stack,
     ct->kstack_top = (uint64_t)(uintptr_t)(ct->kstack + KSTACK_SIZE);
     thread_init_kstack(ct);
 
-    /* CLONE_*_SETTID / CLEARTID */
+    /* CLONE_*_SETTID / CLEARTID
+     *
+     * PARENT_SETTID writes from the caller's address space — safe to do here.
+     * CHILD_SETTID must land in the *child*'s memory; when CLONE_VM is not
+     * set, the parent and child have separated address spaces (COW) so a
+     * write from the kernel would target the parent copy. Defer to
+     * finish_switch (runs after CR3 has been loaded with the child PML4). */
     if ((flags & CLONE_PARENT_SETTID) && parent_tid && user_ok((uint64_t)parent_tid, 4))
         *parent_tid = ct->tid;
+    ct->set_child_tid = 0;
     if ((flags & CLONE_CHILD_SETTID) && child_tid && user_ok((uint64_t)child_tid, 4))
-        *child_tid = ct->tid;
+        ct->set_child_tid = child_tid;
     ct->clear_child_tid = 0;
     if ((flags & CLONE_CHILD_CLEARTID) && child_tid)
         ct->clear_child_tid = child_tid;

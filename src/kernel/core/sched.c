@@ -21,6 +21,7 @@
 #include "config.h"
 #include "core/timer.h"
 #include "hal/hal.h"
+#include "uaccess.h"
 
 _Static_assert(__builtin_offsetof(thread_t, kstack_rsp) == 240,
                "kstack_rsp offset mismatch with context.asm THREAD_KSTACK_RSP");
@@ -284,6 +285,22 @@ void finish_switch(void) {
     cpu->switch_prev = 0;
     if (prev && prev != &idle_thread && prev->state == THREAD_RUNNING)
         sched_add(prev);
+
+    /* CLONE_CHILD_SETTID: write into the child's mm on its first run.
+     * CR3 is now next's PML4 so copy_to_user lands in the right address
+     * space even when CLONE_VM was not requested (separate AS via COW).
+     *
+     * SMAP: finish_switch can be entered without EFLAGS.AC set (e.g. on a
+     * brand-new thread where thread_init_kstack pushed RFLAGS=0x002), so
+     * wrap the user write with stac/clac to allow user memory access. */
+    thread_t *cur = cpu->current_thread;
+    if (cur && cur->set_child_tid) {
+        int tid = (int)cur->tid;
+        hal_cpu_user_access_begin();
+        copy_to_user(cur->set_child_tid, &tid, sizeof(tid));
+        hal_cpu_user_access_end();
+        cur->set_child_tid = 0;
+    }
 }
 
 /* ── schedule() — THE one switch point ──────────── */

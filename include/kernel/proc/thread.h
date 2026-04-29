@@ -142,6 +142,11 @@ typedef struct thread {
     /* ── CLONE_CHILD_CLEARTID: clear + futex_wake on exit ── */
     int *clear_child_tid;
 
+    /* ── CLONE_CHILD_SETTID: write tid to *set_child_tid on first run.
+     * Deferred to finish_switch so the write lands in the child's mm,
+     * not the parent's (matters when CLONE_VM is not set). */
+    int *set_child_tid;
+
     /* ── Fault info for signal delivery ── */
     uint64_t fault_addr;   /* CR2 for SIGSEGV/SIGBUS delivery */
 

@@ -360,6 +360,21 @@ long do_clone3(void *uargs, size_t size) {
     if (kargs.stack && !kargs.stack_size) return -EINVAL;
     if (kargs.stack && !user_ok(kargs.stack, kargs.stack_size)) return -EFAULT;
 
+    /* set_tid: CAP_SYS_ADMIN required (Linux copy_clone_args_from_user →
+     * cap_capable(CAP_SYS_ADMIN) for any set_tid_size > 0). */
+    if (kargs.set_tid_size > 0) {
+        extern int cred_has_cap_sys_admin(process_t *p);
+        percpu_t *cpu = percpu_self();
+        thread_t *cur = cpu->current_thread;
+        if (!cur || !cur->proc) return -EFAULT;
+        if (!cred_has_cap_sys_admin(cur->proc)) return -EPERM;
+        /* set_tid pid pre-allocation not implemented — refuse rather than
+         * silently ignore, so a CAP_SYS_ADMIN caller doesn't get a wrong PID. */
+        if (kargs.set_tid_size > 1) return -EINVAL;
+        /* size==1 with CAP_SYS_ADMIN: best-effort accept (we ignore the
+         * requested PID, kernel picks one). Linux would honor it. */
+    }
+
     /* CLONE_PIDFD: validate pidfd address up-front (Linux does put_user early);
      * write 0 so test sees no stale value. We have no real pidfd — parent
      * pidfd_send_signal will surface -ENOSYS if the test actually uses it. */
