@@ -1212,6 +1212,32 @@ int procfs_pid_read(const char *name, char *buf, int size, int offset) {
         if (file[4]=='a' && file[5]=='d' && file[6]=='j' && file[7]==0)
             return procfs_pid_oom_adj_read(buf, size, offset, p);
     }
+    /* /proc/<pid>/setgroups — Linux liefert "allow\n" oder "deny\n". CosmoRT
+     * ohne user-NS: immer "allow\n". */
+    if (file[0]=='s' && file[1]=='e' && file[2]=='t' && file[3]=='g' &&
+        file[4]=='r' && file[5]=='o' && file[6]=='u' && file[7]=='p' &&
+        file[8]=='s' && file[9]==0) {
+        const char *s = "allow\n";
+        int n = 6;
+        if (offset >= n) return 0;
+        int copy = n - offset;
+        if (copy > size) copy = size;
+        for (int i = 0; i < copy; i++) buf[i] = s[offset + i];
+        return copy;
+    }
+    /* /proc/<pid>/{uid,gid}_map: identity full-range mapping. Linux Format:
+     * "INSIDE_id OUTSIDE_id LENGTH\n", typisch "0 0 4294967295\n". */
+    if ((file[0]=='u' || file[0]=='g') && file[1]=='i' && file[2]=='d' &&
+        file[3]=='_' && file[4]=='m' && file[5]=='a' && file[6]=='p' &&
+        file[7]==0) {
+        const char *s = "         0          0 4294967295\n";
+        int n = 0; while (s[n]) n++;
+        if (offset >= n) return 0;
+        int copy = n - offset;
+        if (copy > size) copy = size;
+        for (int i = 0; i < copy; i++) buf[i] = s[offset + i];
+        return copy;
+    }
 
     return -1; /* not a per-pid file we handle */
 }
@@ -1243,6 +1269,26 @@ long procfs_pid_write(const char *name, const char *buf, int size, int offset) {
         if (file[4]=='s' && file[5]=='c' && file[6]=='o' && file[7]=='r' &&
             file[8]=='e' && file[9]==0)
             return -EACCES; /* oom_score is RO */
+    }
+    /* /proc/<pid>/setgroups: stub — accept "allow"/"deny" prefix. CosmoRT
+     * hat keine user-NS, write ist no-op fuer LTP-Compatibility. */
+    if (file[0]=='s' && file[1]=='e' && file[2]=='t' && file[3]=='g' &&
+        file[4]=='r' && file[5]=='o' && file[6]=='u' && file[7]=='p' &&
+        file[8]=='s' && file[9]==0) {
+        (void)offset;
+        if (size < 4) return -EINVAL;
+        if (buf[0]=='a' && buf[1]=='l' && buf[2]=='l' && buf[3]=='o' && buf[4]=='w')
+            return size;
+        if (buf[0]=='d' && buf[1]=='e' && buf[2]=='n' && buf[3]=='y')
+            return size;
+        return -EINVAL;
+    }
+    /* /proc/<pid>/{uid,gid}_map: stub — accept any "INSIDE OUTSIDE LENGTH" */
+    if ((file[0]=='u' || file[0]=='g') && file[1]=='i' && file[2]=='d' &&
+        file[3]=='_' && file[4]=='m' && file[5]=='a' && file[6]=='p' &&
+        file[7]==0) {
+        (void)offset;
+        return size;  /* no-op accept */
     }
     return -EACCES;
 }
@@ -1285,6 +1331,16 @@ int procfs_pid_exists(const char *name) {
         if (file[4]=='a' && file[5]=='d' && file[6]=='j' && file[7]==0)
             return 4;
     }
+    /* /proc/self/setgroups: Linux user-NS-Schalter. CosmoRT hat keine
+     * user-NS, aber LTP-Tests (bind06, cve-*, icmp_rate_limit01, tcindex01)
+     * oeffnen es write-only und erwarten dass es existiert. Stub. */
+    if (file[0]=='s' && file[1]=='e' && file[2]=='t' && file[3]=='g' &&
+        file[4]=='r' && file[5]=='o' && file[6]=='u' && file[7]=='p' &&
+        file[8]=='s' && file[9]==0) return 4;
+    /* /proc/self/{uid,gid}_map: identity-Stub, kein user-NS support */
+    if ((file[0]=='u' || file[0]=='g') && file[1]=='i' && file[2]=='d' &&
+        file[3]=='_' && file[4]=='m' && file[5]=='a' && file[6]=='p' &&
+        file[7]==0) return 4;
 
     /* /proc/<pid>/ns/time{,_for_children} und /proc/<pid>/ns/net —
      * symlink-like entries. Actual open() bypasses procfs_open and
