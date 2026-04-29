@@ -708,6 +708,23 @@ static int procfs_uptime(char *buf, int size, int offset, void *ctx) {
     return out;
 }
 
+/* ── /proc/cosmort/tlb_flush ─────────────────────────
+ * Format: "fast=<count> slow=<count>\n" — for benchmarks. */
+static int procfs_tlb_flush(char *buf, int size, int offset, void *ctx) {
+    (void)ctx;
+    extern volatile uint64_t tlb_flush_fast, tlb_flush_slow;
+    char tmp[128];
+    int pos = 0;
+    pos = append_str(tmp, pos, 128, "fast=");
+    pos = append_int(tmp, pos, 128, (long)tlb_flush_fast);
+    pos = append_str(tmp, pos, 128, " slow=");
+    pos = append_int(tmp, pos, 128, (long)tlb_flush_slow);
+    pos = append_str(tmp, pos, 128, "\n");
+    int out = 0;
+    for (int i = offset; i < pos && out < size; i++) buf[out++] = tmp[i];
+    return out;
+}
+
 /* ── /proc/loadavg ─────────────────────────────────── */
 
 static int procfs_loadavg(char *buf, int size, int offset, void *ctx) {
@@ -1447,6 +1464,7 @@ void procfs_init(void) {
     procfs_register("self/cgroup", procfs_self_cgroup, 0);
     procfs_register("stat", procfs_global_stat, 0);
     procfs_register("uptime", procfs_uptime, 0);
+    procfs_register("cosmort/tlb_flush", procfs_tlb_flush, 0);
     procfs_register("loadavg", procfs_loadavg, 0);
     procfs_register("version", procfs_version, 0);
     procfs_register("bus/pci/devices", procfs_pci_devices, 0);

@@ -338,6 +338,14 @@ long kernel_clone(unsigned long flags, void *child_stack,
             child->pml4 = parent->pml4;
             child->vma_root = parent->vma_root;
             child->mm_shared = 1;
+            /* Parent's mm is now externally referenced — TLB shootdown
+             * fast path (single-threaded skip) becomes unsafe until the
+             * child execs/exits. We currently don't refcount-restore on
+             * the parent side: the flag stays sticky. Acceptable because
+             * vfork()/posix_spawn() patterns are short-lived; persistent
+             * CLONE_VM share is a real multi-process mm and warrants the
+             * IPI cost anyway. */
+            parent->mm_shared = 1;
         } else {
             /* Freeze sibling threads for COW page-table copy */
             int need_ipi = 0;

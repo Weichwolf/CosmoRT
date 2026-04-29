@@ -329,7 +329,7 @@ qemu-bench: $(ESP_IMG)
 	@rm -f /tmp/cosmo-bench.log
 	timeout 600 $(ALPINE_QEMU) -serial file:/tmp/cosmo-bench.log -display none -no-reboot || true
 	@echo "=== Bench Output ==="
-	@grep -E 'BENCH |COSMO-BENCH' /tmp/cosmo-bench.log | head -30
+	@grep -E 'BENCH |COSMO-BENCH|TLB flush|fast=' /tmp/cosmo-bench.log | head -40
 	@echo ""
 
 qemu-disk: $(BUILD)/disk.img

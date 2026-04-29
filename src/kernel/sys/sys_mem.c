@@ -5,6 +5,37 @@
 
 /* ── Static page-table helpers (callees first) ──── */
 
+/* Conditional cross-CPU TLB shootdown for an address-space mutation.
+ *
+ * Single-threaded process with mm not shared: per-page INVLPGs done by the
+ * caller (unmap_range / update_pte_prot) already invalidate this CPU's TLB.
+ * No other CPU can have stale TLB entries for this pml4: the only thread
+ * owning the mm runs on this CPU (it issued the syscall), and CR3 reload
+ * on every context switch flushes any prior TLB residue when another CPU
+ * loaded this pml4 in the past.
+ *
+ * mm_shared (CLONE_VM) or thread_count > 1: another CPU may currently
+ * hold this pml4 in CR3. Issue the IPI; tlb_shootdown_handler skips
+ * cores whose loaded mm doesn't match.
+ *
+ * The redundant local hal_mmu_flush_all() (CR3 reload) is dropped in the
+ * fast path — per-page INVLPGs already covered the affected range. The
+ * slow path keeps it as a defensive fallback for huge unmap ranges where
+ * per-CPU TLB cost of CR3-reload < N×INVLPG. */
+/* Diagnostic counters — wired to /proc/cosmort/tlb_flush_stats */
+volatile uint64_t tlb_flush_fast = 0;
+volatile uint64_t tlb_flush_slow = 0;
+
+static inline void tlb_flush_mm(process_t *p) {
+    if (__builtin_expect(p->thread_count <= 1 && !p->mm_shared, 1)) {
+        __sync_fetch_and_add(&tlb_flush_fast, 1);
+        return; /* local INVLPGs sufficient */
+    }
+    __sync_fetch_and_add(&tlb_flush_slow, 1);
+    hal_mmu_flush_all();
+    tlb_shootdown(virt_to_phys(p->pml4));
+}
+
 /* Split a 2MB huge page PMD entry into 512 × 4KB PTEs.
  * pd[pdi] must be a present entry with PTE_PS set.
  * After split: pd[pdi] points to a new PT, PS bit cleared.
@@ -351,8 +382,7 @@ long do_brk(unsigned long addr) {
         vma_t *bv = vma_find(p->vma_root, p->brk_base);
         if (bv && bv->start == p->brk_base) bv->end = new_end;
         unmap_range(p->pml4, new_end, old_end);
-        tlb_shootdown(virt_to_phys(p->pml4));
-        hal_mmu_flush_all();
+        tlb_flush_mm(p);
     }
 
     /* Update brk VMA (for grow cases — shrink already handled above) */
@@ -556,8 +586,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
         }
         /* Unmap old PTEs so demand paging sees the new VMA's file_offset */
         unmap_range(p->pml4, vaddr, vaddr + length);
-        hal_mmu_flush_all();
-        tlb_shootdown(virt_to_phys(p->pml4));
+        tlb_flush_mm(p);
 
         /* Remove any overlapping VMAs in [vaddr, vaddr+length) */
         for (;;) {
@@ -750,9 +779,9 @@ long do_munmap(unsigned long addr, size_t length) {
 
     /* Unmap physical pages */
     unmap_range(p->pml4, start, end);
-    /* TLB flush: local + remote cores sharing this address space */
-    hal_mmu_flush_all();
-    tlb_shootdown(virt_to_phys(p->pml4));
+    /* TLB flush: local already done per-page in unmap_range; cross-CPU
+     * IPI only when another thread/process may hold this pml4 in CR3. */
+    tlb_flush_mm(p);
 
     /* Adjust VMAs: find and remove/split overlapping VMAs */
     for (;;) {
@@ -817,9 +846,9 @@ long do_mprotect(unsigned long addr, size_t len, int prot) {
     /* Update PTE permissions for already-mapped pages */
     update_pte_prot(p->pml4, start, end, prot);
 
-    /* TLB flush: local + remote cores sharing this address space */
-    hal_mmu_flush_all();
-    tlb_shootdown(virt_to_phys(p->pml4));
+    /* TLB flush: local already done per-page in update_pte_prot;
+     * cross-CPU IPI only when mm is shared or multi-threaded. */
+    tlb_flush_mm(p);
 
     /* Update VMA prot flags, splitting if needed */
     for (uint64_t probe = start; probe < end; ) {
@@ -942,9 +971,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
             }
             va = v->end;
         }
-        hal_mmu_flush_all();
-        extern void tlb_shootdown(uint64_t pml4_phys);
-        tlb_shootdown(virt_to_phys(p->pml4));
+        tlb_flush_mm(p);
         spin_unlock_irq(&p->lock, irqf);
         return 0;
     }
@@ -974,9 +1001,7 @@ long do_madvise(unsigned long addr, size_t length, int advice) {
             return -ENOMEM;
         }
         /* TLB flush to ensure Dirty bit is cleared in all TLBs */
-        hal_mmu_flush_all();
-        extern void tlb_shootdown(uint64_t pml4_phys);
-        tlb_shootdown(virt_to_phys(p->pml4));
+        tlb_flush_mm(p);
         spin_unlock_irq(&p->lock, irqf);
         return 0;
     }
@@ -1071,8 +1096,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
         copy_user_pages(p->pml4, new_addr, old_addr, old_size < new_size ? old_size : new_size, v_prot);
         unmap_range(p->pml4, old_addr, old_addr + old_size);
-        hal_mmu_flush_all();
-        tlb_shootdown(virt_to_phys(p->pml4));
+        tlb_flush_mm(p);
 
         vma_t *old_v = vma_find(p->vma_root, old_addr);
         if (old_v && old_v->start == old_addr)
@@ -1089,8 +1113,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
         uint64_t trim_start = old_addr + new_size;
         uint64_t trim_end = old_addr + old_size;
         unmap_range(p->pml4, trim_start, trim_end);
-        tlb_shootdown(virt_to_phys(p->pml4));
-        hal_mmu_flush_all();
+        tlb_flush_mm(p);
         v->end = old_addr + new_size;
         spin_unlock_irq(&p->lock, irqf);
         return (long)old_addr;
@@ -1136,8 +1159,7 @@ long do_mremap(unsigned long old_addr, size_t old_size, size_t new_size,
 
     /* Unmap old region */
     unmap_range(p->pml4, old_addr, old_addr + old_size);
-    hal_mmu_flush_all();
-    tlb_shootdown(virt_to_phys(p->pml4));
+    tlb_flush_mm(p);
 
     /* Remove old VMA (re-find since tree may have changed) */
     vma_t *old_v = vma_find(p->vma_root, old_addr);

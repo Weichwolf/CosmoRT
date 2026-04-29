@@ -52,5 +52,9 @@ echo "================================"
 echo "  COSMO-BENCH DONE"
 echo "================================"
 
+# Diagnostic: TLB flush fast vs. slow path counters (per-syscall conditional shootdown).
+echo "--- TLB flush stats ---"
+cat /proc/cosmort/tlb_flush 2>/dev/null || echo "no /proc/cosmort/tlb_flush"
+
 sync
 poweroff -f
