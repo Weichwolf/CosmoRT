@@ -103,7 +103,10 @@ done
 
 
 ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
-LTP_TESTS=$(ls "$LTP_BIN" | grep -v '_helper$' | sort)
+# `_helper` und `_child` sind Hilfsprogramme die von Parent-Tests via
+# fork+exec gerufen werden, KEINE eigenstaendigen Tests. Ohne Filter
+# laufen sie alle als Tests durch und produzieren False-Positive FAILs.
+LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$' | sort)
 if [ -n "$LTP_RUN" ]; then
     filtered=""
     for t in $LTP_TESTS; do
