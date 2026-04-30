@@ -1098,6 +1098,11 @@ int vfs_add_file(const char *path, const void *data, size_t len) {
 long vfs_kernel_append(const char *path, const void *buf, size_t len) {
     if (!buf || !len) return 0;
 
+    /* Pruefe zuerst ob die Datei im globalen ramfs/tmpfs-Namespace existiert.
+     * tmpfs sitzt auf einem mount-point (z.B. /tmp) aber registriert seine
+     * Inodes ueber vfs_create im globalen ramfs-Tree, daher findet
+     * vfs_lookup sie auch wenn ext4 als Root gemountet ist. So muss
+     * vfs_kernel_append nicht explizit ueber vfs_resolve_mount gehen. */
     if (is_ramfs_path(path)) {
         /* ramfs: find or create the node, append directly */
         struct vfs_node *node = vfs_lookup(path);
@@ -1112,6 +1117,21 @@ long vfs_kernel_append(const char *path, const void *buf, size_t len) {
         ramfs_write(node->inode, buf, off, len);
         node->inode->size = end;
         return (long)len;
+    }
+
+    /* tmpfs (mounted ueber ext4 root): vfs_lookup findet die Datei im
+     * globalen ramfs-tree. Nur als bestehende Datei behandeln — wenn nicht
+     * gefunden, faellt der Pfad zurueck auf ext4_walk unten. */
+    {
+        struct vfs_node *node = vfs_lookup(path);
+        if (node && node->inode && node->inode->type == VFS_FILE) {
+            size_t off = node->inode->size;
+            size_t end = off + len;
+            if (grow_file(node->inode, end) < 0) return -ENOMEM;
+            ramfs_write(node->inode, buf, off, len);
+            node->inode->size = end;
+            return (long)len;
+        }
     }
 
     /* ext4: walk path, create if missing, append via ext4_write */

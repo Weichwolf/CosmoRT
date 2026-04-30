@@ -135,11 +135,54 @@ long do_ftruncate(int fd, int64_t length) {
 
 /* ── SYS_fchmodat (268) ─────────────────────────── */
 
+/* AT_EMPTY_PATH (Linux 2.6.39+): path=="" -> operate on dirfd itself.
+ * Reproduce the dirfd's path from the open vfs_file (FD_FILE/VFS_DIR)
+ * so we can chmod via path-based vfs_chmod. */
+static int empty_path_to_kpath(int dirfd, char *kpath, int max) {
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+    if (dirfd == AT_FDCWD) {
+        int i = 0;
+        while (p->cwd[i] && i < max - 1) { kpath[i] = p->cwd[i]; i++; }
+        kpath[i] = '\0';
+        return i;
+    }
+    fd_entry_t *fde = fd_get(&p->fds, dirfd);
+    if (!fde) return -EBADF;
+    if (fde->type != FD_FILE) return -EBADF;
+    struct vfs_file *f = (struct vfs_file *)fde->obj;
+    if (!f || !f->path[0]) return -EBADF;
+    int i = 0;
+    while (f->path[i] && i < max - 1) { kpath[i] = f->path[i]; i++; }
+    kpath[i] = '\0';
+    return i;
+}
+
 long do_fchmodat(int dirfd, const char *path, uint32_t mode, int flags) {
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     char kpath[PATH_MAX];
+    /* AT_EMPTY_PATH + empty user path: target is dirfd itself.
+     * Probe first byte before copy_path_from_user (which returns -ENOENT
+     * for empty paths). */
+    if ((flags & AT_EMPTY_PATH) && path) {
+        char first;
+        if (copy_from_user(&first, path, 1) == 0 && first == '\0') {
+            int r = empty_path_to_kpath(dirfd, kpath, PATH_MAX);
+            if (r < 0) return r;
+            return vfs_chmod(kpath, mode);
+        }
+    }
     int r = resolve_at_path(dirfd, path, kpath, PATH_MAX);
     if (r < 0) return r;
+    /* AT_SYMLINK_NOFOLLOW on a symlink target: VFS rejects with EOPNOTSUPP
+     * since 5d1f903f75a8 ("fs: don't allow chmod on symlinks"). vfs_chmod
+     * via path follows symlinks so we have to lstat first to detect this. */
+    if (flags & AT_SYMLINK_NOFOLLOW) {
+        struct k_stat st;
+        int rc = vfs_lstat(kpath, &st);
+        if (rc < 0) return rc;
+        if ((st.st_mode & S_IFMT) == S_IFLNK) return -EOPNOTSUPP;
+    }
     return vfs_chmod(kpath, mode);
 }
 

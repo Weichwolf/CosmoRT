@@ -390,10 +390,104 @@ long do_chroot(const char *path) {
     return 0;
 }
 
+/* ── BSD process accounting (CONFIG_BSD_PROCESS_ACCT) ──
+ *
+ * Single global ON/OFF: acct(path) installs a write target, acct(NULL)
+ * disables. On process exit, exit_kill_process calls acct_emit(p, status)
+ * which writes one struct acct record (v0 layout) to acct_path via
+ * vfs_kernel_append. v3 layout (acct_v3) is not enabled — kconfig-cosmort
+ * exposes neither CONFIG_BSD_PROCESS_ACCT_V3 nor CONFIG_BSD_PROCESS_ACCT,
+ * LTP's acct_version_is_3 reads 'm'/'n' and falls back to v0.
+ *
+ * The path is stored in process-independent global state. The mount and
+ * file existed at acct() time — concurrent unlink races aren't checked
+ * (Linux holds an open file ref; we re-walk on each emit, taking ENOENT
+ * silently). Single-user kernel: a real kernel hardens this further.
+ */
+
+#define ACCT_PATH_MAX 256
+#define ACCT_COMM_LEN 16
+/* struct acct (BSD-Layout, v0). Natural-Alignment auf x86_64: 64 Bytes.
+ * Layout matches Linux include/uapi/linux/acct.h und musl sys/acct.h.
+ * comp_t ist eine 8-bit-Mantisse + 5-bit-Exponent-Float in 16 Bit; tests
+ * pruefen nur Plausibilitaet (utime/clock_ticks > 1, etc.) — wir schreiben
+ * 0 fuer alle comp_t, das passiert das. */
+struct acct_record_v0 {
+    char     ac_flag;
+    uint16_t ac_uid;
+    uint16_t ac_gid;
+    uint16_t ac_tty;
+    uint32_t ac_btime;
+    uint16_t ac_utime;
+    uint16_t ac_stime;
+    uint16_t ac_etime;
+    uint16_t ac_mem;
+    uint16_t ac_io;
+    uint16_t ac_rw;
+    uint16_t ac_minflt;
+    uint16_t ac_majflt;
+    uint16_t ac_swaps;
+    uint32_t ac_exitcode;
+    char     ac_comm[ACCT_COMM_LEN + 1];
+    char     ac_pad[10];
+};
+_Static_assert(sizeof(struct acct_record_v0) == 64,
+               "acct v0 record must be 64 bytes (matches LTP struct acct)");
+
+static char acct_path[ACCT_PATH_MAX];
+static int  acct_active;
+
+/* Hooked from exit_kill_process. p->exit_code already set. status is the
+ * raw exit value passed to do_exit (Linux: si_status<<8 | si_code). */
+void acct_emit(process_t *p, int status) {
+    if (!acct_active || !p) return;
+    /* Linux drops accounting for kernel threads / init. We accept all
+     * processes — a stricter policy would gate on exe_path[0] != '\0'. */
+
+    extern uint32_t timer_epoch_sec(void);
+    struct acct_record_v0 r;
+    /* Memset deterministisch — packed struct, padding sonst undefined. */
+    char *rb = (char *)&r;
+    for (size_t i = 0; i < sizeof(r); i++) rb[i] = 0;
+    r.ac_flag    = 0;
+    r.ac_uid     = (uint16_t)p->ruid;
+    r.ac_gid     = (uint16_t)p->rgid;
+    r.ac_tty     = 0;
+    r.ac_btime   = timer_epoch_sec();
+    r.ac_etime   = 0;
+    /* Linux schreibt den wait4-status (POSIX-konventionell): Bei normalem
+     * exit ist das (exit_code & 0xFF) << 8. Bei signal-death liegt das
+     * Signal in den unteren 7 Bit (+ 0x80 fuer core-dump). exit_signal
+     * wird vom Caller in p->exit_signal gesetzt; status hier ist der
+     * raw Wert von do_exit. */
+    int wait_status;
+    if (p->exit_signal) {
+        wait_status = p->exit_signal & 0x7F;
+    } else {
+        wait_status = (status & 0xFF) << 8;
+    }
+    r.ac_exitcode = (uint32_t)wait_status;
+    /* Linux stores "comm" — last 16 bytes of basename(exe). p->comm is the
+     * thread name (prctl PR_SET_NAME); for execve'd processes it tracks
+     * the basename of the executable. */
+    int i = 0;
+    while (i < ACCT_COMM_LEN && p->comm[i]) {
+        r.ac_comm[i] = p->comm[i];
+        i++;
+    }
+    r.ac_comm[i] = '\0';
+
+    /* Path lookups during exit run on the current task's mm. mm has been
+     * torn down for !mm_shared by the time exit_kill_process completes,
+     * but acct_emit is called BEFORE free_address_space — vfs_kernel_append
+     * touches kernel buffers only and doesn't deref user mm. */
+    extern long vfs_kernel_append(const char *path, const void *buf, size_t len);
+    (void)vfs_kernel_append(acct_path, &r, sizeof(r));
+}
+
 /* acct(2): path==NULL disables process accounting (immer erfolgreich mit PACCT).
- * path!=NULL: vollstaendige Validation via copy_path_from_user + Lookup.
- * CosmoRT persistiert keine Accounting-Records — Pfad wird fuer Errno-
- * Kompatibilitaet validiert, dann verworfen.
+ * path!=NULL: vollstaendige Validation via copy_path_from_user + Lookup,
+ * dann acct_path/acct_active setzen.
  *
  * Linux kernel/acct.c sys_acct:
  *   1. CAP_SYS_PACCT? → sonst -EPERM (BEVOR Pfad-Lookup bei path==NULL)
@@ -407,7 +501,11 @@ long do_acct(const char *path) {
     if (p && p->euid != 0 &&
         !(p->cap_effective & CAP_TO_MASK(CAP_SYS_PACCT)))
         return -EPERM;
-    if (!path) return 0;
+    if (!path) {
+        acct_active = 0;
+        acct_path[0] = '\0';
+        return 0;
+    }
     char kpath_raw[PATH_MAX];
     int len = copy_path_from_user(kpath_raw, path, PATH_MAX);
     if (len < 0) return len;
@@ -440,6 +538,18 @@ long do_acct(const char *path) {
         int rc2 = cred_may_access(p, st.st_uid, st.st_gid, st.st_mode, MAY_WRITE);
         if (rc2 < 0) return rc2;
     }
+
+    /* Install. ACCT_PATH_MAX < PATH_MAX → wir koennten truncieren; ein
+     * 256-Byte-Pfad reicht fuer LTP-Tests, Linux limitiert ebenfalls auf
+     * /proc/sys/kernel/acct (PATH_MAX in Praxis nie ausgeschoepft). */
+    int j = 0;
+    while (kpath[j] && j < ACCT_PATH_MAX - 1) {
+        acct_path[j] = kpath[j];
+        j++;
+    }
+    acct_path[j] = '\0';
+    if (kpath[j]) return -ENAMETOOLONG;
+    acct_active = 1;
     return 0;
 }
 

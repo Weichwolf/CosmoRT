@@ -110,7 +110,9 @@ ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
 # `tpm*` sind alte LTP shell-Tests von 2005 die direkt tpm-tools Binaries
 # rufen. Ohne TPM-Hardware/tpm-tools-Paket nicht passable; ohne modernes
 # tst_test.sh-Framework auch kein TCONF/SKIP — sie failen unconditional.
-LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$|^tst_|^tpm[a-z_]*' | sort)
+# `execveat_errno` ist ein dummy-Programm fuer execveat02 (ruft tst_reinit
+# das LTP_IPC_PATH erwartet). Kein eigenstaendiger Test.
+LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$|^tst_|^tpm[a-z_]*|^execveat_errno$' | sort)
 if [ -n "$LTP_RUN" ]; then
     filtered=""
     for t in $LTP_TESTS; do
@@ -148,6 +150,13 @@ for t in $LTP_TESTS; do
     rc=$?
     if [ $rc -eq 0 ]; then
         echo "[$ltp_total/$ltp_total_count] $t PASS"
+        [ $DEBUG -eq 1 ] && dump "$t" /tmp/ltp_out.txt
+        ltp_passed=$((ltp_passed + 1))
+    elif [ $rc -eq 4 ]; then
+        # LTP exit: TWARN bit. Pure-warning runs (kein TFAIL/TBROK) sind nach
+        # LTP-Konvention PASS-with-warning, nicht FAIL. Beispiel: tst_device
+        # warnt dass BLKGETSIZE64 fehlt, der Test selbst ist trotzdem grün.
+        echo "[$ltp_total/$ltp_total_count] $t PASS (warn)"
         [ $DEBUG -eq 1 ] && dump "$t" /tmp/ltp_out.txt
         ltp_passed=$((ltp_passed + 1))
     elif [ $rc -eq 32 ] || [ $rc -eq 36 ]; then

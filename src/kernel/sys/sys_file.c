@@ -645,6 +645,21 @@ long do_chdir(const char *path) {
         else if (++comp > 255) return -ENAMETOOLONG;
     }
     resolve_path(kpath, rpath, PATH_MAX);
+    /* Linux fs/open.c sys_chdir → user_path_at(LOOKUP_FOLLOW|DIRECTORY)
+     * → inode_permission(inode, MAY_EXEC). Non-root ohne x-Bit auf dem
+     * Ziel bekommt EACCES. CAP_DAC_OVERRIDE/CAP_DAC_READ_SEARCH umgehen
+     * den Check (Linux generic_permission). */
+    process_t *p = proc_current();
+    if (p && p->euid != 0 &&
+        !(p->cap_effective & (CAP_TO_MASK(CAP_DAC_OVERRIDE) |
+                              CAP_TO_MASK(CAP_DAC_READ_SEARCH)))) {
+        struct k_stat st;
+        int rc = vfs_stat(rpath, &st);
+        if (rc < 0) return rc;
+        if ((st.st_mode & S_IFMT) != S_IFDIR) return -ENOTDIR;
+        rc = cred_may_access(p, st.st_uid, st.st_gid, st.st_mode, MAY_EXEC);
+        if (rc < 0) return rc;
+    }
     return vfs_chdir(rpath);
 }
 

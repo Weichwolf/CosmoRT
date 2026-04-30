@@ -46,6 +46,14 @@ long do_arch_prctl(int code, unsigned long addr) {
 
 static void exit_kill_process(thread_t *t, process_t *p, int status) {
     net_port_check_driver((int)p->pid);
+
+    /* BSD process accounting (acct(2)): write a fixed-size record to the
+     * acct file before fds/mm are torn down. acct_emit no-ops when no
+     * accounting target is installed. Must run BEFORE free_address_space
+     * (still requires the syscall task's mm for vfs_kernel_append). */
+    extern void acct_emit(process_t *, int);
+    acct_emit(p, status);
+
     p->state = PROC_ZOMBIE;
     p->exit_code = status;
     /* exit_signal is set by caller for signal death, 0 for normal exit */
