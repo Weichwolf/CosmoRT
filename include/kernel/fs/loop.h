@@ -41,6 +41,18 @@
 #define LOOP_CTL_REMOVE    0x4C81
 #define LOOP_CTL_GET_FREE  0x4C82
 
+/* Generic block-device ioctls — Linux ABI from <linux/fs.h>.
+ * tst_acquire_device(), parted, blockdev(8) and various LTP setups
+ * call these on /dev/loopN to discover capacity and sector size. */
+#define BLKROSET           0x125D
+#define BLKROGET           0x125E
+#define BLKGETSIZE         0x1260   /* size in 512-byte sectors (long *) */
+#define BLKFLSBUF          0x1261
+#define BLKSSZGET          0x1268   /* logical sector size (int *) */
+#define BLKBSZGET          0x80081270  /* fs block size (size_t *) */
+#define BLKBSZSET          0x40081271
+#define BLKGETSIZE64       0x80081272  /* size in bytes (uint64_t *) */
+
 /* Linux loop_info / loop_info64 struct sizes (binary compatibility) */
 struct loop_info {
     int    lo_number;

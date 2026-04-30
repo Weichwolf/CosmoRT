@@ -237,6 +237,20 @@ static long loop_get_status64(struct loop_dev *d, int idx, struct loop_info64 *u
     return 0;
 }
 
+/* Backing-file size in bytes — tmpfs uses inode->size, ext4 uses disk_size.
+ * sizelimit, when set via LOOP_SET_STATUS64, caps the visible size. */
+static uint64_t loop_backing_size(struct loop_dev *d) {
+    struct vfs_file *f = d->backing_file;
+    if (!f) return 0;
+    uint64_t fsize = 0;
+    if (f->inode) fsize = (uint64_t)f->inode->size;
+    else if (f->disk_ino) fsize = f->disk_size;
+    if (fsize > d->offset) fsize -= d->offset;
+    else fsize = 0;
+    if (d->sizelimit && d->sizelimit < fsize) fsize = d->sizelimit;
+    return fsize;
+}
+
 long loop_ioctl(int devid, unsigned long request, unsigned long arg) {
     if (!loop_inited) loop_init();
 
@@ -280,6 +294,32 @@ long loop_ioctl(int devid, unsigned long request, unsigned long arg) {
     case LOOP_SET_CAPACITY:     return 0;
     case LOOP_SET_DIRECT_IO:    return 0;
     case LOOP_SET_BLOCK_SIZE:   return 0;
+    case BLKGETSIZE64: {
+        if (!user_ok(arg, sizeof(uint64_t))) return -EFAULT;
+        if (!d->bound) return -ENXIO;
+        uint64_t sz = loop_backing_size(d);
+        return copy_to_user((void *)arg, &sz, sizeof(sz));
+    }
+    case BLKGETSIZE: {
+        if (!user_ok(arg, sizeof(unsigned long))) return -EFAULT;
+        if (!d->bound) return -ENXIO;
+        unsigned long sectors = (unsigned long)(loop_backing_size(d) >> 9);
+        return copy_to_user((void *)arg, &sectors, sizeof(sectors));
+    }
+    case BLKSSZGET:
+    case BLKBSZGET: {
+        if (!user_ok(arg, sizeof(int))) return -EFAULT;
+        int bsz = 4096;       /* page-aligned bcache block, matches ext4 */
+        return copy_to_user((void *)arg, &bsz, sizeof(bsz));
+    }
+    case BLKBSZSET:             return 0;
+    case BLKROGET: {
+        if (!user_ok(arg, sizeof(int))) return -EFAULT;
+        int ro = 0;
+        return copy_to_user((void *)arg, &ro, sizeof(ro));
+    }
+    case BLKROSET:              return 0;
+    case BLKFLSBUF:             return 0;
     }
     return -ENOTTY;
 }
