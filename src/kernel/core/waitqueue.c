@@ -347,8 +347,27 @@ static void wq_timeout_fn(hrtimer_t *timer) {
 }
 
 /* Internal: park current thread on wq until woken or (optionally) deadline.
- * If deadline_ns == 0, no timeout is armed. `interruptible` causes returns
- * on pending signals before schedule(). */
+ *
+ * Linux-Pattern: schedule_timeout fuehrt GENAU einen schedule()-Call aus und
+ * returnt danach. Caller (poll_loop, sleep_until_ns, ...) loopt selbst und
+ * prueft seine eigene Bedingung (fd-readiness, deadline). Eine interne
+ * "spurious wake → keep sleeping"-Loop ist falsch fuer Caller mit eigener
+ * outer-loop: wakeups via fd-attached wq-entries (poll/epoll/select) sind
+ * niemals "spurious" — sie zeigen "fd readiness changed", was der Caller
+ * pruefen muss. Eine interne Re-iter wuerde diese Wakes silently swallow.
+ *
+ * Konkret: poll(timeout=-1) mit timeout_ns=0 hatte keine break-Bedingung
+ * (no signal, no deadline) und blockte ewig — pipe_write's wake_up auf der
+ * fd-attached entry CAS state RUNNABLE, schedule() returnt, aber unsere
+ * alte Loop iterierte und prepare_to_wait setzte state=BLOCKED erneut.
+ *
+ * timeout_ns == 0: kein hrtimer, schedule blockt bis externer wake.
+ * timeout_ns > 0: hrtimer treibt deadline.
+ *
+ * Returns:
+ *   -EINTR        signal pending vor schedule() (interruptible only)
+ *   -ETIMEDOUT    deadline erreicht
+ *   0             nach schedule()-Return — caller prueft seine Bedingung */
 static long schedule_timeout_common(wait_queue_head_t *wq,
                                     wait_queue_entry_t *e,
                                     uint64_t timeout_ns,
@@ -364,39 +383,24 @@ static long schedule_timeout_common(wait_queue_head_t *wq,
     }
 
     long rc = 0;
-    for (;;) {
-        prepare_to_wait(wq, e, THREAD_BLOCKED);
 
-        if (interruptible && signal_deliverable()) {
-            rc = -4 /* EINTR */;
-            break;
-        }
-        if (has_timer && hrtimer_now_ns() >= deadline_ns) {
-            rc = -110 /* ETIMEDOUT (Linux) */;
-            break;
-        }
+    prepare_to_wait(wq, e, THREAD_BLOCKED);
 
+    if (interruptible && signal_deliverable()) {
+        rc = -4 /* EINTR */;
+    } else if (has_timer && hrtimer_now_ns() >= deadline_ns) {
+        rc = -110 /* ETIMEDOUT */;
+    } else {
         if (has_timer) hrtimer_start(&timer, deadline_ns);
         schedule();
 
-        /* Post-wake classification:
-         *   - Timeout? return -ETIMEDOUT.
-         *   - Signal?  return -EINTR (interruptible only).
-         *   - Spurious wake (cross-subsystem wake_up, SMP IPI,
-         *     or explicit wake_up on this wq)? Re-enter the loop and sleep
-         *     again up to the original deadline. This matches Linux
-         *     wait_event_* semantics where callers handle spurious wakes
-         *     via the condition re-check; here the caller is timed-only,
-         *     so we simply continue. */
+        /* Post-wake: timeout > signal > 0. "0" heisst woken; caller
+         * pruefen Bedingung in eigener outer-loop. */
         if (has_timer && hrtimer_now_ns() >= deadline_ns) {
             rc = -110;
-            break;
-        }
-        if (interruptible && signal_deliverable()) {
+        } else if (interruptible && signal_deliverable()) {
             rc = -4;
-            break;
         }
-        /* Spurious wake: keep sleeping. */
     }
 
     finish_wait(wq, e);
