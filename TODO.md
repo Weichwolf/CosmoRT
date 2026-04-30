@@ -45,7 +45,8 @@ Multimedia-Apps?
 
 **3-Wege-Diff (alpine-test.log vs alpine-test-host.log):**
 
-- **8 Tests / 5 Cluster** failen NUR auf CosmoRT → echte Kernel-Bugs (Prio A)
+- **7 Tests / 4 Cluster** failen NUR auf CosmoRT → echte Kernel-Bugs (Prio A)
+- **1 Test** failt NUR auf CosmoRT wegen fehlendem Subsystem (akzeptiert: fanotify25)
 - **25 Tests** failen auf BEIDEN → LTP-Test-Bugs / Userspace-Setup (akzeptiert)
 - **48 Tests** failen NUR auf Host → irrelevant fuer CosmoRT (alpine-Setup)
 
@@ -56,7 +57,7 @@ Sub-Cluster sind Prio B/C nach Alltagsrelevanz.
 
 ## Prio A — Echte CosmoRT-Kernel-Bugs
 
-5 Cluster, 8 Test-Failures. Reproduktion: `make alpine-test`, danach
+4 Cluster, 7 Test-Failures. Reproduktion: `make alpine-test`, danach
 Marker-File-Filter fuer fokussierte Iteration (siehe CLAUDE.md §Test-Iteration).
 
 ### A.1 popen-Race (musl popen + popen-static)
@@ -82,14 +83,7 @@ Vermutung: `stat()->st_blocks` falsch berechnet (sollte 512-Byte-Sektor-
 Anzahl sein, nicht Filesystem-Blocks). Untersuche `vfs_fstat()` /
 `tmpfs_op_stat()` / `ext4_inode_stat()`.
 
-### A.4 fanotify25
-
-Anders als fanotify01-24 (siehe Prio B): fanotify25 failt auch wenn das
-Subsystem da waere. Spezifischer Test fuer mark-detach-on-mountpoint-umount.
-Investigation noetig — kann auch ein LTP-Test-Bug sein, dann verschiebt
-sich Test in Prio "akzeptiert". Aktuell vorlaeufig hier.
-
-### A.5 regex (musl regex-ere-backref-static + regex-negated-range-static)
+### A.4 regex (musl regex-ere-backref-static + regex-negated-range-static)
 
 **Befund 2026-04-30**: Heisenbug. In Isolation (Marker-Filter `regex-*`)
 beide PASS. Im Vollauf flaken sie zwischen PASS und FAIL/timeout (rc=143).
@@ -222,7 +216,24 @@ Tests: `icmp_rate_limit01`, `tcindex01`. Niche networking. Niedrige.
 
 ## Akzeptierte Fails (NICHT Kernel-Bugs)
 
-Tests die auch auf Linux failen — kein Engineering-Effort wert.
+Tests die auch auf Linux failen oder fehlende Subsysteme treffen — kein
+Engineering-Effort wert.
+
+### Fehlende Subsysteme (1 Test)
+
+`fanotify25` — kein fanotify-Test im engeren Sinn. Setup mountet
+`tracefs` auf `/sys/kernel/tracing` und schreibt kprobe-events. CosmoRT
+hat weder tracefs-Driver (`src/kernel/sys/stubs.c:71` erlaubt nur
+tmpfs/ext{2,3,4}) noch CONFIG_TRACING-Infrastruktur. `mount("tracefs",
+...)` returnt -ENODEV → LTP `safe_mount` macht TBROK (rc=2).
+
+LTP haette per `needs_kconfigs = "CONFIG_TRACING"` TCONF-skippen koennen,
+aber `KCONFIG_SKIP_CHECK=1` (boot-test.sh:9) deaktiviert das, weil
+CosmoRT `/proc/config.gz` nicht exportiert und ohne den Skip alle anderen
+needs_kconfigs-Tests TBROK schlagen. Trade-off-Akzeptanz: lieber 1 FAIL
+(fanotify25) als ~30 TBROK quer durch LTP.
+
+Gleiche Klasse wie fanotify01-24/Prio B.2 (fehlendes Subsystem).
 
 ### Busybox vs GNU coreutils Mismatches (10 Tests)
 
