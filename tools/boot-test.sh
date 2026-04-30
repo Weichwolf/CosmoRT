@@ -33,6 +33,8 @@ LTP_RUN=""
 DEBUG=0
 [ -n "$MUSL_RUN" ] && DEBUG=1
 [ -n "$LTP_RUN" ]  && DEBUG=1
+# Heisenbug-Debug: erzwingt DEBUG=0 trotz Marker (force_no_debug-Datei)
+[ -f /opt/force_no_debug ] && DEBUG=0
 
 dump() {
     echo "--- OUTPUT ($1) ---"
