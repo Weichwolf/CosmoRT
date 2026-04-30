@@ -257,9 +257,10 @@ static int tmpfs_op_truncate(struct mount *mnt, const char *relpath, int64_t len
     uint64_t irqf;
     spin_lock_irq(&inode->lock, &irqf);
     if (new_size > inode->size) {
-        if (grow_file(inode, new_size) < 0) {
+        int gr = grow_file(inode, new_size);
+        if (gr < 0) {
             spin_unlock_irq(&inode->lock, irqf);
-            return -ENOMEM;
+            return gr; /* propagate -ENOSPC (budget) or -ENOMEM (alloc) */
         }
         /* New pages from grow_file are already zeroed by alloc_page;
          * zero only the tail of the previously-last page if it was reused. */
@@ -330,9 +331,10 @@ static long tmpfs_op_write(struct vfs_file *f, const void *buf, size_t count) {
 
     size_t off = (size_t)f->offset;
     size_t end = off + count;
-    if (grow_file(inode, end) < 0) {
+    int gr = grow_file(inode, end);
+    if (gr < 0) {
         spin_unlock_irq(&inode->lock, irqf);
-        return -ENOMEM;
+        return gr; /* propagate -ENOSPC / -ENOMEM */
     }
     ramfs_write(inode, buf, off, count);
     f->offset = end;
@@ -381,9 +383,10 @@ static long tmpfs_op_pwrite(struct vfs_file *f, const void *buf,
     spin_lock_irq(&inode->lock, &irqf);
     size_t off = (size_t)offset;
     size_t end = off + count;
-    if (grow_file(inode, end) < 0) {
+    int gr = grow_file(inode, end);
+    if (gr < 0) {
         spin_unlock_irq(&inode->lock, irqf);
-        return -ENOMEM;
+        return gr; /* propagate -ENOSPC / -ENOMEM */
     }
     ramfs_write(inode, buf, off, count);
     if (end > inode->size) inode->size = end;
@@ -419,9 +422,10 @@ static int tmpfs_op_ftruncate(struct vfs_file *f, int64_t length) {
     uint64_t irqf;
     spin_lock_irq(&inode->lock, &irqf);
     if (new_size > inode->size) {
-        if (grow_file(inode, new_size) < 0) {
+        int gr = grow_file(inode, new_size);
+        if (gr < 0) {
             spin_unlock_irq(&inode->lock, irqf);
-            return -ENOMEM;
+            return gr; /* propagate -ENOSPC / -ENOMEM */
         }
         size_t old_size = inode->size;
         size_t old_page_end = (old_size + 4095) & ~(size_t)0xFFF;

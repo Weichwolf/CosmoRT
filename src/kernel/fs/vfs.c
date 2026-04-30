@@ -288,11 +288,14 @@ struct vfs_node *node_alloc(const char *name, int type) {
 /* Destroy inode: free per-page storage + pages-array container, return slab */
 void inode_destroy(struct vfs_inode *ino) {
     extern void page_cache_invalidate_ino(uint64_t ino);
+    extern void ramfs_release_pages(size_t n);
     page_cache_invalidate_ino(ino->ino);
     if (ino->pages) {
+        size_t freed = 0;
         for (size_t i = 0; i < ino->npages; i++) {
-            if (ino->pages[i]) page_free(ino->pages[i]);
+            if (ino->pages[i]) { page_free(ino->pages[i]); freed++; }
         }
+        ramfs_release_pages(freed);
         size_t bytes = ino->pages_cap * sizeof(uint8_t *);
         int n_container = (int)((bytes + 4095) / 4096);
         int n_round = 1;

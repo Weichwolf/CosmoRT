@@ -13,8 +13,57 @@
 
 #include "fs/vfs_internal.h"
 #include "linux/signal.h"
+#include "mm/page_alloc.h"
 
 extern uint64_t *alloc_page(void);
+
+/* ── tmpfs/ramfs page-budget ─────────────────────────────────────────────
+ *
+ * Linux's tmpfs caps total in-memory storage at 50% of RAM by default.
+ * Without a cap, fill-the-FS tests (LTP fallocate05, file_attr05) wachsen
+ * unbeschraenkt, bis OOM den ganzen Kernel kippt — kein eligible victim,
+ * weil das tmpfs-storage nicht einem Prozess zuzuordnen ist.
+ *
+ * Wir tracken globalen tmpfs/ramfs-Page-Verbrauch. grow_file gibt
+ * -ENOSPC zurueck wenn ein write das Budget sprengen wuerde — exakt das
+ * Verhalten das LTP's ENOSPC-handler erwartet (`tst_fill_fs` halbiert len
+ * und retried).
+ *
+ * Limit: 60% von total_pages. Default vom page_alloc-Total beim ersten
+ * Aufruf abgefragt. Nicht per-mount (CosmoRT-tmpfs hat shared dentry-Tree),
+ * aber per-prozess-OOM-resistent. */
+static volatile int64_t ramfs_alloc_pages;
+static volatile int64_t ramfs_max_pages;
+
+static int64_t ramfs_get_max(void) {
+    int64_t m = ramfs_max_pages;
+    if (m == 0) {
+        int total = page_alloc_total();
+        m = (int64_t)total * 60 / 100;
+        if (m <= 0) m = 1;
+        ramfs_max_pages = m;
+    }
+    return m;
+}
+
+/* Reserve `add` pages from the ramfs budget. -ENOSPC if budget exhausted. */
+static int ramfs_reserve(size_t add) {
+    int64_t lim = ramfs_get_max();
+    int64_t prev = __sync_fetch_and_add(&ramfs_alloc_pages, (int64_t)add);
+    if (prev + (int64_t)add > lim) {
+        __sync_sub_and_fetch(&ramfs_alloc_pages, (int64_t)add);
+        return -ENOSPC;
+    }
+    return 0;
+}
+
+/* Return `n` pages to the ramfs budget. Called on shrink/destroy/rollback. */
+static void ramfs_release(size_t n) {
+    if (n) __sync_sub_and_fetch(&ramfs_alloc_pages, (int64_t)n);
+}
+
+/* Public wrapper for inode_destroy in vfs.c (different translation unit). */
+void ramfs_release_pages(size_t n) { ramfs_release(n); }
 
 /* RLIMIT_FSIZE enforcement (Linux semantics, write(2)):
  *   offset >= limit       → -EFBIG + SIGXFSZ (nothing written)
@@ -98,16 +147,24 @@ int grow_file(struct vfs_inode *inode, size_t needed) {
     int rc = pages_array_grow(inode, need_pages);
     if (rc < 0) return rc;
 
+    size_t add = need_pages - inode->npages;
+    /* Reserve global budget first so we never start allocating against a
+     * full tmpfs and have to roll back many pages. ENOSPC propagates to
+     * write/truncate which is exactly what LTP's tst_fill_fs expects. */
+    int br = ramfs_reserve(add);
+    if (br < 0) return br;
+
     size_t i = inode->npages;
     while (i < need_pages) {
         uint64_t *pg = alloc_page();
         if (!pg) {
-            /* Roll back: free the pages we just allocated in this call.
-             * Keep already-existing pages intact. */
+            /* Roll back: free the pages we already allocated in this call,
+             * release the entire reservation (allocated + unallocated). */
             for (size_t j = inode->npages; j < i; j++) {
                 page_free(inode->pages[j]);
                 inode->pages[j] = 0;
             }
+            ramfs_release(add);
             return -ENOMEM;
         }
         /* alloc_page already zeroes the page. */
@@ -122,6 +179,7 @@ int grow_file(struct vfs_inode *inode, size_t needed) {
 void shrink_file(struct vfs_inode *inode, size_t new_size) {
     size_t keep_pages = (new_size + 4095) / 4096;
     if (keep_pages >= inode->npages) return;
+    size_t freed = inode->npages - keep_pages;
     for (size_t i = keep_pages; i < inode->npages; i++) {
         if (inode->pages[i]) {
             page_free(inode->pages[i]);
@@ -129,6 +187,7 @@ void shrink_file(struct vfs_inode *inode, size_t new_size) {
         }
     }
     inode->npages = keep_pages;
+    ramfs_release(freed);
 }
 
 /* Flat read from page-list. Out-of-range bytes are zeroed (sparse semantics
