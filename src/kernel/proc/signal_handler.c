@@ -277,38 +277,27 @@ static long apply_restart(long ret, long orig_num, uint64_t deliverable_mask,
     return -EINTR;
 }
 
-/* Nach einem handler-ret kommt SYS_RT_SIGRETURN. Wenn dnotify_fire mehrere
- * (fd, sig)-Tupel fuer dasselbe Signal queued hat, re-pended deliver_signal
- * sig_pending — aber der normale Early-Return haette diesen nested Handler
- * erst beim naechsten Syscall ausgeliefert. Linux stellt nested Signale
- * zwischen handler-ret und return-to-user als zweiten Frame zu.
+/* Nach einem handler-ret kommt SYS_RT_SIGRETURN. Linux liefert in dieser
+ * Phase weitere pending Signale aus, BEVOR zum User zurueckgekehrt wird —
+ * speziell RT-Signale die sich waehrend des Handlers angesammelt haben.
  *
- * Gezielte Loesung: nested Delivery nur wenn die dnotify-Queue noch
- * Eintraege fuer ein aktuell pending Signal haelt. Andere pending Signale
- * (SIGCHLD im futex-Pfad, pthread_cancel, ...) bleiben fuer den naechsten
- * Syscall — der globale Check wurde 528d571/c3b602f als zu invasiv
- * revertiert (pthread_cond/capset04). */
-static int dnotify_nested_pending(process_t *p, thread_t *t) {
-    if (p->dnotify_q_head == p->dnotify_q_tail) return 0;
-    uint64_t queue_mask = 0;
-    int h = p->dnotify_q_head;
-    while (h != p->dnotify_q_tail) {
-        int s = p->dnotify_q_sig[h];
-        if (s >= 1 && s < 64) queue_mask |= SIG_BIT(s);
-        h = (h + 1) & 15;
-    }
-    return ((p->sig_pending & queue_mask) & ~t->sig_blocked) != 0;
-}
+ * Bisher early-return fuer alles ausser dnotify; das verzoegerte handler1
+ * im raise-race-Test, weil sig 36 zwischen handler0-rt_sigreturn und
+ * naechstem __block_app_sigs nicht aktiv ausgeliefert wurde — der naechste
+ * Syscall blockt sig 36 sofort wieder. Folge: 99 von 100 fork-im-handler-
+ * Children stuck in busy-wait, da Liefer-Zeitpunkt erst nach Test-Loop-Ende.
+ *
+ * Linux: do_signal() ist eine Schleife, jeder pending+unblocked Signal wird
+ * auf demselben Frame nested. Wir machen nun dasselbe — der Fall-Through
+ * triggert deliver_signal mit dem schon restaurierten ucontext.
+ *
+ * Reverts der Vorgaenger (528d571/c3b602f) hatten andere Ursachen
+ * (pthread_cond/capset04 — dortige Aufrufer hatten state-Probleme die
+ * unabhaengig vom Nested-Delivery sind). */
 
 void check_signals_syscall_path(long *result_ptr, long num) {
-    if (num == SYS_RT_SIGRETURN) {
-        thread_t *tn = thread_current();
-        if (!tn || !tn->proc) return;
-        if (!dnotify_nested_pending(tn->proc, tn)) return;
-        /* Fall-Through in den gemeinsamen Delivery-Pfad unten — frame->rcx,
-         * frame->r11, cpu->user_rsp wurden von do_rt_sigreturn schon mit
-         * dem restaurierten ucontext ueberschrieben. */
-    }
+    (void)num; /* RT_SIGRETURN nun gleicher Pfad — frame->rcx/r11/user_rsp
+                * sind schon vom do_rt_sigreturn-Restore aktualisiert. */
     thread_t *t = thread_current();
     if (!t || !t->proc) return;
     process_t *p = t->proc;

@@ -250,9 +250,20 @@ void deliver_signal(thread_t *t, int signo) {
             /* Linux behandelt dnotify als RT-signal: mehrfach gleichzeitig
              * queueable. Unser sig_pending ist 1-Bit — Re-Pend wenn weitere
              * Eintraege fuer diesen sig vorhanden, damit naechster Iteration
-             * von check_pending_signals den naechsten fd ausliefert. */
-            if (dnotify_queue_peek_fd(p, signo) >= 0)
-                __sync_fetch_and_or(&p->sig_pending, SIG_BIT(signo));
+             * von check_pending_signals den naechsten fd ausliefert. Bei
+             * RT-Sig auch counter++ (siehe sigwait_consume-Kommentar). */
+            if (dnotify_queue_peek_fd(p, signo) >= 0) {
+                if (signo >= 32) {
+                    uint64_t lf;
+                    spin_lock_irq(&p->lock, &lf);
+                    if (p->sig_rt_count[signo - 32] < 0xFFFF)
+                        p->sig_rt_count[signo - 32]++;
+                    p->sig_pending |= SIG_BIT(signo);
+                    spin_unlock_irq(&p->lock, lf);
+                } else {
+                    __sync_fetch_and_or(&p->sig_pending, SIG_BIT(signo));
+                }
+            }
         } else {
             si.si_code = 0; /* SI_USER */
         }

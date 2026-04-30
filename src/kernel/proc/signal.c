@@ -42,11 +42,36 @@ void check_pending_signals(void) {
         if (!(deliverable & SIG_BIT(sig))) continue;
         /* Clear from whichever pending set has it (thread-level takes priority).
          * Atomic RMW: kill_one and check_alarm_timers can fire from IRQ ctx and
-         * race with this clear; non-atomic |= would lose a freshly-set bit. */
-        if (t->sig_thread_pending & SIG_BIT(sig))
-            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-        else
-            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
+         * race with this clear; non-atomic |= would lose a freshly-set bit.
+         *
+         * RT signals (32..63): decrement queue counter; bit stays set if
+         * counter > 0 (more pending). Lock-protected to pair with the
+         * incrementing send paths. */
+        if (t->sig_thread_pending & SIG_BIT(sig)) {
+            if (sig >= 32) {
+                uint64_t lf;
+                spin_lock_irq(&p->lock, &lf);
+                if (t->sig_rt_thread_count[sig - 32] > 0)
+                    t->sig_rt_thread_count[sig - 32]--;
+                if (t->sig_rt_thread_count[sig - 32] == 0)
+                    t->sig_thread_pending &= ~SIG_BIT(sig);
+                spin_unlock_irq(&p->lock, lf);
+            } else {
+                __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
+            }
+        } else {
+            if (sig >= 32) {
+                uint64_t lf;
+                spin_lock_irq(&p->lock, &lf);
+                if (p->sig_rt_count[sig - 32] > 0)
+                    p->sig_rt_count[sig - 32]--;
+                if (p->sig_rt_count[sig - 32] == 0)
+                    p->sig_pending &= ~SIG_BIT(sig);
+                spin_unlock_irq(&p->lock, lf);
+            } else {
+                __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
+            }
+        }
 
         struct k_sigaction *sa = &p->sig_actions[sig];
         uint64_t handler = (uint64_t)sa->sa_handler;
@@ -363,8 +388,22 @@ long kill_one(process_t *target, int sig) {
      * Delivery happens on return to userspace via check_pending_signals.
      * Atomic RMW: kill_one races with check_pending_signals' &= ~bit
      * clear and check_alarm_timers' SIGALRM |= bit set; non-atomic |=
-     * loses one of those bits when both fire close together. */
-    __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
+     * loses one of those bits when both fire close together.
+     *
+     * RT signals (32..63): increment per-signal queue depth under
+     * target->lock — concurrent senders queue independently instead of
+     * collapsing on the bit. The bit stays set until count drops to 0
+     * during consume. Non-RT signals keep the classic bit-only path. */
+    if (sig >= 32) {
+        uint64_t lf;
+        spin_lock_irq(&target->lock, &lf);
+        if (target->sig_rt_count[sig - 32] < 0xFFFF)
+            target->sig_rt_count[sig - 32]++;
+        target->sig_pending |= SIG_BIT(sig);
+        spin_unlock_irq(&target->lock, lf);
+    } else {
+        __sync_fetch_and_or(&target->sig_pending, SIG_BIT(sig));
+    }
 
     /* Wake blocked threads that have this signal unblocked. Eine Primitive:
      * signal_wake_up macht try_to_wake_up(t, TASK_INTERRUPTIBLE | TASK_KILLABLE),
@@ -473,8 +512,19 @@ long do_tgkill(int tgid, int tid, int sig) {
 
     /* User handler — set per-thread pending and wake target thread.
      * tgkill targets a specific thread, so use thread-level pending
-     * (not process-level) to ensure the correct thread handles it. */
-    __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
+     * (not process-level) to ensure the correct thread handles it.
+     * RT signals (32..63) increment a counter so concurrent senders
+     * don't collapse into a single delivery (Linux RT-queue semantics). */
+    if (sig >= 32) {
+        uint64_t lf;
+        spin_lock_irq(&p->lock, &lf);
+        if (target->sig_rt_thread_count[sig - 32] < 0xFFFF)
+            target->sig_rt_thread_count[sig - 32]++;
+        target->sig_thread_pending |= SIG_BIT(sig);
+        spin_unlock_irq(&p->lock, lf);
+    } else {
+        __sync_fetch_and_or(&target->sig_thread_pending, SIG_BIT(sig));
+    }
     if (!(SIG_BIT(sig) & target->sig_blocked))
         signal_wake_up(target);
     return 0;
@@ -527,10 +577,32 @@ static int sigwait_consume(thread_t *t, process_t *p, uint64_t wait_mask,
     for (sig = 1; sig < 64; sig++)
         if (match & SIG_BIT(sig)) break;
 
-    if (t->sig_thread_pending & SIG_BIT(sig))
-        __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
-    else
-        __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
+    /* Same RT-decrement semantics as check_pending_signals. */
+    if (t->sig_thread_pending & SIG_BIT(sig)) {
+        if (sig >= 32) {
+            uint64_t lf;
+            spin_lock_irq(&p->lock, &lf);
+            if (t->sig_rt_thread_count[sig - 32] > 0)
+                t->sig_rt_thread_count[sig - 32]--;
+            if (t->sig_rt_thread_count[sig - 32] == 0)
+                t->sig_thread_pending &= ~SIG_BIT(sig);
+            spin_unlock_irq(&p->lock, lf);
+        } else {
+            __sync_fetch_and_and(&t->sig_thread_pending, ~SIG_BIT(sig));
+        }
+    } else {
+        if (sig >= 32) {
+            uint64_t lf;
+            spin_lock_irq(&p->lock, &lf);
+            if (p->sig_rt_count[sig - 32] > 0)
+                p->sig_rt_count[sig - 32]--;
+            if (p->sig_rt_count[sig - 32] == 0)
+                p->sig_pending &= ~SIG_BIT(sig);
+            spin_unlock_irq(&p->lock, lf);
+        } else {
+            __sync_fetch_and_and(&p->sig_pending, ~SIG_BIT(sig));
+        }
+    }
 
     extern int dnotify_queue_pop_fd(process_t *p, int sig);
     extern int dnotify_queue_peek_fd(process_t *p, int sig);
@@ -547,8 +619,21 @@ static int sigwait_consume(thread_t *t, process_t *p, uint64_t wait_mask,
         }
         copy_to_user(uinfo, ksi, 128);
     }
-    if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0)
-        __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
+    /* dnotify-Queue hat noch weitere Eintraege fuer denselben sig — re-pend.
+     * Fuer RT-Signale auch den counter erhoehen, sonst geht der Eintrag beim
+     * naechsten consume verloren (counter==0 → bit clear → kein delivery). */
+    if (dn_fd >= 0 && dnotify_queue_peek_fd(p, sig) >= 0) {
+        if (sig >= 32) {
+            uint64_t lf;
+            spin_lock_irq(&p->lock, &lf);
+            if (p->sig_rt_count[sig - 32] < 0xFFFF)
+                p->sig_rt_count[sig - 32]++;
+            p->sig_pending |= SIG_BIT(sig);
+            spin_unlock_irq(&p->lock, lf);
+        } else {
+            __sync_fetch_and_or(&p->sig_pending, SIG_BIT(sig));
+        }
+    }
     return sig;
 }
 

@@ -450,7 +450,11 @@ long kernel_clone(unsigned long flags, void *child_stack,
         child->cmdline_len = parent->cmdline_len;
         for (int i = 0; i < parent->cmdline_len && i < 1024; i++)
             child->cmdline[i] = parent->cmdline[i];
+        /* Linux fork: child starts with empty pending — sig queue not
+         * inherited. proc_alloc() kmemset already zeroed sig_rt_count;
+         * keep this explicit for the next reader. */
         child->sig_pending = 0;
+        for (int i = 0; i < 32; i++) child->sig_rt_count[i] = 0;
         child->alarm_deadline_ms = 0;
         for (int i = 0; i < 64; i++)
             child->sig_actions[i] = parent->sig_actions[i];

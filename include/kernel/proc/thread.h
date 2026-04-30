@@ -159,6 +159,9 @@ typedef struct thread {
     /* ── Signal mask + per-thread pending (like Linux task_struct) ── */
     uint64_t sig_blocked;     /* bitmask of blocked signals (sigprocmask) */
     uint64_t sig_thread_pending; /* per-thread pending (from tgkill/tkill) */
+    /* Per-RT-signal queue depth for thread-directed (tgkill) signals.
+     * Same semantics as process_t::sig_rt_count but for sig_thread_pending. */
+    uint16_t sig_rt_thread_count[32];
 
     /* ── rt_sigsuspend saved mask (restored before signal delivery) ── */
     uint64_t sig_saved_mask;  /* old sig_blocked during sigsuspend; 0 = not in sigsuspend */

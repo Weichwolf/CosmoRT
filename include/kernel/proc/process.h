@@ -67,6 +67,14 @@ typedef struct process {
 
     /* Signals */
     uint64_t    sig_pending;        /* bitmask of pending signals */
+    /* Per-RT-signal queue depth (sig 32..63 → idx 0..31). Linux:
+     * non-RT signals collapse — second send before delivery is a no-op.
+     * RT signals queue: each send is a separate event, all reach the
+     * handler. Counter keeps sig_pending bit set as long as the queue
+     * has pending events. Bumped under spin_lock_irq(p->lock) on send,
+     * decremented under same lock on consume. uint16_t = 65535 events
+     * per signal — ample for any sane signal-flood. */
+    uint16_t    sig_rt_count[32];
     struct k_sigaction sig_actions[64]; /* per-signal action (0-63, SIGRTMIN=32..SIGRTMAX=63) */
     uint64_t    sig_trampoline_page; /* user-addr of RX trampoline page (0 = not yet allocated) */
 
