@@ -120,11 +120,13 @@ static long loop_set_fd(struct loop_dev *d, int backing_fd) {
         irq_restore(flg);
         return -EBUSY;
     }
-    /* Bump open count so subsequent close on user fd doesn't free the inode.
-     * Pin the vfs_file* so kernel-side mount IO can read it even if the
-     * caller closes their fd. */
+    /* Pin the vfs_file* so kernel-side mount IO can read it even if the
+     * caller closes their fd. vfs_file_incref allein reicht — der inode
+     * ist via f->inode an die file gepinnt; vfs_file_release dekrementiert
+     * den inode-refcount via tmpfs_op_close. Eine zusaetzliche
+     * f->inode->refcount++ hier waere ein Leak weil loop_clr_fd kein
+     * passendes inode_decref macht. */
     if (f->disk_ino) ext4_open_inc((uint32_t)f->disk_ino);
-    if (f->inode) f->inode->refcount++;
     vfs_file_incref(f);
 
     d->backing_fd = backing_fd;
