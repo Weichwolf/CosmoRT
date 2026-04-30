@@ -98,6 +98,8 @@ void hal_cpu_reset(void);
  * Kernel drivers must not assume one or the other. */
 void     hal_io_outb(uint16_t port, uint8_t val);
 uint8_t  hal_io_inb(uint16_t port);
+void     hal_io_outw(uint16_t port, uint16_t val);
+uint16_t hal_io_inw(uint16_t port);
 void     hal_io_outl(uint16_t port, uint32_t val);
 uint32_t hal_io_inl(uint16_t port);
 

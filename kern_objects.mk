@@ -23,7 +23,8 @@ KERN_CORE = $(BUILD)/kernel/core/main.o \
             $(BUILD)/kernel/core/rcu.o \
             $(BUILD)/kernel/core/tick.o \
             $(BUILD)/kernel/core/clocksource.o \
-            $(BUILD)/kernel/core/time_ns.o
+            $(BUILD)/kernel/core/time_ns.o \
+            $(BUILD)/kernel/core/cmdline.o
 
 KERN_MM   = $(BUILD)/kernel/mm/page_alloc.o \
             $(BUILD)/kernel/mm/paging.o \
@@ -127,6 +128,7 @@ KERN_HW   = $(BUILD)/kernel/hw/cosmort.o \
             $(BUILD)/kernel/hw/serial_bridge.o \
             $(BUILD)/kernel/hw/kexec.o \
             $(BUILD)/kernel/hw/acpi.o \
+            $(BUILD)/kernel/hw/fw_cfg.o \
             $(BUILD)/arch/x86_64/hw/hyperv.o \
             $(BUILD)/arch/x86_64/hw/hyperv_clocksource.o \
             $(BUILD)/arch/x86_64/hw/hyperv_stimer.o \

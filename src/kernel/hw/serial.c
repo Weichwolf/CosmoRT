@@ -1,15 +1,18 @@
-/* COM1 serial — 115200 baud, 8N1, ring buffer for dmesg
+/* 16550 UART output, gated on `console=ttyS<N>` cmdline (Linux semantics).
  *
- * All output is mirrored to a 64KB ring buffer. procfs reads it live
- * via serial_dmesg_read() — no VFS writes, no file I/O from serial.
- */
+ * Default with no cmdline: no UART traffic. The 64KB dmesg ring continues
+ * to capture printk so /proc/kmsg / dmesg(1) works for postmortem.
+ *
+ * Port + baud are picked at boot from cmdline_init():
+ *   console=ttyS0,115200  → 0x3F8, 115200
+ *   console=ttyS1,9600    → 0x2F8, 9600
+ * Default baud (no comma) is 115200, matching Linux 8250 driver. */
 
 #include "hw/serial.h"
+#include "core/cmdline.h"
 #include "spinlock.h"
 #include <stdint.h>
 #include "hal/hal.h"
-
-#define COM1 0x3F8
 
 static inline void port_out8(uint16_t port, uint8_t val) { hal_io_outb(port, val); }
 static inline uint8_t port_in8(uint16_t port) { return hal_io_inb(port); }
@@ -23,24 +26,10 @@ static int dmesg_head;  /* next write position (wraps) */
 static int dmesg_len;   /* total bytes stored (capped at DMESG_SIZE) */
 static spinlock_t dmesg_lock = SPINLOCK_INIT;
 
-/* ── Public API ────────────────────────────────────── */
+static uint16_t s_port;       /* 0 if console disabled */
+static int      s_inited;
 
-void serial_init(void) {
-    port_out8(COM1 + 1, 0x00);
-    port_out8(COM1 + 3, 0x80);
-    port_out8(COM1 + 0, 0x01);  /* 115200 baud */
-    port_out8(COM1 + 1, 0x00);
-    port_out8(COM1 + 3, 0x03);  /* 8N1 */
-    port_out8(COM1 + 2, 0xC7);
-    port_out8(COM1 + 4, 0x0B);
-}
-
-void serial_putchar(char c) {
-    while (!(port_in8(COM1 + 5) & 0x20))
-        hal_cpu_relax();
-    port_out8(COM1, c);
-
-    /* Append to ring buffer (multi-core safe) */
+static void dmesg_push(char c) {
     uint64_t df;
     spin_lock_irq(&dmesg_lock, &df);
     dmesg_ring[dmesg_head] = c;
@@ -49,10 +38,41 @@ void serial_putchar(char c) {
     spin_unlock_irq(&dmesg_lock, df);
 }
 
-void serial_putchar_raw(char c) {
-    while (!(port_in8(COM1 + 5) & 0x20))
+/* ── Public API ────────────────────────────────────── */
+
+void serial_init(void) {
+    if (s_inited) return;
+    s_inited = 1;
+    if (!cmdline_console_enabled()) return;
+
+    s_port = cmdline_console_port();
+    int baud = cmdline_console_baud();
+    /* 16550 divisor latch: divisor = 115200 / baud */
+    int divisor = 115200 / (baud > 0 ? baud : 115200);
+    if (divisor <= 0) divisor = 1;
+
+    port_out8(s_port + 1, 0x00);
+    port_out8(s_port + 3, 0x80);
+    port_out8(s_port + 0, (uint8_t)(divisor & 0xff));
+    port_out8(s_port + 1, (uint8_t)((divisor >> 8) & 0xff));
+    port_out8(s_port + 3, 0x03);  /* 8N1 */
+    port_out8(s_port + 2, 0xC7);
+    port_out8(s_port + 4, 0x0B);
+}
+
+void serial_putchar(char c) {
+    dmesg_push(c);
+    if (!s_port) return;
+    while (!(port_in8(s_port + 5) & 0x20))
         hal_cpu_relax();
-    port_out8(COM1, c);
+    port_out8(s_port, c);
+}
+
+void serial_putchar_raw(char c) {
+    if (!s_port) return;
+    while (!(port_in8(s_port + 5) & 0x20))
+        hal_cpu_relax();
+    port_out8(s_port, c);
 }
 
 void serial_puts(const char *s) {
@@ -68,13 +88,15 @@ void serial_hex64(uint64_t v) {
 }
 
 char serial_getchar(void) {
-    if (!(port_in8(COM1 + 5) & 0x01))
+    if (!s_port) return 0;
+    if (!(port_in8(s_port + 5) & 0x01))
         return 0; /* no data available */
-    return (char)port_in8(COM1);
+    return (char)port_in8(s_port);
 }
 
 int serial_data_available(void) {
-    return (port_in8(COM1 + 5) & 0x01) ? 1 : 0;
+    if (!s_port) return 0;
+    return (port_in8(s_port + 5) & 0x01) ? 1 : 0;
 }
 
 /* ── dmesg read (for procfs) ─────────────────────── */

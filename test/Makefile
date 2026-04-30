@@ -229,6 +229,7 @@ define run_qemu
 	timeout 180 $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	  -bios /usr/share/ovmf/OVMF.fd \
 	  -drive file=$(1),format=raw \
+	  -fw_cfg name=opt/cmdline,string=console=ttyS0,,115200 \
 	  -serial file:/tmp/cosmo-serial.log \
 	  -display none -no-reboot \
 	  -device e1000,netdev=net0 \

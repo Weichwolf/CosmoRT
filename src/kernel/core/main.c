@@ -100,6 +100,12 @@ void kernel_main(struct boot_info *info) {
 
     g_boot_info = info;
 
+    /* Read kernel cmdline (QEMU fw_cfg "opt/cmdline") before any subsystem
+     * decides whether to enable its UART output. Default (no cmdline) is
+     * silent — matches Linux when no console= is passed. */
+    extern void cmdline_init(void);
+    cmdline_init();
+
     serial_init();
     serial_puts("\n\nCosmoRT v0.1\n");
 

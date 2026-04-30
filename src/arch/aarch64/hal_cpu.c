@@ -48,5 +48,7 @@ void hal_cpu_shutdown(void)                          { AARCH64_STUB(shutdown); }
 void hal_cpu_reset(void)                             { AARCH64_STUB(reset); }
 void hal_io_outb(uint16_t p, uint8_t v)              { (void)p; (void)v; AARCH64_STUB(io_outb); }
 uint8_t hal_io_inb(uint16_t p)                       { (void)p; AARCH64_STUB(io_inb); return 0; }
+void hal_io_outw(uint16_t p, uint16_t v)             { (void)p; (void)v; AARCH64_STUB(io_outw); }
+uint16_t hal_io_inw(uint16_t p)                      { (void)p; AARCH64_STUB(io_inw); return 0; }
 void hal_io_outl(uint16_t p, uint32_t v)             { (void)p; (void)v; AARCH64_STUB(io_outl); }
 uint32_t hal_io_inl(uint16_t p)                      { (void)p; AARCH64_STUB(io_inl); return 0; }

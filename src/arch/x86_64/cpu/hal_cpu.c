@@ -72,6 +72,8 @@ void hal_cpu_set_percpu_active(uint64_t base) {
 
 void     hal_io_outb(uint16_t port, uint8_t val)   { arch_outb(port, val); }
 uint8_t  hal_io_inb(uint16_t port)                 { return arch_inb(port); }
+void     hal_io_outw(uint16_t port, uint16_t val)  { arch_outw(port, val); }
+uint16_t hal_io_inw(uint16_t port)                 { return arch_inw(port); }
 void     hal_io_outl(uint16_t port, uint32_t val)  { arch_outl(port, val); }
 uint32_t hal_io_inl(uint16_t port)                 { return arch_inl(port); }
 

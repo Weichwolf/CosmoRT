@@ -273,9 +273,19 @@ $(BUILD):
 # ── QEMU ────────────────────────────────────────
 QEMU = qemu-system-x86_64
 QEMU_ACCEL = -machine accel=kvm:tcg
+
+# Linux-style kernel cmdline via QEMU fw_cfg. Without it CosmoRT boots
+# silent (no UART output, dmesg ring still records). Every QEMU target
+# below opts in via $(FWCFG_CONSOLE).
+# QEMU's option parser treats ',' as field separator inside -fw_cfg, so
+# embedded commas (console=ttyS0,115200) need ',,' for literal escape.
+KERNEL_CMDLINE  = console=ttyS0,,115200
+FWCFG_CONSOLE   = -fw_cfg name=opt/cmdline,string=$(KERNEL_CMDLINE)
+
 QEMU_FLAGS = $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
              -bios /usr/share/ovmf/OVMF.fd \
              -drive file=$(ESP_IMG),format=raw \
+             $(FWCFG_CONSOLE) \
              -serial stdio \
              -display none \
              -no-reboot \
@@ -292,6 +302,7 @@ ALPINE_QEMU = $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
   -bios /usr/share/ovmf/OVMF.fd \
   -drive file=$(ESP_IMG),format=raw \
   -drive file=build/alpine.img,format=raw,if=virtio \
+  $(FWCFG_CONSOLE) \
   -device e1000,netdev=net0 \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net1 \
@@ -356,6 +367,7 @@ run: $(ESP_IMG)
 	$(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
+	        $(FWCFG_CONSOLE) \
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot &
 
@@ -383,6 +395,7 @@ test-boot: $(ESP_IMG)
 	timeout 10 $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(ESP_IMG),format=raw \
+	        $(FWCFG_CONSOLE) \
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
@@ -399,6 +412,7 @@ test-boot-disk: $(BUILD)/disk.img
 	timeout 10 $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
 	        -bios /usr/share/ovmf/OVMF.fd \
 	        -drive file=$(BUILD)/disk.img,format=raw \
+	        $(FWCFG_CONSOLE) \
 	        -serial file:/tmp/cosmo-serial.log \
 	        -display none -no-reboot \
 	        -device e1000,netdev=net0 \
