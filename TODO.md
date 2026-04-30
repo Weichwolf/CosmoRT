@@ -28,11 +28,43 @@ Multimedia-Apps?
 
 ---
 
-## Stand (Session 2026-04-29 — Late)
+## Stand (Session 2026-04-30)
 
-ktest **3246/0**, musl **~465/13** (Variabilität 460-467 wegen race-cluster-
-flakiness bei Vollauf), LTP **~272/46/133** (von 452 nach Filter; war 191/218
-vor Session). Vollauf-Zeit 15 min (vorher 43 min, **3x schneller via ext4-Phase**).
+**ktest 3246/0**, musl **464/13-14** (Race-tests flaky: raise-race +
+regex-ere-backref-static gehen zwischen PASS/FAIL je nach scheduling),
+**LTP 276 PASS / 19 FAIL / 155 SKIP** (vorher 274/44/133 → +2 PASS,
+**-25 FAIL**, +22 SKIP). Vollauf-Zeit 15 min.
+
+### Session 2026-04-30 — OOM-Cluster behoben
+
+**Problem (vor)**: LTP fallocate05 mit `mount_device + all_filesystems +
+TST_FILL_RANDOM` hat tmpfs unbeschraenkt befuellt → kernel OOM
+"no eligible victim" → ALLE nachfolgenden ~150 Tests broken.
+(Vollauf 274/174/56 wegen Cascade-Death.)
+
+**Fix 1: tmpfs Page-Budget Cap** (commit d27b406):
+- vfs_rw.c: globaler `ramfs_alloc_pages` Counter, max=60% von total RAM
+- grow_file reserviert vorab; ENOSPC bei Cap-Ueberschreitung
+  (LTP's tst_fill_fs erwartet ENOSPC, halbiert len, retried)
+- shrink_file/inode_destroy: ramfs_release der freed pages
+- tmpfs_op_truncate/_write/_pwrite/_ftruncate: -ENOSPC propagieren
+  (statt -ENOMEM zu maskieren)
+- Verifikation: fallocate05 PASS statt OOM-killed (focused: 3/0/1)
+
+**Fix 2: Loop-Device inode-refcount-Leak** (commit 36377ae):
+- LOOP_SET_FD machte sowohl `vfs_file_incref` als auch
+  `f->inode->refcount++` — letztere ohne pair-decref in LOOP_CLR_FD.
+- Folge: jedes test_dev.img-Backing-File leakt seinen inode + pages
+  permanent. Cumulativ ueber tests fanotify-Cluster sah ENOSPC.
+- Fix: redundantes f->inode->refcount++ entfernt; vfs_file_incref pinnt
+  den inode bereits via f->inode-Pfad in tmpfs_op_close.
+- Verifikation (focused): alle 23 fanotify FAIL → 23 SKIP
+  ("fanotify not configured" TCONF). fanotify25 bleibt FAIL
+  (separates tracefs-mount-Issue).
+
+**Fix 3: Boot-Test Filter** (commit 127f490):
+- shell_pipe01.sh aus LTP-Liste filtern — designed um via Pipe gerufen
+  zu werden, blockt als Standalone auf `read line`.
 
 ### Performance Phase 1 — ext4 high-performance (Linux-baseline + besser)
 
@@ -79,39 +111,54 @@ Verifiziert: dd 300 MB tmpfs 2 GB/s, dd 500 MB 991 MB/s, test-hw 3246/0.
 - `_child` und `tst_*` und `tpm*` aus LTP-Test-Liste filtern (~52 false-positive
   FAILs raus).
 
-### Verbleibende ~46 LTP-FAILs — Buckets
+### Verbleibende 19 LTP-FAILs — Buckets (nach Session 2026-04-30)
 
-**Loop-Device-mount (~22 Tests, architektonisch groß)**:
-fanotify×16, fallocate×3, copy_file_range×1, file_attr×4 (race-flake), ...
-- Loop-Subsystem hat read/write durch backing-fd, aber `do_mount("/dev/loopN",
-  "ext4")` returnt -ENODEV in stubs.c
-- Wurzel: ext4-Driver ist single-instance (globale `sb`, `mounted`, `gd_cache`,
-  `icache` etc.) — multi-mount-fähig zu machen ist ~1500 Zeilen Refactor
-- Plus: bcache pro Block-Source statt globaler virtio-blk
-- Mehrere Tage Engineering, separater Track
+**Userspace-Tool-Mismatches (busybox vs. GNU coreutils, 8 Tests, NICHT
+Kernel-fixbar)**:
+- `ar01.sh`: test 14 nutzt `date --date='next day'` (BusyBox date kennt
+  das nicht, GNU date schon). 13 von 17 sub-tests PASS.
+- `df01.sh`, `mkfs01.sh`: `tst_device` cli-tool nicht in install/bin/
+  (testcases/lib Makefile-Build-Issue der LTP-Distribution).
+- `du01.sh`: `stat -f --format='%s'` (GNU) vs. busybox `stat -f -c FMT`.
+- `file01.sh`: `file` Binary fehlt im Image (apk install missing).
+- `gzip_tests.sh`: `gzip -r` nicht in BusyBox (recursive ist GNU-only).
+- `ld01.sh`: gcc cc1 SIGTERM (test-runtime > 5min wegen langsamem
+  fork+exec auf Alpine-Image — nicht OOM mehr seit 60% cap-Fix).
+- `ldd01.sh`: `ld-musl ... -v` Format-Mismatch zur GNU ldd-Output.
+- `mv_tests.sh`, `nm01.sh`, `tar_tests.sh`: aehnliche
+  busybox/GNU-mismatches.
 
-**popen/raise-race + shell-pipe-Tests (~17 Tests)**:
-popen×2, raise-race×2 + shell-tests ar01.sh, du01.sh, file01.sh, ld01.sh,
-ldd01.sh, mv_tests.sh, nm01.sh, gzip_tests.sh, mkfs01.sh, df01.sh, tar_tests.sh,
-shell_pipe01.sh, unshare01.sh
-- Wurzel: race im fork+execve+pipe-Pfad (musl posix_spawn)
-- Heisenbug: serial_putchar logging fixt es (lock-acquire/IRQ-disable im Pfad)
-- 3 Agent-Sessions ohne Erfolg — Wurzel vermutlich in `prepare_to_wait` /
-  wakeup-propagation oder MMU-switch-IRQ-race in process_exec.c
-- Tieftauchen erfordert non-perturbativen Tracer (ftrace-Style)
+**Race-Cluster (3 Tests, fork+exec-Pipe-Race, schwer fixbar)**:
+- `clock_settime04`: variant 3 `sys_clock_nanosleep` mit
+  `__kernel_old_timespec` hangs (libc variant 1 PASS). Stuck-thread
+  diagnose unklar.
+- `epoll_pwait03`, `epoll_wait02`: Multi-variant-Tests, late variants
+  timeout.
 
-**close_range01**: braucht clone(CLONE_FILES) refcount-fd-Sharing.
-process_t.fds ist embedded (~117 Call-Sites) — heap-allokiert mit refcount
-ist mittlerer Refactor.
+**Architektur-Bugs (3 Tests)**:
+- `clone08`, `clone10`: musl 1.2.5 CLONE_THREAD-filter
+  client-side — Linux-LTP-Test-Bug, nicht Kernel.
+- `cve-2014-0196`: `/dev/ptmx`-Open route fehlt + TIOCGPTN ioctl.
+  (mittlerer Fix: pty_alloc + FD_PTY_MASTER allocation.)
 
-**clock_settime04, epoll_pwait03**: Tests killed nach 30s timeout — erste
-Variants PASS, dritte/vierte Variants hängen (vermutlich syscall-variant-bug
-in old-kernel-spec-Pfad).
+**User-Namespaces (1 Test, großer Scope)**:
+- `unshare01.sh`: braucht CLONE_NEWUSER + uid_map/gid_map +
+  /proc/sys/user/max_*_namespaces. ~1500 Zeilen NS-Implementation.
 
-**clone08, clone10**: musl 1.2.5 filtert CLONE_THREAD clientseitig — Linux-
-LTP-Test-Bug, nicht Kernel.
+**fanotify-Tracefs (1 Test)**:
+- `fanotify25`: mount(tracefs) → ENODEV. Tracefs-Subsystem fehlt
+  komplett in CosmoRT.
 
-**cve-2014-0196**: pty-Subsystem-Bug.
+### Erledigt 2026-04-30 (Session "OOM-Cluster")
+
+**fallocate05-OOM-Cascade** war Wurzel von ~150 Test-FAILs:
+- Linux's tmpfs cap (50% RAM default) fehlte → tmpfs wuchs unbeschraenkt
+  via TST_FILL_RANDOM → kernel out_of_memory("no eligible victim")
+  → ALLE nachfolgenden Tests broken (Memory-Cascade-Death).
+- Plus: LOOP_SET_FD inode-refcount-Leak (extra `f->inode->refcount++`
+  ohne pair-decref in LOOP_CLR_FD) → cumulative tmpfs-Leak ueber Tests.
+- Fix-Path: globaler `ramfs_alloc_pages` Counter mit 60%-RAM-Cap +
+  ENOSPC-Propagation in tmpfs ops; redundanter inode-refcount entfernt.
 
 ### Erledigt 2026-04-29
 
