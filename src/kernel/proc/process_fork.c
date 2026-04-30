@@ -1,6 +1,7 @@
 /* CosmoRT Process — fork, COW, address space copy */
 
 #include "proc/proc_internal.h"
+#include "fs/loop.h"
 
 /* ── COW helpers ─────────────────────────────────── */
 
@@ -226,6 +227,11 @@ static int dup_fd_table(process_t *child, process_t *parent) {
                      src->type == FD_TIMERFD || src->type == FD_INOTIFY ||
                      src->type == FD_UNIX_SOCK)
                 fd_obj_incref(src->type, src->obj, src->flags);
+        }
+        if (src->type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)src->obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_open(devid);
         }
     }
     child->fds->max_fd = copy_end;

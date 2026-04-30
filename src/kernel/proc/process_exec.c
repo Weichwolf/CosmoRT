@@ -3,6 +3,7 @@
 #include "proc/proc_internal.h"
 #include "linux/capability.h"
 #include "sys/vdso.h"
+#include "fs/loop.h"
 
 /* ── execve helpers ──────────────────────────────── */
 
@@ -802,6 +803,10 @@ shebang_retry:;
             int ftype = e->type;
             if (ftype == FD_FILE) {
                 vfs_file_free_obj(e->obj);
+            } else if (ftype == FD_DEVICE) {
+                int devid = (int)(uintptr_t)e->obj;
+                if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                    loop_dev_release(devid);
             } else if (ftype != FD_SERIAL) {
                 fd_cleanup_entry(ftype, e->obj, e->flags);
             }

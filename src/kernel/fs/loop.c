@@ -42,6 +42,7 @@ void loop_init(void) {
     for (int i = 0; i < LOOP_NDEV; i++) {
         loop_devs[i].in_use = 0;
         loop_devs[i].bound = 0;
+        loop_devs[i].open_refs = 0;
         loop_devs[i].backing_fd = -1;
         loop_devs[i].backing_file = 0;
         loop_devs[i].offset = 0;
@@ -307,13 +308,31 @@ long loop_write(int devid, const void *user_buf, size_t count, int64_t *file_pos
     return vfs_write(d->backing_fd, (const char *)user_buf, count);
 }
 
+void loop_dev_open(int devid) {
+    int idx = devid_to_idx(devid);
+    if (idx < 0) return;
+    struct loop_dev *d = &loop_devs[idx];
+    uint64_t f = irq_save();
+    spin_lock(&d->lock);
+    d->open_refs++;
+    spin_unlock(&d->lock);
+    irq_restore(f);
+}
+
 void loop_dev_release(int devid) {
     int idx = devid_to_idx(devid);
     if (idx < 0) return;
-    /* No refcount on the /dev/loopN fd — cannot tell if last user.
-     * Leaving in_use=1 with bound=0 allows reuse via LOOP_CTL_GET_FREE
-     * after explicit LOOP_CLR_FD + LOOP_CTL_REMOVE. */
-    (void)idx;
+    struct loop_dev *d = &loop_devs[idx];
+    uint64_t f = irq_save();
+    spin_lock(&d->lock);
+    if (d->open_refs > 0) d->open_refs--;
+    /* Last close on an unbound slot: hand it back to the LOOP_CTL_GET_FREE
+     * pool. A bound device stays acquired across close/open cycles, matching
+     * Linux behaviour absent LO_FLAGS_AUTOCLEAR. */
+    if (d->open_refs == 0 && !d->bound)
+        d->in_use = 0;
+    spin_unlock(&d->lock);
+    irq_restore(f);
 }
 
 /* ── bcache backend against backing vfs_file ─── */

@@ -737,10 +737,12 @@ not_pts:
         if (*d == '\0' && loop_num >= 0 && loop_num < 8) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(p->fds, FD_DEVICE,
-                              (void *)(uintptr_t)(DEV_LOOP_BASE + loop_num),
+            int devid = DEV_LOOP_BASE + loop_num;
+            int fd = fd_alloc(p->fds, FD_DEVICE, (void *)(uintptr_t)devid,
                               (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
-            return fd < 0 ? -EMFILE : fd;
+            if (fd < 0) return -EMFILE;
+            loop_dev_open(devid);
+            return fd;
         }
     }
     if (kstreq(path, "/dev/null") || kstreq(path, "/dev/zero") ||

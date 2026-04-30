@@ -80,6 +80,7 @@ struct vfs_file;
 struct loop_dev {
     int       in_use;     /* slot allocated via LOOP_CTL_GET_FREE */
     int       bound;      /* LOOP_SET_FD done */
+    int       open_refs;  /* count of live /dev/loopN fds (Linux lo_refcnt) */
     int       backing_fd; /* O_RDWR fd into backing file (kernel-private dup) */
     struct vfs_file *backing_file;  /* pinned vfs_file* for kernel-side I/O */
     uint64_t  offset;
@@ -104,8 +105,12 @@ long loop_ioctl(int devid, unsigned long request, unsigned long arg);
 long loop_read(int devid, void *user_buf, size_t count, int64_t *file_pos);
 long loop_write(int devid, const void *user_buf, size_t count, int64_t *file_pos);
 
-/* Used by close(2) — releases backing_fd if last user. Currently no refcount,
- * just allow the fd to remain bound between opens. */
+/* open(2) on /dev/loopN: bump open_refs for refcount-based slot lifetime. */
+void loop_dev_open(int devid);
+
+/* close(2): decrement open_refs. If zero and not bound, free the slot
+ * (in_use=0) so LOOP_CTL_GET_FREE can hand it out again. Without this the
+ * 8-slot pool exhausts after the first 8 LTP tests that acquire devices. */
 void loop_dev_release(int devid);
 
 /* Lookup info — used by stat / open path / mount lookup. */

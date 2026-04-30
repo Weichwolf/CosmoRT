@@ -148,6 +148,10 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
             vfs_file_incref((struct vfs_file *)src.obj);
+        } else if (src.type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)src.obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_open(devid);
         } else if (src.obj) {
             fd_obj_incref(src.type, src.obj, src.flags);
         }

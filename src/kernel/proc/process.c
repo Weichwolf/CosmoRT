@@ -8,6 +8,7 @@
 #include "linux/capability.h"
 #include "core/time_ns.h"
 #include "net/net_ns.h"
+#include "fs/loop.h"
 
 /* Net-NS shim: net layer pulls task->net_ns through this typed accessor
  * so it stays free of proc internals. Strong override of the weak
@@ -568,6 +569,10 @@ static void fd_table_drain(fd_table_t *fdt) {
         }
         if (type == FD_FILE) {
             vfs_file_free_obj(e->obj);
+        } else if (type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)e->obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_release(devid);
         } else {
             fd_cleanup_entry(type, e->obj, e->flags);
         }
@@ -622,6 +627,11 @@ int fd_table_unshare(struct process *p) {
                      src->type == FD_TIMERFD || src->type == FD_INOTIFY ||
                      src->type == FD_UNIX_SOCK)
                 fd_obj_incref(src->type, src->obj, src->flags);
+        }
+        if (src->type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)src->obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_open(devid);
         }
     }
     neu->max_fd = copy_end;

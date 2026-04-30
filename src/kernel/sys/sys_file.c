@@ -495,6 +495,11 @@ long do_close(int fd) {
         nsfs_handle_free((struct nsfs_handle *)fde->obj);
         return fd_close(p->fds, fd);
     }
+    if (fde->type == FD_DEVICE) {
+        int devid = (int)(uintptr_t)fde->obj;
+        if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+            loop_dev_release(devid);
+    }
     return fd_close(p->fds, fd);
 }
 
@@ -598,6 +603,12 @@ long do_dup3(int oldfd, int newfd, int flags) {
             if (ino) flock_release(ino, p->pid);
             vfs_close(newfd);
         } else if (cur->type == FD_PIPE) pipe_close(cur);
+        else if (cur->type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)cur->obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_release(devid);
+            fd_close(p->fds, newfd);
+        }
         else {
             fd_cleanup_entry(cur->type, cur->obj, cur->flags);
             fd_close(p->fds, newfd);
@@ -617,6 +628,10 @@ long do_dup3(int oldfd, int newfd, int flags) {
     if (old_copy.type == FD_FILE && old_copy.obj) {
         extern void vfs_file_incref(struct vfs_file *f);
         vfs_file_incref((struct vfs_file *)old_copy.obj);
+    } else if (old_copy.type == FD_DEVICE) {
+        int devid = (int)(uintptr_t)old_copy.obj;
+        if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+            loop_dev_open(devid);
     } else if (old_copy.obj) {
         fd_obj_incref(old_copy.type, old_copy.obj, old_copy.flags);
     }
@@ -1798,6 +1813,10 @@ long do_fcntl(int fd, int cmd, long arg) {
         if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
             vfs_file_incref((struct vfs_file *)src.obj);
+        } else if (src.type == FD_DEVICE) {
+            int devid = (int)(uintptr_t)src.obj;
+            if (devid >= DEV_LOOP_BASE && devid < DEV_LOOP_END)
+                loop_dev_open(devid);
         } else if (src.obj) {
             fd_obj_incref(src.type, src.obj, src.flags);
         }
