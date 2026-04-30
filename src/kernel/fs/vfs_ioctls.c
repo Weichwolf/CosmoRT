@@ -18,7 +18,14 @@ void fill_stat(struct vfs_inode *inode, struct k_stat *buf) {
     buf->st_nlink = inode->nlink ? inode->nlink : 1;
     buf->st_size = (int64_t)inode->size;
     buf->st_blksize = 4096;
-    buf->st_blocks = (int64_t)((inode->size + 511) / 512);
+    /* Linux mm/shmem.c shmem_getattr: blocks = nrpages * (PAGE_SIZE/512).
+     * Tmpfs-Symlinks landen inline im inode (kein zusaetzlicher Page-Verbrauch),
+     * Verzeichnisse pflegen ihren Eintragsspeicher in der vfs_node-Liste —
+     * beide bekommen st_blocks=0. Nur regulaere Files haben Page-Backing. */
+    if (inode->type == VFS_FILE)
+        buf->st_blocks = (int64_t)((inode->size + 511) / 512);
+    else
+        buf->st_blocks = 0;
     buf->st_uid = inode->uid;
     buf->st_gid = inode->gid;
 

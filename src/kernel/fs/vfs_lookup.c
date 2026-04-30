@@ -50,6 +50,18 @@ restart:
 
         if (cur->inode->type != VFS_DIR) { if (err) *err = -ENOTDIR; return 0; }
 
+        /* "." und ".." als Komponenten — Linux fs/namei.c walk_component:
+         * `.` bleibt am aktuellen Verzeichnis, `..` geht zu Parent (bei
+         * Root: bleibt Root). Beide muessen vor der children-Suche
+         * abgefangen werden, sonst schlaegt der Lookup mit -ENOENT fehl. */
+        if (len == 1 && start[0] == '.') {
+            continue;
+        }
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            if (cur->parent) cur = cur->parent;
+            continue;
+        }
+
         /* DAC: need MAY_EXEC on each intermediate directory to traverse.
          * Root euid bypasses. Only check when descending (is_last=0) or
          * when the last component still needs an intermediate look-up

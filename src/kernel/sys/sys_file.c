@@ -278,10 +278,17 @@ long do_read(int fd, void *buf, size_t count) {
         int devid = (int)(uintptr_t)fde->obj;
         if (devid == DEV_NULL)    return 0; /* EOF */
         if (devid == DEV_ZERO) {
-            /* Fill with zeros */
-            size_t actual = count > 0x10000 ? 0x10000 : count;
-            kmemset(buf, 0, actual);
-            return (long)actual;
+            /* Linux mem.c read_zero: liefert immer voll `count` zurueck
+             * (kein partial read). Page-by-page fuellen, damit demand-paging
+             * korrekt einsetzt und SIGSEGV bei nicht mapbaren Pages greift. */
+            size_t done = 0;
+            while (done < count) {
+                size_t chunk = count - done;
+                if (chunk > 4096) chunk = 4096;
+                kmemset((uint8_t *)buf + done, 0, chunk);
+                done += chunk;
+            }
+            return (long)done;
         }
         if (devid == DEV_URANDOM) {
             /* Fill with random bytes */
