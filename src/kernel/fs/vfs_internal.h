@@ -39,6 +39,10 @@ uint64_t ext4_walk(const char *path);
 uint64_t ext4_walk_err(const char *path, int *err);
 uint64_t ext4_walk_parent(const char *path, const char **basename_out);
 uint64_t ext4_walk_parent_err(const char *path, const char **basename_out, int *err);
+/* Per-instance variants for loop-mounts. fs==NULL routes to default. */
+uint64_t ext4_walk_inst_err(struct ext4_fs *fs, const char *path, int *err);
+uint64_t ext4_walk_parent_inst_err(struct ext4_fs *fs, const char *path,
+                                   const char **basename_out, int *err);
 char *vfs_get_cwd(void);
 
 /* ── Node/file allocation (defined in vfs.c) ── */

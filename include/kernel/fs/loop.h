@@ -73,15 +73,25 @@ struct loop_info64 {
     uint64_t lo_init[2];
 };
 
+struct ext4_fs;
+struct bcache_inst;
+struct vfs_file;
+
 struct loop_dev {
     int       in_use;     /* slot allocated via LOOP_CTL_GET_FREE */
     int       bound;      /* LOOP_SET_FD done */
     int       backing_fd; /* O_RDWR fd into backing file (kernel-private dup) */
+    struct vfs_file *backing_file;  /* pinned vfs_file* for kernel-side I/O */
     uint64_t  offset;
     uint64_t  sizelimit;
     uint32_t  flags;
     char      lo_name[64];
     spinlock_t lock;
+
+    /* Mounted-on-this-loop ext4 fs (set by do_mount, cleared by do_umount2) */
+    struct ext4_fs    *mounted_fs;
+    struct bcache_inst *mounted_bcache;
+    int                mounted;
 };
 
 /* Init at vfs_init() time. */
@@ -100,5 +110,12 @@ void loop_dev_release(int devid);
 
 /* Lookup info — used by stat / open path / mount lookup. */
 struct loop_dev *loop_dev_get(int idx);
+
+/* Get loop-device index from /dev/loopN path. Returns -1 if not a loopN path. */
+int loop_path_to_idx(const char *path);
+
+/* bcache backend ops for a bound loop device — exposed for do_mount. */
+int loop_bcache_read(void *ctx, uint64_t block, void *buf);
+int loop_bcache_write(void *ctx, uint64_t block, const void *buf);
 
 #endif

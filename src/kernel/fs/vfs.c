@@ -68,10 +68,17 @@ int is_ramfs_path(const char *path) {
 }
 
 /* Walk an ext4 path component-by-component, following symlinks.
- * Returns final inode number, or 0 on failure. */
-uint64_t ext4_walk_err(const char *path, int *err) {
-    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
-    if (path[0] == '/' && path[1] == 0) return EXT4_ROOT_INO;
+ * Returns final inode number, or 0 on failure.
+ *
+ * Per-instance variant: walks within fs starting at root_ino. The path may
+ * begin with '/' (absolute relative-to-mount) or be a no-leading-slash
+ * relative path. */
+uint64_t ext4_walk_inst_err(struct ext4_fs *fs, const char *path, int *err) {
+    if (!path) { if (err) *err = -ENOENT; return 0; }
+    if (!fs) fs = ext4_default_fs();
+    /* Treat "/" or "" as root */
+    if (path[0] == 0 || (path[0] == '/' && path[1] == 0))
+        return EXT4_ROOT_INO;
 
     /* Mutable copy for symlink restart */
     char buf[512];
@@ -85,7 +92,9 @@ restart:
     if (symloop > 8) { if (err) *err = -ELOOP; return 0; }
 
     uint32_t cur = EXT4_ROOT_INO;
-    char *p = buf + 1;
+    char *p = buf;
+    /* Skip optional leading slashes */
+    while (*p == '/') p++;
 
     while (*p) {
         while (*p == '/') p++;
@@ -102,17 +111,13 @@ restart:
         for (int i = 0; i < len; i++) name[i] = start[i];
         name[len] = 0;
 
-        /* Intermediate component must be a directory.
-         * Always read the inode (root inode too) so DAC traversal checks
-         * see the real mode bits, not a stale stack value. */
         struct ext4_inode cur_ip;
-        if (ext4_inode_read(cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
+        if (ext4_inode_read_inst(fs, cur, &cur_ip) < 0) { if (err) *err = -EIO; return 0; }
         if ((cur_ip.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) {
             if (err) *err = -ENOTDIR;
             return 0;
         }
 
-        /* DAC: each directory on the path needs MAY_EXEC for non-root. */
         {
             process_t *pcur = proc_current();
             if (pcur && pcur->euid != 0) {
@@ -123,26 +128,23 @@ restart:
         }
 
         uint32_t child;
-        if (ext4_dir_lookup(cur, name, &child) < 0) {
+        if (ext4_dir_lookup_inst(fs, cur, name, &child) < 0) {
             if (err) *err = -ENOENT;
             return 0;
         }
 
-        /* Check if child is a symlink — resolve transparently */
         struct ext4_inode ip;
-        if (ext4_inode_read(child, &ip) == 0 &&
+        if (ext4_inode_read_inst(fs, child, &ip) == 0 &&
             (ip.i_mode & EXT4_S_IFMT) == EXT4_S_IFLNK && ip.i_size > 0) {
             symloop++;
             char target[256];
-            int tlen = ext4_readlink(child, target, sizeof(target) - 1);
+            int tlen = ext4_readlink_inst(fs, child, target, sizeof(target) - 1);
             if (tlen <= 0) { if (err) *err = -ENOENT; return 0; }
             target[tlen] = 0;
 
-            /* Remaining path after this component */
             int rlen = kstrlen(p);
             int ttlen = tlen;
             if (target[0] == '/') {
-                /* Absolute symlink: target + "/" + remaining */
                 if (ttlen + 1 + rlen >= (int)sizeof(buf)) {
                     if (err) *err = -ENAMETOOLONG;
                     return 0;
@@ -154,7 +156,6 @@ restart:
                 for (int i = 0; i < rlen; i++) buf[off + i] = buf[sizeof(buf) - 1 - rlen + i];
                 buf[off + rlen] = 0;
             } else {
-                /* Relative symlink: resolve from parent of current component */
                 int prefix_len = (int)(start - buf);
                 if (prefix_len + ttlen + 1 + rlen >= (int)sizeof(buf)) {
                     if (err) *err = -ENAMETOOLONG;
@@ -173,6 +174,12 @@ restart:
         cur = child;
     }
     return cur;
+}
+
+/* Default-instance API: legacy callers. Walks default fs. */
+uint64_t ext4_walk_err(const char *path, int *err) {
+    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
+    return ext4_walk_inst_err(ext4_default_fs(), path, err);
 }
 
 uint64_t ext4_walk(const char *path) {
@@ -197,13 +204,23 @@ uint64_t ext4_file_size(uint64_t ino) {
 }
 
 /* Walk to parent directory, extract basename. Returns parent inode or 0. */
-uint64_t ext4_walk_parent_err(const char *path, const char **basename_out, int *err) {
-    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
+uint64_t ext4_walk_parent_inst_err(struct ext4_fs *fs, const char *path,
+                                   const char **basename_out, int *err) {
+    if (!path) { if (err) *err = -ENOENT; return 0; }
+    if (!fs) fs = ext4_default_fs();
 
     int len = kstrlen(path);
-    int last_slash = 0;
+    int last_slash = -1;
     for (int i = len - 1; i >= 0; i--) {
         if (path[i] == '/') { last_slash = i; break; }
+    }
+    if (last_slash < 0) {
+        /* No slash: relative basename, parent is root */
+        *basename_out = path;
+        int blen = len;
+        if (blen == 0) { if (err) *err = -ENOENT; return 0; }
+        if (blen > NAME_MAX) { if (err) *err = -ENAMETOOLONG; return 0; }
+        return EXT4_ROOT_INO;
     }
     *basename_out = path + last_slash + 1;
     int blen = len - last_slash - 1;
@@ -218,7 +235,12 @@ uint64_t ext4_walk_parent_err(const char *path, const char **basename_out, int *
     for (int i = 0; i < plen; i++) parent_path[i] = path[i];
     parent_path[plen] = 0;
 
-    return ext4_walk_err(parent_path, err);
+    return ext4_walk_inst_err(fs, parent_path, err);
+}
+
+uint64_t ext4_walk_parent_err(const char *path, const char **basename_out, int *err) {
+    if (!path || path[0] != '/') { if (err) *err = -ENOENT; return 0; }
+    return ext4_walk_parent_inst_err(ext4_default_fs(), path, basename_out, err);
 }
 
 uint64_t ext4_walk_parent(const char *path, const char **basename_out) {

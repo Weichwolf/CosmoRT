@@ -43,13 +43,31 @@ void loop_init(void) {
         loop_devs[i].in_use = 0;
         loop_devs[i].bound = 0;
         loop_devs[i].backing_fd = -1;
+        loop_devs[i].backing_file = 0;
         loop_devs[i].offset = 0;
         loop_devs[i].sizelimit = 0;
         loop_devs[i].flags = 0;
         loop_devs[i].lo_name[0] = 0;
         loop_devs[i].lock = (spinlock_t)SPINLOCK_INIT;
+        loop_devs[i].mounted_fs = 0;
+        loop_devs[i].mounted_bcache = 0;
+        loop_devs[i].mounted = 0;
     }
     loop_inited = 1;
+}
+
+int loop_path_to_idx(const char *path) {
+    if (!path) return -1;
+    if (path[0] != '/' || path[1] != 'd' || path[2] != 'e' || path[3] != 'v' ||
+        path[4] != '/' || path[5] != 'l' || path[6] != 'o' || path[7] != 'o' ||
+        path[8] != 'p') return -1;
+    int n = 0;
+    const char *d = path + 9;
+    if (*d < '0' || *d > '9') return -1;
+    while (*d >= '0' && *d <= '9') n = n * 10 + (*d++ - '0');
+    if (*d != '\0') return -1;
+    if (n < 0 || n >= LOOP_NDEV) return -1;
+    return n;
 }
 
 struct loop_dev *loop_dev_get(int idx) {
@@ -101,11 +119,15 @@ static long loop_set_fd(struct loop_dev *d, int backing_fd) {
         irq_restore(flg);
         return -EBUSY;
     }
-    /* Bump open count so subsequent close on user fd doesn't free the inode. */
+    /* Bump open count so subsequent close on user fd doesn't free the inode.
+     * Pin the vfs_file* so kernel-side mount IO can read it even if the
+     * caller closes their fd. */
     if (f->disk_ino) ext4_open_inc((uint32_t)f->disk_ino);
     if (f->inode) f->inode->refcount++;
+    vfs_file_incref(f);
 
     d->backing_fd = backing_fd;
+    d->backing_file = f;
     d->bound = 1;
     d->offset = 0;
     d->sizelimit = 0;
@@ -124,8 +146,16 @@ static long loop_clr_fd(struct loop_dev *d) {
         irq_restore(flg);
         return -ENXIO;
     }
+    /* Reject if fs is still mounted on this loop. */
+    if (d->mounted) {
+        spin_unlock(&d->lock);
+        irq_restore(flg);
+        return -EBUSY;
+    }
+    struct vfs_file *bf = d->backing_file;
     d->bound = 0;
     d->backing_fd = -1;
+    d->backing_file = 0;
     d->offset = 0;
     d->sizelimit = 0;
     d->flags = 0;
@@ -137,6 +167,8 @@ static long loop_clr_fd(struct loop_dev *d) {
      * not handed out by GET_FREE while the fd is still open. */
     spin_unlock(&d->lock);
     irq_restore(flg);
+    /* Drop kernel-private vfs_file refcount outside the lock. */
+    if (bf) vfs_file_free_obj(bf);
     return 0;
 }
 
@@ -282,4 +314,32 @@ void loop_dev_release(int devid) {
      * Leaving in_use=1 with bound=0 allows reuse via LOOP_CTL_GET_FREE
      * after explicit LOOP_CLR_FD + LOOP_CTL_REMOVE. */
     (void)idx;
+}
+
+/* ── bcache backend against backing vfs_file ─── */
+/* ctx is struct loop_dev *. block is 4KB unit. */
+
+int loop_bcache_read(void *ctx, uint64_t block, void *buf) {
+    struct loop_dev *d = (struct loop_dev *)ctx;
+    if (!d || !d->backing_file) return -EIO;
+    extern long vfs_pread(struct vfs_file *f, void *buf, size_t count, uint64_t offset);
+    uint64_t off = d->offset + block * 4096ULL;
+    long n = vfs_pread(d->backing_file, buf, 4096, off);
+    if (n < 0) return (int)n;
+    if (n < 4096) {
+        /* Short read past EOF — zero-fill the tail. */
+        char *p = (char *)buf;
+        for (long i = n; i < 4096; i++) p[i] = 0;
+    }
+    return 0;
+}
+
+int loop_bcache_write(void *ctx, uint64_t block, const void *buf) {
+    struct loop_dev *d = (struct loop_dev *)ctx;
+    if (!d || !d->backing_file) return -EIO;
+    extern long vfs_pwrite(struct vfs_file *f, const void *buf, size_t count, uint64_t offset);
+    uint64_t off = d->offset + block * 4096ULL;
+    long n = vfs_pwrite(d->backing_file, buf, 4096, off);
+    if (n < 0) return (int)n;
+    return 0;
 }

@@ -25,6 +25,8 @@
 #include "fs/procfs.h"
 #include "event/epoll.h"
 #include "fs/ext4.h"
+#include "fs/loop.h"
+#include "fs/bcache.h"
 #include "vt/pty.h"
 #include "vt/vt.h"
 #include "arch/arch.h"
