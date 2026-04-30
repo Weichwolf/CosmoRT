@@ -66,6 +66,7 @@ uint64_t    clocksource_read_ns(void);
 struct clocksource *clocksource_current(void);
 
 void        clock_event_register(struct clock_event_device *ce);
+void        clock_event_unregister(struct clock_event_device *ce);
 int         clock_event_set_oneshot(uint64_t delta_ns);
 int         clock_event_set_periodic(uint64_t period_ns);
 int         clock_event_shutdown(void);

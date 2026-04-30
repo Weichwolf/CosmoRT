@@ -121,6 +121,18 @@ void clock_event_register(struct clock_event_device *ce) {
     spin_unlock_irq(&ce_lock, flags);
 }
 
+void clock_event_unregister(struct clock_event_device *ce) {
+    uint64_t flags;
+    spin_lock_irq(&ce_lock, &flags);
+
+    struct clock_event_device **link = &ce_head;
+    while (*link && *link != ce) link = &(*link)->next;
+    if (*link) *link = ce->next;
+    ce->next = 0;
+
+    spin_unlock_irq(&ce_lock, flags);
+}
+
 struct clock_event_device *clock_event_current(void) { return ce_head; }
 
 int clock_event_set_oneshot(uint64_t delta_ns) {

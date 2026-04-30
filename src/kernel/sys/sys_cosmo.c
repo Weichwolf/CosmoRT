@@ -236,9 +236,10 @@ static long cst_clock_event(void) {
                                      .features = CLOCK_EVT_FEAT_ONESHOT,
                                      .set_next_event = cst_ce_set };
     clock_event_register(&ce);
-    if (clock_event_current() != &ce) return -1;
+    if (clock_event_current() != &ce) { clock_event_unregister(&ce); return -1; }
     cst_ce_last_delta = 0;
     int r = clock_event_set_oneshot(123456ULL);
+    clock_event_unregister(&ce);
     if (r != 0) return -2;
     if (cst_ce_last_delta != 123456ULL) return -3;
     return 0;
