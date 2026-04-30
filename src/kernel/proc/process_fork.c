@@ -183,38 +183,41 @@ static void free_child_proc(process_t *child) {
         child->pml4 = 0;
         child->vma_root = 0;
     }
-    fd_table_free(&child->fds);
+    if (child->fds) { fd_table_put(child->fds); child->fds = 0; }
     cred_groups_free(child);
     if ((int)child->pid < pid_table_capacity()) pid_table[child->pid] = 0;
     slab_free(&proc_slab, child);
 }
 
-/* Copy parent's FDs into child. If child's rlim_nofile is smaller than parent's
- * in-use range, only FDs < child's nofile are inherited (excess silently dropped,
- * Linux behavior per copy_fd_table w/ sysctl_nr_open interaction). Returns
- * -ENOMEM on alloc failure, 0 on success. */
+/* Copy parent's FDs into a fresh fd_table allocated for `child`. If child's
+ * rlim_nofile is smaller than parent's in-use range, only FDs < child's nofile
+ * are inherited (excess silently dropped, Linux copy_fd_table w/ sysctl_nr_open
+ * interaction). Caller has cleared child->fds; on success child->fds points to
+ * the new table with refcount=1. Returns -ENOMEM on alloc failure, 0 on success. */
 static int dup_fd_table(process_t *child, process_t *parent) {
     unsigned long child_nofile = child->rlim_nofile ? child->rlim_nofile
                                                     : (unsigned long)FD_DEFAULT_NOFILE;
-    int copy_end = parent->fds.max_fd;
+    int copy_end = parent->fds->max_fd;
     if ((unsigned long)copy_end > child_nofile) copy_end = (int)child_nofile;
 
     int want = FD_INIT_SLOTS;
     while (want < copy_end) want *= 2;
     if (want > FD_CEILING) want = FD_CEILING;
 
-    if (fd_table_alloc_empty(&child->fds, want) < 0) return -ENOMEM;
+    fd_table_t *neu = fd_table_alloc_heap_empty(want);
+    if (!neu) return -ENOMEM;
+    child->fds = neu;
 
     /* Two-level layout: leaves are lazy. Walk parent's dir page-by-page so
      * we only allocate child leaves that have at least one live entry.
      * fd_install_at would also work but does an extra leaf-touch per fd. */
     for (int i = 0; i < copy_end; i++) {
-        fd_entry_t *src = fd_entry_at(&parent->fds, i);
+        fd_entry_t *src = fd_entry_at(parent->fds, i);
         if (!src || src->type == FD_NONE) continue;
-        if (fd_table_leaf_ensure(&child->fds, i) < 0) return -ENOMEM;
-        fd_entry_t *dst = fd_entry_at(&child->fds, i);
+        if (fd_table_leaf_ensure(child->fds, i) < 0) return -ENOMEM;
+        fd_entry_t *dst = fd_entry_at(child->fds, i);
         *dst = *src;
-        fd_mark_used(&child->fds, i);
+        fd_mark_used(child->fds, i);
         if (src->obj) {
             if (src->type == FD_FILE)
                 vfs_file_incref((struct vfs_file *)src->obj);
@@ -225,7 +228,7 @@ static int dup_fd_table(process_t *child, process_t *parent) {
                 fd_obj_incref(src->type, src->obj, src->flags);
         }
     }
-    child->fds.max_fd = copy_end;
+    child->fds->max_fd = copy_end;
     return 0;
 }
 
@@ -446,7 +449,16 @@ long kernel_clone(unsigned long flags, void *child_stack,
         for (int i = 0; i < 64; i++)
             child->sig_actions[i] = parent->sig_actions[i];
 
-        dup_fd_table(child, parent);
+        /* CLONE_FILES (Linux copy_files): share parent's fd_table via refcount.
+         * Without the flag the child gets a deep copy. Failure to dup is
+         * propagated as -ENOMEM (free_child_proc cleans up the half-built
+         * child + its potentially-partially populated fd_table). */
+        if (flags & CLONE_FILES) {
+            child->fds = fd_table_get(parent->fds);
+        } else {
+            int dr = dup_fd_table(child, parent);
+            if (dr < 0) { free_child_proc(child); return dr; }
+        }
     }
 
     /* ── Create child thread ── */

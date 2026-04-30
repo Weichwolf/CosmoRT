@@ -93,7 +93,7 @@ long do_timerfd_create(int clockid, int flags) {
     if (flags & TFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
     if (flags & TFD_NONBLOCK) fd_flags |= O_NONBLOCK;
 
-    int fd = fd_alloc(&p->fds, FD_TIMERFD, tfd, fd_flags);
+    int fd = fd_alloc(p->fds, FD_TIMERFD, tfd, fd_flags);
     if (fd < 0) {
         slab_free(&timerfd_slab, tfd);
         return -EMFILE;
@@ -117,7 +117,7 @@ long do_timerfd_settime(int fd, int tfd_flags,
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_TIMERFD) return -EBADF;
     timerfd_t *tfd = (timerfd_t *)fde->obj;
     if (!tfd) return -EBADF;

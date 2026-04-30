@@ -530,7 +530,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
 
     /* /dev/zero mmap → treat as MAP_ANONYMOUS (zero-filled pages) */
     if (fd >= 0 && !(flags & MAP_ANONYMOUS)) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (fde && fde->type == FD_DEVICE &&
             (int)(uintptr_t)fde->obj == 2 /*DEV_ZERO*/) {
             flags |= MAP_ANONYMOUS;
@@ -544,7 +544,7 @@ long do_mmap(unsigned long addr, size_t length, int prot,
     struct vfs_file *vf = 0;
     procfs_fd_t *pf = 0;
     if (is_file) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (!fde) return -EBADF;
         if (fde->type == FD_FILE) {
             vf = (struct vfs_file *)fde->obj;

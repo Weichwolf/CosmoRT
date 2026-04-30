@@ -144,7 +144,7 @@ net_tcp_t *sock_listener_tcp(uint32_t ns_id, uint16_t local_port_host) {
 static socket_t *sock_from_fd(int fd) {
     process_t *p = proc_current();
     if (!p) return 0;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_SOCKET) return 0;
     return (socket_t *)fde->obj;
 }
@@ -154,7 +154,7 @@ static socket_t *sock_from_fd(int fd) {
 static socket_t *sock_lookup(int fd, int *err) {
     process_t *p = proc_current();
     if (!p) { *err = -EFAULT; return 0; }
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) { *err = -EBADF; return 0; }
     if (fde->type != FD_SOCKET) { *err = -ENOTSOCK; return 0; }
     socket_t *s = (socket_t *)fde->obj;
@@ -209,7 +209,7 @@ long do_socket(int domain, int type, int protocol) {
     if (type & 0x80000) flags |= 0x80000;      /* SOCK_CLOEXEC -> O_CLOEXEC */
     if (type & 0x800) flags |= 0x800;          /* SOCK_NONBLOCK -> O_NONBLOCK */
 
-    int fd = fd_alloc(&p->fds, FD_SOCKET, s, flags);
+    int fd = fd_alloc(p->fds, FD_SOCKET, s, flags);
     if (fd < 0) { sock_free(s); return -EMFILE; }
     return fd;
 }
@@ -219,7 +219,7 @@ long do_socket(int domain, int type, int protocol) {
 long do_connect(int fd, const void *addr, int addrlen) {
     process_t *cp = proc_current();
     if (cp) {
-        fd_entry_t *fde = fd_get(&cp->fds, fd);
+        fd_entry_t *fde = fd_get(cp->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type == FD_UNIX_SOCK)
             return usock_connect(fd, (const struct k_sockaddr_un *)addr, addrlen);
@@ -314,7 +314,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
             if (r == -11) {
                 int nonblock = 0;
                 process_t *rp = proc_current();
-                if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+                if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                     if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; }
                 if (nonblock) {
                     finish_wait(&s->tcp.wait_wq, &wait);
@@ -415,7 +415,7 @@ long do_connect(int fd, const void *addr, int addrlen) {
         if (r == -11) {
             int nonblock = 0;
             { process_t *rp = proc_current();
-              if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+              if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                          if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
             if (nonblock) {
                 finish_wait(&s->tcp.wait_wq, &wait);
@@ -453,7 +453,7 @@ long do_sendto(int fd, const void *buf, long len, int flags,
     {
         process_t *cp = proc_current();
         if (cp) {
-            fd_entry_t *fde = fd_get(&cp->fds, fd);
+            fd_entry_t *fde = fd_get(cp->fds, fd);
             if (fde && fde->type == FD_UNIX_SOCK) {
                 extern long usock_send(int fd, const void *buf, long len, int flags);
                 (void)dest_addr; (void)addrlen;
@@ -572,7 +572,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     {
         process_t *cp = proc_current();
         if (cp) {
-            fd_entry_t *fde = fd_get(&cp->fds, fd);
+            fd_entry_t *fde = fd_get(cp->fds, fd);
             if (fde && fde->type == FD_UNIX_SOCK) {
                 extern long usock_recv(int fd, void *buf, long len, int flags);
                 (void)src_addr; (void)addrlen;
@@ -592,7 +592,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         if (!s->udp_local_port) return -EAGAIN;
         int nonblock_udp = (flags & 0x40);
         { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+          if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock_udp = 1; } }
         uint64_t udp_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
         uint8_t kbuf[1400];
@@ -632,7 +632,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
         if (!s->udp_local_port) return -EAGAIN;
         int nonblock_udp = (flags & 0x40);
         { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+          if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock_udp = 1; } }
         uint64_t udp_deadline = timer_ms() + NET_TCP_TIMEOUT_MS;
         uint8_t kbuf[1400];
@@ -675,7 +675,7 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
     {
         int nonblock = (flags & 0x40);
         { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+          if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
         uint64_t now = timer_ms();
         if (s->recv_deadline) {
@@ -718,7 +718,7 @@ long socket_read(int fd, void *buf, long count) {
     {
         int nonblock = 0;
         { process_t *rp = proc_current();
-          if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+          if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                      if (rf && (rf->flags & O_NONBLOCK)) nonblock = 1; } }
         uint64_t now = timer_ms();
         if (s->recv_deadline) {
@@ -783,7 +783,7 @@ long socket_close(int fd) {
 
     /* Close the fd entry first */
     process_t *p = proc_current();
-    if (p) fd_close(&p->fds, fd);
+    if (p) fd_close(p->fds, fd);
 
     /* Only tear down socket when last reference is gone.
      * Fork increments refcount; each close decrements. */
@@ -817,7 +817,7 @@ long socket_close(int fd) {
 long do_bind(int fd, const void *addr, int addrlen) {
     process_t *p = proc_current();
     if (p) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type == FD_UNIX_SOCK)
             return usock_bind(fd, (const struct k_sockaddr_un *)addr, addrlen);
@@ -1004,7 +1004,7 @@ long do_bind(int fd, const void *addr, int addrlen) {
 long do_listen(int fd, int backlog) {
     process_t *p = proc_current();
     if (p) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (fde && fde->type == FD_UNIX_SOCK)
             return usock_listen(fd, backlog);
     }
@@ -1033,7 +1033,7 @@ long do_listen(int fd, int backlog) {
 long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
     process_t *p = proc_current();
     if (p) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         /* O_PATH fds have no struct file, so any file-op → EBADF (Linux). */
         if (fde->flags & O_PATH) return -EBADF;
@@ -1049,7 +1049,7 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 
     /* Non-blocking: return EAGAIN immediately if no pending connection */
     int nonblock = 0;
-    { fd_entry_t *fde = fd_get(&p->fds, fd);
+    { fd_entry_t *fde = fd_get(p->fds, fd);
       if (fde && (fde->flags & O_NONBLOCK)) nonblock = 1; }
     if (nonblock) return -EAGAIN;
 
@@ -1133,7 +1133,7 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 
     p = proc_current();
     if (!p) { sock_free(ns); return -EFAULT; }
-    int newfd = fd_alloc(&p->fds, FD_SOCKET, ns, 0x02);
+    int newfd = fd_alloc(p->fds, FD_SOCKET, ns, 0x02);
     if (newfd < 0) { sock_free(ns); return -EMFILE; }
 
     if (addr && addrlen) {
@@ -1159,7 +1159,7 @@ long do_accept4(int fd, void *addr, int *addrlen, int acc_flags) {
 
     /* accept4 flags: SOCK_NONBLOCK (0x800) → O_NONBLOCK, SOCK_CLOEXEC (0x80000) → O_CLOEXEC */
     if (acc_flags) {
-        fd_entry_t *nfde = fd_get(&p->fds, newfd);
+        fd_entry_t *nfde = fd_get(p->fds, newfd);
         if (nfde) {
             if (acc_flags & 0x800)   nfde->flags |= O_NONBLOCK;
             if (acc_flags & 0x80000) nfde->flags |= O_CLOEXEC;
@@ -1400,7 +1400,7 @@ long do_getsockopt(int fd, int level, int optname, void *optval, int *optlen) {
 long do_getsockname(int fd, void *addr, int *addrlen) {
     process_t *p = proc_current();
     if (p) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type == FD_UNIX_SOCK) {
             unix_socket_t *us = (unix_socket_t *)fde->obj;
@@ -1488,7 +1488,7 @@ long do_getpeername(int fd, void *addr, int *addrlen) {
 long do_shutdown(int fd, int how) {
     process_t *p = proc_current();
     if (p) {
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type == FD_UNIX_SOCK) return 0;
         if (fde->type != FD_SOCKET) return -ENOTSOCK;

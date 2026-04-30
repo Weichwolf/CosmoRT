@@ -83,7 +83,7 @@ int resolve_at_path(int dirfd, const char *upath, char *kpath, int max) {
     /* Real dirfd: look up the directory's path from the open vfs_file */
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, dirfd);
+    fd_entry_t *fde = fd_get(p->fds, dirfd);
     if (!fde) return -EBADF;
     if (fde->type != FD_FILE) return -ENOTDIR;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -116,7 +116,7 @@ long do_write(int fd, const void *buf, size_t count) {
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (__builtin_expect((fde->flags & O_ACCMODE) == O_RDONLY, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
@@ -230,7 +230,7 @@ long do_pwritev(int fd, const struct iovec *iov, int iovcnt, int64_t offset) {
     if (offset >= 0) {
         process_t *p = proc_current();
         if (__builtin_expect(!p, 0)) return -EFAULT;
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (__builtin_expect(!fde, 0)) return -EBADF;
         if (fde->type != FD_FILE) return -ESPIPE;
         struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -271,7 +271,7 @@ long do_read(int fd, void *buf, size_t count) {
     if (__builtin_expect(!user_ok((uint64_t)buf, count), 0)) return -EFAULT;
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (__builtin_expect((fde->flags & O_ACCMODE) == O_WRONLY, 0)) return -EBADF;
     if (fde->type == FD_DEVICE) {
@@ -416,7 +416,7 @@ long do_preadv(int fd, const struct iovec *iov, int iovcnt, int64_t offset) {
     if (offset >= 0) {
         process_t *p = proc_current();
         if (__builtin_expect(!p, 0)) return -EFAULT;
-        fd_entry_t *fde = fd_get(&p->fds, fd);
+        fd_entry_t *fde = fd_get(p->fds, fd);
         if (__builtin_expect(!fde, 0)) return -EBADF;
         if (fde->type != FD_FILE) return -ESPIPE;
         struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -459,7 +459,7 @@ void flock_release(uint64_t ino, uint32_t pid);
 long do_close(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
     /* dnotify-Watches auf diesen fd freigeben (no-op wenn keiner). */
     dnotify_fd_closed(p, fd);
@@ -474,7 +474,7 @@ long do_close(int fd) {
             procfs_close(pf->handle);
             procfs_fd_free(pf);
         }
-        return fd_close(&p->fds, fd);
+        return fd_close(p->fds, fd);
     }
     if (fde->type == FD_SOCKET)
         return socket_close(fd);
@@ -482,20 +482,20 @@ long do_close(int fd) {
         return usock_close(fd);
     if (fde->type == FD_PIPE) {
         long r = pipe_close(fde);
-        fd_close(&p->fds, fd);
+        fd_close(p->fds, fd);
         return r;
     }
-    if (fde->type == FD_EPOLL)   { epoll_destroy(fde->obj);   return fd_close(&p->fds, fd); }
-    if (fde->type == FD_EVENTFD) { eventfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
-    if (fde->type == FD_TIMERFD) { timerfd_destroy(fde->obj); return fd_close(&p->fds, fd); }
-    if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(&p->fds, fd); }
+    if (fde->type == FD_EPOLL)   { epoll_destroy(fde->obj);   return fd_close(p->fds, fd); }
+    if (fde->type == FD_EVENTFD) { eventfd_destroy(fde->obj); return fd_close(p->fds, fd); }
+    if (fde->type == FD_TIMERFD) { timerfd_destroy(fde->obj); return fd_close(p->fds, fd); }
+    if (fde->type == FD_INOTIFY) { inotify_destroy(fde->obj); return fd_close(p->fds, fd); }
     if (fde->type == FD_PTY_MASTER || fde->type == FD_PTY_SLAVE)
-        return fd_close(&p->fds, fd);
+        return fd_close(p->fds, fd);
     if (fde->type == FD_NSFS) {
         nsfs_handle_free((struct nsfs_handle *)fde->obj);
-        return fd_close(&p->fds, fd);
+        return fd_close(p->fds, fd);
     }
-    return fd_close(&p->fds, fd);
+    return fd_close(p->fds, fd);
 }
 
 /* ── SYS_openat (257) — primary; SYS_open delegates with AT_FDCWD ── */
@@ -557,7 +557,7 @@ long do_openat(int dirfd, const char *path, int flags, int mode) {
             h = nsfs_handle_alloc(ns_kind, src);
         }
         if (!h) return -ENOMEM;
-        int fd = fd_alloc(&p->fds, FD_NSFS, h, flags);
+        int fd = fd_alloc(p->fds, FD_NSFS, h, flags);
         if (fd < 0) { nsfs_handle_free(h); return fd; }
         return fd;
     }
@@ -585,13 +585,13 @@ long do_dup3(int oldfd, int newfd, int flags) {
     if (oldfd < 0 || newfd < 0) return -EBADF;
     unsigned long nofile = p->rlim_nofile ? p->rlim_nofile : FD_DEFAULT_NOFILE;
     if ((unsigned long)oldfd >= nofile || (unsigned long)newfd >= nofile) return -EBADF;
-    fd_entry_t *old = fd_get(&p->fds, oldfd);
+    fd_entry_t *old = fd_get(p->fds, oldfd);
     if (!old) return -EBADF;
     /* Copy the entry to stack — subsequent table expansion may reallocate. */
     fd_entry_t old_copy = *old;
 
     /* Close newfd if open (must match do_close logic) */
-    fd_entry_t *cur = fd_get(&p->fds, newfd);
+    fd_entry_t *cur = fd_get(p->fds, newfd);
     if (cur) {
         if (cur->type == FD_FILE) {
             uint64_t ino = flock_ino(cur);
@@ -600,10 +600,10 @@ long do_dup3(int oldfd, int newfd, int flags) {
         } else if (cur->type == FD_PIPE) pipe_close(cur);
         else {
             fd_cleanup_entry(cur->type, cur->obj, cur->flags);
-            fd_close(&p->fds, newfd);
+            fd_close(p->fds, newfd);
         }
         /* cur pointer still valid here; fd_install_at below may reallocate */
-        fd_entry_t *slot = fd_entry_at(&p->fds, newfd);
+        fd_entry_t *slot = fd_entry_at(p->fds, newfd);
         if (slot) { slot->type = FD_NONE; slot->obj = 0; }
     }
 
@@ -611,7 +611,7 @@ long do_dup3(int oldfd, int newfd, int flags) {
     installed.flags &= ~O_CLOEXEC;
     if (flags & O_CLOEXEC) installed.flags |= O_CLOEXEC;
 
-    int r = fd_install_at(&p->fds, newfd, installed);
+    int r = fd_install_at(p->fds, newfd, installed);
     if (r < 0) return r;
 
     if (old_copy.type == FD_FILE && old_copy.obj) {
@@ -748,7 +748,7 @@ long do_getdents64(int fd, void *buf, size_t count) {
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
 
     /* /proc directory (FD_PROCFS with handle == -1) */
@@ -764,8 +764,8 @@ long do_getdents64(int fd, void *buf, size_t count) {
                 .written = 0,
                 .next_off = (uint64_t)pf->offset
             };
-            for (int i = pf->offset; i < p->fds.max_slots; i++) {
-                fd_entry_t *e = fd_get(&p->fds, i);
+            for (int i = pf->offset; i < p->fds->max_slots; i++) {
+                fd_entry_t *e = fd_get(p->fds, i);
                 if (!e || e->type == FD_NONE) continue;
                 char name[12];
                 int ni = 0;
@@ -877,7 +877,7 @@ struct winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
 long do_ioctl(int fd, unsigned long request, unsigned long arg) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
 
     /* Loop-device ioctls: FD_DEVICE with devid in loop range */
@@ -1401,7 +1401,7 @@ long do_flock(int fd, int operation) {
 
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
     if (fde->type != FD_FILE) return -EINVAL;
     uint64_t ino = flock_ino(fde);
@@ -1660,7 +1660,7 @@ static long fcntl_getlease(fd_entry_t *fde) {
 long do_fcntl(int fd, int cmd, long arg) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
 
     switch (cmd) {
@@ -1793,7 +1793,7 @@ long do_fcntl(int fd, int cmd, long arg) {
         fd_entry_t src = *fde;
         int new_flags = src.flags & ~O_CLOEXEC;
         if (cmd == F_DUPFD_CLOEXEC) new_flags |= O_CLOEXEC;
-        int i = fd_dup_at(&p->fds, (int)arg, src, new_flags);
+        int i = fd_dup_at(p->fds, (int)arg, src, new_flags);
         if (i < 0) return i;
         if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
@@ -1814,7 +1814,7 @@ long do_pread64(int fd, void *buf, size_t count, int64_t offset) {
     if (offset < 0) return -EINVAL;
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type != FD_FILE) return -ESPIPE;
     if (__builtin_expect(!fde->obj, 0)) return -EBADF;
@@ -1829,7 +1829,7 @@ long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
     if (offset < 0) return -EINVAL;
     process_t *p = proc_current();
     if (__builtin_expect(!p, 0)) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (__builtin_expect(!fde, 0)) return -EBADF;
     if (fde->type != FD_FILE) return -ESPIPE;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -1841,7 +1841,7 @@ long do_pwrite64(int fd, const void *buf, size_t count, int64_t offset) {
 long do_fchdir(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
     if (fde->type != FD_FILE) return -ENOTDIR;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -1892,14 +1892,24 @@ long do_getdents(int fd, void *buf, size_t count) {
 long do_close_range(unsigned int first, unsigned int last, unsigned int flags) {
     if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) return -EINVAL;
     if (first > last) return -EINVAL;
-    process_t *pr = proc_current();
-    int slot_max = pr ? pr->fds.max_slots : 0;
+    process_t *p = proc_current();
+    if (!p) return -EFAULT;
+
+    /* CLOSE_RANGE_UNSHARE: detach a private fd_table before mutating it so
+     * the changes don't leak into peers that share via clone(CLONE_FILES).
+     * Linux fs/file.c::__close_range. Must run before either CLOEXEC-mark
+     * or the close loop because both touch entries owned by the table. */
+    if (flags & CLOSE_RANGE_UNSHARE) {
+        int us = fd_table_unshare(p);
+        if (us < 0) return us;
+    }
+
+    int slot_max = p->fds ? p->fds->max_slots : 0;
     if (slot_max > 0 && last >= (unsigned int)slot_max) last = (unsigned int)slot_max - 1;
+
     if (flags & CLOSE_RANGE_CLOEXEC) {
-        process_t *p = proc_current();
-        if (!p) return -EFAULT;
         for (unsigned int fd = first; fd <= last; fd++) {
-            fd_entry_t *fde = fd_get(&p->fds, (int)fd);
+            fd_entry_t *fde = fd_get(p->fds, (int)fd);
             if (fde) fde->flags |= O_CLOEXEC;
         }
         return 0;
@@ -1916,8 +1926,8 @@ long do_copy_file_range(int fd_in, long *off_in, int fd_out, long *off_out,
     (void)flags;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde_in = fd_get(&p->fds, fd_in);
-    fd_entry_t *fde_out = fd_get(&p->fds, fd_out);
+    fd_entry_t *fde_in = fd_get(p->fds, fd_in);
+    fd_entry_t *fde_out = fd_get(p->fds, fd_out);
     if (!fde_in || !fde_out) return -EBADF;
     if (fde_in->type != FD_FILE || fde_out->type != FD_FILE) return -EINVAL;
     struct vfs_file *fin = (struct vfs_file *)fde_in->obj;
@@ -1956,7 +1966,7 @@ long do_fadvise64(int fd, long offset, long len, int advice) {
     (void)offset; (void)len;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
     if (advice < POSIX_FADV_NORMAL || advice > POSIX_FADV_NOREUSE) return -EINVAL;
     if (fde->type == FD_PIPE || fde->type == FD_SOCKET ||
@@ -2001,7 +2011,7 @@ long do_memfd_create(const char *uname, unsigned int flags) {
     f->inode = node->inode;
     { int i = 0; while (path[i] && i < 255) { f->path[i] = path[i]; i++; } f->path[i] = '\0'; }
 
-    int fd = fd_alloc(&p->fds, FD_FILE, f, O_RDWR);
+    int fd = fd_alloc(p->fds, FD_FILE, f, O_RDWR);
     if (fd < 0) { vfs_file_free_obj(f); return -EMFILE; }
     return fd;
 }

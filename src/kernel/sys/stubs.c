@@ -288,7 +288,7 @@ long do_syncfs(int fd) { (void)fd; return do_sync(); }
 long do_fsync(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
     switch (fde->type) {
     case FD_FILE: {

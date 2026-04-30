@@ -86,7 +86,7 @@ int vfs_fstat(int fd, struct k_stat *buf) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
 
     if (fde->type == FD_DEVICE) {
@@ -246,7 +246,7 @@ int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
 int vfs_fchmod(int fd, uint32_t mode) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
@@ -260,7 +260,7 @@ int vfs_fchmod(int fd, uint32_t mode) {
 int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
@@ -312,7 +312,7 @@ int vfs_ftruncate(int fd, int64_t length) {
     if (r) return r;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f || f->type != VFS_FILE) return -EINVAL;

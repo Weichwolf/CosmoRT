@@ -106,8 +106,11 @@ typedef struct process {
      * "/x" -> "<root>/x". fork() inherits, execve() preserves. */
     char        root[256];
 
-    /* File descriptors */
-    fd_table_t  fds;
+    /* File descriptors — Linux task_struct.files. Heap-allocated so
+     * clone(CLONE_FILES) shares one fd_table across processes via refcount.
+     * Never NULL on a live process; proc_alloc/clone-copy paths must populate
+     * before linking the process into pid_table. */
+    fd_table_t *fds;
 
     /* Threads */
     thread_t   *main_thread;

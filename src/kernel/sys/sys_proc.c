@@ -74,22 +74,14 @@ static void exit_kill_process(thread_t *t, process_t *p, int status) {
     extern void flock_release_pid(uint32_t pid);
     flock_release_pid(p->pid);
 
-    /* Close all FDs immediately so pipe writers/readers see EOF.
-     * proc_cleanup() will fd_table_free() — here we only decrement refs
-     * and clear entries so blocked I/O wakes up. */
-    for (int i = 0; i < p->fds.max_slots; i++) {
-        fd_entry_t *e = fd_entry_at(&p->fds, i);
-        if (!e) continue;
-        int ftype = e->type;
-        if (ftype == FD_FILE) {
-            extern void vfs_file_free_obj(void *obj);
-            vfs_file_free_obj(e->obj);
-        } else if (ftype != FD_NONE && ftype != FD_SERIAL) {
-            fd_cleanup_entry(ftype, e->obj, e->flags);
-        }
-        e->type = FD_NONE;
-        e->obj = 0;
-        if (p->fds.free_bitmap) fd_mark_free(&p->fds, i);
+    /* Drop our reference on the fd_table. If we're the sole owner this
+     * closes every entry now (so pipe writers/readers see EOF immediately);
+     * if shared via CLONE_FILES we just decrement and the other holder keeps
+     * the fds live. Detach from the process — proc_cleanup must not see it. */
+    if (p->fds) {
+        fd_table_t *t = p->fds;
+        p->fds = 0;
+        fd_table_put(t);
     }
 
     /* Kill other threads.
@@ -461,7 +453,7 @@ long do_unshare(unsigned long flags) {
 long do_setns(int fd, int nstype) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde) return -EBADF;
     if (fde->type != FD_NSFS) return -EINVAL;
     struct nsfs_handle *h = (struct nsfs_handle *)fde->obj;

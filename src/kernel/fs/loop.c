@@ -89,7 +89,7 @@ static long loop_ctl_get_free(void) {
 static long loop_set_fd(struct loop_dev *d, int backing_fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, backing_fd);
+    fd_entry_t *fde = fd_get(p->fds, backing_fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;

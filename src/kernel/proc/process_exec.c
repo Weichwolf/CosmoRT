@@ -767,14 +767,36 @@ shebang_retry:;
             kmemset(&p->sig_actions[si], 0, sizeof(struct k_sigaction));
     }
 
+    /* Linux unshare_files (fs/exec.c::do_execve_common): if our fd_table is
+     * shared with another process via clone(CLONE_FILES) we must detach a
+     * private copy BEFORE clearing CLOEXEC entries. Otherwise CLOEXEC on this
+     * exec would also close those fds in the other holder — Linux semantics
+     * require the close to be local. fd_table_unshare is a no-op when
+     * refcount == 1 (the common case after fork). */
+    {
+        int us = fd_table_unshare(p);
+        /* OOM here is recoverable: we keep the shared table and skip the
+         * CLOEXEC sweep would corrupt the peer. Treat as fatal exec failure. */
+        if (us < 0) {
+            pages_free(strbuf, EXECVE_BUF_PAGES);
+            pages_free(kargv_ptrs, EXECVE_PTR_PAGES);
+            pages_free(kenvp_ptrs, EXECVE_PTR_PAGES);
+            p->state = PROC_ZOMBIE;
+            cur->state = THREAD_DEAD;
+            hal_mmu_switch(virt_to_phys(pml4));
+            schedule();
+            __builtin_unreachable();
+        }
+    }
+
     /* Close O_CLOEXEC fds — must use full close (pipe_close, fd_cleanup_entry)
      * not just fd_close, so pipe write_open/read_open decrements happen and
      * blocked readers/writers get woken (e.g., posix_spawn error-check pipe). */
     {
         extern void vfs_file_free_obj(void *obj);
         extern void fd_cleanup_entry(int fde_type, void *fde_obj, int fde_flags);
-        for (int i = 0; i < p->fds.max_slots; i++) {
-            fd_entry_t *e = fd_entry_at(&p->fds, i);
+        for (int i = 0; i < p->fds->max_slots; i++) {
+            fd_entry_t *e = fd_entry_at(p->fds, i);
             if (!e || e->type == FD_NONE) continue;
             if (!(e->flags & 0x80000)) continue;  /* O_CLOEXEC */
             int ftype = e->type;
@@ -783,7 +805,7 @@ shebang_retry:;
             } else if (ftype != FD_SERIAL) {
                 fd_cleanup_entry(ftype, e->obj, e->flags);
             }
-            fd_close(&p->fds, i);
+            fd_close(p->fds, i);
         }
     }
 
@@ -846,7 +868,7 @@ long do_execveat(int dirfd, const char *path, char *const argv[],
         if (!cur || !cur->proc) return -EFAULT;
         process_t *p = cur->proc;
         if (dirfd == AT_FDCWD) return -ENOENT;
-        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        fd_entry_t *fde = fd_get(p->fds, dirfd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type != FD_FILE) return -EACCES;
         struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -864,7 +886,7 @@ long do_execveat(int dirfd, const char *path, char *const argv[],
         thread_t *cur = thread_current();
         if (!cur || !cur->proc) return -EFAULT;
         process_t *p = cur->proc;
-        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        fd_entry_t *fde = fd_get(p->fds, dirfd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (fde->type != FD_FILE) return -ENOTDIR;
         struct vfs_file *f = (struct vfs_file *)fde->obj;

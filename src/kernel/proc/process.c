@@ -20,6 +20,7 @@ struct net_ns *proc_net_ns(struct process *p) {
 
 slab_t proc_slab;
 slab_t thread_slab;
+slab_t fd_table_slab;
 static int next_pid = 1;
 static int next_tid = 1;
 spinlock_t pid_lock = SPINLOCK_INIT;
@@ -70,6 +71,7 @@ static int grow_ptr_table(void ***tbl_ptr, int *cap_ptr) {
 void proc_init(void) {
     slab_init_dynamic(&proc_slab, (int)sizeof(process_t), 32);
     slab_init_dynamic(&thread_slab, (int)sizeof(thread_t), 64);
+    slab_init_dynamic(&fd_table_slab, (int)sizeof(fd_table_t), 32);
     pid_table = (process_t **)alloc_ptr_table(PID_TABLE_INIT);
     tid_table = (thread_t  **)alloc_ptr_table(PID_TABLE_INIT);
     if (!pid_table || !tid_table) {
@@ -514,6 +516,121 @@ void fd_table_free(fd_table_t *fdt) {
     fdt->max_fd = 0;
 }
 
+/* ── Heap-allocated fd_table refcount API ─────────────────────────
+ * Linux files_struct lifetime: clone(CLONE_FILES) shares one struct,
+ * exit/execve(unshare) decrements the refcount, last drop frees + closes
+ * every still-open fd entry. Refcount manipulation is atomic so concurrent
+ * exit paths on shared tables cannot race a free. */
+
+fd_table_t *fd_table_alloc_heap(void) {
+    fd_table_t *fdt = (fd_table_t *)slab_alloc(&fd_table_slab);
+    if (!fdt) return 0;
+    kmemset(fdt, 0, sizeof(*fdt));
+    if (fd_table_init(fdt) < 0) {
+        slab_free(&fd_table_slab, fdt);
+        return 0;
+    }
+    fdt->refcount = 1;
+    return fdt;
+}
+
+fd_table_t *fd_table_alloc_heap_empty(int slots) {
+    fd_table_t *fdt = (fd_table_t *)slab_alloc(&fd_table_slab);
+    if (!fdt) return 0;
+    kmemset(fdt, 0, sizeof(*fdt));
+    if (fd_table_alloc_empty(fdt, slots) < 0) {
+        slab_free(&fd_table_slab, fdt);
+        return 0;
+    }
+    fdt->refcount = 1;
+    return fdt;
+}
+
+fd_table_t *fd_table_get(fd_table_t *fdt) {
+    if (!fdt) return 0;
+    __sync_fetch_and_add(&fdt->refcount, 1);
+    return fdt;
+}
+
+/* Drain entries: close every still-live fd. Called by fd_table_put on the
+ * last reference (mirrors Linux put_files_struct → close_files). Pipe/socket
+ * decrement ref; FILE drops vfs_file. Order matters only insofar as no entry
+ * dereferences another's obj. */
+static void fd_table_drain(fd_table_t *fdt) {
+    extern void vfs_file_free_obj(void *obj);
+    for (int i = 0; i < fdt->max_slots; i++) {
+        fd_entry_t *e = fd_entry_at(fdt, i);
+        if (!e) continue;
+        int type = e->type;
+        if (type == FD_NONE || type == FD_SERIAL) {
+            e->type = FD_NONE; e->obj = 0;
+            continue;
+        }
+        if (type == FD_FILE) {
+            vfs_file_free_obj(e->obj);
+        } else {
+            fd_cleanup_entry(type, e->obj, e->flags);
+        }
+        e->type = FD_NONE; e->obj = 0;
+    }
+}
+
+void fd_table_put(fd_table_t *fdt) {
+    if (!fdt) return;
+    int prev = __sync_fetch_and_sub(&fdt->refcount, 1);
+    if (prev != 1) return;            /* still referenced by another process */
+    fd_table_drain(fdt);
+    fd_table_free(fdt);
+    slab_free(&fd_table_slab, fdt);
+}
+
+/* execve / close_range(CLOSE_RANGE_UNSHARE): if p->fds is shared (refcount > 1)
+ * detach a private copy. After the call p->fds is unique to p; the previous
+ * shared table is left intact for the other holders. Linux unshare_files. */
+int fd_table_unshare(struct process *p) {
+    if (!p || !p->fds) return -EINVAL;
+    fd_table_t *old = p->fds;
+    if (__atomic_load_n(&old->refcount, __ATOMIC_ACQUIRE) <= 1)
+        return 0;                     /* sole owner — nothing to do */
+
+    /* Pick capacity that covers the live range. dup_fd_table grows lazily
+     * up to FD_CEILING; here we mirror its sizing logic. */
+    int copy_end = old->max_fd;
+    int want = FD_INIT_SLOTS;
+    while (want < copy_end) want *= 2;
+    if (want > FD_CEILING) want = FD_CEILING;
+
+    fd_table_t *neu = fd_table_alloc_heap_empty(want);
+    if (!neu) return -ENOMEM;
+
+    extern void vfs_file_incref(struct vfs_file *f);
+    for (int i = 0; i < copy_end; i++) {
+        fd_entry_t *src = fd_entry_at(old, i);
+        if (!src || src->type == FD_NONE) continue;
+        if (fd_table_leaf_ensure(neu, i) < 0) {
+            fd_table_put(neu);
+            return -ENOMEM;
+        }
+        fd_entry_t *dst = fd_entry_at(neu, i);
+        *dst = *src;
+        fd_mark_used(neu, i);
+        if (src->obj) {
+            if (src->type == FD_FILE)
+                vfs_file_incref((struct vfs_file *)src->obj);
+            else if (src->type == FD_PIPE || src->type == FD_SOCKET ||
+                     src->type == FD_EPOLL || src->type == FD_EVENTFD ||
+                     src->type == FD_TIMERFD || src->type == FD_INOTIFY ||
+                     src->type == FD_UNIX_SOCK)
+                fd_obj_incref(src->type, src->obj, src->flags);
+        }
+    }
+    neu->max_fd = copy_end;
+
+    p->fds = neu;
+    fd_table_put(old);                /* drop our share of the old table */
+    return 0;
+}
+
 /* Effective RLIMIT_NOFILE: 0 = unset → FD_DEFAULT_NOFILE (Linux ulimit -n). */
 static unsigned long fd_effective_nofile(process_t *p) {
     if (!p) return FD_DEFAULT_NOFILE;
@@ -663,7 +780,8 @@ int proc_create_elf(const void *elf_data, size_t elf_len) {
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 255) { p->exe_path[ii] = s[ii]; ii++; } p->exe_path[ii] = 0; }
     { const char *s = "init";  int ii = 0; while (s[ii] && ii < 15)  { p->comm[ii] = s[ii]; ii++; } p->comm[ii] = 0; }
     { const char *s = "/init"; int ii = 0; while (s[ii] && ii < 1023) { p->cmdline[ii] = s[ii]; ii++; } p->cmdline[ii] = 0; p->cmdline_len = ii + 1; }
-    if (fd_table_init(&p->fds) < 0) goto fail_pml4;
+    p->fds = fd_table_alloc_heap();
+    if (!p->fds) goto fail_pml4;
 
     /* Stack: small initial VMA with VMA_GROWSDOWN (expands on page fault).
      * Like Linux: initial 132KB, grows to RLIMIT_STACK on demand.

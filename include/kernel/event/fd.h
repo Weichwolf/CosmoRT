@@ -74,6 +74,11 @@ typedef struct {
     uint64_t    *free_bitmap;    /* one bit per slot, bit set = free */
     int          max_slots;      /* current capacity (multiple of FD_LEAF_PER_PAGE) */
     int          max_fd;         /* highest allocated fd + 1 */
+
+    /* Reference count — Linux files_struct.count. clone(CLONE_FILES) bumps,
+     * exit / execve(unshare) decrements. Last decref frees the table. SMP-safe
+     * via atomic fetch-add/sub. */
+    int          refcount;
 } fd_table_t;
 
 /* Internal: locate (and optionally allocate) the leaf page for fd.
@@ -137,6 +142,23 @@ int fd_table_alloc_empty(fd_table_t *fdt, int slots);
 
 /* Free backing pages; call before slab_free(proc). */
 void fd_table_free(fd_table_t *fdt);
+
+/* Heap-allocated fd_table — Linux struct files_struct lifetime model.
+ * fd_table_alloc_heap(): allocate fd_table_t*, run fd_table_init(), refcount=1.
+ * fd_table_alloc_heap_empty(): same, but no stdio install (used by fork copy).
+ * fd_table_get(): atomic refcount++. Returns the same pointer for chaining.
+ * fd_table_put(): atomic refcount--, free if last reference (calls fd_table_free
+ *   plus owner-side fd cleanup hooks via the entries[] type tags).
+ *
+ * exec-time unshare: fd_table_unshare(p) atomically replaces p->fds with a
+ * fresh copy when refcount > 1, leaving the old table alive for other refs.
+ * Used by close_range(CLOSE_RANGE_UNSHARE) and execve before CLOEXEC sweep. */
+struct process;
+fd_table_t *fd_table_alloc_heap(void);
+fd_table_t *fd_table_alloc_heap_empty(int slots);
+fd_table_t *fd_table_get(fd_table_t *fdt);
+void        fd_table_put(fd_table_t *fdt);
+int         fd_table_unshare(struct process *p);
 
 /* Allocate lowest free FD, expanding table on demand up to RLIMIT_NOFILE.
  * Returns fd number or -EMFILE. */

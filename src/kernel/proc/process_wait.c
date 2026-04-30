@@ -25,21 +25,11 @@ void proc_cleanup(process_t *p) {
     extern void dnotify_proc_exit(struct process *p);
     dnotify_proc_exit(p);
 
-    /* Close all FDs — decrement refcount, free when last ref.
-     * exit_kill_process already does this, so entries may be FD_NONE. */
-    for (int i = 0; i < p->fds.max_slots; i++) {
-        fd_entry_t *e = fd_entry_at(&p->fds, i);
-        if (!e) continue;
-        int type = e->type;
-        if (type == FD_FILE) {
-            vfs_file_free_obj(e->obj);
-        } else if (type != FD_NONE && type != FD_SERIAL) {
-            fd_cleanup_entry(type, e->obj, e->flags);
-        }
-        e->type = FD_NONE;
-        e->obj = 0;
-    }
-    fd_table_free(&p->fds);
+    /* Drop our reference on the fd_table. If shared (clone(CLONE_FILES))
+     * the other holders keep their open fds; only the last drop closes every
+     * entry and frees the backing pages. exit_kill_process already cleared
+     * our half of the entries when this process is the sole holder. */
+    if (p->fds) { fd_table_put(p->fds); p->fds = 0; }
 
     /* Free threads.
      * exit_kill_process sets sibling threads to DEAD with proc=NULL. Those

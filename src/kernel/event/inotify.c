@@ -210,7 +210,7 @@ long do_inotify_init1(int flags) {
     if (flags & O_CLOEXEC)  fd_flags |= O_CLOEXEC;
     if (flags & O_NONBLOCK) fd_flags |= O_NONBLOCK;
 
-    int fd = fd_alloc(&p->fds, FD_INOTIFY, ino, fd_flags);
+    int fd = fd_alloc(p->fds, FD_INOTIFY, ino, fd_flags);
     if (fd < 0) {
         slab_free(&inotify_slab, ino);
         return -EMFILE;
@@ -223,7 +223,7 @@ long do_inotify_init1(int flags) {
 long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_INOTIFY) return -EBADF;
     inotify_t *ino = (inotify_t *)fde->obj;
     if (!ino) return -EBADF;
@@ -279,7 +279,7 @@ long do_inotify_add_watch(int fd, const char *path, uint32_t mask) {
 long do_inotify_rm_watch(int fd, int wd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_INOTIFY) return -EBADF;
     inotify_t *ino = (inotify_t *)fde->obj;
     if (!ino) return -EBADF;

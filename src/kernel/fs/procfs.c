@@ -455,7 +455,7 @@ static int procfs_pid_status(char *buf, int size, int offset, void *ctx) {
     pos = append_str(tmp, pos, 1024, "\nUid:\t0\t0\t0\t0");
     pos = append_str(tmp, pos, 1024, "\nGid:\t0\t0\t0\t0");
     pos = append_str(tmp, pos, 1024, "\nFDSize:\t");
-    pos = append_int(tmp, pos, 1024, (long)p->fds.max_fd);
+    pos = append_int(tmp, pos, 1024, p->fds ? (long)p->fds->max_fd : 0L);
     pos = append_str(tmp, pos, 1024, "\nGroups:\t");
     pos = append_str(tmp, pos, 1024, "\nVmPeak:\t");
     pos = append_int(tmp, pos, 1024, (long)(vm_bytes / 1024));

@@ -644,7 +644,7 @@ int vfs_open(const char *path, int flags, int mode) {
     if (kstreq(path, "/dev/console")) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)0L,
+        int fd = fd_alloc(p->fds, FD_PTY_SLAVE, (void *)0L,
                           (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
         return fd < 0 ? -EMFILE : fd;
     }
@@ -654,9 +654,9 @@ int vfs_open(const char *path, int flags, int mode) {
         if (!p) return -EFAULT;
         /* Find the PTY from existing fds (stdin is typically PTY_SLAVE) */
         for (int i = 0; i < 3; i++) {
-            fd_entry_t *e = fd_entry_at(&p->fds, i);
+            fd_entry_t *e = fd_entry_at(p->fds, i);
             if (e && e->type == FD_PTY_SLAVE) {
-                int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, e->obj,
+                int fd = fd_alloc(p->fds, FD_PTY_SLAVE, e->obj,
                                   (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
                 return fd < 0 ? -EMFILE : fd;
             }
@@ -675,7 +675,7 @@ int vfs_open(const char *path, int flags, int mode) {
             int vt_id = vt_num - 1; /* tty1 → VT0 */
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)vt_id,
+            int fd = fd_alloc(p->fds, FD_PTY_SLAVE, (void *)(long)vt_id,
                               (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
             return fd < 0 ? -EMFILE : fd;
         }
@@ -691,7 +691,7 @@ int vfs_open(const char *path, int flags, int mode) {
         if (*d == '\0' && pts_id >= 0 && pts_id < PTY_DEV_ID_MAX) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(&p->fds, FD_PTY_SLAVE, (void *)(long)pts_id,
+            int fd = fd_alloc(p->fds, FD_PTY_SLAVE, (void *)(long)pts_id,
                               (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
             return fd < 0 ? -EMFILE : fd;
         }
@@ -702,7 +702,7 @@ not_pts:
     if (kstreq(path, "/dev/loop-control")) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)DEV_LOOP_CTL,
+        int fd = fd_alloc(p->fds, FD_DEVICE, (void *)(uintptr_t)DEV_LOOP_CTL,
                           (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
         return fd < 0 ? -EMFILE : fd;
     }
@@ -715,7 +715,7 @@ not_pts:
         if (*d == '\0' && loop_num >= 0 && loop_num < 8) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            int fd = fd_alloc(&p->fds, FD_DEVICE,
+            int fd = fd_alloc(p->fds, FD_DEVICE,
                               (void *)(uintptr_t)(DEV_LOOP_BASE + loop_num),
                               (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
             return fd < 0 ? -EMFILE : fd;
@@ -730,7 +730,7 @@ not_pts:
                                            devid = DEV_URANDOM;
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        int fd = fd_alloc(&p->fds, FD_DEVICE, (void *)(uintptr_t)devid,
+        int fd = fd_alloc(p->fds, FD_DEVICE, (void *)(uintptr_t)devid,
                           (flags & 3) | (flags & O_PATH) | (flags & O_CLOEXEC));
         return fd < 0 ? -EMFILE : fd;
     }
@@ -745,7 +745,7 @@ not_pts:
         process_t *p = proc_current();
         if (!p) { procfs_fd_free(pf); return -EFAULT; }
 
-        int fd = fd_alloc(&p->fds, FD_PROCFS, pf, O_RDONLY);
+        int fd = fd_alloc(p->fds, FD_PROCFS, pf, O_RDONLY);
         if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
         return fd;
     }
@@ -775,7 +775,7 @@ not_pts:
 
             process_t *p = proc_current();
             if (!p) { procfs_fd_free(pf); return -EFAULT; }
-            int fd = fd_alloc(&p->fds, FD_PROCFS, pf,
+            int fd = fd_alloc(p->fds, FD_PROCFS, pf,
                               flags & (O_ACCMODE | O_CLOEXEC));
             if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
             return fd;
@@ -794,7 +794,7 @@ not_pts:
         process_t *p = proc_current();
         if (!p) { procfs_fd_free(pf); return -EFAULT; }
 
-        int fd = fd_alloc(&p->fds, FD_PROCFS, pf,
+        int fd = fd_alloc(p->fds, FD_PROCFS, pf,
                           flags & (O_ACCMODE | O_CLOEXEC));
         if (fd < 0) { procfs_fd_free(pf); return -EMFILE; }
         return fd;
@@ -908,7 +908,7 @@ not_pts:
             file_free(f);
             return -EFAULT;
         }
-        int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
+        int fd = fd_alloc(p->fds, FD_FILE, f, f->flags);
         if (fd < 0) {
             if (writable) i_writecount_put_write(VFS_BACKEND_EXT4, ino);
             file_free(f);
@@ -1007,7 +1007,7 @@ not_pts:
         file_free(f);
         return -EFAULT;
     }
-    int fd = fd_alloc(&p->fds, FD_FILE, f, f->flags);
+    int fd = fd_alloc(p->fds, FD_FILE, f, f->flags);
     if (fd < 0) {
         if (writable_tm) i_writecount_put_write(VFS_BACKEND_RAM, node->inode->ino);
         file_free(f);
@@ -1021,7 +1021,7 @@ int vfs_close(int fd) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
 
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -1037,7 +1037,7 @@ int vfs_close(int fd) {
         }
     }
 
-    fd_close(&p->fds, fd);
+    fd_close(p->fds, fd);
     return 0;
 }
 

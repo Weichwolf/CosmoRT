@@ -143,7 +143,7 @@ long do_epoll_create1(int flags) {
 
     int fd_flags = O_RDWR;
     if (flags & EPOLL_CLOEXEC) fd_flags |= O_CLOEXEC;
-    int fd = fd_alloc(&p->fds, FD_EPOLL, ep, fd_flags);
+    int fd = fd_alloc(p->fds, FD_EPOLL, ep, fd_flags);
     if (fd < 0) {
         slab_free(&epoll_slab, ep);
         return -EMFILE;
@@ -192,7 +192,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
-    fd_entry_t *epfde = fd_get(&p->fds, epfd);
+    fd_entry_t *epfde = fd_get(p->fds, epfd);
     if (!epfde || epfde->type != FD_EPOLL) return -EBADF;
     epoll_t *ep = (epoll_t *)epfde->obj;
     if (!ep) return -EBADF;
@@ -206,7 +206,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 
     /* Validate target fd exists (except for DEL, target may already be closed) */
     if (op != EPOLL_CTL_DEL) {
-        fd_entry_t *tgt = fd_get(&p->fds, fd);
+        fd_entry_t *tgt = fd_get(p->fds, fd);
         if (!tgt || tgt->type == FD_NONE) return -EBADF;
 
         /* Regular files and directories do not implement poll → EPERM (Linux) */
@@ -226,7 +226,7 @@ long do_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
                 epoll_t *next = 0;
                 for (epoll_entry_t *it = walk->entries; it; it = it->next) {
                     if (it->fd == epfd) return -ELOOP;
-                    fd_entry_t *e = fd_get(&p->fds, it->fd);
+                    fd_entry_t *e = fd_get(p->fds, it->fd);
                     if (e && e->type == FD_EPOLL && !next)
                         next = (epoll_t *)e->obj;
                 }
@@ -424,7 +424,7 @@ long do_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int time
     process_t *p = proc_current();
     if (!p) return -EFAULT;
 
-    fd_entry_t *epfde = fd_get(&p->fds, epfd);
+    fd_entry_t *epfde = fd_get(p->fds, epfd);
     if (!epfde || epfde->type == FD_NONE) return -EBADF;
     if (epfde->type != FD_EPOLL) return -EINVAL;
     epoll_t *ep = (epoll_t *)epfde->obj;

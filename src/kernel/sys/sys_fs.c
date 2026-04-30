@@ -147,7 +147,7 @@ static int empty_path_to_kpath(int dirfd, char *kpath, int max) {
         kpath[i] = '\0';
         return i;
     }
-    fd_entry_t *fde = fd_get(&p->fds, dirfd);
+    fd_entry_t *fde = fd_get(p->fds, dirfd);
     if (!fde) return -EBADF;
     if (fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
@@ -199,7 +199,7 @@ long do_utimensat(int dirfd, const char *path, const void *utimes, int flags) {
     if (!path) {
         process_t *p = proc_current();
         if (!p) return -EFAULT;
-        fd_entry_t *fde = fd_get(&p->fds, dirfd);
+        fd_entry_t *fde = fd_get(p->fds, dirfd);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         /* Get VFS file from fd */
         #define UTIME_NOW_FD  ((1L << 30) - 1L)
@@ -263,7 +263,7 @@ long do_fallocate(int fd, int mode, int64_t offset, int64_t len) {
     if (offset > (int64_t)0x7FFFFFFFFFFFFFFFLL - len) return -EFBIG;
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
     if ((fde->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     if (fde->type == FD_PIPE) return -ESPIPE;
@@ -480,7 +480,7 @@ long do_statfs(const char *path, void *buf) {
 long do_fstatfs(int fd, void *buf) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return -EBADF;
     struct k_statfs kbuf;
     /* Infer filesystem from fd type */

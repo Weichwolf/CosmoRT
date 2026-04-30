@@ -50,7 +50,7 @@ long do_eventfd2(unsigned int initval, int flags) {
     if (flags & EFD_CLOEXEC)  fd_flags |= O_CLOEXEC;
     if (flags & EFD_NONBLOCK) fd_flags |= O_NONBLOCK;
 
-    int fd = fd_alloc(&p->fds, FD_EVENTFD, efd, fd_flags);
+    int fd = fd_alloc(p->fds, FD_EVENTFD, efd, fd_flags);
     if (fd < 0) {
         slab_free(&eventfd_slab, efd);
         return -EMFILE;

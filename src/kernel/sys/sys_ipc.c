@@ -369,15 +369,15 @@ long do_pipe2(int *fds, int flags) {
     if (flags & O_CLOEXEC)  { rflags |= O_CLOEXEC;  wflags |= O_CLOEXEC; }
     if (flags & O_NONBLOCK) { rflags |= O_NONBLOCK;  wflags |= O_NONBLOCK; }
 
-    int rfd = fd_alloc(&p->fds, FD_PIPE, pp, rflags);
+    int rfd = fd_alloc(p->fds, FD_PIPE, pp, rflags);
     if (rfd < 0) {
         pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
         return -EMFILE;
     }
-    int wfd = fd_alloc(&p->fds, FD_PIPE, pp, wflags);
+    int wfd = fd_alloc(p->fds, FD_PIPE, pp, wflags);
     if (wfd < 0) {
-        fd_close(&p->fds, rfd);
+        fd_close(p->fds, rfd);
         pages_free(pp->buf, pipe_page_count(pp->buf_size));
         slab_free(&pipe_slab, pp);
         return -EMFILE;
@@ -510,7 +510,7 @@ void fd_obj_incref(int fde_type, void *fde_obj, int fde_flags) {
 uint32_t fd_poll_readiness(int fd, uint32_t interest) {
     process_t *p = proc_current();
     if (!p) return EPOLLHUP | EPOLLERR;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE) return EPOLLHUP | EPOLLERR;
 
     uint32_t ready = 0;
@@ -674,7 +674,7 @@ uint32_t fd_poll_readiness(int fd, uint32_t interest) {
 wait_queue_head_t *fd_get_poll_wq(int fd, uint32_t events) {
     process_t *p = proc_current();
     if (!p) return 0;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type == FD_NONE || !fde->obj) return 0;
 
     int want_out = (events & EPOLLOUT) != 0;

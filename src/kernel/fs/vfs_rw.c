@@ -203,7 +203,7 @@ size_t vfs_inode_read(struct vfs_inode *inode, void *dst, size_t off, size_t len
 long vfs_read(int fd, void *buf, size_t count) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
@@ -225,7 +225,7 @@ static uint64_t effective_write_offset(struct vfs_file *f) {
 long vfs_write(int fd, const void *buf, size_t count) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;
@@ -242,7 +242,7 @@ long vfs_write(int fd, const void *buf, size_t count) {
 long vfs_lseek(int fd, long offset, int whence) {
     process_t *p = proc_current();
     if (!p) return -EFAULT;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_FILE) return -EBADF;
     struct vfs_file *f = (struct vfs_file *)fde->obj;
     if (!f) return -EBADF;

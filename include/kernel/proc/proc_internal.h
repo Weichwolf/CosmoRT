@@ -37,6 +37,7 @@
 /* Shared state — defined in process.c */
 extern slab_t proc_slab;
 extern slab_t thread_slab;
+extern slab_t fd_table_slab;
 extern spinlock_t pid_lock;
 extern process_t **pid_table;
 extern thread_t  **tid_table;

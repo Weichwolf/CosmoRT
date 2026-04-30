@@ -16,7 +16,7 @@ static void sendmmsg_error(long err) {
 long do_sendmsg(int fd, const void *msg, int flags) {
     process_t *sp = proc_current();
     if (sp) {
-        fd_entry_t *sfe = fd_get(&sp->fds, fd);
+        fd_entry_t *sfe = fd_get(sp->fds, fd);
         if (sfe && sfe->type == FD_SOCKET) {
             /* Parse msghdr */
             struct { uint64_t name; uint32_t namelen; uint32_t _pad;
@@ -39,7 +39,7 @@ long do_sendmsg(int fd, const void *msg, int flags) {
 long do_recvmsg(int fd, void *msg, int flags) {
     process_t *sp = proc_current();
     if (sp) {
-        fd_entry_t *sfe = fd_get(&sp->fds, fd);
+        fd_entry_t *sfe = fd_get(sp->fds, fd);
         if (sfe && sfe->type == FD_SOCKET) {
             struct { uint64_t name; uint32_t namelen; uint32_t _pad;
                      uint64_t iov; uint64_t iovlen;
@@ -69,7 +69,7 @@ long do_sendmmsg(int fd, uint64_t mmsg_arr, int vlen, int flags) {
 
     process_t *mp = proc_current();
     if (!mp) return -EFAULT;
-    fd_entry_t *mfe = fd_get(&mp->fds, fd);
+    fd_entry_t *mfe = fd_get(mp->fds, fd);
     int sent = 0;
     for (int mi = 0; mi < vlen; mi++) {
         /* Each mmsghdr = msghdr(56 bytes) + msg_len(4 bytes) */

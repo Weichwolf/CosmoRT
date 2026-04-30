@@ -85,7 +85,7 @@ static void usock_release(unix_socket_t *s) {
 unix_socket_t *usock_from_fd(int fd) {
     process_t *p = proc_current();
     if (!p) return 0;
-    fd_entry_t *fde = fd_get(&p->fds, fd);
+    fd_entry_t *fde = fd_get(p->fds, fd);
     if (!fde || fde->type != FD_UNIX_SOCK) return 0;
     return (unix_socket_t *)fde->obj;
 }
@@ -211,7 +211,7 @@ long usock_socket(int type) {
     if (type & 0x800)   fd_flags |= 0x800;    /* SOCK_NONBLOCK */
     s->flags = type & (0x80000 | 0x800);
 
-    int fd = fd_alloc(&p->fds, FD_UNIX_SOCK, s, fd_flags);
+    int fd = fd_alloc(p->fds, FD_UNIX_SOCK, s, fd_flags);
     if (fd < 0) { usock_release(s); return -EMFILE; }
     return fd;
 }
@@ -244,12 +244,12 @@ long usock_socketpair(int type, int *sv) {
     if (type & 0x80000) fd_flags |= 0x80000;
     if (type & 0x800)   fd_flags |= 0x800;
 
-    int fd0 = fd_alloc(&p->fds, FD_UNIX_SOCK, a, fd_flags);
+    int fd0 = fd_alloc(p->fds, FD_UNIX_SOCK, a, fd_flags);
     if (fd0 < 0) { usock_release(a); usock_release(b); return -EMFILE; }
 
-    int fd1 = fd_alloc(&p->fds, FD_UNIX_SOCK, b, fd_flags);
+    int fd1 = fd_alloc(p->fds, FD_UNIX_SOCK, b, fd_flags);
     if (fd1 < 0) {
-        fd_close(&p->fds, fd0);
+        fd_close(p->fds, fd0);
         usock_release(a);
         usock_release(b);
         return -EMFILE;
@@ -402,7 +402,7 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
      * under usock_lock catches any enqueue between sleep prep and schedule. */
     int nonblock = 0;
     { process_t *rp = proc_current();
-      if (rp) { fd_entry_t *rf = fd_get(&rp->fds, fd);
+      if (rp) { fd_entry_t *rf = fd_get(rp->fds, fd);
                  if (rf && (rf->flags & 0x800)) nonblock = 1; } }
 
     unix_socket_t *client = 0;
@@ -454,7 +454,7 @@ long usock_accept4(int fd, void *addr, int *addrlen, int flags) {
     if (flags & 0x80000) fd_flags |= 0x80000;  /* SOCK_CLOEXEC */
     if (flags & 0x800)   fd_flags |= 0x800;    /* SOCK_NONBLOCK */
 
-    int new_fd = fd_alloc(&p->fds, FD_UNIX_SOCK, server, fd_flags);
+    int new_fd = fd_alloc(p->fds, FD_UNIX_SOCK, server, fd_flags);
     if (new_fd < 0) { usock_release(server); return -EMFILE; }
     return new_fd;
 }
@@ -680,7 +680,7 @@ long usock_close(int fd) {
     if (!s) return -EBADF;
 
     process_t *p = proc_current();
-    if (p) fd_close(&p->fds, fd);
+    if (p) fd_close(p->fds, fd);
 
     /* usock_decref will wake peer's read_wq/write_wq for HUP propagation. */
     usock_decref(s);

@@ -140,10 +140,10 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_DUP: {
         process_t *dp = proc_current();
         if (!dp) return -EFAULT;
-        fd_entry_t *dold = fd_get(&dp->fds, (int)a1);
+        fd_entry_t *dold = fd_get(dp->fds, (int)a1);
         if (!dold) return -EBADF;
         fd_entry_t src = *dold;
-        int di = fd_dup_at(&dp->fds, 0, src, src.flags & ~O_CLOEXEC);
+        int di = fd_dup_at(dp->fds, 0, src, src.flags & ~O_CLOEXEC);
         if (di < 0) return di;
         if (src.type == FD_FILE && src.obj) {
             extern void vfs_file_incref(struct vfs_file *f);
@@ -159,7 +159,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
         if ((int)a1 == (int)a2) {
             process_t *p = proc_current();
             if (!p) return -EFAULT;
-            return fd_get(&p->fds, (int)a1) ? (int)a2 : -EBADF;
+            return fd_get(p->fds, (int)a1) ? (int)a2 : -EBADF;
         }
         return do_dup3((int)a1, (int)a2, 0);
     }
@@ -200,7 +200,7 @@ static long sys_dispatch(long num, long a1, long a2, long a3, long a4, long a5, 
     case SYS_FLISTXATTR: {
         process_t *xp = proc_current();
         if (!xp) return -EFAULT;
-        fd_entry_t *fde = fd_get(&xp->fds, (int)a1);
+        fd_entry_t *fde = fd_get(xp->fds, (int)a1);
         if (!fde || fde->type == FD_NONE) return -EBADF;
         if (num == SYS_FLISTXATTR && a3 == 0) return 0;
         if (num == SYS_FGETXATTR) return -ENODATA;
