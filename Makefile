@@ -323,10 +323,38 @@ alpine-test: $(ESP_IMG)
 	@echo '::sysinit:/opt/boot-test.sh' > $(ALPINE_ROOT)/etc/inittab
 	@sh tools/mkalpine.sh $(ALPINE_ROOT)
 	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
-	@rm -f /tmp/cosmo-serial.log
-	timeout 3600 $(ALPINE_QEMU) -serial file:/tmp/cosmo-serial.log -display none -no-reboot || true
+	@rm -f /tmp/alpine-test.log
+	timeout 3600 $(ALPINE_QEMU) -serial file:/tmp/alpine-test.log -display none -no-reboot || true
 	@echo "=== Serial output ==="
-	@tail -30 /tmp/cosmo-serial.log
+	@tail -30 /tmp/alpine-test.log
+
+# ── alpine-test-host — gleiche Test-Suite, Host-Kernel als Referenz ──
+# Bootet alpine.img mit dem aktuellen Host-Kernel + dessen initrd. Debian's
+# initramfs-tools mountet ext4 mit virtio_blk und uebergibt an alpine init.
+# Selbe boot-test.sh, selbe LTP-Tests, selbe musl libc-test — der einzige
+# Unterschied ist welcher Kernel die Syscalls bedient. Erlaubt A/B:
+# was scheitert auf Linux, was nur auf CosmoRT.
+HOST_KERNEL_VER   = $(shell uname -r)
+HOST_KERNEL_IMG   = /boot/vmlinuz-$(HOST_KERNEL_VER)
+HOST_INITRD_IMG   = /boot/initrd.img-$(HOST_KERNEL_VER)
+
+alpine-test-host: alpine-image
+	@test -r $(HOST_KERNEL_IMG) || { echo "Missing $(HOST_KERNEL_IMG) — run: sudo apt install linux-image-$(HOST_KERNEL_VER)"; exit 1; }
+	@test -r $(HOST_INITRD_IMG) || { echo "Missing $(HOST_INITRD_IMG)"; exit 1; }
+	@cp $(ALPINE_ROOT)/etc/inittab $(ALPINE_ROOT)/etc/inittab.bak 2>/dev/null || true
+	@echo '::sysinit:/opt/boot-test.sh' > $(ALPINE_ROOT)/etc/inittab
+	@sh tools/mkalpine.sh $(ALPINE_ROOT)
+	@cp $(ALPINE_ROOT)/etc/inittab.bak $(ALPINE_ROOT)/etc/inittab 2>/dev/null || true
+	@rm -f /tmp/alpine-test-host.log
+	timeout 3600 $(QEMU) $(QEMU_ACCEL) -cpu qemu64,+smep,+smap -smp 2 -m 4096 \
+	  -kernel $(HOST_KERNEL_IMG) \
+	  -initrd $(HOST_INITRD_IMG) \
+	  -append "root=/dev/vda rootfstype=ext4 rw console=ttyS0,115200 init=/sbin/init earlyprintk=ttyS0,115200 floppy.allowed_drive_mask=0" \
+	  -drive file=build/alpine.img,format=raw,if=virtio \
+	  -serial file:/tmp/alpine-test-host.log -display none -no-reboot \
+	  -device e1000,netdev=net0 -netdev user,id=net0 || true
+	@echo "=== Serial output ==="
+	@tail -30 /tmp/alpine-test-host.log
 
 # make qemu-bench — gcc-compile benchmark inside CosmoRT VM
 # Runs tools/cosmo-bench.sh as sysinit; reports per-phase elapsed_ms.
