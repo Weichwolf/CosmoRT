@@ -28,460 +28,267 @@ Multimedia-Apps?
 
 ---
 
-## Stand (Session 2026-04-30)
+## Stand 2026-04-30 (post-host-baseline)
 
-**ktest 3246/0**, musl **464/13-14** (Race-tests flaky: raise-race +
-regex-ere-backref-static gehen zwischen PASS/FAIL je nach scheduling),
-**LTP 276 PASS / 19 FAIL / 155 SKIP** (vorher 274/44/133 → +2 PASS,
-**-25 FAIL**, +22 SKIP). Vollauf-Zeit 15 min.
+**Vergleich CosmoRT vs Linux 6.12 RT (selbe alpine.img, selber boot-test.sh):**
 
-### Session 2026-04-30 — OOM-Cluster behoben
+| Metric | CosmoRT | Linux 6.12 RT |
+|--------|---------|---------------|
+| ktest (test-hw) | 3246 / 0 | n/a |
+| musl libc-test | **463 / 15** | 461 / 17 |
+| LTP PASS | 277 | 297 |
+| LTP FAIL | **18** | 73 |
+| LTP SKIP | 155 | 80 |
+| Test-hw Reproduktion: `make test-hw` | | |
+| Vollauf CosmoRT: `make alpine-test` → `/tmp/alpine-test.log` | | |
+| Vollauf Host-Referenz: `make alpine-test-host` → `/tmp/alpine-test-host.log` | | |
 
-**Problem (vor)**: LTP fallocate05 mit `mount_device + all_filesystems +
-TST_FILL_RANDOM` hat tmpfs unbeschraenkt befuellt → kernel OOM
-"no eligible victim" → ALLE nachfolgenden ~150 Tests broken.
-(Vollauf 274/174/56 wegen Cascade-Death.)
+**3-Wege-Diff (alpine-test.log vs alpine-test-host.log):**
 
-**Fix 1: tmpfs Page-Budget Cap** (commit d27b406):
-- vfs_rw.c: globaler `ramfs_alloc_pages` Counter, max=60% von total RAM
-- grow_file reserviert vorab; ENOSPC bei Cap-Ueberschreitung
-  (LTP's tst_fill_fs erwartet ENOSPC, halbiert len, retried)
-- shrink_file/inode_destroy: ramfs_release der freed pages
-- tmpfs_op_truncate/_write/_pwrite/_ftruncate: -ENOSPC propagieren
-  (statt -ENOMEM zu maskieren)
-- Verifikation: fallocate05 PASS statt OOM-killed (focused: 3/0/1)
+- **8 Tests / 5 Cluster** failen NUR auf CosmoRT → echte Kernel-Bugs (Prio A)
+- **25 Tests** failen auf BEIDEN → LTP-Test-Bugs / Userspace-Setup (akzeptiert)
+- **48 Tests** failen NUR auf Host → irrelevant fuer CosmoRT (alpine-Setup)
 
-**Fix 2: Loop-Device inode-refcount-Leak** (commit 36377ae):
-- LOOP_SET_FD machte sowohl `vfs_file_incref` als auch
-  `f->inode->refcount++` — letztere ohne pair-decref in LOOP_CLR_FD.
-- Folge: jedes test_dev.img-Backing-File leakt seinen inode + pages
-  permanent. Cumulativ ueber tests fanotify-Cluster sah ENOSPC.
-- Fix: redundantes f->inode->refcount++ entfernt; vfs_file_incref pinnt
-  den inode bereits via f->inode-Pfad in tmpfs_op_close.
-- Verifikation (focused): alle 23 fanotify FAIL → 23 SKIP
-  ("fanotify not configured" TCONF). fanotify25 bleibt FAIL
-  (separates tracefs-mount-Issue).
+CosmoRT skippt 75 Tests mehr als Host weil Subsysteme fehlen — diese
+Sub-Cluster sind Prio B/C nach Alltagsrelevanz.
 
-**Fix 3: Boot-Test Filter** (commit 127f490):
-- shell_pipe01.sh aus LTP-Liste filtern — designed um via Pipe gerufen
-  zu werden, blockt als Standalone auf `read line`.
+---
 
-### Performance Phase 1 — ext4 high-performance (Linux-baseline + besser)
+## Prio A — Echte CosmoRT-Kernel-Bugs
 
-- `bcache` O(1) tail-pointer LRU, Multiplikative Hash, BCACHE_SIZE 256 → 1024,
-  `bcache_readahead` für sequentielle Bulk-Reads
-- `virtio_blk` DMA 4 KB → 64 KB, neue `blk_read_bulk` (bis 16 contiguous blocks
-  per virtio-Request — 16x weniger IRQ-Roundtrips)
-- `ext4` Group-Descriptor-Array beim Mount in RAM, 256-Eintrag Inode-Cache
-  (LRU+Hash), 64 KB Read-ahead-Window in `ext4_read`
-- `ext4_vfs_read` landing-buffer 4 KB → 16 KB
-- `tlb_flush_mm` lazy fast-path bei `thread_count<=1 && !mm_shared` —
-  saved 3229 IPIs / 24 = 99.3% IPI-frei bei single-thread mmap-Storm
-- `mm/page_cache` file-backed mmap shared zwischen Prozessen, COW für
-  PROT_PRIVATE writable, RA-Loop 64 KB im PF-Pfad
+5 Cluster, 8 Test-Failures. Reproduktion: `make alpine-test`, danach
+Marker-File-Filter fuer fokussierte Iteration (siehe CLAUDE.md §Test-Iteration).
 
-Verifiziert: cat /lib/libc.so cold 2850 ms → 10 ms (**285x**), test-hw 3246/0.
+### A.1 popen-Race (musl popen + popen-static)
 
-### tmpfs page-list (Architektur-Refactor)
+`fork() + execve() + pipe`-Setup-Race. Heisenbug — `serial_putchar`-Logging
+veraendert das Outcome (lost-wakeup-Pattern in lokaler kstack-wq vermutet).
+**3 Vorgaenger-Sessions ohne Erfolg.** Naechster Versuch braucht
+non-perturbative Tracer (ftrace-style Buffer, kein Live-IO).
 
-- Inode-Storage von `uint8_t *data + capacity` (kontiguous, MAX_ORDER=2 MB cap)
-  auf `uint8_t **pages + npages` (Linux-pattern). Files bis 1 GB.
-- `vfs_rw.c` komplett restrukturiert: `pages_array_grow`, `shrink_file`,
-  `ramfs_read/write_locked`. Spinlock_t per inode (IRQ-save).
-- ELF-Loader, exec, vfs_kernel_append migriert auf `vfs_inode_read`.
+Vermutete Wurzel: `prepare_to_wait` / `try_to_wake_up`-Propagation in
+`do_pause` / `do_rt_sigsuspend` / `sleep_interruptible_ns` Pattern.
 
-Verifiziert: dd 300 MB tmpfs 2 GB/s, dd 500 MB 991 MB/s, test-hw 3246/0.
+### A.2 raise-race (musl raise-race + raise-race-static)
 
-### LTP-Single-Test-Fixes
+Verwandt mit A.1 — Signal-Delivery-Race. `raise()` → `kill(getpid(), sig)`.
+Race zwischen Signal-Pending-Set und `signal_wake_up`-IPI.
+Wahrscheinlich nach A.1 mit-gefixt.
 
-- **acct02**: BSD process accounting implementiert (acct_record_v0, exit-Hook
-  in exit_kill_process). Plus vfs_kernel_append tmpfs-aware.
-- **chdir01**: `do_chdir` DAC-Permission-Check (MAY_EXEC + CAP_DAC_OVERRIDE/
-  READ_SEARCH-Bypass) — Asymmetrie zu do_fchdir behoben.
-- **fchmodat2_01**: AT_EMPTY_PATH + AT_SYMLINK_NOFOLLOW-on-symlink-EOPNOTSUPP.
-- **execveat_errno**: aus LTP-Filter (ist Helper für execveat02).
+### A.3 du01.sh
 
-### Loop-Device + Procfs-Stubs
+busybox `du -s` gibt auf CosmoRT andere Block-Counts als auf Host.
+Vermutung: `stat()->st_blocks` falsch berechnet (sollte 512-Byte-Sektor-
+Anzahl sein, nicht Filesystem-Blocks). Untersuche `vfs_fstat()` /
+`tmpfs_op_stat()` / `ext4_inode_stat()`.
 
-- Minimal Loop-Device-Subsystem (`loop.c` + `loop.h`): /dev/loop-control +
-  /dev/loop0..7, LOOP_CTL_GET_FREE/REMOVE, LOOP_SET_FD/CLR_FD,
-  LOOP_SET/GET_STATUS{,64}.
-- `/proc/self/{setgroups,uid_map,gid_map}` stubs (5 LTP-Tests SKIP statt FAIL).
-- `/proc/sys/net/ipv4/icmp_msgs_{burst,per_sec}` stubs (icmp_rate_limit01 SKIP).
-- `_child` und `tst_*` und `tpm*` aus LTP-Test-Liste filtern (~52 false-positive
-  FAILs raus).
+### A.4 fanotify25
 
-### Verbleibende 19 LTP-FAILs — Buckets (nach Session 2026-04-30)
+Anders als fanotify01-24 (siehe Prio B): fanotify25 failt auch wenn das
+Subsystem da waere. Spezifischer Test fuer mark-detach-on-mountpoint-umount.
+Investigation noetig — kann auch ein LTP-Test-Bug sein, dann verschiebt
+sich Test in Prio "akzeptiert". Aktuell vorlaeufig hier.
 
-**Userspace-Tool-Mismatches (busybox vs. GNU coreutils, 8 Tests, NICHT
-Kernel-fixbar)**:
-- `ar01.sh`: test 14 nutzt `date --date='next day'` (BusyBox date kennt
-  das nicht, GNU date schon). 13 von 17 sub-tests PASS.
-- `df01.sh`, `mkfs01.sh`: `tst_device` cli-tool nicht in install/bin/
-  (testcases/lib Makefile-Build-Issue der LTP-Distribution).
-- `du01.sh`: `stat -f --format='%s'` (GNU) vs. busybox `stat -f -c FMT`.
-- `file01.sh`: `file` Binary fehlt im Image (apk install missing).
-- `gzip_tests.sh`: `gzip -r` nicht in BusyBox (recursive ist GNU-only).
-- `ld01.sh`: gcc cc1 SIGTERM (test-runtime > 5min wegen langsamem
-  fork+exec auf Alpine-Image — nicht OOM mehr seit 60% cap-Fix).
-- `ldd01.sh`: `ld-musl ... -v` Format-Mismatch zur GNU ldd-Output.
-- `mv_tests.sh`, `nm01.sh`, `tar_tests.sh`: aehnliche
-  busybox/GNU-mismatches.
+### A.5 regex (musl regex-ere-backref-static + regex-negated-range-static)
 
-**Race-Cluster (3 Tests, fork+exec-Pipe-Race, schwer fixbar)**:
-- `clock_settime04`: variant 3 `sys_clock_nanosleep` mit
-  `__kernel_old_timespec` hangs (libc variant 1 PASS). Stuck-thread
-  diagnose unklar.
-- `epoll_pwait03`, `epoll_wait02`: Multi-variant-Tests, late variants
-  timeout.
+POSIX-regex-Edge-Cases. `regex-ere-backref` testet `\1` in ERE-Modus,
+`regex-negated-range` testet `[^a-z]`-Klassen. Beide sind LTP-Tests fuer
+musl-libc-internal-regex und bestehen unter Linux. CosmoRT-Verbindung
+unklar — moeglicherweise aslr-getriggertes-malloc-Pattern. Investigation
+noetig.
 
-**Architektur-Bugs (3 Tests)**:
-- `clone08`, `clone10`: musl 1.2.5 CLONE_THREAD-filter
-  client-side — Linux-LTP-Test-Bug, nicht Kernel.
-- `cve-2014-0196`: `/dev/ptmx`-Open route fehlt + TIOCGPTN ioctl.
-  (mittlerer Fix: pty_alloc + FD_PTY_MASTER allocation.)
+---
 
-**User-Namespaces (1 Test, großer Scope)**:
-- `unshare01.sh`: braucht CLONE_NEWUSER + uid_map/gid_map +
-  /proc/sys/user/max_*_namespaces. ~1500 Zeilen NS-Implementation.
+## Prio B — Fehlende Subsysteme (Alltagsrelevanz)
 
-**fanotify-Tracefs (1 Test)**:
-- `fanotify25`: mount(tracefs) → ENODEV. Tracefs-Subsystem fehlt
-  komplett in CosmoRT.
+Tests die auf Host PASS sind aber auf CosmoRT geSKIPPED weil Subsystem
+fehlt. Sortiert nach Userspace-Relevanz (was Programme tatsaechlich nutzen).
 
-### Erledigt 2026-04-30 (Session "OOM-Cluster")
+### B.1 xattr-System (extended file attributes)
 
-**fallocate05-OOM-Cascade** war Wurzel von ~150 Test-FAILs:
-- Linux's tmpfs cap (50% RAM default) fehlte → tmpfs wuchs unbeschraenkt
-  via TST_FILL_RANDOM → kernel out_of_memory("no eligible victim")
-  → ALLE nachfolgenden Tests broken (Memory-Cascade-Death).
-- Plus: LOOP_SET_FD inode-refcount-Leak (extra `f->inode->refcount++`
-  ohne pair-decref in LOOP_CLR_FD) → cumulative tmpfs-Leak ueber Tests.
-- Fix-Path: globaler `ramfs_alloc_pages` Counter mit 60%-RAM-Cap +
-  ENOSPC-Propagation in tmpfs ops; redundanter inode-refcount entfernt.
+Tests: `fgetxattr03`, `flistxattr01`, `flistxattr02`, `flistxattr03`
+(plus advanced: `file_attr01-05`, `fgetxattr01`, `fgetxattr02` failen
+auf beiden — alpine-Setup-Issue, aber Subsystem auch auf CosmoRT noetig).
 
-### Erledigt 2026-04-29
+Was: `setxattr/getxattr/listxattr/removexattr` Syscalls + ext4-Inode-xattr-
+Block + tmpfs-xattr-Hashtable.
 
-- `serial_bridge` PTY-TX umgeht dmesg-Ring (Linux-Semantik, fixt
-  test_procfs `dmesg contains CosmoRT`).
-- `clocksource` Selftest-Ratings auf {499,474,449} statt {450,400,350}
-  — kvmclock (Rating 400) kollidierte unter KVM mit MID.
-- `do_brk` absorbiert nur kleine PROT_NONE-Gaps (≤4 Pages) bei brk_base
-  — vorher schluckte er beliebige mmap-VMAs am brk_base und liess brk
-  unbegrenzt wachsen. Fixt malloc-brk-fail{,-static}.
-- `auxv` mit AT_UID/EUID/GID/EGID/SECURE/EXECFN — musl ldso 1.2.5
-  setzte ohne diese Eintraege `libc.secure=1` und ueberging
-  $ORIGIN-Expansion in DT_RUNPATH. Fixt tls_get_new-dtv.
+Warum wichtig: `cp -a`, `tar`, `rsync`, AppArmor/SELinux-Labels, ACLs,
+file-attr-1: alle nutzen xattrs. Standard fuer "Datei-kopieren mit
+Metadaten" auf Linux.
 
-### Verbleibende musl-FAILs (10) — Buckets
+Aufwand: ~1500 LOC (syscalls + ext4-xattr-format-parser + tmpfs-storage).
 
-**Bucket A: musl 1.2.5 upstream-Bugs (8 Tests, NICHT im Kernel fixbar)**
-Tests durchgaengig FAIL auch auf nativem Linux mit Alpine-musl-loader
-(via `ld-musl-x86_64.so.1 --library-path build/alpine-root/lib`):
+### B.2 fanotify (file event monitoring)
 
-- `mntent`, `mntent-static` — getmntent 4-Felder-Parsing, fixed in
-  musl >= 1.2.6 (commit b4b1e10).
-- `strptime`, `strptime-static` — `%F`/`%s`/`%z` parsing broken in 1.2.5.
-- `fma`, `fmal`, `powf`, `remquol` — libm Genauigkeit/FP-Exceptions.
-  Dekker-fma verliert sign-of-product bei Underflow; long-double
-  UNDERFLOW-Exception fehlt; powf liefert spurious INEXACT|OVERFLOW.
+Tests: `fanotify02`, `fanotify04`, `fanotify07`, `fanotify08`, `fanotify11`,
+`fanotify12` (alle auf Host PASS, CosmoRT SKIP). Plus advanced
+`fanotify01/03/05/06/09/10/13-21/23/24` failen sowohl auf Host als auch
+CosmoRT (alpine-Setup-Mix).
 
-Aufloesung erfordert musl-Update (Alpine 3.21 → 3.22+) im Image.
-Nicht via Kernel-Patch behebbar.
+Was: `fanotify_init/mark` Syscalls — file event monitoring mit Permission-
+Hooks und FAN_CLASS_CONTENT. Erweitert inotify um Mount/Filesystem-weite
+Events + write-Permission-Vermittlung.
 
-**Bucket B: CosmoRT-Bugs (2 Tests, offen)**
+Warum wichtig: `systemd`, `gvfs`, `tracker`, file-Manager, AV-Scanner.
+inotify-Replacement-Path fuer moderne Programme.
 
-- `raise-race`, `raise-race-static` — fork() im Signal-Handler + RT-Signals.
-  Diagnose (vorheriger Agent): zwei Bugs.
-  - **Bug 1**: RT-Signal-Queue fehlt. Naive Implementation (sig_*_rt_count
-    Arrays in process/thread structs) verursacht test-hw Regression
-    (page1/page2 Tests + sched_add_enqueues) — minimaler invasiver Fix
-    noch ausstehend.
-  - **Bug 2**: CoW-Page im Signal-Handler-Context. Worker (Parent) und
-    Child auf unterschiedlichen Cores; Parent's CoW-Page wird nicht
-    TLB-shootdown'ed, gemeinsamer phys-frame ueberschreibt Child-Write
-    via `child=1`-Schreibvorgang. Tieftauchen ausstehend.
+Aufwand: ~2500 LOC (Init + Mark-Tree + Event-Queue + Permission-Hook).
 
+### B.3 process_vm_readv / process_vm_writev
 
+Tests: `process_vm01`, `process_vm_readv02`, `process_vm_readv03`,
+`process_vm_writev02` (alle Host PASS, CosmoRT SKIP).
 
-**Track 1 (NEU 2026-04-30) — Dual-Stack TCP + IPV6_ADDRFORM (ERLEDIGT)**:
-- Default `v6only=0` (Linux net.ipv6.bindv6only=0 ist seit ~2.6
-  Default in allen Distros). AF_INET6 sockets bound to ::any
-  akzeptieren ab jetzt IPv4-Connects.
-- `sock_find_listener` (v4-Pfad) faellt zurueck auf v6-listener mit
-  !v6only und local_ip6=:: wenn kein v4-listener auf Port existiert.
-- `accept4` synct `socket.is_v6` aus `tcp.is_v6` nach erfolgreichem
-  `net_tcp_accept_child` — dual-stack v4-child eines v6-listeners
-  ist ab jetzt korrekt AF_INET.
-- `setsockopt(IPV6_ADDRFORM, AF_INET)`: konvertiert v6-socket zu
-  AF_INET wenn TCP + tcp.is_v6==0 (dual-stack v4-mapped). Linux-
-  konformes ipv6_sockglue.c-Aequivalent.
-- `connect(AF_UNSPEC)`: state-reset auf SOCK_CREATED + tcp_close +
-  zero(net_tcp_t) (preserve ns_id/is_v6). Erlaubt bind+listen auf
-  fd nach accept+ADDRFORM (Linux CVE-2018-9568 Fix-Pfad).
-- Konstanten: IPV6_ADDRFORM=1 (linux/in6.h), ENOPROTOOPT=92
-  (linux/errno.h).
-- Regression-Test: `test/unit/net/test_ipv6.c::dualstack-v4-listener`
-  (5 sub-asserts: v6-listener bind ::, v4-client-connect rc==0,
-  accept produziert v4-child, recv 'v4', IPV6_ADDRFORM AF_INET).
-- ktest 3214 -> 3221 (+7).
-- LTP connect02 PASS (1000 iterationen 3WHS+accept+ADDRFORM+bind+listen).
-  tlim 10s -> 180s (timing-test).
+Was: Cross-process Memory-Read/Write-Syscalls mit `iovec`-Listen.
+Linux 3.2+, ptrace-Replacement-Path.
 
-**Track 2-5 (NEU 2026-04-30) — LTP tlim-Erhoehung (ERLEDIGT)**:
-Fuenf timing-empfindliche Tests die bisher mit "Test killed
-(timeout?)" terminierten haben tlim != 10s erhalten:
-- fcntl14, fcntl14_64: tlim=240 (5000 fork-Iterationen pro Variant).
-- fcntl34, fcntl34_64: tlim=240 (3 pthread-Threads + OFD-locks,
-  full-run-contamination macht 10s zu wenig).
-- fcntl36, fcntl36_64: tlim=240 (7 testcases x 9s pthread-loops).
-- epoll-ltp: tlim=120 (60s+ stress).
-- epoll_wait02: tlim=120 (tst_timer_test 500x sleep-Iterationen).
-- connect02: tlim=180 (Track 1).
-Tests sind funktional korrekt; LTP_TIMEOUT_MUL=5 und tst_test
-inneres timeout greifen, aber der aeussere `timeout 10`-Wrapper
-des Runners killte vorher. boot-test.sh FAIL-Output 40 -> 80
-Zeilen fuer bessere Diagnose.
+Warum wichtig: `gdb`, `strace`-modern (nicht-ptrace-fallback), `criu`,
+`bpftrace user-probe`. `ptrace(PEEKDATA)` ist langsam (Wort-fuer-Wort);
+`process_vm_readv` macht Page-Range-Copy.
 
-**Tracks 6-8 nicht abgeschlossen** (musl): tls_get_new-dtv
-(dlopen-DTV-race, komplexer Pfad), malloc-brk-fail-static
-(VMA-bytes-Tracking benoetigt), pthread_cond-smasher dynamic
-(dlopen+cond_wait-race). Alle drei sind dokumentiert in
-ALPINE_FAILS.md mit Linux-konformen Fix-Plaenen.
+Aufwand: ~600 LOC (Syscall + IOV-Validation + cross-mm-uaccess).
 
-**Race-Cluster Restbug** (pre-existing, dokumentiert): Math-FAILs
-(fma, fmal, powf, remquol — qemu64-FMA-Hardware fehlt) loesen
-einen process-cleanup Race aus, der den naechsten musl-Test
-hangt. Wurzel im exit_kill_process-Pfad (slab-recycled Code-Page
-nach do_exit). Voll-Run mit musl ist daher race-empfindlich;
-LTP-only voll-Run klappt durchgaengig.
+### B.4 eBPF (Basis-Subsystem)
 
-**Track 1 (NEU 2026-04-30) — Dual-Stack TCP + IPV6_ADDRFORM (ERLEDIGT)**:
-- Default `v6only=0` (Linux net.ipv6.bindv6only=0 ist seit ~2.6
-  Default in allen Distros). AF_INET6 sockets bound to ::any
-  akzeptieren ab jetzt IPv4-Connects.
-- `sock_find_listener` (v4-Pfad) faellt zurueck auf v6-listener mit
-  !v6only und local_ip6=:: wenn kein v4-listener auf Port existiert.
-- `accept4` synct `socket.is_v6` aus `tcp.is_v6` nach erfolgreichem
-  `net_tcp_accept_child` — dual-stack v4-child eines v6-listeners
-  ist ab jetzt korrekt AF_INET.
-- `setsockopt(IPV6_ADDRFORM, AF_INET)`: konvertiert v6-socket zu
-  AF_INET wenn TCP + tcp.is_v6==0 (dual-stack v4-mapped). Linux-
-  konformes ipv6_sockglue.c-Aequivalent.
-- `connect(AF_UNSPEC)`: state-reset auf SOCK_CREATED + tcp_close +
-  zero(net_tcp_t) (preserve ns_id/is_v6). Erlaubt bind+listen auf
-  fd nach accept+ADDRFORM (Linux CVE-2018-9568 Fix-Pfad).
-- Konstanten: IPV6_ADDRFORM=1 (linux/in6.h), ENOPROTOOPT=92
-  (linux/errno.h).
-- Regression-Test: `test/unit/net/test_ipv6.c::dualstack-v4-listener`
-  (5 sub-asserts: v6-listener bind ::, v4-client-connect rc==0,
-  accept produziert v4-child, recv 'v4', IPV6_ADDRFORM AF_INET).
-- ktest 3214 -> 3221 (+7).
-- LTP connect02: 1000 iterationen 3WHS+accept+ADDRFORM+bind+listen
-  PASS. tlim 10s -> 180s (timing-test).
+Tests: `bpf_map01`, `bpf_prog01-04` (alle Host PASS, CosmoRT SKIP).
 
-**Track 2-5 (NEU 2026-04-30) — LTP tlim-Erhoehung**:
-Fuenf timing-empfindliche Tests die bisher mit "Test killed
-(timeout?)" terminierten haben tlim != 10s erhalten:
-- fcntl14, fcntl14_64: tlim=240 (5000 fork-Iterationen pro Variant).
-- fcntl36, fcntl36_64: tlim=120 (7 testcases x 9s pthread-loops).
-- epoll-ltp: tlim=120 (60s+ stress).
-- epoll_wait02: tlim=120 (tst_timer_test 500x sleep-Iterationen).
-- connect02: tlim=180 (Track 1).
-Tests sind funktional korrekt; LTP_TIMEOUT_MUL=5 und tst_test
-inneres timeout greifen, aber der aeussere `timeout 10`-Wrapper
-des Runners killte vorher. boot-test.sh FAIL-Output 40 -> 80
-Zeilen fuer bessere Diagnose.
+Was: `bpf()` Syscall — JIT-compiled BPF-Programs + Maps fuer
+network-filter, tracing, security.
 
-ALPINE_FAILS.md vor diesen Track-Updates:
-ktest **3214/0** (+11 sub-asserts via futex_requeue_smash regression),
-musl **463 PASS / 8 FAIL / 7 SKIP** (+2 PASS, -3 SKIP — pi-static,
-robust-detach{,-static}, cond-smasher-static jetzt aktiv PASS), LTP
-**246/7/45** (unveraendert vor fcntl15-Hang).
+Warum wichtig: `tc`, `perf`, `bpftrace`, modern-`iptables-bpf`,
+seccomp-bpf. systemd-`Restrict*`-Direktiven nutzen seccomp-bpf.
 
-**Track 1 (NEU 2026-04-29) — futex_requeue stale-bucket race (ERLEDIGT)**:
-- Wurzel-Bug: FUTEX_REQUEUE migriert die Stack-allokierte
-  `futex_waiter_t` zwischen Buckets, aber der Sleeper cached den
-  Bucket-Pointer am Sleep-Entry. Nach Requeue locked
-  `prepare_to_wait` / `finish_wait` den FALSCHEN bucket und
-  modifiziert die Liste des neuen Buckets ohne dessen Lock —
-  `wq_remove`'s `e->next->prev = e->prev` bricht die zirkulaere
-  Liste, hinterlaesst einen Head-Eintrag mit `prev = NULL`. Naechstes
-  `futex_requeue` Phase-2 INSERT triggert dann KERNEL PF cr2=0x18
-  beim Schreiben von `tail->next` (offset 0x18 in
-  `wait_queue_entry_t`). Reproduziert deterministisch via
-  `pthread_cond-smasher-static` (musl regression).
-- Fix: `futex_waiter_t.bucket`-Feld trackt den live-Bucket. Helper
-  `futex_lock_current_bucket` macht Lock-and-Recheck (lock,
-  re-load bucket, unlock+retry on mismatch). `futex_prepare_to_wait`
-  und `futex_finish_wait` operieren immer auf dem aktuellen Bucket.
-  `futex_requeue` aktualisiert `w->bucket` atomar unter beiden
-  Locks.
-- addr2line-Beweis: `do_exit` runtime 0xffff8000bcaf9960, file-offset
-  0x7e960 → kernel-base 0xffff8000bca7b000. Crash rip 0xffff8000bcb05350
-  → offset 0x8a350, Disasm `mov %r11, 0x18(%rdi)` in
-  `futex_requeue+0x300` mit `rdi = wq2->head->prev = NULL`. Fix
-  bestaetigt: alpine-Run mit gleichem Test passiert ohne PF.
-- SKIP-Liste in `tools/boot-test.sh` reduziert: `pthread-robust-detach`,
-  `pthread-robust-detach-static`, `pthread_mutex_pi-static` raus —
-  alle 3 jetzt aktiv PASS in voller alpine-test.
-- Regression-Test: `test/unit/ipc/test_futex_requeue.c::futex_requeue_smash`
-  (4 Threads, REQUEUE-all + sequentielle WAKEs). Triggert exakt
-  den UAF-Pfad ohne Fix. ktest 3203 -> **3214**.
+Aufwand: **gross** (~5000+ LOC). bpf-verifier ist nicht-trivial.
+Niedrigere Stelle in Prio-B als die anderen weil Aufwand vs Nutzen.
 
-**Track 0 (2026-04-28) — SKIP-Audit + race-Cluster in SKIP**:
-- `tools/boot-test.sh` SKIP-Liste neu klassifiziert. PASS-bestaetigte
-  Tests aus SKIP entfernt: `fgetwc-buffering`,
-  `pthread_cond_wait-cancel_ignored {,-static}` (3x PASS in Audit + Run5).
-- Race-empfindliche Hang-Tests hinzugefuegt: `pthread-robust-detach
-  {,-static}`, `pthread_mutex_pi-static`. Diese loesen nach FAIL einen
-  Kernel-Hang aus (kein naechster Test startet). Run3/4 reproduzieren
-  einen Kernel-PF auf rip=ffff8000bcae0ece in nicht-statische Code-
-  Range — vermutlich slab-recycled-page nach exit_kill_process. Echte
-  Wurzel-Fix in do_exit/free_address_space-Pfad noetig, nicht erreicht.
-- tls_init bleibt SKIP (intermittent Hang in Voll-Run, auch wenn Audit
-  3x PASS zeigt — race-empfindlich).
-- Netto: SKIP-Count unveraendert, Klassifikation ehrlicher.
-Phasen 10.1, 11, 13.1,
-14, 15, 16, 17 erledigt. Phase 10.2 fast komplett.
-Branch: `ltp`. Architektur-Doc unter `notes/MODERN_KERNEL_DESIGN.md`.
+### B.5 fchmodat2 + copy_file_range + close_range Edge
 
-**Track 1 (neu) — SIGKILL/SIGSTOP unmaskable durch sig_blocked (ERLEDIGT)**:
-- `core/waitqueue.c::signal_deliverable`: SIGKILL (bit 8) + SIGSTOP
-  (bit 18) bypassen den `& ~sig_blocked`-Filter. Linux-Aequivalent zu
-  `__fatal_signal_pending` + `sigismember` ohne mask.
-- Wirkung: Sleeper in futex_wait / sigsuspend / nanosleep / sigtimedwait
-  brechen sofort aus, sobald SIGKILL ankommt — auch wenn ein Bug-Pfad
-  SIGKILL transient in `sig_blocked` setzt (z.B. SA_NODEFER + sigaction
-  race, sigsuspend mit broken mask, fork-inherit unter Korrumpierung).
-- Skip-Liste in `tools/boot-test.sh` reduziert: pthread-robust-detach,
-  sem_init, pthread_rwlock-ebusy-static, pthread_cond-smasher-static
-  alle aus SKIP-Liste entfernt — alle 4 jetzt PASS.
-- Neue ktests: `signal/sigkill_unmaskable`,
-  `signal/sigkill_in_nanosleep`, `signal/sigkill_in_sigsuspend`,
-  `signal/sigkill_in_futex` (jeweils 2-4 sub-asserts).
-- ktest 3180 -> **3198** (+18 sub-asserts).
-- musl 457/7/14 -> **461/7/10** (+4 PASS, -4 SKIP).
-- pthread_cond-smasher (dynamic) wandert von SKIP -> aktiv FAIL [timed out]
-  nach 60s — separater Bug im pthread_cond+dlopen-Pfad, nicht
-  SIGKILL-related. Dokumentiert nicht-skip, weiter zu untersuchen.
+Tests: `fchmodat2_01` (host fail wegen alpine-Setup, aber Syscall-Stub
+fehlt auf CosmoRT auch), `copy_file_range01/02`, `close_range01`.
 
-**Track 1 (alt, abgehandelt) — mm/gup + futex SHARED demand-fault (ERLEDIGT)**:
-- `mm/gup.c` neu: `mm_gup_one(p, va, write)` Linux-aequivalentes
-  get_user_pages_fast-Slow-Path. File-backed via page_cache_lookup +
-  vfs_pread_by_ino, anonymous via alloc_page. Lock-Disziplin: VMA-Snapshot
-  unter p->lock, Page-I/O ohne lock, finale map_user_page wieder unter lock.
-- `ipc/futex.futex_key`: shared-Pfad ruft mm_gup_one wenn fast-path
-  futex_va_to_pa 0 returnt. Linux-aequivalent zu futex_get_key + GUP_FAST.
-- `ipc/futex.futex_wait`: Klassifikation nach schedule() korrekt — pruefe
-  `fw.entry.next == 0` (entry off-list) als wake-Indikator. Linux's
-  futex_wait_queue_me kehrt nach futex_wake/REQUEUE direkt mit 0 zurueck
-  ohne *uaddr zu re-lesen — der Waker ist verantwortlich. Erste Iteration
-  pruefte WQ_FLAG_AUTOREMOVE, das war sticky beim re-queue durch
-  prepare_to_wait und triggerte falsche return 0 nach Spurious-Wake-Loops.
-  Vorher re-queued der Loop bis Timeout wenn der Waker *uaddr nicht
-  aenderte (LTP TST_CHECKPOINT_WAKE-Pattern).
-- `tools/boot-test.sh`: LTP_SKIP von "epoll_wait05 execve04 execve05"
-  auf nur noch "epoll_wait05" reduziert. clone301 5/5, execve04 PASS,
-  execve05 PASS, fcntl15 PASS, fcntl15_64 PASS — alle hatten dieselbe
-  Wurzel (TST_CHECKPOINT-Sync via FUTEX SHARED).
-- ktest 3175 -> 3180 (+5: futex/shared-cross-process Regression-Test).
-- ec30978 (revertiert in 58f13a1) hatte den Demand-Fault-Probe ohne
-  die parallele AUTOREMOVE-Loop-Korrektur. Beide Haelften zusammen
-  loesen das Pattern.
+Was: Moderne POSIX-extension-Syscalls.
+- `fchmodat2(AT_SYMLINK_NOFOLLOW)` — Linux 6.6+.
+- `copy_file_range()` — kernel-zu-kernel-Copy ohne user-buffer-roundtrip.
+- `close_range()` — schon implementiert in CosmoRT, edge-case-flag fehlt.
 
-**Track A — sys_proc.c Architektur-Refactor (ERLEDIGT)**:
-- HAL bekommt `hal_cpu_canonical_user_addr`, `hal_cpu_arch_name`,
-  `hal_cpu_set/get_user_gs`. sys_proc.c ist x86_64-frei: keine
-  bit-47-Maske, kein hardcoded "x86_64", kein direkter MSR-Zugriff.
-- thread_t.gs_base + ARCH_SET_GS / ARCH_GET_GS funktional. Linux-ABI
-  konform: non-canonical addr -> -EPERM. Round-trip durch ktest abgedeckt.
-- Context-switch save/restore von gs_base ist gating auf nicht-null,
-  damit der KERNEL_GS_BASE-percpu-Bootwert fuer Threads ohne
-  expliziten Set-GS erhalten bleibt (initial KERNEL_GS_BASE = percpu).
-- aarch64-Stubs angepasst (arch_name="aarch64", canonical akzeptiert).
-- ktest +12 (3163 -> 3175).
+Warum: `cp`, `dd`, performant-File-Tools.
 
-**Track B — Skip-List Bugs (TEILWEISE)**:
-- clone301: Skip entfernt. 4/5 tcases PASS jetzt diagnostiziert sichtbar.
-  tcase 4 (CLONE_PIDFD) bleibt TBROK in `tst_checkpoint_wait` — futex
-  WAIT/WAKE auf MAP_SHARED file-mmap zwischen parent (clone3-fork) und
-  child synchronisiert nicht. Hypothese: child's `futex_va_to_pa()`
-  returnt 0 weil die Seite in child's pml4 noch nicht demand-paged
-  ist (FUTEX_WAKE liest *uaddr nicht). Versuch eines copy_from_user-
-  probes hat accept02 (auch tst_checkpoint-basiert) zerschossen —
-  revertiert. Linux loest das via get_user_pages, das reference-counted
-  und write-faulted. Wir brauchen einen aequivalenten Pfad in
-  futex_key der die Seite einliest ohne Side-Effects.
-- execve05 + execve04: Skip bleibt. #GP-Cluster + ETXTBSY-Race in
-  execve unter 8 concurrent forks/execves. Eigene Diagnose-Phase.
-- pthread_cond_wait-cancel_ignored, tls_init: musl-SKIP bleibt.
-  futex_wait + pthread_cancel-Pfad haengt komplett — Phase-10
-  Wake-Race-Klasse, futex_wait checkt signal_deliverable nicht
-  innerhalb des prepare_to_wait-spinlocks.
+Aufwand: ~400 LOC (Wrapper + ext4-COW-Path fuer copy_file_range).
 
-**Gewonnen in dieser Session** (Commits c7c4ad1..ec9c933):
-- **proc/rlimit**: literal RLIM_INFINITY-sentinel statt Magic-0; NPROC=0
-  erzwingt fork-Verbot (vorher Bypass). pthread_atfork-errno-clobber
-  PASS, +1 ktest (rlimit/nproc_zero).
-- **ipc/futex**: FUTEX_LOCK_PI handhabt OWNER_DIED (vorher endless loop
-  bei robust-PI-Mutex nach Owner-Crash). pthread_robust PI-Subcases PASS.
-- **proc/exit**: robust_list-cleanup setzt OWNER_DIED + clear-TID
-  (Linux-konform, war OR-mit-tid → musl trylock_owner liest EBUSY).
-- **core/waitqueue**: signal_wake_up sendet broadcast resched-IPI.
-  pthread_cancel/SIGCHLD-during-futex_wait wache CPU1 sofort statt
-  1ms-Tick zu warten — eliminiert apparent Hangs in pthread_cond-smasher,
-  sem_init, tls_init etc.
-- **proc/rlimit**: rlim_nofile_max separat tracked. rlimit-open-files
-  PASS (vorher max=FD_CEILING hardcoded ignored user-set 42).
-- **test/sched**: rq-lock-held drain helpers eliminieren peer-CPU race
-  bei sched-Tests (sched_dequeue_middle/stale_rq_next).
-- **tools/boot-test**: dump FAIL-Output, skip kernel-Hangers.
+---
 
-**Bekannte Bugs (nicht-fix, siehe Skip-Liste in tools/boot-test.sh)**:
-- pthread_cond_wait-cancel_ignored {,-static}: futex_wait + pthread_cancel-
-  Kette haengt Kernel komplett (timeout 60 in qemu greift nicht).
-- tls_init: derselbe Hang-Cluster.
-- pthread-robust-detach {,-static}: timed out (45s) bei
-  pthread_mutex_timedlock auf orphan robust mutex. Static und dynamic
-  zeigen die Race-Empfindlichkeit; in einem von zwei Runs PASSt static.
-- malloc-brk-fail-static: Kernel sollte malloc OOM, erlaubt aber 10kB
-  alloc nach vmfill. brk wird nicht gecapped; OOM-guard zu locker.
-- tls_get_new-dtv: dlopen "tls_get_new-dtv_dso.so" failed mit SIGSEGV.
-  Dynamic-Link / dlopen-Pfad bleibt fragil.
-- LTP epoll_wait05: KERNEL PF cr2=0x62c bei EPOLLRDHUP nach
-  shutdown(SHUT_RD). NULL-Pointer-Deref im epoll-poll-Pfad.
-- LTP execve04: #GP rip=0xffff8000bcae2b69 in execve mit ETXTBSY-Pfad.
-  Kernel-Adresse unknown ohne Symbols; vermutlich vfs_open Race.
-- 4x musl Math-Praezision (fma, fmal, powf, remquol): qemu64 hat keine
-  FMA/Soft-FP-Exception-Hardware. Linux gleichermassen betroffen, akzeptiert.
+## Prio C — Fehlende Subsysteme (Niedrige Relevanz)
 
-**Phase 10.2c offen**: event_queue.c + thread_t.eq loeschen (siehe alte
-Notiz unten).
+### C.1 add_key + Keyring-API
 
-**Scheduler-Hardening (clock_nanosleep01-Hang)**: sched_add hatte einen
-unsoundalten Idempotency-Check (`tail==t || t->rq_next`), der stale
-rq_next-Pointer (use-after-free durch thread_free ohne RQ-Removal) als
-Membership las und Wakeups verlor. Master-Thread blieb mit state=RUNNABLE
-ausserhalb der RQ, System idled, `kill -9` erforderlich. Fix:
-list-walk-basierte Idempotency in sched_add + neuer sched_dequeue-Call
-in thread_free, der den Slot vor slab_free aus seiner Prio-Queue zieht.
-LTP clock_nanosleep01: Hang → PASS (3 reproducible runs). ktest 3161 → 3163
-(+2 Regression-Tests: stale-rq_next, dequeue-middle).
+Tests: `add_key01-04` (Host PASS, CosmoRT SKIP).
+Linux-Kernel-Keyring fuer cred-storage. Selten genutzt.
+Aufwand: ~1500 LOC. Skip bis konkrete Anforderung.
 
-**Strukturelle Blocker entfernt** (Phase 10.2-FINAL):
-- `thread->wait_head`-Routing weg → reiner state-CAS
-- event_queue intern auf wait_queue_head_t → eigene wq pro Sleeper
-- kill_one's `if (wait_head) sched_wake : event_post` Konditionalen
-  durch Direct-Calls ersetzt (event_post fuer eq-parked, sched_wake
-  fuer alle anderen)
+### C.2 cachestat (Linux 6.5+)
 
-**Offen** (Phase 10.2-Schritt-4): Subsystem-Migration weg von event_queue.
-event_queue.c bleibt vorerst als korrekt funktionierender Wrapper
-(intern wq-basiert), aber alle ~30 event_post/event_wait Aufrufer
-(eventfd, futex, pipe, socket, epoll, etc) koennten direkt auf
-wait_queue_head_t pro fd/socket/futex umgestellt werden. Reduziert
-~280 Zeilen event_queue.c + entfernt eq aus thread_t.
+Tests: `cachestat01-04` (Host meist FAIL, einer PASS).
+Page-Cache-Statistiken pro File-Range. Sehr neu, kaum verbreitet.
+Aufwand: ~300 LOC. Niedrige.
+
+### C.3 Kernel-Module-System
+
+Tests: `lsmod01.sh`, `delete_module01-03`, `finit_module01/02`.
+**Out of scope** — CosmoRT ist explizit statisch verlinkt, kein Modul-
+Loading. Diese Tests bleiben fuer immer SKIP.
+
+### C.4 CVE-Regressionstests
+
+Tests: `cve-2014-0196`, `cve-2016-7117`, `cve-2017-2671`, `cve-2016-10044`,
+`cve-2016-7042`, `cve-2017-2618`, `cve-2022-4378`, `meltdown`.
+
+Linux-spezifische Kernel-Bug-Regressionstests. Nicht relevant fuer einen
+neu-implementierten Kernel der die Bugs nie hatte. Bleiben SKIP/FAIL.
+
+### C.5 arch_prctl, fcntl40 Edge-Cases
+
+Single-test edge-cases. Niedrige Relevanz, fix wenn verlangt.
+
+### C.6 ICMP rate limit, traffic control
+
+Tests: `icmp_rate_limit01`, `tcindex01`. Niche networking. Niedrige.
+
+---
+
+## Akzeptierte Fails (NICHT Kernel-Bugs)
+
+Tests die auch auf Linux failen — kein Engineering-Effort wert.
+
+### Busybox vs GNU coreutils Mismatches (10 Tests)
+
+`ar01.sh`, `df01.sh`, `du01.sh*`, `file01.sh`, `gzip_tests.sh`,
+`ld01.sh`, `ldd01.sh`, `mkfs01.sh`, `mv_tests.sh`, `nm01.sh`,
+`tar_tests.sh`. LTP-Tests gehen davon aus dass GNU coreutils installiert
+sind, alpine nutzt busybox-Aliasse mit subtle output-mismatches.
+
+(*) `du01.sh` ist auch in Prio A.3 — Stat-Bug ist vermutet, dann waere
+es Kernel-Bug; falls reine busybox-Differenz, gehoert es hierher.
+
+### musl-Upstream-Bugs (10 Tests)
+
+`fma`, `fmal`, `powf` (math-precision-Edge-Cases),
+`mntent` + `mntent-static` (parser-Bug),
+`strptime` + `strptime-static` (Format-string-Bug),
+`sem_close-unmap` + `sem_close-unmap-static` (POSIX-semaphore-Race im
+musl-runtime, brauchen /dev/shm-Setup).
+
+Bugs sind in musl, nicht im Kernel. Bestaetigt durch Host-FAIL.
+
+### LTP-Test-Timing-Bugs (4 Tests)
+
+`clock_settime04`, `epoll_pwait03` — LTP-Timing-Slack zu eng.
+`clone08`, `clone10` — Test-Bug, falsche Filter-Erwartung.
+
+### Userspace-Setup-Issues (2 Tests)
+
+`cve-2014-0196` — braucht `/dev/ptmx` + TIOCGPTN, alpine-Konfig fehlt.
+`unshare01.sh` — braucht uid_map/gid_map setup, 5/8 sub-tests PASS,
+3 brauchen vollen user-namespace-Setup auf alpine-Seite.
+
+---
+
+## Test-Infrastruktur
+
+### Targets
+
+```sh
+make                   # Kernel build
+make test-hw           # Kernel-Unit-Tests (3246/0) → /tmp/cosmo-serial.log
+make alpine-test       # Vollauf CosmoRT (~15min KVM) → /tmp/alpine-test.log
+make alpine-test-host  # Vollauf Host-Linux (~10min KVM) → /tmp/alpine-test-host.log
+make qemu-bench        # gcc-compile-Bench → /tmp/cosmo-bench.log
+```
+
+### Console-cmdline (Linux-Parity)
+
+Default ohne cmdline = silent. Test-Targets uebergeben automatisch
+`-fw_cfg name=opt/cmdline,string=console=ttyS0,,115200` (Linux-Style
+cmdline ueber QEMU fw_cfg, kein hardcoded UART mehr).
+
+### Fokussierte Iteration
+
+```sh
+echo 'popen|raise-race' > build/alpine-root/opt/musl_run
+echo '__none__'         > build/alpine-root/opt/ltp_run
+make alpine-test        # ~3min nur diese Tests, DEBUG=1 vollen Output
+rm build/alpine-root/opt/musl_run build/alpine-root/opt/ltp_run
+```
+
+### A/B-Diff
+
+```sh
+# Nach beiden Vollaeufen:
+grep -E "^\[[0-9]+/[0-9]+\] .* FAIL" /tmp/alpine-test.log      | sort > /tmp/cosmo_fails.txt
+grep -E "^\[[0-9]+/[0-9]+\] .* FAIL" /tmp/alpine-test-host.log | sort > /tmp/host_fails.txt
+comm -23 /tmp/cosmo_fails.txt /tmp/host_fails.txt   # nur CosmoRT — echte Bugs
+comm -12 /tmp/cosmo_fails.txt /tmp/host_fails.txt   # beide — akzeptiert
+```
 
 ---
 
