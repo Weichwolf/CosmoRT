@@ -91,11 +91,15 @@ sich Test in Prio "akzeptiert". Aktuell vorlaeufig hier.
 
 ### A.5 regex (musl regex-ere-backref-static + regex-negated-range-static)
 
-POSIX-regex-Edge-Cases. `regex-ere-backref` testet `\1` in ERE-Modus,
-`regex-negated-range` testet `[^a-z]`-Klassen. Beide sind LTP-Tests fuer
-musl-libc-internal-regex und bestehen unter Linux. CosmoRT-Verbindung
-unklar — moeglicherweise aslr-getriggertes-malloc-Pattern. Investigation
-noetig.
+**Befund 2026-04-30**: Heisenbug. In Isolation (Marker-Filter `regex-*`)
+beide PASS. Im Vollauf flaken sie zwischen PASS und FAIL/timeout (rc=143).
+Selbe Race wie A.1+A.2 — `popen-static` und `raise-race` zeigen
+identisches Pattern (timeout im Vollauf, PASS isoliert). Drei
+aufeinanderfolgende `make alpine-test`-Vollaeufe lieferten 465/13,
+465/13, 463/15. Die ±2 Drift entspricht exakt den 2 regex-Tests.
+
+Gemeinsame Wurzel mit A.1 vermutet. **Bleibt deferred bis A.1-Fix** —
+sollte nach popen-Race-Fix mit-stabilisieren.
 
 ---
 
