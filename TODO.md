@@ -28,14 +28,14 @@ Multimedia-Apps?
 
 ---
 
-## Stand 2026-04-30 (post-host-baseline)
+## Stand 2026-04-30 (post-popen-fix)
 
 **Vergleich CosmoRT vs Linux 6.12 RT (selbe alpine.img, selber boot-test.sh):**
 
 | Metric | CosmoRT | Linux 6.12 RT |
 |--------|---------|---------------|
 | ktest (test-hw) | 3246 / 0 | n/a |
-| musl libc-test | **463 / 15** | 461 / 17 |
+| musl libc-test | **467 / 11** | 461 / 17 |
 | LTP PASS | 277 | 297 |
 | LTP FAIL | **18** | 73 |
 | LTP SKIP | 155 | 80 |
@@ -60,21 +60,28 @@ Sub-Cluster sind Prio B/C nach Alltagsrelevanz.
 4 Cluster, 7 Test-Failures. Reproduktion: `make alpine-test`, danach
 Marker-File-Filter fuer fokussierte Iteration (siehe CLAUDE.md §Test-Iteration).
 
-### A.1 popen-Race (musl popen + popen-static)
+### A.1 popen-Race — ✓ GEFIXT (Commit 45b023d)
 
-`fork() + execve() + pipe`-Setup-Race. Heisenbug — `serial_putchar`-Logging
-veraendert das Outcome (lost-wakeup-Pattern in lokaler kstack-wq vermutet).
-**3 Vorgaenger-Sessions ohne Erfolg.** Naechster Versuch braucht
-non-perturbative Tracer (ftrace-style Buffer, kein Live-IO).
+Wurzel: `schedule_timeout_common` in `core/waitqueue.c` hatte interne
+`for(;;)`-Loop die wakes als "spurious" classified und re-iterierte. Bei
+`timeout_ns=0` (poll(-1)) nie break-Bedingung — sh's poll(-1) auf pipe
+geweckt durch pipe_write, schedule() returnt, aber alte Loop setzte
+state=BLOCKED erneut. sh nie wieder dran.
 
-Vermutete Wurzel: `prepare_to_wait` / `try_to_wake_up`-Propagation in
-`do_pause` / `do_rt_sigsuspend` / `sleep_interruptible_ns` Pattern.
+Fix: Linux-Pattern. schedule_timeout fuehrt EINEN schedule()-Call aus und
+returnt danach. Caller (poll_loop, sleep_until_ns) hat eigene outer-loop
+mit Condition-Recheck.
+
+Mitgefixt: regex-ere-backref-static, regex-negated-range-static (A.5)
+hatten dieselbe Race im poll-Pfad.
 
 ### A.2 raise-race (musl raise-race + raise-race-static)
 
-Verwandt mit A.1 — Signal-Delivery-Race. `raise()` → `kill(getpid(), sig)`.
-Race zwischen Signal-Pending-Set und `signal_wake_up`-IPI.
-Wahrscheinlich nach A.1 mit-gefixt.
+Multi-thread + pthread_kill + fork-in-signal-handler. **NICHT durch A.1-Fix
+behoben** — separates Race-Pattern. `raise()` Test macht 1000x raise(SIGRTMIN)
++ 100x pthread_kill mit fork() in handler. Wahrscheinlich Race zwischen
+sig_pending-Bit-Set und signal_wake_up vs. Concurrent fork()-State.
+Tieferes Diagnostik notwendig.
 
 ### A.3 du01.sh
 
@@ -83,17 +90,10 @@ Vermutung: `stat()->st_blocks` falsch berechnet (sollte 512-Byte-Sektor-
 Anzahl sein, nicht Filesystem-Blocks). Untersuche `vfs_fstat()` /
 `tmpfs_op_stat()` / `ext4_inode_stat()`.
 
-### A.4 regex (musl regex-ere-backref-static + regex-negated-range-static)
+### A.4 regex — ✓ GEFIXT (mit A.1, Commit 45b023d)
 
-**Befund 2026-04-30**: Heisenbug. In Isolation (Marker-Filter `regex-*`)
-beide PASS. Im Vollauf flaken sie zwischen PASS und FAIL/timeout (rc=143).
-Selbe Race wie A.1+A.2 — `popen-static` und `raise-race` zeigen
-identisches Pattern (timeout im Vollauf, PASS isoliert). Drei
-aufeinanderfolgende `make alpine-test`-Vollaeufe lieferten 465/13,
-465/13, 463/15. Die ±2 Drift entspricht exakt den 2 regex-Tests.
-
-Gemeinsame Wurzel mit A.1 vermutet. **Bleibt deferred bis A.1-Fix** —
-sollte nach popen-Race-Fix mit-stabilisieren.
+Wie vermutet: gleiche Wurzel wie popen-Race. schedule_timeout-Loop bug
+betraf alle Tests die ueber poll/select auf fd-readiness warten.
 
 ---
 
@@ -378,11 +378,28 @@ Mit Phase 10 sollten verschwinden:
 
 | Metrik | Start-of-Session | Ende |
 |---|---|---|
-| ktest | 2504 | **2870** (+366) |
+| ktest | 2504 | **3246** (+742) |
 | ktest FAIL | variable | **0** |
-| musl PASS | 448 | **460** (+12) |
-| LTP PASS | 198 | **246** (+48) |
-| LTP FAIL | 87 | **8** (-79) |
+| musl PASS | 448 | **467** (+19) |
+| LTP PASS | 198 | **277** (+79) |
+| LTP FAIL | 87 | **18** (-69) |
+
+### popen-Race (A.1+A.4) gefixt
+
+3 Vorgaenger-Sessions ohne Erfolg. Wurzel diesmal gefunden via
+non-perturbative Tracer (16K-event ringbuffer, lock-free atomic xadd):
+**`schedule_timeout_common` hatte interne `for(;;)`-Loop die wakes als
+spurious classified.** Bei `timeout_ns=0` (poll(-1)) keine break-Bedingung,
+sh's poll auf pipe wakes via `wake_up(&pp->read_wq)` triggern
+default_wake_function/try_to_wake_up aber alte schedule_timeout-Loop
+setzte state=BLOCKED erneut via prepare_to_wait — sh nie wieder dran.
+
+Linux-Pattern: schedule_timeout fuehrt EINEN schedule()-Call aus, returnt.
+Caller (poll_loop in sys_event.c, sleep_until_ns in sys_time.c) hat eigene
+outer-loop mit Condition-Recheck.
+
+popen + popen-static + regex-* (4 Tests) gefixt durch eine Aenderung
+in `core/waitqueue.c`. Commit 45b023d.
 
 ### Gefixte Cluster (Session)
 fcntl (komplett), eventfd/epoll, chroot/caps, cve/execve, clone,
