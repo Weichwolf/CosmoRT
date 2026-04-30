@@ -112,7 +112,10 @@ ltp_passed=0; ltp_failed=0; ltp_skipped=0; ltp_total=0
 # tst_test.sh-Framework auch kein TCONF/SKIP — sie failen unconditional.
 # `execveat_errno` ist ein dummy-Programm fuer execveat02 (ruft tst_reinit
 # das LTP_IPC_PATH erwartet). Kein eigenstaendiger Test.
-LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$|^tst_|^tpm[a-z_]*|^execveat_errno$' | sort)
+# `shell_pipe01.sh` ist designed um via `echo "SUCCESS" | shell_pipe01.sh`
+# (siehe ltp/runtest/commands:37) gerufen zu werden — als Standalone-Aufruf
+# blockiert er auf `read line` ohne stdin und failt nach Timeout.
+LTP_TESTS=$(ls "$LTP_BIN" | grep -vE '_(helper|child)$|^tst_|^tpm[a-z_]*|^execveat_errno$|^shell_pipe01\.sh$' | sort)
 if [ -n "$LTP_RUN" ]; then
     filtered=""
     for t in $LTP_TESTS; do
