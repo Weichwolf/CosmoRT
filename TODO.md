@@ -28,13 +28,90 @@ Multimedia-Apps?
 
 ---
 
-## Stand (Session 2026-04-29)
+## Stand (Session 2026-04-29 — Late)
 
-ktest **3227/0** (+6 via clocksource-rating-Fix), musl **467/11** (+4
-PASS via tls_get_new-dtv + malloc-brk-fail{,-static}; popen{,-static}
-nicht mehr in FAIL bei aktivem KVM). LTP nicht voll baseline'd
-(make alpine-test wird vom System nach 4-28 min ge-killed, Ursache
-unklar — kein OOM, kein Timeout).
+ktest **3246/0**, musl **~465/13** (Variabilität 460-467 wegen race-cluster-
+flakiness bei Vollauf), LTP **~272/46/133** (von 452 nach Filter; war 191/218
+vor Session). Vollauf-Zeit 15 min (vorher 43 min, **3x schneller via ext4-Phase**).
+
+### Performance Phase 1 — ext4 high-performance (Linux-baseline + besser)
+
+- `bcache` O(1) tail-pointer LRU, Multiplikative Hash, BCACHE_SIZE 256 → 1024,
+  `bcache_readahead` für sequentielle Bulk-Reads
+- `virtio_blk` DMA 4 KB → 64 KB, neue `blk_read_bulk` (bis 16 contiguous blocks
+  per virtio-Request — 16x weniger IRQ-Roundtrips)
+- `ext4` Group-Descriptor-Array beim Mount in RAM, 256-Eintrag Inode-Cache
+  (LRU+Hash), 64 KB Read-ahead-Window in `ext4_read`
+- `ext4_vfs_read` landing-buffer 4 KB → 16 KB
+- `tlb_flush_mm` lazy fast-path bei `thread_count<=1 && !mm_shared` —
+  saved 3229 IPIs / 24 = 99.3% IPI-frei bei single-thread mmap-Storm
+- `mm/page_cache` file-backed mmap shared zwischen Prozessen, COW für
+  PROT_PRIVATE writable, RA-Loop 64 KB im PF-Pfad
+
+Verifiziert: cat /lib/libc.so cold 2850 ms → 10 ms (**285x**), test-hw 3246/0.
+
+### tmpfs page-list (Architektur-Refactor)
+
+- Inode-Storage von `uint8_t *data + capacity` (kontiguous, MAX_ORDER=2 MB cap)
+  auf `uint8_t **pages + npages` (Linux-pattern). Files bis 1 GB.
+- `vfs_rw.c` komplett restrukturiert: `pages_array_grow`, `shrink_file`,
+  `ramfs_read/write_locked`. Spinlock_t per inode (IRQ-save).
+- ELF-Loader, exec, vfs_kernel_append migriert auf `vfs_inode_read`.
+
+Verifiziert: dd 300 MB tmpfs 2 GB/s, dd 500 MB 991 MB/s, test-hw 3246/0.
+
+### LTP-Single-Test-Fixes
+
+- **acct02**: BSD process accounting implementiert (acct_record_v0, exit-Hook
+  in exit_kill_process). Plus vfs_kernel_append tmpfs-aware.
+- **chdir01**: `do_chdir` DAC-Permission-Check (MAY_EXEC + CAP_DAC_OVERRIDE/
+  READ_SEARCH-Bypass) — Asymmetrie zu do_fchdir behoben.
+- **fchmodat2_01**: AT_EMPTY_PATH + AT_SYMLINK_NOFOLLOW-on-symlink-EOPNOTSUPP.
+- **execveat_errno**: aus LTP-Filter (ist Helper für execveat02).
+
+### Loop-Device + Procfs-Stubs
+
+- Minimal Loop-Device-Subsystem (`loop.c` + `loop.h`): /dev/loop-control +
+  /dev/loop0..7, LOOP_CTL_GET_FREE/REMOVE, LOOP_SET_FD/CLR_FD,
+  LOOP_SET/GET_STATUS{,64}.
+- `/proc/self/{setgroups,uid_map,gid_map}` stubs (5 LTP-Tests SKIP statt FAIL).
+- `/proc/sys/net/ipv4/icmp_msgs_{burst,per_sec}` stubs (icmp_rate_limit01 SKIP).
+- `_child` und `tst_*` und `tpm*` aus LTP-Test-Liste filtern (~52 false-positive
+  FAILs raus).
+
+### Verbleibende ~46 LTP-FAILs — Buckets
+
+**Loop-Device-mount (~22 Tests, architektonisch groß)**:
+fanotify×16, fallocate×3, copy_file_range×1, file_attr×4 (race-flake), ...
+- Loop-Subsystem hat read/write durch backing-fd, aber `do_mount("/dev/loopN",
+  "ext4")` returnt -ENODEV in stubs.c
+- Wurzel: ext4-Driver ist single-instance (globale `sb`, `mounted`, `gd_cache`,
+  `icache` etc.) — multi-mount-fähig zu machen ist ~1500 Zeilen Refactor
+- Plus: bcache pro Block-Source statt globaler virtio-blk
+- Mehrere Tage Engineering, separater Track
+
+**popen/raise-race + shell-pipe-Tests (~17 Tests)**:
+popen×2, raise-race×2 + shell-tests ar01.sh, du01.sh, file01.sh, ld01.sh,
+ldd01.sh, mv_tests.sh, nm01.sh, gzip_tests.sh, mkfs01.sh, df01.sh, tar_tests.sh,
+shell_pipe01.sh, unshare01.sh
+- Wurzel: race im fork+execve+pipe-Pfad (musl posix_spawn)
+- Heisenbug: serial_putchar logging fixt es (lock-acquire/IRQ-disable im Pfad)
+- 3 Agent-Sessions ohne Erfolg — Wurzel vermutlich in `prepare_to_wait` /
+  wakeup-propagation oder MMU-switch-IRQ-race in process_exec.c
+- Tieftauchen erfordert non-perturbativen Tracer (ftrace-Style)
+
+**close_range01**: braucht clone(CLONE_FILES) refcount-fd-Sharing.
+process_t.fds ist embedded (~117 Call-Sites) — heap-allokiert mit refcount
+ist mittlerer Refactor.
+
+**clock_settime04, epoll_pwait03**: Tests killed nach 30s timeout — erste
+Variants PASS, dritte/vierte Variants hängen (vermutlich syscall-variant-bug
+in old-kernel-spec-Pfad).
+
+**clone08, clone10**: musl 1.2.5 filtert CLONE_THREAD clientseitig — Linux-
+LTP-Test-Bug, nicht Kernel.
+
+**cve-2014-0196**: pty-Subsystem-Bug.
 
 ### Erledigt 2026-04-29
 
