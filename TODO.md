@@ -28,16 +28,16 @@ Multimedia-Apps?
 
 ---
 
-## Stand 2026-04-30 (post-popen-fix)
+## Stand 2026-04-30 (post-raise-race-fix)
 
 **Vergleich CosmoRT vs Linux 6.12 RT (selbe alpine.img, selber boot-test.sh):**
 
 | Metric | CosmoRT | Linux 6.12 RT |
 |--------|---------|---------------|
 | ktest (test-hw) | 3246 / 0 | n/a |
-| musl libc-test | **467 / 11** | 461 / 17 |
-| LTP PASS | 277 | 297 |
-| LTP FAIL | **18** | 73 |
+| musl libc-test | **469 / 9** | 461 / 17 |
+| LTP PASS | 276 | 297 |
+| LTP FAIL | **19** | 73 |
 | LTP SKIP | 155 | 80 |
 | Test-hw Reproduktion: `make test-hw` | | |
 | Vollauf CosmoRT: `make alpine-test` → `/tmp/alpine-test.log` | | |
@@ -45,7 +45,7 @@ Multimedia-Apps?
 
 **3-Wege-Diff (alpine-test.log vs alpine-test-host.log):**
 
-- **7 Tests / 4 Cluster** failen NUR auf CosmoRT → echte Kernel-Bugs (Prio A)
+- **3 Tests / 2 Cluster** failen NUR auf CosmoRT → echte Kernel-Bugs (Prio A)
 - **1 Test** failt NUR auf CosmoRT wegen fehlendem Subsystem (akzeptiert: fanotify25)
 - **25 Tests** failen auf BEIDEN → LTP-Test-Bugs / Userspace-Setup (akzeptiert)
 - **48 Tests** failen NUR auf Host → irrelevant fuer CosmoRT (alpine-Setup)
@@ -57,8 +57,9 @@ Sub-Cluster sind Prio B/C nach Alltagsrelevanz.
 
 ## Prio A — Echte CosmoRT-Kernel-Bugs
 
-4 Cluster, 7 Test-Failures. Reproduktion: `make alpine-test`, danach
-Marker-File-Filter fuer fokussierte Iteration (siehe CLAUDE.md §Test-Iteration).
+2 Cluster, 3 Test-Failures (popen + raise-race + regex GEFIXT). Reproduktion:
+`make alpine-test`, danach Marker-File-Filter fuer fokussierte Iteration
+(siehe CLAUDE.md §Test-Iteration).
 
 ### A.1 popen-Race — ✓ GEFIXT (Commit 45b023d)
 
@@ -75,13 +76,50 @@ mit Condition-Recheck.
 Mitgefixt: regex-ere-backref-static, regex-negated-range-static (A.5)
 hatten dieselbe Race im poll-Pfad.
 
-### A.2 raise-race (musl raise-race + raise-race-static)
+### A.2 raise-race (musl raise-race + raise-race-static) — ✓ GEFIXT
 
-Multi-thread + pthread_kill + fork-in-signal-handler. **NICHT durch A.1-Fix
-behoben** — separates Race-Pattern. `raise()` Test macht 1000x raise(SIGRTMIN)
-+ 100x pthread_kill mit fork() in handler. Wahrscheinlich Race zwischen
-sig_pending-Bit-Set und signal_wake_up vs. Concurrent fork()-State.
-Tieferes Diagnostik notwendig.
+Zwei Wurzeln, beide noetig fuer den Test:
+
+**1. RT-Signal-Queue (sig 32..63 / SIGRTMIN..SIGRTMAX)**
+
+CosmoRT hatte nur Bitmap-pending. 100x pthread_kill(SIGRTMIN+1) kollabierten
+zu einem Bit → handler1 lief 1x statt 100x → busy-wait `while (c1<100)`
+hing forever. Linux: counted RT-queue, jeder pthread_kill liefert genau
+einen Handler-Aufruf.
+
+Fix: per-RT-signal counter `sig_rt_count[32]` (process) und
+`sig_rt_thread_count[32]` (thread). Bei sig>=32: counter++ in send-Pfad,
+counter-- in consume-Pfad, bit bleibt set solange counter > 0. Send/consume
+unter `process->lock` synchronisiert. Non-RT-Signale (1..31) bleiben
+bit-only — Linux-konform.
+
+**2. Nested Signal-Delivery in rt_sigreturn**
+
+Nach handler0-Return war SIGRTMIN+1 zwar deliverable (mask=0 nach restore),
+aber `check_signals_syscall_path` machte fuer SYS_RT_SIGRETURN early-return.
+Naechster Syscall war raise's `__block_app_sigs`, das SIGRTMIN+1 sofort
+wieder blockt — handler1 nie ausgeliefert waehrend raise-Loop. Erst nach
+Loop-Ende, in busy-wait, lieferte preempt-tick die handler aus → 99 von 100
+Children resumed im busy-wait und blieben dort haengen (parent's `if (child)
+_exit` war zu dem Zeitpunkt schon vorbei).
+
+Fix: rt_sigreturn-Pfad in `check_signals_syscall_path` macht keinen
+early-return mehr. Nested Delivery wie Linux: zwischen handler-ret und
+return-to-user wird ein zweiter Frame gestapelt.
+
+Das war ein Revert (c3b602f) eines fruehen Versuchs (528d571) — die damals
+gemeldeten Regressionen (pthread_cond-smasher, pthread_once-deadlock,
+capset04) sind in der aktuellen Version alle PASS. Vermutlich wurden die
+state-issues seither in anderen Subsystemen behoben.
+
+Files: `include/kernel/proc/process.h`, `include/kernel/proc/thread.h`,
+`src/kernel/proc/process_fork.c` (counter-Init im fork-Pfad),
+`src/kernel/proc/signal.c` (RT-counter inc/dec + lock-Sync),
+`src/kernel/proc/signal_frame.c` (dnotify re-pend mit counter),
+`src/kernel/proc/signal_handler.c` (rt_sigreturn early-return entfernt).
+
+5x isoliert PASS. Vollauf: musl 469/9 (vorher 467/11), LTP 276/19 (vorher
+277/18 — innerhalb Noise).
 
 ### A.3 du01.sh
 
@@ -380,9 +418,9 @@ Mit Phase 10 sollten verschwinden:
 |---|---|---|
 | ktest | 2504 | **3246** (+742) |
 | ktest FAIL | variable | **0** |
-| musl PASS | 448 | **467** (+19) |
-| LTP PASS | 198 | **277** (+79) |
-| LTP FAIL | 87 | **18** (-69) |
+| musl PASS | 448 | **469** (+21) |
+| LTP PASS | 198 | **276** (+78) |
+| LTP FAIL | 87 | **19** (-68) |
 
 ### popen-Race (A.1+A.4) gefixt
 
