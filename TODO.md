@@ -1,6 +1,6 @@
 # CosmoRT — TODO
 
-**Test-Status:** test-hw 3243/1 · musl 469/9 · LTP 277/18/155
+**Test-Status:** test-hw 3246/0 · musl 469/9 · LTP 277/18/155
 
 Linux/POSIX/musl-ABI-kompatibler Kernel. Modern, schlank, performant. Kein Legacy.
 
@@ -8,17 +8,17 @@ Aufgabenformat: jede Subtask ist allein commit-bar (~30–60 min). Workflow für
 
 ---
 
-## Aktive Bugs
+## Erledigt
 
-### Bug 1 — `net/tcp_hash_multi` TIMEOUT (test-hw)
-
-8 Connects+Sends OK, Recv hängt bei Hash-Bucket-Kollision. 2-Conn passt.
-
-- [ ] **1.0 Invest** — printk in `tcp_register/tcp_find/tcp_input` (Bucket-Idx, Match-Pfad, Wakes). Bei 8 Connects: Kollision? `tcp_find` nur Bucket-Head? Wake verloren? *(0 LOC, kein Commit)*
-- [ ] **1.1 Ephemeral-Port-Kollisionsschutz** — `net_tcp_connect` + `net_tcp6_connect`: random pick + `tcp_find(ns, lport, rport, dst)`-Probe in Schleife (max 16 Tries), Fehlschlag → `-EADDRINUSE`. *~25 LOC. Test: `test_tcp_hash_multi`.*
-- [ ] **1.2 Wake-Audit** — falls 1.0 Race zeigt: `wake_up` → `wake_up_all` wo nur ein Waiter blockiert; `prepare_to_wait` Re-Check-Reihenfolge in `socket.c:socket_read/do_recvfrom`. Sonst entfällt. *~10 LOC.*
+- **Bug 1 — `net/tcp_hash_multi` TIMEOUT** (Commits `c455b67`, `2710886`)
+  - Wurzel war nicht Port-Kollision (verworfen), sondern fehlende TCP-Retransmission. `net_tcp_retransmit` war registriert, aber nirgends armed → fire-and-forget. Bei e1000-RX-Drop kein Retry, Recv hing.
+  - 1.3a: `socket_read`/`do_recvfrom` mit `schedule_timeout`-Backstop (kein 10s-Watchdog mehr bei Drop ohne Wake).
+  - 1.3: RFC-6298-simplified Retransmission — `retx_buf[1460]` per Connection, arm bei `net_tcp_send`/connect, cancel bei ACK-drain, RTO-Backoff ×2 bis 8s, nach 5 Retries RST. SYN-Retx und Daten-Retx via `snd_nxt`-Rewind-Trick (wie keepalive).
+  - test-hw 3243/1 → 3246/0; alpine-test unverändert (kein TCP-Test in den FAILs).
 
 ---
+
+## Aktive Bugs
 
 ### Bug 2 — LTP `clone08` TID/PID-Identität
 
@@ -69,16 +69,13 @@ Wurzel: `epoll.c:436+459` deadline = `timer_ms() + timeout` (ms-Granularität), 
 
 | # | Subtask | LOC | Begründung |
 |---|---|---|---|
-| 1 | 1.0 Invest | 0 | Schließt einzige test-hw-Lücke |
-| 2 | 1.1 | 25 | Eigentlicher Fix |
-| 3 | 4.0 + 4.1 | 40 | Klein, RT-Versprechen, niedrig hängend |
-| 4 | 5.0 + 5.1 | 110 | uid_map isoliert, gut testbar |
-| 5 | 2.0 + 2.1 | 110 | TID/PID — größtes Risiko, früh angehen |
-| 6 | 3.0 + 3.1 | 50 | Klären ob Page-Cache existiert |
-| 7 | 3.2/3.3 oder Phase | ? | Je nach 3.0-Befund |
-| 8 | 2.2, 2.3 | 50 | Cleanup |
-| 9 | 5.2, 5.3 | 110–180 | Mount-Propagation |
-| 10 | 1.2 | 10 | Nur falls 1.0 Race zeigt |
+| 1 | 4.0 + 4.1 | 40 | Klein, RT-Versprechen, niedrig hängend |
+| 2 | 5.0 + 5.1 | 110 | uid_map isoliert, gut testbar |
+| 3 | 2.0 + 2.1 | 110 | TID/PID — größtes Risiko, früh angehen |
+| 4 | 3.0 + 3.1 | 50 | Klären ob Page-Cache existiert |
+| 5 | 3.2/3.3 oder Phase | ? | Je nach 3.0-Befund |
+| 6 | 2.2, 2.3 | 50 | Cleanup |
+| 7 | 5.2, 5.3 | 110–180 | Mount-Propagation |
 
 ---
 
@@ -96,3 +93,5 @@ Dokumentiert als TFAIL akzeptiert — busybox-vs-GNU oder musl-Bug:
 - **SMP echt:** `smp_num_cores()==1`, globales `rq_lock`, keine per-CPU-Runqueues. Voraussetzung für SCHED_FIFO mit CPU-Isolation.
 - **aarch64:** 153 LOC Panic-Stubs, `entry.S` ist ein Kommentar. CLAUDE.md fordert Tier-1.
 - **Stub-Audit:** `src/kernel/sys/stubs.c` 11 No-op-Returns + 2× `-ENOSYS` (CLAUDE.md §8 verbietet Stubs); `umount2` entfernt mount-entry nicht; `do_sched_setscheduler` lehnt SCHED_DEADLINE/BATCH/IDLE ab; `vt/input.c:14 INPUT_MAX_DRIVERS 4` static array (verstößt gegen §6).
+- **TCP-Folgearbeit** (aufgedeckt durch Bug 1): per-skb send queue statt single-segment retx_buf; RFC 6298 SRTT/RTTVAR-Estimator; FIN-Retransmit; SACK-basiertes selektives RTX (RFC 6675); Timer-Callback-vs-sock_free Race (gilt auch für keepalive).
+- **e1000 RX-Ring:** `NUM_RX_DESC=8` (drivers/pci/e1000.c:86) — bei N≥8 simultanen Verbindungen overflowt unter Last. Ohne Retransmission war das ein Hänger; mit Retransmit nur noch Latenz. Vergrößern auf 64 wäre billig.
