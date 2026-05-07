@@ -698,9 +698,13 @@ long do_recvfrom(int fd, void *buf, long len, int flags,
                 return r;
             }
             if (nonblock) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
-            if (timer_ms() >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            uint64_t now2 = timer_ms();
+            if (now2 >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
             if (signal_deliverable()) { finish_wait(&s->tcp.wait_wq, &wait); return -ERESTARTSYS; }
-            schedule();
+            /* hrtimer-Backstop: ohne diesen Timeout haengt schedule() ewig wenn ein
+             * Paket droppt (e1000 RX-Ring overflow → kein wake_up). recv_deadline
+             * ist ms; schedule_timeout erwartet ns. */
+            schedule_timeout(&s->tcp.wait_wq, &wait, (s->recv_deadline - now2) * 1000000ULL);
             finish_wait(&s->tcp.wait_wq, &wait);
         }
     }
@@ -747,9 +751,11 @@ long socket_read(int fd, void *buf, long count) {
                 return r;
             }
             if (nonblock) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
-            if (timer_ms() >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
+            uint64_t now2 = timer_ms();
+            if (now2 >= s->recv_deadline) { finish_wait(&s->tcp.wait_wq, &wait); s->recv_deadline = 0; return -EAGAIN; }
             if (signal_deliverable()) { finish_wait(&s->tcp.wait_wq, &wait); return -ERESTARTSYS; }
-            schedule();
+            /* hrtimer-Backstop gegen Drop ohne Wake (siehe do_recvfrom). */
+            schedule_timeout(&s->tcp.wait_wq, &wait, (s->recv_deadline - now2) * 1000000ULL);
             finish_wait(&s->tcp.wait_wq, &wait);
         }
     }
