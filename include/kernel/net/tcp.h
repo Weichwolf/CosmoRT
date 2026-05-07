@@ -18,6 +18,17 @@
 #define NET_TCP_OOO_MAX   64   /* per-connection cap on OOO segments (DoS guard) */
 #define NET_TFO_CACHE_MAX 64   /* TFO-cookie cache (global, server-IP keyed) */
 
+/* Retransmit timeouts (RFC 6298 §2 — simplified, no SRTT estimator yet).
+ * INITIAL is RFC's recommended 1s for the SYN path. DATA is the lower
+ * bound used after handshake completes (Linux: HZ/5 = 200ms with HZ=1000).
+ * MAX caps the exponential backoff. RETRIES is between Linux's TCP_RETR1
+ * (3) and TCP_RETR2 (15) — picked so a stalled connection times out in
+ * 0.2 + 0.4 + 0.8 + 1.6 + 3.2 ≈ 6.2 s, well above the recv backstop. */
+#define TCP_RTO_INITIAL_MS 1000
+#define TCP_RTO_DATA_MS    200
+#define TCP_RTO_MAX_MS     8000
+#define TCP_MAX_RETRIES    5
+
 /* ── TCP States (RFC 793) ─────────────────────────── */
 
 enum tcp_state {
@@ -135,8 +146,17 @@ typedef struct net_tcp {
     uint8_t  rcv_wscale;     /* our shift count (advertised) */
     uint8_t  wscale_ok;      /* 1 = both sides negotiated */
 
-    /* Retransmit */
+    /* Retransmit (RFC 6298 — simplified, fixed-RTO variant)
+     * retx_buf holds the last unacked data segment so the timer-wheel
+     * callback can re-emit it with seq=snd_una. retx_armed gates
+     * idempotent timer_wheel_add. retx_count caps retries before RST.
+     * Linux uses a per-skb send queue; this single-segment buffer is
+     * sufficient for the current test workload (single MSS in flight). */
     uint64_t rto_ms, last_send_ms;
+    uint16_t retx_len;        /* bytes valid in retx_buf, 0 = none */
+    uint8_t  retx_count;      /* retries since last new ACK */
+    uint8_t  retx_armed;      /* 1 = timer-wheel entry registered */
+    uint8_t  retx_buf[1460];  /* MSS-sized last-segment scratch */
 
     uint8_t got_fin, got_rst;
 

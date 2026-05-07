@@ -9,6 +9,7 @@
 #include "net/in6.h"
 #include "net/ipv6.h"
 #include "core/timer.h"
+#include "core/timer_wheel.h"
 #include "mm/page_alloc.h"
 #include "mm/slab.h"
 #include "core/waitqueue.h"
@@ -251,6 +252,30 @@ static uint16_t tcp_cksum6(const struct in6_addr *src, const struct in6_addr *ds
     }
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (uint16_t)~sum;
+}
+
+/* ── Retransmit Timer Arming (RFC 6298 §5) ─────────
+ * The timer_wheel callback fires net_tcp_retransmit(c) once rto_ms
+ * elapses without ACK progress. arm/cancel are idempotent via the
+ * retx_armed flag — net_tcp_send → arm, ACK that drains the window
+ * → cancel, RTO fire → re-arm with backoff. Cold helpers: never on
+ * the per-segment hot path (only on transitions). */
+
+__attribute__((cold))
+static void tcp_arm_retx(net_tcp_t *c) {
+    if (c->retx_armed) return;
+    if (c->rto_ms == 0) c->rto_ms = TCP_RTO_DATA_MS;
+    if (timer_wheel_add(RT_TIMER_TCP_RETRANSMIT, c, (uint32_t)c->rto_ms) == 0)
+        c->retx_armed = 1;
+}
+
+__attribute__((cold))
+static void tcp_cancel_retx(net_tcp_t *c) {
+    if (!c->retx_armed) return;
+    timer_wheel_cancel(c);
+    c->retx_armed = 0;
+    c->retx_count = 0;
+    c->retx_len   = 0;
 }
 
 /* ── Send TCP Segment (with options support) ──────── */
@@ -1162,6 +1187,9 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
             c->ecn_enabled = 1;
         else
             c->ecn_enabled = 0; /* peer doesn't support ECN */
+        /* Handshake complete: SYN-RTX timer no longer needed.
+         * net_tcp_send will re-arm with TCP_RTO_DATA_MS once data flows. */
+        tcp_cancel_retx(c);
         send_tcp(c, 0x10, 0, 0);
         c->state = TCP_ESTABLISHED;
         c->connect_err = 0;
@@ -1172,6 +1200,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
 
     /* RST */
     if (flags & 0x04) {
+        tcp_cancel_retx(c);
         c->state = TCP_CLOSED;
         c->got_rst = 1;
         c->connect_err = -1;
@@ -1195,10 +1224,23 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
                     /* Karn's algorithm: use timestamp RTT, update RTO */
                     /* Simple SRTT: RTO = max(200, rtt * 2) capped at MAX_RTO */
                     uint64_t new_rto = rtt * 2;
-                    if (new_rto < 200) new_rto = 200;
+                    if (new_rto < TCP_RTO_DATA_MS) new_rto = TCP_RTO_DATA_MS;
                     if (new_rto > NET_TCP_MAX_RTO_MS) new_rto = NET_TCP_MAX_RTO_MS;
                     c->rto_ms = new_rto;
                 }
+            }
+
+            /* Retransmit-timer maintenance (RFC 6298 §5.3, §5.2):
+             *  - All outstanding bytes acked → cancel.
+             *  - Partial ACK (still data in flight) → reset retry count
+             *    and rto_ms, but leave the timer armed against the new
+             *    snd_una. retx_armed stays 1; cancel+rearm would also
+             *    work but costs an extra wheel-list traversal. */
+            if (c->snd_una == c->snd_nxt) {
+                tcp_cancel_retx(c);
+            } else {
+                c->retx_count = 0;
+                c->rto_ms = TCP_RTO_DATA_MS;
             }
 
             /* ECN: if peer sent ECE, reduce cwnd and send CWR */
@@ -1245,6 +1287,7 @@ void tcp_input(uint32_t ns_id, const uint8_t *pkt, int len) {
         } else if (c->state == TCP_CLOSING && ack_num == c->snd_nxt) {
             c->state = TCP_TIME_WAIT; state_changed = 1;
         } else if (c->state == TCP_LAST_ACK && ack_num == c->snd_nxt) {
+            tcp_cancel_retx(c);
             c->state = TCP_CLOSED; tcp_unregister(c); state_changed = 1;
         }
         if (state_changed) {
@@ -1411,6 +1454,8 @@ int net_tcp_connect(net_tcp_t *c, const uint8_t *dst_ip, uint16_t port) {
     tcp_register(c);
     /* SYN with MSS + Window Scale + SACK Permitted options */
     send_syn(c, 0x02);
+    c->rto_ms = TCP_RTO_INITIAL_MS;
+    tcp_arm_retx(c);
     return -11;
 }
 
@@ -1464,6 +1509,8 @@ int net_tcp6_connect(net_tcp_t *c, const struct in6_addr *dst, uint16_t port) {
     c->state = TCP_SYN_SENT;
     tcp_register(c);
     send_syn(c, 0x02);
+    c->rto_ms = TCP_RTO_INITIAL_MS;
+    tcp_arm_retx(c);
     return -11;
 }
 
@@ -1485,8 +1532,21 @@ int net_tcp_send(net_tcp_t *c, const void *data, int len) {
             if (sent > 0) break;
         }
         send_tcp(c, 0x18, p + sent, ch);
+        /* Cache the most-recent unacked segment for retransmission.
+         * Single-segment buffer: a peer that loses an earlier segment
+         * in a multi-segment burst gets the *latest* re-sent here, but
+         * Fast Retransmit (3 DupACKs) covers the common case — see
+         * cc_on_loss path in tcp_input. Full per-skb send queue is a
+         * future phase. */
+        int blen = ch > (int)sizeof(c->retx_buf) ? (int)sizeof(c->retx_buf) : ch;
+        for (int i = 0; i < blen; i++) c->retx_buf[i] = p[sent + i];
+        c->retx_len = (uint16_t)blen;
         c->snd_nxt += (uint32_t)ch;
         sent += ch;
+    }
+    if (sent > 0) {
+        c->rto_ms = TCP_RTO_DATA_MS;
+        tcp_arm_retx(c);
     }
     return sent;
 }
@@ -1529,6 +1589,10 @@ void net_tcp_close(net_tcp_t *c) {
         c->snd_nxt++;
         c->state = TCP_LAST_ACK;
     }
+    /* Cancel before unregister: the timer-wheel callback dereferences
+     * the connection pointer and would race with sock_free's slab
+     * release. Ordering: cancel → unregister → buffer teardown. */
+    tcp_cancel_retx(c);
     tcp_unregister(c);
     rxring_destroy(&c->rx);
     ooo_free_all(c);
@@ -1537,13 +1601,69 @@ void net_tcp_close(net_tcp_t *c) {
 
 /* ── TCP Retransmit (called from Timer Wheel, IRQ-context) ── */
 
+/* Retransmit-the-RST helper: peer must be told the connection is gone
+ * after we exhaust retries. Cold path, called once per dead connection. */
+__attribute__((cold))
+static void send_tcp_rst(net_tcp_t *c) {
+    /* RST=0x04, ACK=0x10. Carries snd_nxt as seq (RFC 793 §3.4). */
+    send_tcp(c, 0x14, 0, 0);
+}
+
 void net_tcp_retransmit(void *conn) {
     net_tcp_t *c = (net_tcp_t *)conn;
-    if (!c || c->state != TCP_ESTABLISHED) return;
-    cc_on_loss(c);
-    c->in_recovery = 0; /* RTO exits fast recovery */
-    c->cubic_t_epoch = timer_ms();
-    send_tcp(c, 0x10, 0, 0);
+    if (!c) return;
+
+    /* Wheel entry already consumed by tw_process_slot — flag is now
+     * out of date; clear so a re-arm below registers a fresh entry. */
+    c->retx_armed = 0;
+
+    /* Connection torn down between arming and firing — drop silently.
+     * net_tcp_close already cancelled, but a racing close path may
+     * have set state=TCP_CLOSED after dequeue but before fire. */
+    if (__builtin_expect(c->state == TCP_CLOSED, 0)) return;
+
+    /* Exhausted retries: abort via RST and wake any blocked recv.
+     * Linux: tcp_write_err() → ETIMEDOUT. We surface as ECONNRESET via
+     * got_rst, which the recv path already maps to -ECONNRESET. */
+    if (c->retx_count >= TCP_MAX_RETRIES) {
+        if (c->state != TCP_SYN_SENT) send_tcp_rst(c);
+        c->state = TCP_CLOSED;
+        c->got_rst = 1;
+        c->connect_err = -1;
+        wake_up_all(&c->wait_wq);
+        return;
+    }
+
+    if (c->state == TCP_SYN_SENT) {
+        /* Re-emit SYN with the original options — same snd_nxt, no
+         * sequence advance (SYN occupies one slot only on first ACK). */
+        send_syn(c, 0x02);
+    } else if ((c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT) &&
+               (int32_t)(c->snd_nxt - c->snd_una) > 0 && c->retx_len > 0) {
+        /* Loss-event accounting: collapse cwnd, exit Fast Recovery,
+         * reset CUBIC epoch so growth restarts from the new ssthresh. */
+        cc_on_loss(c);
+        c->in_recovery = 0;
+        c->cubic_t_epoch = timer_ms();
+        /* Re-emit the cached segment with seq=snd_una. send_tcp_opts
+         * builds the header from snd_nxt; rewind, send, restore — same
+         * trick keepalive uses. */
+        uint32_t saved_nxt = c->snd_nxt;
+        c->snd_nxt = c->snd_una;
+        send_tcp(c, 0x18, c->retx_buf, c->retx_len);
+        c->snd_nxt = saved_nxt;
+    } else {
+        /* No data outstanding (e.g. FIN only) and not SYN_SENT —
+         * nothing to retransmit. Don't re-arm. */
+        return;
+    }
+
+    c->retx_count++;
+    /* Exponential backoff capped at TCP_RTO_MAX_MS (RFC 6298 §5.5). */
+    uint64_t next = c->rto_ms * 2;
+    if (next > TCP_RTO_MAX_MS) next = TCP_RTO_MAX_MS;
+    c->rto_ms = next;
+    tcp_arm_retx(c);
 }
 
 /* ── TCP Keepalive Probe (called from Timer Wheel, IRQ-context) ── */
